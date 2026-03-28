@@ -1,4 +1,4 @@
-use chrono::{Datelike, IsoWeek, Local, NaiveDate, Timelike};
+use chrono::{Datelike, Local, NaiveDate, Timelike};
 
 use crate::output::DaySummary;
 
@@ -9,11 +9,11 @@ pub fn day_fraction() -> f64 {
     secs as f64 / 86400.0
 }
 
-/// Fraction of the current ISO week that has elapsed
+/// Fraction of the current Sunday-based week that has elapsed (Sun-Sat)
 pub fn week_fraction() -> f64 {
     let now = Local::now();
-    let days_from_monday = now.weekday().num_days_from_monday() as f64;
-    (days_from_monday + day_fraction()) / 7.0
+    let days_from_sunday = now.weekday().num_days_from_sunday() as f64;
+    (days_from_sunday + day_fraction()) / 7.0
 }
 
 /// Fraction of the current month that has elapsed
@@ -50,11 +50,12 @@ pub fn effective_days(days: &[DaySummary]) -> f64 {
     eff
 }
 
-/// Compute effective week count for averaging
+/// Compute effective week count for averaging (Sunday-based weeks)
 pub fn effective_weeks(weeks: &[(String, f64, usize)]) -> f64 {
     let today = Local::now().date_naive();
-    let iso: IsoWeek = today.iso_week();
-    let current_key = format!("{}-W{:02}", iso.year(), iso.week());
+    let days_since_sunday = today.weekday().num_days_from_sunday() as i64;
+    let current_sunday = today - chrono::Duration::days(days_since_sunday);
+    let current_key = format!("{}", current_sunday);
     let mut eff = 0.0;
     for (key, _, _) in weeks {
         if *key == current_key {
@@ -165,9 +166,10 @@ mod tests {
 
     #[test]
     fn test_effective_weeks_no_current() {
+        // Sunday-based week keys (date of the Sunday)
         let weeks = vec![
-            ("2020-W01".to_string(), 100.0, 10),
-            ("2020-W02".to_string(), 200.0, 20),
+            ("2020-01-05".to_string(), 100.0, 10),
+            ("2020-01-12".to_string(), 200.0, 20),
         ];
         let eff = effective_weeks(&weeks);
         assert!((eff - 2.0).abs() < f64::EPSILON);

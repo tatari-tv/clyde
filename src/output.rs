@@ -310,16 +310,16 @@ mod tests {
     #[test]
     fn test_format_weekly_text() {
         let weeks = vec![
-            ("2026-W11".to_string(), 47.82, 12),
-            ("2026-W10".to_string(), 123.45, 28),
+            ("2026-03-08".to_string(), 47.82, 12),
+            ("2026-03-01".to_string(), 123.45, 28),
         ];
         let text = format_weekly_text(&weeks);
         assert!(text.contains("Week"));
         assert!(text.contains("Cost"));
         assert!(text.contains("Sessions"));
-        assert!(text.contains("2026-W11"));
+        assert!(text.contains("2026-03-08"));
         assert!(text.contains("47.82"));
-        assert!(text.contains("2026-W10"));
+        assert!(text.contains("2026-03-01"));
         assert!(text.contains("123.45"));
         // No parentheses or pluralization
         assert!(!text.contains("session)"));
@@ -329,14 +329,14 @@ mod tests {
     #[test]
     fn test_format_weekly_json() {
         let weeks = vec![
-            ("2026-W11".to_string(), 47.826, 12),
-            ("2026-W10".to_string(), 123.454, 28),
+            ("2026-03-08".to_string(), 47.826, 12),
+            ("2026-03-01".to_string(), 123.454, 28),
         ];
         let json = format_weekly_json(&weeks, None);
-        assert!(json.contains("\"week\":\"2026-W11\""));
+        assert!(json.contains("\"week\":\"2026-03-08\""));
         assert!(json.contains("\"cost\":47.83"));
         assert!(json.contains("\"sessions\":12"));
-        assert!(json.contains("\"week\":\"2026-W10\""));
+        assert!(json.contains("\"week\":\"2026-03-01\""));
         assert!(json.contains("\"cost\":123.45"));
     }
 

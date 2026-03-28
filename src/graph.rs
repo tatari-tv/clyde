@@ -251,8 +251,8 @@ mod tests {
     #[test]
     fn test_weekly_chart_few_points() {
         let weeks = vec![
-            ("2026-W11".to_string(), 47.82, 12),
-            ("2026-W10".to_string(), 123.45, 28),
+            ("2026-03-08".to_string(), 47.82, 12),
+            ("2026-03-01".to_string(), 123.45, 28),
         ];
         assert!(weekly_chart(&weeks).is_none());
     }

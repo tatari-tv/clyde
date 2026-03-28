@@ -89,7 +89,7 @@ pub enum Command {
         #[arg(short, long)]
         graph: bool,
     },
-    /// Show weekly cost summary
+    /// Show weekly cost summary (Sun-Sat weeks, clipped to Sunday)
     Weekly {
         /// Output as JSON
         #[arg(short, long)]
@@ -110,8 +110,12 @@ pub enum Command {
         /// Show inline bar charts and braille line chart
         #[arg(short, long)]
         graph: bool,
+
+        /// Rolling window (last N*7 days from today instead of clipping to Sunday)
+        #[arg(short, long)]
+        rolling: bool,
     },
-    /// Show monthly cost summary
+    /// Show monthly cost summary (clipped to 1st of month)
     Monthly {
         /// Output as JSON
         #[arg(short, long)]
@@ -132,6 +136,10 @@ pub enum Command {
         /// Show inline bar charts and braille line chart
         #[arg(short, long)]
         graph: bool,
+
+        /// Rolling window (last N months from today instead of clipping to 1st)
+        #[arg(short, long)]
+        rolling: bool,
     },
     /// Install a Claude Code statusline
     Statusline {

@@ -367,22 +367,27 @@ fn run(cli: &Cli, config: &Config) -> Result<()> {
             weeks: num_weeks,
             average: show_avg,
             graph: show_graph,
+            rolling,
         }) => {
-            // Monday of the current ISO week
-            let current_monday =
-                today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
-            // Go back (num_weeks - 1) more weeks
-            let start = current_monday - chrono::Duration::weeks(i64::from(*num_weeks) - 1);
+            let start = if *rolling {
+                // Rolling: last N*7 days from today
+                today - chrono::Duration::days(i64::from(*num_weeks) * 7 - 1)
+            } else {
+                // Clipped: Sunday of current week, go back N-1 more weeks
+                let days_since_sunday =
+                    today.weekday().num_days_from_sunday() as i64;
+                let current_sunday = today - chrono::Duration::days(days_since_sunday);
+                current_sunday - chrono::Duration::weeks(i64::from(*num_weeks) - 1)
+            };
             let (days, ..) = compute_summaries(cli, config, start, today, false)?;
 
-            // Group by ISO week
+            // Group by Sunday-based week (Sun-Sat)
             let mut weeks: BTreeMap<String, (f64, HashSet<String>)> = BTreeMap::new();
             for day in &days {
-                let week_key = format!(
-                    "{}-W{:02}",
-                    day.date.iso_week().year(),
-                    day.date.iso_week().week()
-                );
+                let days_since_sunday =
+                    day.date.weekday().num_days_from_sunday() as i64;
+                let week_sunday = day.date - chrono::Duration::days(days_since_sunday);
+                let week_key = format!("{}", week_sunday);
                 let entry = weeks
                     .entry(week_key)
                     .or_insert_with(|| (0.0, HashSet::new()));
@@ -440,10 +445,19 @@ fn run(cli: &Cli, config: &Config) -> Result<()> {
             months: num_months,
             average: show_avg,
             graph: show_graph,
+            rolling,
         }) => {
-            let current_month_start =
-                NaiveDate::from_ymd_opt(today.year(), today.month(), 1).expect("valid date");
-            let start = subtract_months(current_month_start, *num_months - 1);
+            let start = if *rolling {
+                // Rolling: N calendar months back from today
+                today
+                    .checked_sub_months(chrono::Months::new(*num_months))
+                    .expect("valid date")
+            } else {
+                // Clipped: 1st of current month, go back N-1 more months
+                let current_month_start =
+                    NaiveDate::from_ymd_opt(today.year(), today.month(), 1).expect("valid date");
+                subtract_months(current_month_start, *num_months - 1)
+            };
             let (days, ..) = compute_summaries(cli, config, start, today, false)?;
 
             // Group by month
