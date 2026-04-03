@@ -5,19 +5,19 @@ Fast Rust CLI that reads Claude Code's JSONL session logs and computes cost summ
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/scottidler/claude-cost-usage/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tatari-tv/claude-cost-usage/main/install.sh | bash
 ```
 
 Installs to `~/.local/bin` by default. Override with `INSTALL_DIR`:
 
 ```bash
-INSTALL_DIR=~/bin curl -fsSL https://raw.githubusercontent.com/scottidler/claude-cost-usage/main/install.sh | bash
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/tatari-tv/claude-cost-usage/main/install.sh | bash
 ```
 
 ### From Source
 
 ```bash
-cargo install --git https://github.com/scottidler/claude-cost-usage
+cargo install --git https://github.com/tatari-tv/claude-cost-usage
 ```
 
 ---
