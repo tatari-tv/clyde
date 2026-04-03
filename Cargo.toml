@@ -1,6 +1,6 @@
 [package]
 name = "ccu"
-version = "0.3.17"
+version = "0.3.18"
 edition = "2024"
 authors = ["Scott Idler <scott.a.idler@gmail.com>"]
 build = "build.rs"
@@ -20,6 +20,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_yaml = "0.9.34"
 sparklines = "0.3.0"
+include_dir = "0.7.4"
 
 [build-dependencies]
 

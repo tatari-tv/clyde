@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Return embedded default pricing compiled into the binary.
 pub fn default_pricing() -> HashMap<String, ModelPricing> {
     let yaml = include_str!("../data/pricing.yml");
-    let parsed: crate::update::PricingOnly =
-        serde_yaml::from_str(yaml).expect("embedded pricing YAML is valid");
+    let parsed: crate::update::PricingOnly = serde_yaml::from_str(yaml).expect("embedded pricing YAML is valid");
     parsed.pricing
 }
 
@@ -73,12 +72,7 @@ pub fn normalize_model_id(model_id: &str) -> &str {
 }
 
 /// Calculate tiered cost for a token type: standard rate below threshold, premium above.
-fn tiered_cost(
-    tokens: u64,
-    total_input: u64,
-    standard_rate: f64,
-    premium_rate: Option<f64>,
-) -> f64 {
+fn tiered_cost(tokens: u64, total_input: u64, standard_rate: f64, premium_rate: Option<f64>) -> f64 {
     let mtok = 1_000_000.0;
     if tokens == 0 {
         return 0.0;
@@ -92,10 +86,8 @@ fn tiered_cost(
 /// Calculate cost for a single assistant entry's token usage
 pub fn calculate_cost(pricing: &ModelPricing, usage: &crate::parser::TokenUsage) -> f64 {
     // Total input context determines whether long context pricing applies.
-    let total_input = usage.input_tokens
-        + usage.cache_5m_write_tokens
-        + usage.cache_1h_write_tokens
-        + usage.cache_read_tokens;
+    let total_input =
+        usage.input_tokens + usage.cache_5m_write_tokens + usage.cache_1h_write_tokens + usage.cache_read_tokens;
 
     tiered_cost(
         usage.input_tokens,
@@ -171,47 +163,26 @@ mod tests {
         );
         // All three model families must be present
         assert!(pricing.contains_key("claude-opus-4-6"), "missing opus 4.6");
-        assert!(
-            pricing.contains_key("claude-sonnet-4-6"),
-            "missing sonnet 4.6"
-        );
-        assert!(
-            pricing.contains_key("claude-haiku-4-5"),
-            "missing haiku 4.5"
-        );
+        assert!(pricing.contains_key("claude-sonnet-4-6"), "missing sonnet 4.6");
+        assert!(pricing.contains_key("claude-haiku-4-5"), "missing haiku 4.5");
         // Older models must be present too
         assert!(pricing.contains_key("claude-opus-3"), "missing opus 3");
         assert!(pricing.contains_key("claude-haiku-3"), "missing haiku 3");
-        assert!(
-            pricing.contains_key("claude-sonnet-3-7"),
-            "missing sonnet 3.7"
-        );
+        assert!(pricing.contains_key("claude-sonnet-3-7"), "missing sonnet 3.7");
         // All values must be positive
         for (model, p) in &pricing {
             assert!(p.input_per_mtok > 0.0, "{model} input_per_mtok <= 0");
             assert!(p.output_per_mtok > 0.0, "{model} output_per_mtok <= 0");
-            assert!(
-                p.cache_5m_write_per_mtok > 0.0,
-                "{model} cache_5m_write <= 0"
-            );
-            assert!(
-                p.cache_1h_write_per_mtok > 0.0,
-                "{model} cache_1h_write <= 0"
-            );
+            assert!(p.cache_5m_write_per_mtok > 0.0, "{model} cache_5m_write <= 0");
+            assert!(p.cache_1h_write_per_mtok > 0.0, "{model} cache_1h_write <= 0");
             assert!(p.cache_read_per_mtok > 0.0, "{model} cache_read <= 0");
         }
     }
 
     #[test]
     fn test_normalize_model_id_with_date() {
-        assert_eq!(
-            normalize_model_id("claude-opus-4-5-20251101"),
-            "claude-opus-4-5"
-        );
-        assert_eq!(
-            normalize_model_id("claude-haiku-4-5-20251001"),
-            "claude-haiku-4-5"
-        );
+        assert_eq!(normalize_model_id("claude-opus-4-5-20251101"), "claude-opus-4-5");
+        assert_eq!(normalize_model_id("claude-haiku-4-5-20251001"), "claude-haiku-4-5");
     }
 
     #[test]
@@ -229,26 +200,11 @@ mod tests {
 
     #[test]
     fn test_normalize_model_id_older_naming() {
-        assert_eq!(
-            normalize_model_id("claude-3-7-sonnet-20250219"),
-            "claude-sonnet-3-7"
-        );
-        assert_eq!(
-            normalize_model_id("claude-3-5-haiku-20241022"),
-            "claude-haiku-3-5"
-        );
-        assert_eq!(
-            normalize_model_id("claude-3-5-sonnet-20241022"),
-            "claude-sonnet-3-5"
-        );
-        assert_eq!(
-            normalize_model_id("claude-3-opus-20240229"),
-            "claude-opus-3"
-        );
-        assert_eq!(
-            normalize_model_id("claude-3-haiku-20240307"),
-            "claude-haiku-3"
-        );
+        assert_eq!(normalize_model_id("claude-3-7-sonnet-20250219"), "claude-sonnet-3-7");
+        assert_eq!(normalize_model_id("claude-3-5-haiku-20241022"), "claude-haiku-3-5");
+        assert_eq!(normalize_model_id("claude-3-5-sonnet-20241022"), "claude-sonnet-3-5");
+        assert_eq!(normalize_model_id("claude-3-opus-20240229"), "claude-opus-3");
+        assert_eq!(normalize_model_id("claude-3-haiku-20240307"), "claude-haiku-3");
     }
 
     #[test]
@@ -355,9 +311,8 @@ mod tests {
 
         // total_input = 50K + 200K = 250K > 200K, premium rates apply
         let cost = calculate_cost(&pricing, &usage);
-        let expected = (50_000.0 * 10.0 / 1_000_000.0)
-            + (10_000.0 * 37.50 / 1_000_000.0)
-            + (200_000.0 * 1.0 / 1_000_000.0);
+        let expected =
+            (50_000.0 * 10.0 / 1_000_000.0) + (10_000.0 * 37.50 / 1_000_000.0) + (200_000.0 * 1.0 / 1_000_000.0);
         assert!((cost - expected).abs() < 0.001);
     }
 }

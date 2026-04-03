@@ -14,10 +14,7 @@ pub struct SessionFile {
 
 /// Discover all JSONL session files under the Claude projects directory
 pub fn find_session_files(projects_dir: &Path) -> Result<Vec<SessionFile>> {
-    debug!(
-        "find_session_files: projects_dir={}",
-        projects_dir.display()
-    );
+    debug!("find_session_files: projects_dir={}", projects_dir.display());
 
     if !projects_dir.exists() {
         return Ok(Vec::new());
@@ -25,8 +22,7 @@ pub fn find_session_files(projects_dir: &Path) -> Result<Vec<SessionFile>> {
 
     let mut files = Vec::new();
 
-    let project_dirs =
-        fs::read_dir(projects_dir).context("Failed to read Claude projects directory")?;
+    let project_dirs = fs::read_dir(projects_dir).context("Failed to read Claude projects directory")?;
 
     for entry in project_dirs {
         let entry = match entry {
@@ -93,11 +89,7 @@ pub fn find_session_files(projects_dir: &Path) -> Result<Vec<SessionFile>> {
 /// Filter session files to those modified within a date range (inclusive).
 /// Uses file mtime as a heuristic - files modified on a given day likely contain
 /// entries for that day.
-pub fn filter_by_date_range(
-    files: &[SessionFile],
-    start: NaiveDate,
-    end: NaiveDate,
-) -> Vec<&SessionFile> {
+pub fn filter_by_date_range(files: &[SessionFile], start: NaiveDate, end: NaiveDate) -> Vec<&SessionFile> {
     debug!(
         "filter_by_date_range: start={}, end={}, input_count={}",
         start,

@@ -259,21 +259,13 @@ mod tests {
             mtime_hash: 0,
             version: CACHE_VERSION,
         };
-        fs::write(
-            &old_path,
-            serde_json::to_string(&cached).expect("serialize"),
-        )
-        .expect("write");
+        fs::write(&old_path, serde_json::to_string(&cached).expect("serialize")).expect("write");
         assert!(old_path.exists());
 
         // Create a cache file for today (should be kept)
         let today = chrono::Local::now().date_naive();
         let today_path = dir.join(format!("{}.json", today));
-        fs::write(
-            &today_path,
-            serde_json::to_string(&cached).expect("serialize"),
-        )
-        .expect("write");
+        fs::write(&today_path, serde_json::to_string(&cached).expect("serialize")).expect("write");
 
         prune_cache(90).expect("prune");
 

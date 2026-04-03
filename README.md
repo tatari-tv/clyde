@@ -2,6 +2,26 @@
 
 Fast Rust CLI that reads Claude Code's JSONL session logs and computes cost summaries - today, daily, weekly, monthly. Designed for embedding in statuslines, scripts, and automation.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/scottidler/claude-cost-usage/main/install.sh | bash
+```
+
+Installs to `~/.local/bin` by default. Override with `INSTALL_DIR`:
+
+```bash
+INSTALL_DIR=~/bin curl -fsSL https://raw.githubusercontent.com/scottidler/claude-cost-usage/main/install.sh | bash
+```
+
+### From Source
+
+```bash
+cargo install --git https://github.com/scottidler/claude-cost-usage
+```
+
+---
+
 ## Statusline Integration
 
 `ccu` pairs with Claude Code's built-in [statusline.sh](https://docs.anthropic.com/en/docs/claude-code/statusline) hook to give you live spend data in your terminal. The `--total` flag outputs a plain dollar amount (e.g. `14.23`), designed for embedding in status bars.
@@ -70,29 +90,6 @@ For a polished statusline with ANSI colors, powerline arrows, git branch, color-
 
 - [Owloops/claude-powerline](https://github.com/Owloops/claude-powerline) - a third-party powerline statusline
 - Ask Claude Code to write a custom statusline for you - it understands the JSON payload and can generate one to your spec
-
-## Installation
-
-### Quick Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/scottidler/claude-cost-usage/main/install.sh | bash
-```
-
-Options:
-```bash
-# Install to a custom directory
-curl -fsSL https://raw.githubusercontent.com/scottidler/claude-cost-usage/main/install.sh | bash -s -- --to ~/bin
-
-# Install a specific version
-curl -fsSL https://raw.githubusercontent.com/scottidler/claude-cost-usage/main/install.sh | bash -s -- --version v0.3.0
-```
-
-### From Source
-
-```bash
-cargo install --git https://github.com/scottidler/claude-cost-usage
-```
 
 ## Usage
 

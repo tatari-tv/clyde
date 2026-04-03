@@ -40,14 +40,8 @@ pub fn show(config: &Config) -> Result<()> {
                 format!("  (>200K)"),
                 format!("${:.2}", p.input_per_mtok_above_200k.unwrap_or(0.0)),
                 format!("${:.2}", p.output_per_mtok_above_200k.unwrap_or(0.0)),
-                format!(
-                    "${:.2}",
-                    p.cache_5m_write_per_mtok_above_200k.unwrap_or(0.0)
-                ),
-                format!(
-                    "${:.2}",
-                    p.cache_1h_write_per_mtok_above_200k.unwrap_or(0.0)
-                ),
+                format!("${:.2}", p.cache_5m_write_per_mtok_above_200k.unwrap_or(0.0)),
+                format!("${:.2}", p.cache_1h_write_per_mtok_above_200k.unwrap_or(0.0)),
                 format!("${:.2}", p.cache_read_per_mtok_above_200k.unwrap_or(0.0)),
             ]);
         }
@@ -97,10 +91,7 @@ pub fn check() -> Result<i32> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!(
-            "Could not fetch pricing page: {}. Skipping check.",
-            stderr.trim()
-        );
+        eprintln!("Could not fetch pricing page: {}. Skipping check.", stderr.trim());
         return Ok(2);
     }
 
@@ -115,10 +106,7 @@ pub fn check() -> Result<i32> {
     let hash_output = Command::new("sh")
         .args([
             "-c",
-            &format!(
-                "echo '{}' | sha256sum | cut -d' ' -f1",
-                body.replace('\'', "'\\''")
-            ),
+            &format!("echo '{}' | sha256sum | cut -d' ' -f1", body.replace('\'', "'\\''")),
         ])
         .output();
 
@@ -177,14 +165,8 @@ mod tests {
 
     #[test]
     fn test_pricing_url_points_to_raw_markdown() {
-        assert!(
-            PRICING_URL.ends_with(".md"),
-            "URL should fetch raw markdown"
-        );
-        assert!(
-            PRICING_URL.contains("pricing"),
-            "URL must fetch the pricing page"
-        );
+        assert!(PRICING_URL.ends_with(".md"), "URL should fetch raw markdown");
+        assert!(PRICING_URL.contains("pricing"), "URL must fetch the pricing page");
     }
 
     #[test]

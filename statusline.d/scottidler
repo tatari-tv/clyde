@@ -168,15 +168,14 @@ L2_B_FG="50;10;15"  # darker red text
 # =====================
 # LINE 1: CWD | hostname | git branch +/- | model(ctx)
 # =====================
-seg "${DISPLAY_CWD} " "$L1_A" "$L1_A_FG"
-seg "🌐 ${HOSTNAME_SHORT} " "$L1_B" "$L1_B_FG"
+seg "${DISPLAY_CWD} " "$L1_B" "$L1_B_FG"
+seg "🌐 ${HOSTNAME_SHORT} " "$L1_A" "$L1_A_FG"
 
 if [[ -n "$GIT_BRANCH" ]]; then
-    DIFF_TEXT=" ${GIT_BRANCH}"
+    seg " ${GIT_BRANCH} " "$L1_B" "$L1_B_FG"
     if [[ "$LINES_ADDED" != "0" || "$LINES_REMOVED" != "0" ]]; then
-        DIFF_TEXT+=" $(fgr_split $ACCENT_OK)+${LINES_ADDED}$(fgr_split $ACCENT_ERROR)-${LINES_REMOVED}"
+        seg " $(fgr_split $ACCENT_OK)+${LINES_ADDED}$(fgr_split $ACCENT_ERROR)-${LINES_REMOVED} " "$L1_A" "$L1_A_FG"
     fi
-    seg "${DIFF_TEXT} " "$L1_A" "$L1_A_FG"
 fi
 
 end_seg

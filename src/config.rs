@@ -32,8 +32,7 @@ impl Config {
         log::debug!("Config::load: config_path={:?}", config_path);
 
         if let Some(path) = config_path {
-            return Self::load_from_file(path)
-                .context(format!("Failed to load config from {}", path.display()));
+            return Self::load_from_file(path).context(format!("Failed to load config from {}", path.display()));
         }
 
         // Try ~/.config/ccu/ccu.yml
@@ -43,11 +42,7 @@ impl Config {
                 match Self::load_from_file(&primary_config) {
                     Ok(config) => return Ok(config),
                     Err(e) => {
-                        log::warn!(
-                            "Failed to load config from {}: {}",
-                            primary_config.display(),
-                            e
-                        );
+                        log::warn!("Failed to load config from {}: {}", primary_config.display(), e);
                     }
                 }
             }

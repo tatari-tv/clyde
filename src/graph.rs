@@ -55,14 +55,7 @@ pub fn format_weekly_text_with_bars(weeks: &[(String, f64, usize)]) -> String {
     let max_cost = weeks.iter().map(|(_, c, _)| *c).fold(0.0_f64, f64::max);
     let rows = weeks
         .iter()
-        .map(|(w, c, s)| {
-            vec![
-                w.clone(),
-                format!("${:.2}", c),
-                s.to_string(),
-                bar(*c, max_cost, 20),
-            ]
-        })
+        .map(|(w, c, s)| vec![w.clone(), format!("${:.2}", c), s.to_string(), bar(*c, max_cost, 20)])
         .collect();
     table::build(&["Week", "Cost", "Sessions", "Graph"], rows, &[1, 2])
 }
@@ -72,14 +65,7 @@ pub fn format_monthly_text_with_bars(months: &[(String, f64, usize)]) -> String 
     let max_cost = months.iter().map(|(_, c, _)| *c).fold(0.0_f64, f64::max);
     let rows = months
         .iter()
-        .map(|(m, c, s)| {
-            vec![
-                m.clone(),
-                format!("${:.2}", c),
-                s.to_string(),
-                bar(*c, max_cost, 20),
-            ]
-        })
+        .map(|(m, c, s)| vec![m.clone(), format!("${:.2}", c), s.to_string(), bar(*c, max_cost, 20)])
         .collect();
     table::build(&["Month", "Cost", "Sessions", "Graph"], rows, &[1, 2])
 }
@@ -259,10 +245,7 @@ mod tests {
 
     #[test]
     fn test_monthly_chart_few_points() {
-        let months = vec![
-            ("2026-03".to_string(), 200.0, 30),
-            ("2026-02".to_string(), 150.0, 25),
-        ];
+        let months = vec![("2026-03".to_string(), 200.0, 30), ("2026-02".to_string(), 150.0, 25)];
         assert!(monthly_chart(&months).is_none());
     }
 }

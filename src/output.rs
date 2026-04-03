@@ -115,13 +115,7 @@ pub fn format_yesterday_json(summary: &DaySummary) -> String {
 pub fn format_daily_text(days: &[DaySummary]) -> String {
     let rows = days
         .iter()
-        .map(|d| {
-            vec![
-                d.date.to_string(),
-                format!("${:.2}", d.cost),
-                d.sessions.to_string(),
-            ]
-        })
+        .map(|d| vec![d.date.to_string(), format!("${:.2}", d.cost), d.sessions.to_string()])
         .collect();
     table::build(&["Date", "Cost", "Sessions"], rows, &[1, 2])
 }
@@ -250,10 +244,7 @@ mod tests {
             cost: 22.175,
             sessions: 5,
         };
-        assert_eq!(
-            format_yesterday_text(&summary),
-            "Yesterday: $22.18 (5 sessions)"
-        );
+        assert_eq!(format_yesterday_text(&summary), "Yesterday: $22.18 (5 sessions)");
     }
 
     #[test]
@@ -263,10 +254,7 @@ mod tests {
             cost: 3.00,
             sessions: 1,
         };
-        assert_eq!(
-            format_yesterday_text(&summary),
-            "Yesterday: $3.00 (1 session)"
-        );
+        assert_eq!(format_yesterday_text(&summary), "Yesterday: $3.00 (1 session)");
     }
 
     #[test]
