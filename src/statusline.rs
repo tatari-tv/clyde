@@ -26,7 +26,7 @@ fn entry_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = STATUSLINE_DIR
         .files()
         .filter_map(|f| f.path().file_name()?.to_str())
-        .filter(|name| !name.starts_with('.'))
+        .filter(|name| !name.starts_with('.') && *name != "default")
         .collect();
     names.sort_unstable();
     names
@@ -74,7 +74,10 @@ fn claude_dir() -> Result<PathBuf> {
 }
 
 pub fn install(name: Option<&str>) -> Result<()> {
-    let name = name.unwrap_or(DEFAULT_NAME);
+    let name = match name {
+        None | Some("default") => DEFAULT_NAME,
+        Some(n) => n,
+    };
     let dest = claude_dir()?;
     install_to(name, &dest)
 }
