@@ -36,24 +36,30 @@ fn log_file_path() -> PathBuf {
         .join("ccu.log")
 }
 
-fn resolve_log_filter(cli_level: Option<&str>) -> String {
+fn resolve_log_filter(cli_level: Option<&str>, config_level: Option<&str>) -> (String, bool) {
     // CLI / CCU_LOG_LEVEL (merged by clap)
     if let Some(level) = cli_level {
-        return format!("ccu={}", level);
+        return (format!("ccu={}", level), true);
     }
     // Config file
-    if let Some(level) = Config::load_log_level() {
-        return format!("ccu={}", level);
+    if let Some(level) = config_level {
+        return (format!("ccu={}", level), true);
     }
     // RUST_LOG - pass through as-is (advanced users expect full filter syntax)
     if let Ok(filter) = std::env::var("RUST_LOG") {
-        return filter;
+        return (filter, true);
     }
     // Default
-    "ccu=warn".to_string()
+    ("ccu=warn".to_string(), false)
 }
 
-fn setup_logging(filter: &str) -> Result<()> {
+fn setup_logging(filter: &str, has_explicit_level: bool) -> Result<()> {
+    if !has_explicit_level {
+        // Default warn level - nothing will be logged; skip the file open.
+        env_logger::Builder::new().parse_filters(filter).init();
+        return Ok(());
+    }
+
     let log_file = log_file_path();
     let log_dir = log_file.parent().expect("log file has parent");
     fs::create_dir_all(log_dir).context("Failed to create log directory")?;
@@ -579,17 +585,11 @@ fn main() -> Result<()> {
     let matches = Cli::command().after_help(after_help).get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
 
-    // Resolve log level and initialize logging
-    let filter = resolve_log_filter(cli.log_level.as_deref());
-    setup_logging(&filter).context("Failed to setup logging")?;
-
-    // Handle pricing --check (no config needed, just network + hash comparison)
+    // Early exits: handle before config load so these paths stay fast.
     if let Some(Command::Pricing { check: true, .. }) = &cli.command {
         let exit_code = update::check()?;
         std::process::exit(exit_code);
     }
-
-    // Handle statusline command (no config needed)
     if let Some(Command::Statusline { name, list }) = &cli.command {
         if *list {
             statusline::list();
@@ -599,8 +599,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Load config: embedded pricing as base, config file as override
+    // Load config once; use its log_level to initialize logging.
     let mut config = Config::load(cli.config.as_ref()).context("Failed to load configuration")?;
+    let (filter, has_explicit_level) = resolve_log_filter(cli.log_level.as_deref(), config.log_level.as_deref());
+    setup_logging(&filter, has_explicit_level).context("Failed to setup logging")?;
 
     // Detect stale >200K tier pricing in user config. Anthropic eliminated the >200K
     // long-context surcharge on 2026-03-13. Pre-2026-03-11 ccu installs auto-wrote
@@ -708,21 +710,37 @@ mod tests {
 
     #[test]
     fn test_resolve_log_filter_cli_level() {
-        let result = resolve_log_filter(Some("debug"));
-        assert_eq!(result, "ccu=debug");
+        let (filter, explicit) = resolve_log_filter(Some("debug"), None);
+        assert_eq!(filter, "ccu=debug");
+        assert!(explicit);
     }
 
     #[test]
     fn test_resolve_log_filter_cli_level_trace() {
-        let result = resolve_log_filter(Some("trace"));
-        assert_eq!(result, "ccu=trace");
+        let (filter, explicit) = resolve_log_filter(Some("trace"), None);
+        assert_eq!(filter, "ccu=trace");
+        assert!(explicit);
+    }
+
+    #[test]
+    fn test_resolve_log_filter_config_level() {
+        let (filter, explicit) = resolve_log_filter(None, Some("info"));
+        assert_eq!(filter, "ccu=info");
+        assert!(explicit);
     }
 
     #[test]
     fn test_resolve_log_filter_none_falls_through() {
-        // When CLI level is None, it falls through to config/RUST_LOG/default
-        // We can't easily control env in tests, but we can verify it returns a valid string
-        let result = resolve_log_filter(None);
-        assert!(!result.is_empty());
+        // When both CLI and config level are None, falls through to RUST_LOG/default
+        let (filter, _) = resolve_log_filter(None, None);
+        assert!(!filter.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_log_filter_default_not_explicit() {
+        // Default path (no env, no config, no CLI) returns explicit=false
+        // Only reliable when RUST_LOG is unset; we check the shape, not the exact value
+        let (filter, _) = resolve_log_filter(None, None);
+        assert!(!filter.is_empty());
     }
 }

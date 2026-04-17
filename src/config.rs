@@ -18,16 +18,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// Lightweight read of just the log_level field from the config file.
-    /// Returns None if the file doesn't exist or can't be parsed.
-    pub fn load_log_level() -> Option<String> {
-        let config_dir = dirs::config_dir()?;
-        let path = config_dir.join("ccu").join("ccu.yml");
-        let content = fs::read_to_string(&path).ok()?;
-        let config: Config = serde_yaml::from_str(&content).ok()?;
-        config.log_level
-    }
-
     pub fn load(config_path: Option<&PathBuf>) -> Result<Self> {
         log::debug!("Config::load: config_path={:?}", config_path);
 
@@ -64,14 +54,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_load_log_level_returns_option() {
-        // load_log_level should not panic regardless of config state
-        let result = Config::load_log_level();
-        // It returns Some(level) if config exists with log_level, None otherwise
-        assert!(result.is_none() || result.is_some());
-    }
 
     #[test]
     fn test_config_deserialize_with_log_level() {
