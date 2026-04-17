@@ -2,12 +2,12 @@
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use clap::{CommandFactory, FromArgMatches};
 use eyre::{Context, Result};
 use log::{debug, info, warn};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -134,9 +134,23 @@ fn compute_summaries(
 
     // Group by day and session, compute costs
     let mut day_costs: BTreeMap<NaiveDate, (f64, HashSet<String>)> = BTreeMap::new();
-    let mut session_costs: BTreeMap<String, (f64, usize, chrono::DateTime<chrono::Utc>)> = BTreeMap::new();
+    let mut session_costs: BTreeMap<String, (f64, usize, DateTime<Utc>)> = BTreeMap::new();
 
     let mut warned_models: HashSet<String> = HashSet::new();
+
+    // Dedupe pass: Claude Code emits multiple copies of each assistant message to the
+    // JSONL file - partial streaming states with incomplete output_tokens, then a final
+    // complete copy. Additionally, session resumption can duplicate entries. Keep the
+    // highest-cost copy per (message.id, requestId), which corresponds to the final
+    // complete message Anthropic actually bills for.
+    struct DedupedEntry {
+        cost: f64,
+        date: NaiveDate,
+        session_id: String,
+        timestamp: DateTime<Utc>,
+    }
+    let mut deduped: HashMap<(String, Option<String>), DedupedEntry> = HashMap::new();
+    let mut no_mid_entries: Vec<DedupedEntry> = Vec::new();
 
     for entry in &all_entries {
         // Skip synthetic entries (internal Claude Code artifacts, not real API calls)
@@ -149,15 +163,15 @@ fn compute_summaries(
             continue;
         }
 
+        let normalized = pricing::normalize_model_id(&entry.model);
+
         // Apply model filter if specified
-        if let Some(ref model_filter) = cli.model {
-            let normalized = pricing::normalize_model_id(&entry.model);
-            if normalized != model_filter {
-                continue;
-            }
+        if let Some(ref model_filter) = cli.model
+            && normalized != model_filter
+        {
+            continue;
         }
 
-        let normalized = pricing::normalize_model_id(&entry.model);
         let model_pricing = match config.pricing.get(normalized) {
             Some(p) => p,
             None => {
@@ -170,17 +184,48 @@ fn compute_summaries(
 
         let cost = pricing::calculate_cost(model_pricing, &entry.usage);
 
-        let day_entry = day_costs.entry(date).or_insert_with(|| (0.0, HashSet::new()));
-        day_entry.0 += cost;
-        day_entry.1.insert(entry.session_id.clone());
+        let deduped_entry = DedupedEntry {
+            cost,
+            date,
+            session_id: entry.session_id.clone(),
+            timestamp: entry.timestamp,
+        };
+
+        match &entry.message_id {
+            Some(mid) => {
+                let key = (mid.clone(), entry.request_id.clone());
+                deduped
+                    .entry(key)
+                    .and_modify(|existing| {
+                        if cost > existing.cost {
+                            existing.cost = cost;
+                            existing.date = date;
+                            existing.session_id = entry.session_id.clone();
+                            existing.timestamp = entry.timestamp;
+                        }
+                    })
+                    .or_insert(deduped_entry);
+            }
+            None => {
+                // No reliable dedup key: count as-is
+                no_mid_entries.push(deduped_entry);
+            }
+        }
+    }
+
+    // Aggregate deduped entries into day and session summaries
+    for de in deduped.values().chain(no_mid_entries.iter()) {
+        let day_entry = day_costs.entry(de.date).or_insert_with(|| (0.0, HashSet::new()));
+        day_entry.0 += de.cost;
+        day_entry.1.insert(de.session_id.clone());
 
         let session_entry = session_costs
-            .entry(entry.session_id.clone())
-            .or_insert((0.0, 0, entry.timestamp));
-        session_entry.0 += cost;
+            .entry(de.session_id.clone())
+            .or_insert((0.0, 0, de.timestamp));
+        session_entry.0 += de.cost;
         session_entry.1 += 1;
-        if entry.timestamp > session_entry.2 {
-            session_entry.2 = entry.timestamp;
+        if de.timestamp > session_entry.2 {
+            session_entry.2 = de.timestamp;
         }
     }
 
@@ -557,8 +602,53 @@ fn main() -> Result<()> {
     // Load config: embedded pricing as base, config file as override
     let mut config = Config::load(cli.config.as_ref()).context("Failed to load configuration")?;
 
-    // Merge: embedded pricing is the base layer, config file pricing overrides
+    // Detect stale >200K tier pricing in user config. Anthropic eliminated the >200K
+    // long-context surcharge on 2026-03-13. Pre-2026-03-11 ccu installs auto-wrote
+    // ~/.config/ccu/ccu.yml with the then-current tiered pricing, and that file is
+    // never rewritten. Left in place, it over-bills any request with >200K input tokens.
     let embedded = pricing::default_pricing();
+    let stale_models: Vec<&String> = config
+        .pricing
+        .iter()
+        .filter(|(model, user_pricing)| {
+            let user_has_premium = user_pricing.input_per_mtok_above_200k.is_some()
+                || user_pricing.output_per_mtok_above_200k.is_some()
+                || user_pricing.cache_5m_write_per_mtok_above_200k.is_some()
+                || user_pricing.cache_1h_write_per_mtok_above_200k.is_some()
+                || user_pricing.cache_read_per_mtok_above_200k.is_some();
+            if !user_has_premium {
+                return false;
+            }
+            match embedded.get(*model) {
+                Some(emb) => {
+                    emb.input_per_mtok_above_200k.is_none()
+                        && emb.output_per_mtok_above_200k.is_none()
+                        && emb.cache_5m_write_per_mtok_above_200k.is_none()
+                        && emb.cache_1h_write_per_mtok_above_200k.is_none()
+                        && emb.cache_read_per_mtok_above_200k.is_none()
+                }
+                None => false,
+            }
+        })
+        .map(|(model, _)| model)
+        .collect();
+
+    if !stale_models.is_empty() {
+        let mut models: Vec<&str> = stale_models.iter().map(|s| s.as_str()).collect();
+        models.sort();
+        eprintln!(
+            "warning: your ~/.config/ccu/ccu.yml has stale *_above_200k pricing tiers for: {}.\n\
+             Anthropic eliminated the >200K long-context surcharge for these models on 2026-03-13,\n\
+             so leaving them in place over-bills any request with >200K input tokens.\n\
+             \n\
+             To fix, either:\n  \
+               - delete ~/.config/ccu/ccu.yml entirely (the binary's embedded pricing covers everything), or\n  \
+               - remove just the *_above_200k lines from the affected model entries.\n",
+            models.join(", ")
+        );
+    }
+
+    // Merge: embedded pricing is the base layer, config file pricing overrides
     let mut effective = embedded;
     for (model, model_pricing) in config.pricing.drain() {
         effective.insert(model, model_pricing);

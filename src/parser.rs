@@ -20,6 +20,10 @@ pub struct AssistantEntry {
     pub timestamp: DateTime<Utc>,
     pub model: String,
     pub usage: TokenUsage,
+    // Anthropic's canonical message ID (e.g. "msg_01AbC..."). Used to dedupe
+    // entries copied across session files when Claude Code resumes/forks a session.
+    pub message_id: Option<String>,
+    pub request_id: Option<String>,
 }
 
 // Serde structures for JSONL parsing - only the fields we need
@@ -31,10 +35,13 @@ struct RawEntry {
     session_id: Option<String>,
     timestamp: Option<String>,
     message: Option<RawMessage>,
+    #[serde(rename = "requestId")]
+    request_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct RawMessage {
+    id: Option<String>,
     model: Option<String>,
     usage: Option<RawUsage>,
 }
@@ -103,7 +110,9 @@ fn convert_raw_entry(raw: RawEntry) -> Option<AssistantEntry> {
 
     let session_id = raw.session_id?;
     let timestamp_str = raw.timestamp?;
+    let request_id = raw.request_id;
     let message = raw.message?;
+    let message_id = message.id;
     let model = message.model?;
     let usage = message.usage?;
 
@@ -130,6 +139,8 @@ fn convert_raw_entry(raw: RawEntry) -> Option<AssistantEntry> {
             cache_1h_write_tokens: cache_1h,
             cache_read_tokens: usage.cache_read_input_tokens.unwrap_or(0),
         },
+        message_id,
+        request_id,
     })
 }
 
@@ -157,7 +168,7 @@ mod tests {
     #[test]
     fn test_parse_assistant_entry() {
         let jsonl = make_jsonl_file(&[
-            r#"{"type":"assistant","sessionId":"abc-123","timestamp":"2026-03-10T14:23:01.025Z","message":{"model":"claude-opus-4-6","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":200,"ephemeral_1h_input_tokens":0}}}}"#,
+            r#"{"type":"assistant","sessionId":"abc-123","timestamp":"2026-03-10T14:23:01.025Z","requestId":"req_1","message":{"id":"msg_abc","model":"claude-opus-4-6","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":200,"ephemeral_1h_input_tokens":0}}}}"#,
         ]);
 
         let entries = parse_jsonl_file(jsonl.path()).expect("parse");
@@ -167,6 +178,42 @@ mod tests {
         assert_eq!(entries[0].usage.output_tokens, 50);
         assert_eq!(entries[0].usage.cache_5m_write_tokens, 200);
         assert_eq!(entries[0].usage.cache_read_tokens, 1000);
+        assert_eq!(entries[0].message_id.as_deref(), Some("msg_abc"));
+        assert_eq!(entries[0].request_id.as_deref(), Some("req_1"));
+    }
+
+    #[test]
+    fn test_parse_captures_message_id_for_dedup() {
+        // Same message.id duplicated across two files (simulates session resumption).
+        // Parser returns both; dedup happens in the caller.
+        let line = r#"{"type":"assistant","sessionId":"s1","timestamp":"2026-03-10T14:23:01.025Z","requestId":"req_1","message":{"id":"msg_dupe","model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5}}}"#;
+        let f1 = make_jsonl_file(&[line]);
+        let f2 = make_jsonl_file(&[line]);
+
+        let e1 = parse_jsonl_file(f1.path()).expect("parse f1");
+        let e2 = parse_jsonl_file(f2.path()).expect("parse f2");
+        assert_eq!(e1.len(), 1);
+        assert_eq!(e2.len(), 1);
+        assert_eq!(e1[0].message_id, e2[0].message_id);
+        assert_eq!(e1[0].message_id.as_deref(), Some("msg_dupe"));
+    }
+
+    #[test]
+    fn test_parse_streaming_partial_copies() {
+        // Claude Code writes partial streaming states followed by a final complete copy,
+        // all with the same (message.id, requestId). Parser returns all copies; the dedup
+        // pass in main.rs is responsible for selecting the authoritative one by max cost.
+        let jsonl = make_jsonl_file(&[
+            r#"{"type":"assistant","sessionId":"s1","timestamp":"2026-03-10T14:23:01Z","requestId":"req_x","message":{"id":"msg_stream","model":"claude-opus-4-6","usage":{"input_tokens":1,"output_tokens":8,"cache_creation_input_tokens":100,"cache_read_input_tokens":500}}}"#,
+            r#"{"type":"assistant","sessionId":"s1","timestamp":"2026-03-10T14:23:01Z","requestId":"req_x","message":{"id":"msg_stream","model":"claude-opus-4-6","usage":{"input_tokens":1,"output_tokens":315,"cache_creation_input_tokens":100,"cache_read_input_tokens":500}}}"#,
+        ]);
+
+        let entries = parse_jsonl_file(jsonl.path()).expect("parse");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].usage.output_tokens, 8);
+        assert_eq!(entries[1].usage.output_tokens, 315);
+        assert_eq!(entries[0].message_id, entries[1].message_id);
+        assert_eq!(entries[0].request_id, entries[1].request_id);
     }
 
     #[test]
