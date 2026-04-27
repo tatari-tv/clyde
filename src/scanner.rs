@@ -12,6 +12,26 @@ pub struct SessionFile {
     pub size: u64,
 }
 
+/// Collect a single JSONL file into the files list, skipping empty files.
+fn collect_jsonl_file(path: &Path, files: &mut Vec<SessionFile>) {
+    let metadata = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            warn!("Error reading metadata for {}: {}", path.display(), e);
+            return;
+        }
+    };
+    if metadata.len() == 0 {
+        return;
+    }
+    let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    files.push(SessionFile {
+        path: path.to_path_buf(),
+        mtime,
+        size: metadata.len(),
+    });
+}
+
 /// Discover all JSONL session files under the Claude projects directory
 pub fn find_session_files(projects_dir: &Path) -> Result<Vec<SessionFile>> {
     debug!("find_session_files: projects_dir={}", projects_dir.display());
@@ -56,29 +76,39 @@ pub fn find_session_files(projects_dir: &Path) -> Result<Vec<SessionFile>> {
             };
 
             let file_path = file_entry.path();
-            if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+
+            // Direct .jsonl file in the project dir
+            if file_path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                collect_jsonl_file(&file_path, &mut files);
                 continue;
             }
 
-            let metadata = match fs::metadata(&file_path) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!("Error reading metadata for {}: {}", file_path.display(), e);
-                    continue;
+            // Session UUID directory: look for subagents/*.jsonl inside it
+            if file_path.is_dir() {
+                let subagents_dir = file_path.join("subagents");
+                if subagents_dir.is_dir() {
+                    let sub_entries = match fs::read_dir(&subagents_dir) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            warn!("Error reading subagents dir {}: {}", subagents_dir.display(), e);
+                            continue;
+                        }
+                    };
+                    for sub_entry in sub_entries {
+                        let sub_entry = match sub_entry {
+                            Ok(e) => e,
+                            Err(e) => {
+                                warn!("Error reading subagent entry: {}", e);
+                                continue;
+                            }
+                        };
+                        let sub_path = sub_entry.path();
+                        if sub_path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                            collect_jsonl_file(&sub_path, &mut files);
+                        }
+                    }
                 }
-            };
-
-            if metadata.len() == 0 {
-                continue;
             }
-
-            let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-
-            files.push(SessionFile {
-                path: file_path,
-                mtime,
-                size: metadata.len(),
-            });
         }
     }
 
@@ -154,6 +184,69 @@ mod tests {
     #[test]
     fn test_find_session_files_nonexistent() {
         let files = find_session_files(Path::new("/nonexistent/path")).expect("find files");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_find_session_files_includes_subagents() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let project_dir = tmp.path().join("test-project");
+        fs::create_dir_all(&project_dir).expect("create project dir");
+
+        // Direct session JSONL
+        let parent_jsonl = project_dir.join("abc123.jsonl");
+        let mut f = fs::File::create(&parent_jsonl).expect("create parent jsonl");
+        writeln!(f, r#"{{"type":"system"}}"#).expect("write");
+
+        // Subagent JSONL at <uuid>/subagents/<agent>.jsonl
+        let subagents_dir = project_dir.join("abc123").join("subagents");
+        fs::create_dir_all(&subagents_dir).expect("create subagents dir");
+        let agent_jsonl = subagents_dir.join("agent-aabbccdd.jsonl");
+        let mut f = fs::File::create(&agent_jsonl).expect("create agent jsonl");
+        writeln!(f, r#"{{"type":"assistant"}}"#).expect("write");
+
+        // Empty subagent file (should be skipped)
+        fs::File::create(subagents_dir.join("agent-empty.jsonl")).expect("create empty");
+
+        let files = find_session_files(tmp.path()).expect("find files");
+        assert_eq!(files.len(), 2);
+        let paths: Vec<_> = files.iter().map(|f| &f.path).collect();
+        assert!(paths.contains(&&parent_jsonl));
+        assert!(paths.contains(&&agent_jsonl));
+    }
+
+    #[test]
+    fn test_find_session_files_subagents_no_parent_jsonl() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let project_dir = tmp.path().join("test-project");
+        fs::create_dir_all(&project_dir).expect("create project dir");
+
+        // Subagent JSONL exists without a sibling parent .jsonl
+        let subagents_dir = project_dir.join("orphan-uuid").join("subagents");
+        fs::create_dir_all(&subagents_dir).expect("create subagents dir");
+        let agent_jsonl = subagents_dir.join("agent-orphan.jsonl");
+        let mut f = fs::File::create(&agent_jsonl).expect("create agent jsonl");
+        writeln!(f, r#"{{"type":"assistant"}}"#).expect("write");
+
+        let files = find_session_files(tmp.path()).expect("find files");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, agent_jsonl);
+    }
+
+    #[test]
+    fn test_find_session_files_tool_results_ignored() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let project_dir = tmp.path().join("test-project");
+        fs::create_dir_all(&project_dir).expect("create project dir");
+
+        // tool-results dir should not be traversed for JSONL
+        let tool_results_dir = project_dir.join("abc123").join("tool-results");
+        fs::create_dir_all(&tool_results_dir).expect("create tool-results dir");
+        let mut f = fs::File::create(tool_results_dir.join("output.json")).expect("create json");
+        writeln!(f, "{{}}").expect("write");
+
+        // Only the subagents dir should be scanned; tool-results has no JSONL so result is 0
+        let files = find_session_files(tmp.path()).expect("find files");
         assert!(files.is_empty());
     }
 }
