@@ -1,6 +1,6 @@
 [package]
 name = "ccu"
-version = "0.3.24"
+version = "0.3.25"
 edition = "2024"
 authors = ["Scott Idler <scott.a.idler@gmail.com>"]
 build = "build.rs"
