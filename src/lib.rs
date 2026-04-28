@@ -25,7 +25,14 @@ pub struct RunResult {
 
 pub fn run(config: &Config) -> Result<RunResult> {
     match &config.command {
-        ResolvedCommand::Scan(scan_cfg) => scan::run(scan_cfg),
+        ResolvedCommand::Scan(scan_cfg) => {
+            let files = scan::find_session_files(&scan_cfg.projects_dir)?;
+            log::info!("run: discovered {} session files", files.len());
+            Ok(RunResult {
+                sessions_emitted: 0,
+                output_path: scan_cfg.output.clone(),
+            })
+        }
         ResolvedCommand::Render(render_cfg) => render::run(render_cfg),
         ResolvedCommand::Merge(_) => {
             bail!("`cr merge` is not implemented in this release");
