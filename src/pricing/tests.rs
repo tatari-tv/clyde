@@ -24,7 +24,7 @@ fn normalize_handles_bare_aliases() {
 }
 
 #[test]
-fn unknown_model_returns_zero_cost() {
+fn unknown_model_returns_err() {
     let usage = TokenUsage {
         input_tokens: 1_000_000,
         output_tokens: 1_000_000,
@@ -32,8 +32,10 @@ fn unknown_model_returns_zero_cost() {
         cache_1h_write_tokens: 0,
         cache_read_tokens: 0,
     };
-    assert_eq!(calculate_usd("<synthetic>", &usage), 0.0);
-    assert_eq!(calculate_usd("not-a-real-model", &usage), 0.0);
+    let err = calculate_usd("<synthetic>", &usage).expect_err("synthetic must fail");
+    assert_eq!(err.0, "<synthetic>");
+    let err = calculate_usd("not-a-real-model", &usage).expect_err("not-a-real-model must fail");
+    assert_eq!(err.0, "not-a-real-model");
 }
 
 #[test]
@@ -45,7 +47,7 @@ fn opus_4_7_input_output_math() {
         cache_1h_write_tokens: 0,
         cache_read_tokens: 0,
     };
-    let cost = calculate_usd("claude-opus-4-7", &usage);
+    let cost = calculate_usd("claude-opus-4-7", &usage).unwrap();
     assert!((cost - 30.0).abs() < 0.001, "expected $30, got ${}", cost);
 }
 
@@ -58,6 +60,6 @@ fn dated_haiku_resolves_to_haiku_4_5() {
         cache_1h_write_tokens: 0,
         cache_read_tokens: 0,
     };
-    let cost = calculate_usd("claude-haiku-4-5-20251001", &usage);
+    let cost = calculate_usd("claude-haiku-4-5-20251001", &usage).unwrap();
     assert!(cost > 0.0, "haiku should price; got {}", cost);
 }

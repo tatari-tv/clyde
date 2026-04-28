@@ -102,10 +102,14 @@ fn render_built_in(report: &Report) -> String {
 
     let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
     out.push_str(&format!("- **total tokens:** {}\n", format_int(total_tokens)));
-    out.push_str(&format!(
-        "- **total spend:** {}\n\n",
-        format_usd(report.totals.spend_usd)
-    ));
+    out.push_str(&format!("- **total spend:** {}\n", format_usd(report.totals.spend_usd)));
+    if !report.totals.untracked_models.is_empty() {
+        out.push_str(&format!(
+            "- **untracked models:** {}\n",
+            report.totals.untracked_models.join(", ")
+        ));
+    }
+    out.push('\n');
 
     out.push_str("## Totals by model\n\n");
     if report.totals.models.is_empty() {
@@ -123,7 +127,7 @@ fn render_built_in(report: &Report) -> String {
                 format_int(m.cache_1h_write),
                 format_int(m.cache_read),
                 format_int(m.total),
-                format_usd(m.spend_usd),
+                format_optional_usd(m.spend_usd),
             ));
         }
         out.push('\n');
@@ -139,7 +143,7 @@ fn render_built_in(report: &Report) -> String {
         for (repo, entries) in &by_repo {
             let session_count = entries.len();
             let tok: u64 = entries.iter().map(|e| session_total_tokens(e)).sum();
-            let spend: f64 = entries.iter().map(|e| e.spend_usd).sum();
+            let spend: f64 = entries.iter().filter_map(|e| e.spend_usd).sum();
             let mut models: Vec<String> = entries.iter().flat_map(|e| e.models.keys().cloned()).collect();
             models.sort();
             models.dedup();
@@ -168,15 +172,21 @@ fn render_built_in(report: &Report) -> String {
             let title = entry.title.as_deref().unwrap_or("<untitled>");
             let short = sid.get(..8).unwrap_or(&sid);
             let models_str: Vec<&str> = entry.models.keys().map(|s| s.as_str()).collect();
+            let untracked_suffix = if entry.untracked_models.is_empty() {
+                String::new()
+            } else {
+                format!(" | untracked: {}", entry.untracked_models.join(", "))
+            };
             out.push_str(&format!(
-                "- **{}** ({}) {} -> {} | {} | {} tokens | {}\n",
+                "- **{}** ({}) {} -> {} | {} | {} tokens | {}{}\n",
                 title,
                 short,
                 entry.begin.format("%Y-%m-%d %H:%M"),
                 entry.end.format("%Y-%m-%d %H:%M"),
                 models_str.join(", "),
                 format_int(session_total_tokens(entry)),
-                format_usd(entry.spend_usd),
+                format_optional_usd(entry.spend_usd),
+                untracked_suffix,
             ));
         }
         out.push('\n');
@@ -235,6 +245,13 @@ fn format_usd(n: f64) -> String {
     }
     let with_commas: String = buf.chars().rev().collect();
     format!("${}.{:02}", with_commas, frac)
+}
+
+fn format_optional_usd(n: Option<f64>) -> String {
+    match n {
+        Some(v) => format_usd(v),
+        None => "(untracked)".to_string(),
+    }
 }
 
 fn write_pdf(markdown: &str, output: &Path, pdf_engine: &str) -> Result<()> {

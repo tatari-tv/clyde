@@ -64,11 +64,14 @@ fn write_yaml_round_trips() {
     let opus = entry.models.get("claude-opus-4-7").unwrap();
     assert_eq!(opus.input, 100);
     assert_eq!(opus.output, 200);
-    assert!(opus.spend_usd > 0.0);
+    assert!(opus.spend_usd.unwrap() > 0.0);
+    assert!(entry.untracked_models.is_empty());
+    assert_eq!(entry.jsonl_paths, vec![PathBuf::from("/path/to/parent.jsonl")]);
+    assert!(entry.spend_usd.unwrap() > 0.0);
 }
 
 #[test]
-fn yaml_uses_kebab_case_keys_and_no_jsonl_paths() {
+fn yaml_uses_kebab_case_keys_and_emits_jsonl_paths() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("claude-report.yml");
     let s = sample_summary("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", None);
@@ -88,8 +91,13 @@ fn yaml_uses_kebab_case_keys_and_no_jsonl_paths() {
     assert!(body.contains("cache-5m-write:"));
     assert!(body.contains("cache-1h-write:"));
     assert!(body.contains("cache-read:"));
+    assert!(
+        body.contains("untracked-models:"),
+        "untracked-models must appear: {}",
+        body
+    );
+    assert!(body.contains("jsonl-paths:"), "jsonl-paths must appear: {}", body);
     assert!(!body.contains("schema_version:"));
-    assert!(!body.contains("jsonl-paths:"), "jsonl-paths must not appear: {}", body);
 }
 
 #[test]
@@ -144,6 +152,114 @@ fn load_existing_titles_returns_titles_only() {
 fn load_existing_titles_missing_path_is_empty() {
     let titles = load_existing_titles(Path::new("/nonexistent/cr-test/missing.yml"));
     assert!(titles.is_empty());
+}
+
+fn small_totals(input: u64) -> TokenTotals {
+    let mut t = TokenTotals::default();
+    t.add(&crate::parse::TokenUsage {
+        input_tokens: input,
+        output_tokens: 0,
+        cache_5m_write_tokens: 0,
+        cache_1h_write_tokens: 0,
+        cache_read_tokens: 0,
+    });
+    t
+}
+
+fn summary_with_models(sid: &str, models: BTreeMap<String, TokenTotals>) -> SessionSummary {
+    SessionSummary {
+        session_id: sid.into(),
+        repo: None,
+        cwd: None,
+        begin: ts("2026-04-10T10:00:00Z"),
+        end: ts("2026-04-10T11:00:00Z"),
+        models,
+        jsonl_paths: vec![],
+        title: None,
+    }
+}
+
+#[test]
+fn all_priced_session_has_some_spend_and_no_untracked() {
+    let mut models = BTreeMap::new();
+    models.insert("claude-opus-4-7".into(), opus_totals());
+    let s = summary_with_models("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", models);
+    let entry = to_entry(&s);
+    assert!(entry.spend_usd.is_some());
+    assert!(entry.spend_usd.unwrap() > 0.0);
+    assert!(entry.untracked_models.is_empty());
+}
+
+#[test]
+fn all_untracked_session_has_none_spend_and_lists_models() {
+    let mut models = BTreeMap::new();
+    models.insert("not-a-real-model".into(), small_totals(1_000_000));
+    let s = summary_with_models("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", models);
+    let entry = to_entry(&s);
+    assert_eq!(entry.spend_usd, None);
+    assert_eq!(entry.untracked_models, vec!["not-a-real-model".to_string()]);
+}
+
+#[test]
+fn mixed_session_has_partial_spend_and_flags_untracked() {
+    let mut models = BTreeMap::new();
+    models.insert("claude-opus-4-7".into(), opus_totals());
+    models.insert("not-a-real-model".into(), small_totals(1_000_000));
+    let s = summary_with_models("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", models);
+    let entry = to_entry(&s);
+    assert!(entry.spend_usd.is_some(), "mixed session must report partial spend");
+    assert!(entry.spend_usd.unwrap() > 0.0);
+    assert_eq!(
+        entry.untracked_models,
+        vec!["not-a-real-model".to_string()],
+        "mixed session must flag the untracked model"
+    );
+}
+
+#[test]
+fn totals_untracked_models_dedupes_across_sessions() {
+    let mut s1_models = BTreeMap::new();
+    s1_models.insert("ghost-model".into(), small_totals(10));
+    let s1 = summary_with_models("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", s1_models);
+    let mut s2_models = BTreeMap::new();
+    s2_models.insert("ghost-model".into(), small_totals(20));
+    s2_models.insert("phantom-model".into(), small_totals(30));
+    let s2 = summary_with_models("8b21c34d-1e22-4f5a-b91c-1234567890ab", s2_models);
+
+    let report = build_report(
+        &[s1, s2],
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+    );
+    assert_eq!(
+        report.totals.untracked_models,
+        vec!["ghost-model".to_string(), "phantom-model".to_string()]
+    );
+}
+
+#[test]
+fn yaml_with_null_spend_round_trips_to_none() {
+    let mut models = BTreeMap::new();
+    models.insert("not-a-real-model".into(), small_totals(1_000_000));
+    let s = summary_with_models("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", models);
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("claude-report.yml");
+    write_yaml(
+        &path,
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+    )
+    .unwrap();
+    let body = fs::read_to_string(&path).unwrap();
+    assert!(body.contains("spend-usd: null"), "body:\n{}", body);
+    let parsed: Report = serde_yaml::from_str(&body).unwrap();
+    let entry = parsed.sessions.values().next().unwrap();
+    assert_eq!(entry.spend_usd, None);
+    let mt = entry.models.get("not-a-real-model").unwrap();
+    assert_eq!(mt.spend_usd, None);
 }
 
 #[test]

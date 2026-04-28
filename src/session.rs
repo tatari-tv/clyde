@@ -66,7 +66,7 @@ impl SessionSummary {
     pub fn total_spend_usd(&self) -> f64 {
         self.models
             .iter()
-            .map(|(model, totals)| pricing::calculate_usd(model, &totals.as_usage()))
+            .filter_map(|(model, totals)| pricing::calculate_usd(model, &totals.as_usage()).ok())
             .sum()
     }
 }

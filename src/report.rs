@@ -5,11 +5,12 @@ use eyre::{Context, Result};
 use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -28,6 +29,8 @@ pub struct Report {
 pub struct Totals {
     pub sessions: usize,
     pub spend_usd: f64,
+    #[serde(default)]
+    pub untracked_models: Vec<String>,
     pub models: BTreeMap<String, ModelTokens>,
 }
 
@@ -38,7 +41,12 @@ pub struct SessionEntry {
     pub repo: Option<String>,
     pub begin: DateTime<Utc>,
     pub end: DateTime<Utc>,
-    pub spend_usd: f64,
+    #[serde(default)]
+    pub spend_usd: Option<f64>,
+    #[serde(default)]
+    pub untracked_models: Vec<String>,
+    #[serde(default)]
+    pub jsonl_paths: Vec<PathBuf>,
     pub models: BTreeMap<String, ModelTokens>,
 }
 
@@ -51,11 +59,16 @@ pub struct ModelTokens {
     pub cache_1h_write: u64,
     pub cache_read: u64,
     pub total: u64,
-    pub spend_usd: f64,
+    #[serde(default)]
+    pub spend_usd: Option<f64>,
 }
 
 impl ModelTokens {
     pub fn from_totals(model: &str, t: &TokenTotals) -> Self {
+        let spend_usd = match pricing::calculate_usd(model, &t.as_usage()) {
+            Ok(f) => Some(round_cents(f)),
+            Err(_) => None,
+        };
         Self {
             input: t.input,
             output: t.output,
@@ -63,7 +76,7 @@ impl ModelTokens {
             cache_1h_write: t.cache_1h_write,
             cache_read: t.cache_read,
             total: t.total,
-            spend_usd: round_cents(pricing::calculate_usd(model, &t.as_usage())),
+            spend_usd,
         }
     }
 }
@@ -142,9 +155,14 @@ pub fn write_yaml(
 fn build_report(summaries: &[SessionSummary], since: DateTime<Utc>, until: DateTime<Utc>, host: &str) -> Report {
     let mut sessions = BTreeMap::new();
     let mut totals_models: BTreeMap<String, TokenTotals> = BTreeMap::new();
+    let mut untracked: BTreeSet<String> = BTreeSet::new();
 
     for s in summaries {
-        sessions.insert(s.session_id.clone(), to_entry(s));
+        let entry = to_entry(s);
+        for name in &entry.untracked_models {
+            untracked.insert(name.clone());
+        }
+        sessions.insert(s.session_id.clone(), entry);
         for (model, totals) in &s.models {
             totals_models.entry(model.clone()).or_default().merge(totals);
         }
@@ -154,11 +172,12 @@ fn build_report(summaries: &[SessionSummary], since: DateTime<Utc>, until: DateT
         .iter()
         .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t)))
         .collect();
-    let totals_spend: f64 = totals_model_entries.values().map(|m| m.spend_usd).sum();
+    let totals_spend: f64 = totals_model_entries.values().filter_map(|m| m.spend_usd).sum();
 
     let totals = Totals {
         sessions: sessions.len(),
         spend_usd: round_cents(totals_spend),
+        untracked_models: untracked.into_iter().collect(),
         models: totals_model_entries,
     };
 
@@ -179,13 +198,27 @@ fn to_entry(s: &SessionSummary) -> SessionEntry {
         .iter()
         .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t)))
         .collect();
-    let spend: f64 = models.values().map(|m| m.spend_usd).sum();
+    let mut priced_sum = 0.0_f64;
+    let mut priced_count = 0usize;
+    let mut untracked_models: Vec<String> = Vec::new();
+    for (name, mt) in &models {
+        match mt.spend_usd {
+            Some(v) => {
+                priced_sum += v;
+                priced_count += 1;
+            }
+            None => untracked_models.push(name.clone()),
+        }
+    }
+    let spend_usd = if priced_count == 0 { None } else { Some(round_cents(priced_sum)) };
     SessionEntry {
         title: s.title.clone(),
         repo: s.repo.clone(),
         begin: s.begin,
         end: s.end,
-        spend_usd: round_cents(spend),
+        spend_usd,
+        untracked_models,
+        jsonl_paths: s.jsonl_paths.clone(),
         models,
     }
 }

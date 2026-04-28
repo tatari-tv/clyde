@@ -1,7 +1,19 @@
 use crate::parse::TokenUsage;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::OnceLock;
+
+#[derive(Debug, Clone)]
+pub struct UnknownModel(pub String);
+
+impl fmt::Display for UnknownModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown model '{}'", self.0)
+    }
+}
+
+impl std::error::Error for UnknownModel {}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelPricing {
@@ -54,19 +66,19 @@ pub fn normalize_model_id(model: &str) -> &str {
     }
 }
 
-pub fn calculate_usd(model: &str, usage: &TokenUsage) -> f64 {
+pub fn calculate_usd(model: &str, usage: &TokenUsage) -> Result<f64, UnknownModel> {
     let key = normalize_model_id(model);
     let table = pricing_table();
     let p = match table.get(key) {
         Some(p) => p,
-        None => return 0.0,
+        None => return Err(UnknownModel(model.to_string())),
     };
     let mtok = 1_000_000.0;
-    (usage.input_tokens as f64) * p.input_per_mtok / mtok
+    Ok((usage.input_tokens as f64) * p.input_per_mtok / mtok
         + (usage.output_tokens as f64) * p.output_per_mtok / mtok
         + (usage.cache_5m_write_tokens as f64) * p.cache_5m_write_per_mtok / mtok
         + (usage.cache_1h_write_tokens as f64) * p.cache_1h_write_per_mtok / mtok
-        + (usage.cache_read_tokens as f64) * p.cache_read_per_mtok / mtok
+        + (usage.cache_read_tokens as f64) * p.cache_read_per_mtok / mtok)
 }
 
 #[cfg(test)]

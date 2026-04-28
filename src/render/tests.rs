@@ -19,7 +19,7 @@ fn opus_tokens() -> ModelTokens {
         cache_1h_write: 0,
         cache_read: 4_000,
         total: 5_500,
-        spend_usd: 0.50,
+        spend_usd: Some(0.50),
     }
 }
 
@@ -31,7 +31,7 @@ fn sonnet_tokens() -> ModelTokens {
         cache_1h_write: 0,
         cache_read: 0,
         total: 150,
-        spend_usd: 0.10,
+        spend_usd: Some(0.10),
     }
 }
 
@@ -46,7 +46,9 @@ fn sample_report() -> Report {
             repo: Some("tatari-tv/claude-report".into()),
             begin: ts("2026-04-10T10:00:00Z"),
             end: ts("2026-04-10T11:00:00Z"),
-            spend_usd: 0.50,
+            spend_usd: Some(0.50),
+            untracked_models: Vec::new(),
+            jsonl_paths: Vec::new(),
             models: s1_models,
         },
     );
@@ -60,7 +62,9 @@ fn sample_report() -> Report {
             repo: None,
             begin: ts("2026-04-12T14:00:00Z"),
             end: ts("2026-04-12T14:30:00Z"),
-            spend_usd: 0.10,
+            spend_usd: Some(0.10),
+            untracked_models: Vec::new(),
+            jsonl_paths: Vec::new(),
             models: s2_models,
         },
     );
@@ -70,7 +74,7 @@ fn sample_report() -> Report {
     totals_models.insert("claude-sonnet-4-6".into(), sonnet_tokens());
 
     Report {
-        schema_version: 2,
+        schema_version: 1,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
@@ -78,6 +82,7 @@ fn sample_report() -> Report {
         totals: Totals {
             sessions: 2,
             spend_usd: 0.60,
+            untracked_models: Vec::new(),
             models: totals_models,
         },
         sessions,
@@ -118,7 +123,7 @@ fn built_in_template_renders_header_totals_repo_table_and_sessions() {
 #[test]
 fn empty_report_renders_safe_message() {
     let report = Report {
-        schema_version: 2,
+        schema_version: 1,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
@@ -126,6 +131,7 @@ fn empty_report_renders_safe_message() {
         totals: Totals {
             sessions: 0,
             spend_usd: 0.0,
+            untracked_models: Vec::new(),
             models: BTreeMap::new(),
         },
         sessions: BTreeMap::new(),
