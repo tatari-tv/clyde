@@ -157,6 +157,7 @@ fn render_config(input: &Path, output: &Path) -> Config {
             output: output.to_path_buf(),
             pdf: false,
             template: None,
+            prompt: None,
             pdf_engine: "wkhtmltopdf".into(),
         }),
     }

@@ -1,6 +1,7 @@
 use crate::RunResult;
 use crate::config::RenderConfig;
 use crate::report::{Report, SessionEntry};
+use crate::{summarize, title};
 use eyre::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::fs;
@@ -11,15 +12,24 @@ use std::process::{Command, Stdio};
 const STDOUT_SIGIL: &str = "-";
 
 pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
-    log::info!("render::run: input={} pdf={}", cfg.input.display(), cfg.pdf);
+    log::info!(
+        "render::run: input={} pdf={} prompt={:?}",
+        cfg.input.display(),
+        cfg.pdf,
+        cfg.prompt
+    );
 
     let body =
         fs::read_to_string(&cfg.input).with_context(|| format!("failed to read report at {}", cfg.input.display()))?;
     let report: Report =
         serde_yaml::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
 
-    let template = load_template(cfg.template.as_deref())?;
-    let markdown = to_markdown(&report, &template);
+    let markdown = if let Some(prompt_path) = cfg.prompt.as_deref() {
+        render_via_opus(&body, prompt_path)?
+    } else {
+        let template = load_template(cfg.template.as_deref())?;
+        to_markdown(&report, &template)
+    };
 
     if cfg.pdf {
         if cfg.output.as_os_str() == STDOUT_SIGIL {
@@ -51,6 +61,14 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
 pub enum Template {
     BuiltIn,
     Custom(String),
+}
+
+fn render_via_opus(yaml_body: &str, prompt_path: &Path) -> Result<String> {
+    let prompt = fs::read_to_string(prompt_path)
+        .with_context(|| format!("failed to read prompt template at {}", prompt_path.display()))?;
+    let api_key =
+        title::api_key_from_env().ok_or_else(|| eyre::eyre!("ANTHROPIC_API_KEY is required for --prompt rendering"))?;
+    summarize::opus(&prompt, yaml_body, &api_key)
 }
 
 fn load_template(custom: Option<&Path>) -> Result<Template> {

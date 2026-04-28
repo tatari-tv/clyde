@@ -58,6 +58,9 @@ pub struct RenderArgs {
     #[arg(long)]
     pub template: Option<PathBuf>,
 
+    #[arg(long)]
+    pub prompt: Option<PathBuf>,
+
     #[arg(long, default_value = "wkhtmltopdf")]
     pub pdf_engine: String,
 }

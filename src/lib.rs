@@ -11,6 +11,7 @@ pub mod repo;
 pub mod report;
 pub mod scan;
 pub mod session;
+pub mod summarize;
 pub mod title;
 
 use crate::config::CollectConfig;

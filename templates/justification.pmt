@@ -1,0 +1,127 @@
+You are writing a Claude Enterprise usage justification document for Scott Idler (Director of Engineering, Platform: SRE | Data Platform), based on a per-session YAML report. Match the voice and structure of the prior month's example below. Output ONLY the markdown document - no preamble, no commentary, no fenced code block around the whole output.
+
+# Required structure (copy this exactly)
+
+```
+---
+title: "Claude Usage Justification - Scott Idler - {{month-name}} {{year}}"
+date: {{generated-date}}
+type: note
+domain: work
+tags:
+
+  - claude
+  - enterprise
+  - usage
+  - justification
+
+---
+
+# Claude Enterprise Usage Justification
+
+**Author:** Scott Idler
+**Title:** Director of Engineering, Platform (SRE | Data Platform)
+**Date:** {{generated-date-long}}
+**Period:** {{period-long}}
+**Total Spend:** {{total-spend}}
+
+---
+
+## Context
+
+### Was this spend from a personal MAX plan or concentrated in a few days?
+
+Two-paragraph answer. Open with: No, this is Claude Enterprise spend distributed across the full period, not concentrated. Reference the date range, total session count, and even daily distribution. Note that prior to Enterprise, Scott was using the Anthropic API directly with a personal API key while requesting MAX, until the company moved everyone to Enterprise for data security assurances.
+
+### What have I been doing and what is the impact?
+
+Open with: Across the period, {{session-count}} sessions across {{distinct-repos}} repos, {{total-tokens}} total tokens, {{total-spend}} total spend. Then a one-paragraph summary describing the mix of work (agentic development, platform leadership, toolsmithing). Pull concrete examples from the YAML's session titles - the most informative titles, not just the highest-token ones. Mention specific repos and what was accomplished there.
+
+---
+
+## How I Use Claude
+
+Three modes (numbered list, one paragraph each):
+
+1. **Agentic Development:** End-to-end Rust CLIs, Python packages, platform tools. Design doc -> implementation -> tests (otto ci) -> coverage -> bump -> release. Claude handles the lifecycle while Scott reviews and steers.
+
+2. **Platform Leadership at Scale:** Reading Confluence tech specs, synthesizing Slack threads, drafting Jira tickets, investigating incidents, communicating across teams. Multiplies throughput on the communication and review work that is the majority of a director-level role.
+
+3. **Toolsmith / Force Multiplier:** Internal tools that other engineers adopt. Many tools shipped this period are already used by teammates. Enables one senior engineer to ship production-quality Rust and Python at a pace that would otherwise require dedicated headcount.
+
+---
+
+## Work Themes - Categorized
+
+### Direct Tatari Value (Work Tools, Platform, Processes)
+
+A markdown table with columns: Project | Sessions | What It Is | Impact. One row per `tatari-tv/*` repo with notable activity (>= 2 sessions). Sort by session count descending. "What It Is" should be a one-line description inferred from session titles. "Impact" should be specific (PR counts, Confluence pages, ticket counts) when titles imply them - if titles don't justify a number, describe the work qualitatively rather than fabricating one.
+
+### Infrastructure / Developer Tooling (Open Source, Used at Tatari)
+
+Same table format. Rows for `scottidler/*` repos and other-org repos that produce tools used at Tatari (otto, scaffold, bump, ls-owners, etc.).
+
+### R&D and Knowledge Tooling
+
+Prose section, not a table. Cover the R&D themes inferable from the YAML - if loopr, second-brain, forge, oracle, borg, or similar repos show meaningful activity, describe them as paragraphs explaining what they are and what value they will produce. End with: which projects pay for themselves today vs which are investments in future capability.
+
+If there are no clear R&D repos in the data, omit this section entirely (do not invent one).
+
+---
+
+## Usage Pattern
+
+One paragraph describing the temporal distribution: peak sessions/day, average sessions/day, gaps if any. Then a markdown table sampling four representative days from the YAML (high-activity days, evenly distributed across the period):
+
+| Day | Sessions | Top Repo | Key Work |
+|-----|----------|----------|----------|
+
+"Key Work" should summarize titles from sessions on that day in 1-2 short phrases.
+
+---
+
+## Quantified Output ({{period-short}})
+
+A markdown table with these rows, computed from the YAML:
+
+| Metric | Count |
+|--------|-------|
+| Claude sessions (desktop + laptop) | {{session-count}} |
+| Total tokens | {{total-tokens}} |
+| Total spend | {{total-spend}} |
+| Distinct repositories worked in | {{distinct-repos}} |
+| Top model by spend | {{top-model}} |
+
+---
+
+## What the Spend Gets the Company
+
+A numbered list of 4-5 items. Each item is a 1-2 sentence justification. Topics to cover (in order):
+
+1. **Headcount-equivalent output.** Tools shipped this period would typically require a small team. Claude lets one senior engineer ship across Rust, Python, and platform infrastructure at startup speed.
+2. **Platform leadership at machine pace.** Reading specs, reviewing PRDs, investigating threads, writing docs, creating tickets - the unglamorous tasks that make a Platform Director effective. Claude does them 3-5x faster.
+3. **Tools that multiply other engineers.** Specific tools from this period that are already in use by other engineers (cite real tool names from the YAML where applicable).
+4. **Strong ROI.** Frame {{total-spend}} as ~X% of a fully loaded engineer's monthly cost. If usage makes Scott even 20% more effective, the return is clear.
+
+---
+
+## Conclusion
+
+Two-sentence summary: spend distributed across the full period (not concentrated), funds the work of a Director who also ships code, output is measurable: {{session-count}} sessions, X commits, Y PRs, Z tools built or improved.
+```
+
+# Strict rules
+
+- Output ONLY the markdown document - nothing before or after.
+- Substitute every `{{placeholder}}` with the computed value (the report carries period dates, totals, model breakdown).
+- Do NOT invent metrics not derivable from the YAML. If a count cannot be computed (commits, PRs, Confluence pages, Jira tickets, Slack messages), describe qualitatively rather than fabricating.
+- Use session titles to infer "What It Is" and "Impact" - they are accurate summaries by design.
+- Sort tables by session count descending.
+- Lowercase, hyphenated repo slugs (the YAML keys are correct).
+- Follow the prior-month example for tone: matter-of-fact, specific, no marketing language.
+
+# Prior-month example (reference for tone, structure, voice)
+
+The full March 2026 justification is referenced separately. Match its structure exactly. The structure above already mirrors it - do not deviate.
+
+# YAML report follows

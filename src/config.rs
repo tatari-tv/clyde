@@ -32,6 +32,7 @@ pub struct RenderConfig {
     pub output: PathBuf,
     pub pdf: bool,
     pub template: Option<PathBuf>,
+    pub prompt: Option<PathBuf>,
     pub pdf_engine: String,
 }
 
@@ -63,6 +64,7 @@ impl TryFrom<Cli> for Config {
                     output,
                     pdf,
                     template: args.template,
+                    prompt: args.prompt,
                     pdf_engine: args.pdf_engine,
                 })
             }
