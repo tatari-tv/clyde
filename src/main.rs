@@ -4,11 +4,12 @@
 
 use clap::Parser;
 use claude_report::cli::Cli;
-use claude_report::{Config, run};
+use claude_report::{Config, ResolvedCommand, run};
 use eyre::{Context, Result};
 use log::LevelFilter;
 use std::fs;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::str::FromStr;
 
 fn setup_logging(level: &str) -> Result<()> {
@@ -38,15 +39,21 @@ fn setup_logging(level: &str) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
     setup_logging(&cli.log_level).context("Failed to setup logging")?;
     let config = Config::try_from(cli).context("Failed to build configuration")?;
+
+    if let ResolvedCommand::Merge(_) = config.command {
+        eprintln!("cr: merge is not implemented in this release");
+        return Ok(ExitCode::from(2));
+    }
+
     let result = run(&config).context("cr failed")?;
     println!(
         "wrote {} sessions to {}",
         result.sessions_emitted,
         result.output_path.display()
     );
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
