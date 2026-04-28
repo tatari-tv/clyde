@@ -38,7 +38,7 @@ pub struct ScanArgs {
     pub no_rollup: bool,
 
     #[arg(long)]
-    pub no_title: bool,
+    pub offline: bool,
 }
 
 #[derive(Subcommand, Debug)]

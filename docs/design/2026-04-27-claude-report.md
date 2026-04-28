@@ -222,7 +222,7 @@ cr [OPTIONS] [SUBCOMMAND]
         --projects-dir <PATH>   override scan root [default: ~/.claude/projects]
         --no-rollup             keep subagent sessions as separate top-level entries
                                 (debug only)
-        --no-title              skip Haiku titling step (no-op in v1; reserved)
+        --offline               skip network calls (currently: Haiku titling)
 
   render options:
     -i, --input <PATH>          input YAML path [default: ./claude-report.yml]
@@ -325,8 +325,8 @@ pub struct RunResult {
 **Model:** opus
 
 - `title::haiku(summary, jsonl_paths) -> Result<Option<String>>`. Reads a bounded prefix of the parent JSONL (first user prompt + first assistant reply), sends to Haiku with a strict prompt for "3-7 words, lowercase, no punctuation, summarize the task." Persists the result in the YAML.
-- Skip when `--no-title` is set or when the session already has a title.
-- Designed and shipped after v1 lands; the YAML schema already accommodates `title`.
+- Skip when `--offline` is set or when the session already has a title.
+- Reads the API key from `ANTHROPIC_API_KEY`; skips silently if absent.
 
 #### Phase 9: Render to markdown / PDF
 **Model:** opus

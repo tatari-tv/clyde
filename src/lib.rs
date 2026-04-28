@@ -55,7 +55,7 @@ fn run_scan(cfg: &ScanConfig) -> Result<RunResult> {
     let existing_titles = report::load_existing_titles(&cfg.output);
     let mut resolver = repo::Resolver::new();
 
-    let summaries = session::fold(
+    let mut summaries = session::fold(
         &files,
         &parsed,
         cfg.since,
@@ -65,6 +65,10 @@ fn run_scan(cfg: &ScanConfig) -> Result<RunResult> {
         &existing_titles,
     );
 
+    if !cfg.offline {
+        title_untitled_sessions(&mut summaries);
+    }
+
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let count = report::write_yaml(&cfg.output, &summaries, cfg.since, cfg.until, &host)?;
 
@@ -72,6 +76,63 @@ fn run_scan(cfg: &ScanConfig) -> Result<RunResult> {
         sessions_emitted: count,
         output_path: cfg.output.clone(),
     })
+}
+
+fn title_untitled_sessions(summaries: &mut [session::SessionSummary]) {
+    let api_key = match title::api_key_from_env() {
+        Some(k) => k,
+        None => {
+            log::info!("run_scan: ANTHROPIC_API_KEY not set; skipping titling");
+            return;
+        }
+    };
+
+    let to_title: Vec<usize> = summaries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| if s.title.is_none() && parent_jsonl(s).is_some() { Some(i) } else { None })
+        .collect();
+
+    if to_title.is_empty() {
+        return;
+    }
+
+    log::info!("run_scan: titling {} sessions via Haiku", to_title.len());
+    let titles: Vec<(usize, Option<String>)> = to_title
+        .par_iter()
+        .map(|&i| {
+            let s = &summaries[i];
+            let parent = match parent_jsonl(s) {
+                Some(p) => p,
+                None => return (i, None),
+            };
+            let prefix = match title::extract_prefix(parent) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::warn!("title: extract_prefix failed for {}: {}", parent.display(), e);
+                    return (i, None);
+                }
+            };
+            match title::haiku(&prefix, &api_key) {
+                Ok(t) => (i, t),
+                Err(e) => {
+                    log::warn!("title::haiku failed for session {}: {}", s.session_id, e);
+                    (i, None)
+                }
+            }
+        })
+        .collect();
+
+    for (i, t) in titles {
+        summaries[i].title = t;
+    }
+}
+
+fn parent_jsonl(s: &session::SessionSummary) -> Option<&std::path::Path> {
+    s.jsonl_paths
+        .iter()
+        .find(|p| !p.components().any(|c| c.as_os_str() == "subagents"))
+        .map(|p| p.as_path())
 }
 
 #[cfg(test)]
