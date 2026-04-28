@@ -27,6 +27,11 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
     let report: Report =
         serde_yaml::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
 
+    let output = match cfg.output.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => default_output_path(&report, cfg.pdf),
+    };
+
     let markdown = if let Some(template_path) = cfg.template.as_deref() {
         let template = load_template(Some(template_path))?;
         to_markdown(&report, &template)
@@ -38,29 +43,33 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
     };
 
     if cfg.pdf {
-        if cfg.output.as_os_str() == STDOUT_SIGIL {
+        if output.as_os_str() == STDOUT_SIGIL {
             bail!("--pdf cannot write binary output to stdout; pass -o <path>");
         }
-        write_pdf(&markdown, &cfg.output, &cfg.pdf_engine)?;
-    } else if cfg.output.as_os_str() == STDOUT_SIGIL {
+        write_pdf(&markdown, &output, &cfg.pdf_engine)?;
+    } else if output.as_os_str() == STDOUT_SIGIL {
         std::io::stdout()
             .write_all(markdown.as_bytes())
             .context("failed to write markdown to stdout")?;
     } else {
-        let dir = cfg
-            .output
+        let dir = output
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
-        fs::write(&cfg.output, &markdown)
-            .with_context(|| format!("failed to write markdown to {}", cfg.output.display()))?;
+        fs::write(&output, &markdown).with_context(|| format!("failed to write markdown to {}", output.display()))?;
     }
 
     Ok(RunResult {
         sessions_emitted: report.totals.sessions,
-        output_path: cfg.output.clone(),
+        output_path: output,
     })
+}
+
+pub(crate) fn default_output_path(report: &Report, pdf: bool) -> std::path::PathBuf {
+    let prefix = report.since.format("%Y-%m");
+    let ext = if pdf { "pdf" } else { "md" };
+    std::path::PathBuf::from(format!("./{}-claude-report.{}", prefix, ext))
 }
 
 #[derive(Debug, Clone)]

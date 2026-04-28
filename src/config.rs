@@ -29,7 +29,9 @@ pub struct CollectConfig {
 #[derive(Debug, Clone)]
 pub struct RenderConfig {
     pub input: PathBuf,
-    pub output: PathBuf,
+    /// Explicit output path. When `None`, render::run resolves a default of the form
+    /// `./<YYYY-MM>-claude-report.{md,pdf}` using the `since` field from the input YAML.
+    pub output: Option<PathBuf>,
     pub pdf: bool,
     pub template: Option<PathBuf>,
     pub prompt: Option<PathBuf>,
@@ -43,8 +45,6 @@ pub struct MergeConfig {
 }
 
 const DEFAULT_OUTPUT: &str = "./claude-report.yml";
-const DEFAULT_RENDER_MD: &str = "./claude-report.md";
-const DEFAULT_RENDER_PDF: &str = "./claude-report.pdf";
 
 impl TryFrom<Cli> for Config {
     type Error = eyre::Report;
@@ -57,12 +57,9 @@ impl TryFrom<Cli> for Config {
             Some(crate::cli::Command::Render(args)) => {
                 let pdf = args.pdf;
                 let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT));
-                let output = args
-                    .output
-                    .unwrap_or_else(|| PathBuf::from(if pdf { DEFAULT_RENDER_PDF } else { DEFAULT_RENDER_MD }));
                 ResolvedCommand::Render(RenderConfig {
                     input,
-                    output,
+                    output: args.output,
                     pdf,
                     template: args.template,
                     prompt: args.prompt,

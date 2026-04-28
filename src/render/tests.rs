@@ -207,7 +207,7 @@ fn render_run_writes_markdown_file_with_custom_template() {
         log_level: "info".into(),
         command: ResolvedCommand::Render(RenderConfig {
             input: yml.clone(),
-            output: md.clone(),
+            output: Some(md.clone()),
             pdf: false,
             template: Some(template_path),
             prompt: None,
@@ -219,6 +219,15 @@ fn render_run_writes_markdown_file_with_custom_template() {
     assert_eq!(result.sessions_emitted, 2);
     let body = fs::read_to_string(&md).unwrap();
     assert_eq!(body, "host=desk sessions=2");
+}
+
+#[test]
+fn default_output_uses_since_yyyy_mm() {
+    let report = sample_report(); // since = 2026-04-01
+    let md = default_output_path(&report, false);
+    assert_eq!(md, std::path::PathBuf::from("./2026-04-claude-report.md"));
+    let pdf = default_output_path(&report, true);
+    assert_eq!(pdf, std::path::PathBuf::from("./2026-04-claude-report.pdf"));
 }
 
 #[test]
