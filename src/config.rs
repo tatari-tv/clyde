@@ -23,7 +23,7 @@ pub struct ScanConfig {
     pub output: PathBuf,
     pub projects_dir: PathBuf,
     pub no_rollup: bool,
-    pub offline: bool,
+    pub skip_title: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +94,7 @@ fn scan_config_from_args(args: ScanArgs) -> Result<ScanConfig> {
         output,
         projects_dir,
         no_rollup: args.no_rollup,
-        offline: args.offline,
+        skip_title: args.skip_title,
     })
 }
 

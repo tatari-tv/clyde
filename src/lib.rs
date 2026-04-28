@@ -65,7 +65,7 @@ fn run_scan(cfg: &ScanConfig) -> Result<RunResult> {
         &existing_titles,
     );
 
-    if !cfg.offline {
+    if !cfg.skip_title {
         title_untitled_sessions(&mut summaries);
     }
 

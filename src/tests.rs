@@ -29,7 +29,7 @@ fn make_scan_config(projects_dir: &Path, output: &Path) -> Config {
             output: output.to_path_buf(),
             projects_dir: projects_dir.to_path_buf(),
             no_rollup: false,
-            offline: true,
+            skip_title: true,
         }),
     }
 }
