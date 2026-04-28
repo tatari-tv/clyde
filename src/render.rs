@@ -42,7 +42,7 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
     }
 
     Ok(RunResult {
-        sessions_emitted: report.session_count,
+        sessions_emitted: report.totals.sessions,
         output_path: cfg.output.clone(),
     })
 }
@@ -80,30 +80,58 @@ fn render_built_in(report: &Report) -> String {
         report.since.format("%Y-%m-%d"),
         report.until.format("%Y-%m-%d")
     ));
-    out.push_str(&format!("- **sessions:** {}\n", report.session_count));
+    out.push_str(&format!("- **sessions:** {}\n", report.totals.sessions));
 
-    let total_tokens: u64 = report.sessions.values().map(|s| s.tokens.total).sum();
-    out.push_str(&format!("- **total tokens:** {}\n\n", format_int(total_tokens)));
+    let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
+    out.push_str(&format!("- **total tokens:** {}\n", format_int(total_tokens)));
+    out.push_str(&format!(
+        "- **total spend:** {}\n\n",
+        format_usd(report.totals.spend_usd)
+    ));
+
+    out.push_str("## Totals by model\n\n");
+    if report.totals.models.is_empty() {
+        out.push_str("_no model usage_\n\n");
+    } else {
+        out.push_str("| model | input | output | cache 5m write | cache 1h write | cache read | total | spend |\n");
+        out.push_str("|-------|------:|-------:|---------------:|---------------:|-----------:|------:|------:|\n");
+        for (model, m) in &report.totals.models {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                model,
+                format_int(m.input),
+                format_int(m.output),
+                format_int(m.cache_5m_write),
+                format_int(m.cache_1h_write),
+                format_int(m.cache_read),
+                format_int(m.total),
+                format_usd(m.spend_usd),
+            ));
+        }
+        out.push('\n');
+    }
 
     let by_repo = group_by_repo(&report.sessions);
     out.push_str("## By repo\n\n");
     if by_repo.is_empty() {
         out.push_str("_no sessions with a detected repo_\n\n");
     } else {
-        out.push_str("| repo | sessions | total tokens | models |\n");
-        out.push_str("|------|---------:|-------------:|--------|\n");
+        out.push_str("| repo | sessions | total tokens | spend | models |\n");
+        out.push_str("|------|---------:|-------------:|------:|--------|\n");
         for (repo, entries) in &by_repo {
             let session_count = entries.len();
-            let tok: u64 = entries.iter().map(|e| e.tokens.total).sum();
-            let mut models: Vec<String> = entries.iter().flat_map(|e| e.models.clone()).collect();
+            let tok: u64 = entries.iter().map(|e| session_total_tokens(e)).sum();
+            let spend: f64 = entries.iter().map(|e| e.spend_usd).sum();
+            let mut models: Vec<String> = entries.iter().flat_map(|e| e.models.keys().cloned()).collect();
             models.sort();
             models.dedup();
             out.push_str(&format!(
-                "| {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} |\n",
                 repo,
                 session_count,
                 format_int(tok),
-                models.join(", ")
+                format_usd(spend),
+                models.join(", "),
             ));
         }
         out.push('\n');
@@ -121,14 +149,16 @@ fn render_built_in(report: &Report) -> String {
         for (sid, entry) in entries {
             let title = entry.title.as_deref().unwrap_or("<untitled>");
             let short = sid.get(..8).unwrap_or(&sid);
+            let models_str: Vec<&str> = entry.models.keys().map(|s| s.as_str()).collect();
             out.push_str(&format!(
-                "- **{}** ({}) {} -> {} | {} | {} tokens\n",
+                "- **{}** ({}) {} -> {} | {} | {} tokens | {}\n",
                 title,
                 short,
                 entry.begin.format("%Y-%m-%d %H:%M"),
                 entry.end.format("%Y-%m-%d %H:%M"),
-                entry.models.join(", "),
-                format_int(entry.tokens.total),
+                models_str.join(", "),
+                format_int(session_total_tokens(entry)),
+                format_usd(entry.spend_usd),
             ));
         }
         out.push('\n');
@@ -138,12 +168,17 @@ fn render_built_in(report: &Report) -> String {
 }
 
 fn render_custom(report: &Report, body: &str) -> String {
-    let total_tokens: u64 = report.sessions.values().map(|s| s.tokens.total).sum();
+    let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
     body.replace("{{host}}", &report.host)
         .replace("{{since}}", &report.since.format("%Y-%m-%d").to_string())
         .replace("{{until}}", &report.until.format("%Y-%m-%d").to_string())
-        .replace("{{session-count}}", &report.session_count.to_string())
+        .replace("{{session-count}}", &report.totals.sessions.to_string())
         .replace("{{total-tokens}}", &format_int(total_tokens))
+        .replace("{{total-spend}}", &format_usd(report.totals.spend_usd))
+}
+
+fn session_total_tokens(entry: &SessionEntry) -> u64 {
+    entry.models.values().map(|m| m.total).sum()
 }
 
 fn group_by_repo<'a>(sessions: &'a BTreeMap<String, SessionEntry>) -> BTreeMap<String, Vec<&'a SessionEntry>> {
@@ -166,6 +201,22 @@ fn format_int(n: u64) -> String {
         out.push(ch);
     }
     out.chars().rev().collect()
+}
+
+fn format_usd(n: f64) -> String {
+    let cents = (n * 100.0).round() as i64;
+    let dollars = cents / 100;
+    let frac = cents.rem_euclid(100);
+    let s = dollars.to_string();
+    let mut buf = String::with_capacity(s.len() + s.len() / 3);
+    for (i, ch) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            buf.push(',');
+        }
+        buf.push(ch);
+    }
+    let with_commas: String = buf.chars().rev().collect();
+    format!("${}.{:02}", with_commas, frac)
 }
 
 fn write_pdf(markdown: &str, output: &Path, pdf_engine: &str) -> Result<()> {

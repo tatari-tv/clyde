@@ -1,4 +1,5 @@
-use crate::session::SessionSummary;
+use crate::pricing;
+use crate::session::{SessionSummary, TokenTotals};
 use chrono::{DateTime, Utc};
 use eyre::{Context, Result};
 use log::debug;
@@ -6,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -18,31 +19,57 @@ pub struct Report {
     pub host: String,
     pub since: DateTime<Utc>,
     pub until: DateTime<Utc>,
-    pub session_count: usize,
+    pub totals: Totals,
     pub sessions: BTreeMap<String, SessionEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct SessionEntry {
-    pub repo: Option<String>,
-    pub begin: DateTime<Utc>,
-    pub end: DateTime<Utc>,
-    pub models: Vec<String>,
-    pub tokens: TokenEntry,
-    pub jsonl_paths: Vec<PathBuf>,
-    pub title: Option<String>,
+pub struct Totals {
+    pub sessions: usize,
+    pub spend_usd: f64,
+    pub models: BTreeMap<String, ModelTokens>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct TokenEntry {
+pub struct SessionEntry {
+    pub title: Option<String>,
+    pub repo: Option<String>,
+    pub begin: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub spend_usd: f64,
+    pub models: BTreeMap<String, ModelTokens>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct ModelTokens {
     pub input: u64,
     pub output: u64,
     pub cache_5m_write: u64,
     pub cache_1h_write: u64,
     pub cache_read: u64,
     pub total: u64,
+    pub spend_usd: f64,
+}
+
+impl ModelTokens {
+    pub fn from_totals(model: &str, t: &TokenTotals) -> Self {
+        Self {
+            input: t.input,
+            output: t.output,
+            cache_5m_write: t.cache_5m_write,
+            cache_1h_write: t.cache_1h_write,
+            cache_read: t.cache_read,
+            total: t.total,
+            spend_usd: round_cents(pricing::calculate_usd(model, &t.as_usage())),
+        }
+    }
+}
+
+fn round_cents(x: f64) -> f64 {
+    (x * 100.0).round() / 100.0
 }
 
 pub fn load_existing_titles(path: &Path) -> HashMap<String, String> {
@@ -90,7 +117,6 @@ pub fn write_yaml(
     );
 
     let report = build_report(summaries, since, until, host);
-
     let yaml = serde_yaml::to_string(&report).context("failed to serialize report to YAML")?;
 
     let dir = path
@@ -110,42 +136,57 @@ pub fn write_yaml(
     tmp.persist(path)
         .with_context(|| format!("failed to atomically rename temp file to {}", path.display()))?;
 
-    Ok(report.session_count)
+    Ok(report.totals.sessions)
 }
 
 fn build_report(summaries: &[SessionSummary], since: DateTime<Utc>, until: DateTime<Utc>, host: &str) -> Report {
     let mut sessions = BTreeMap::new();
+    let mut totals_models: BTreeMap<String, TokenTotals> = BTreeMap::new();
+
     for s in summaries {
         sessions.insert(s.session_id.clone(), to_entry(s));
+        for (model, totals) in &s.models {
+            totals_models.entry(model.clone()).or_default().merge(totals);
+        }
     }
-    let session_count = sessions.len();
+
+    let totals_model_entries: BTreeMap<String, ModelTokens> = totals_models
+        .iter()
+        .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t)))
+        .collect();
+    let totals_spend: f64 = totals_model_entries.values().map(|m| m.spend_usd).sum();
+
+    let totals = Totals {
+        sessions: sessions.len(),
+        spend_usd: round_cents(totals_spend),
+        models: totals_model_entries,
+    };
+
     Report {
         schema_version: SCHEMA_VERSION,
         generated: Utc::now(),
         host: host.to_string(),
         since,
         until,
-        session_count,
+        totals,
         sessions,
     }
 }
 
 fn to_entry(s: &SessionSummary) -> SessionEntry {
+    let models: BTreeMap<String, ModelTokens> = s
+        .models
+        .iter()
+        .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t)))
+        .collect();
+    let spend: f64 = models.values().map(|m| m.spend_usd).sum();
     SessionEntry {
+        title: s.title.clone(),
         repo: s.repo.clone(),
         begin: s.begin,
         end: s.end,
-        models: s.models.iter().cloned().collect(),
-        tokens: TokenEntry {
-            input: s.tokens.input,
-            output: s.tokens.output,
-            cache_5m_write: s.tokens.cache_5m_write,
-            cache_1h_write: s.tokens.cache_1h_write,
-            cache_read: s.tokens.cache_read,
-            total: s.tokens.total,
-        },
-        jsonl_paths: s.jsonl_paths.clone(),
-        title: s.title.clone(),
+        spend_usd: round_cents(spend),
+        models,
     }
 }
 

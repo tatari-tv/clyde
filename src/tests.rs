@@ -71,15 +71,18 @@ fn end_to_end_collect_writes_yaml() {
 
     let body = fs::read_to_string(&output).unwrap();
     let report: Report = serde_yaml::from_str(&body).unwrap();
-    assert_eq!(report.session_count, 2);
+    assert_eq!(report.totals.sessions, 2);
     assert!(report.sessions.contains_key(SID_A));
     assert!(report.sessions.contains_key(SID_B));
 
     let a = &report.sessions[SID_A];
-    assert_eq!(a.tokens.output, 5 + 15);
-    assert_eq!(a.tokens.input, 10 + 20);
     assert_eq!(a.models.len(), 2);
-    assert_eq!(a.jsonl_paths.len(), 2);
+    let opus = a.models.get("claude-opus-4-7").unwrap();
+    let sonnet = a.models.get("claude-sonnet-4-6").unwrap();
+    assert_eq!(opus.input, 10);
+    assert_eq!(opus.output, 5);
+    assert_eq!(sonnet.input, 20);
+    assert_eq!(sonnet.output, 15);
     assert!(a.title.is_none());
 }
 

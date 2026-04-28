@@ -1,8 +1,9 @@
 use crate::parse::{AssistantEntry, ParseResult, TokenUsage};
+use crate::pricing;
 use crate::repo::Resolver;
 use crate::scan::{SessionFile, SessionFileKind};
 use chrono::{DateTime, Utc};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default)]
@@ -24,6 +25,25 @@ impl TokenTotals {
         self.cache_read += usage.cache_read_tokens;
         self.total = self.input + self.output + self.cache_5m_write + self.cache_1h_write + self.cache_read;
     }
+
+    pub fn merge(&mut self, other: &TokenTotals) {
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_5m_write += other.cache_5m_write;
+        self.cache_1h_write += other.cache_1h_write;
+        self.cache_read += other.cache_read;
+        self.total = self.input + self.output + self.cache_5m_write + self.cache_1h_write + self.cache_read;
+    }
+
+    pub fn as_usage(&self) -> TokenUsage {
+        TokenUsage {
+            input_tokens: self.input,
+            output_tokens: self.output,
+            cache_5m_write_tokens: self.cache_5m_write,
+            cache_1h_write_tokens: self.cache_1h_write,
+            cache_read_tokens: self.cache_read,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -33,10 +53,22 @@ pub struct SessionSummary {
     pub cwd: Option<PathBuf>,
     pub begin: DateTime<Utc>,
     pub end: DateTime<Utc>,
-    pub models: BTreeSet<String>,
-    pub tokens: TokenTotals,
+    pub models: BTreeMap<String, TokenTotals>,
     pub jsonl_paths: Vec<PathBuf>,
     pub title: Option<String>,
+}
+
+impl SessionSummary {
+    pub fn total_tokens(&self) -> u64 {
+        self.models.values().map(|t| t.total).sum()
+    }
+
+    pub fn total_spend_usd(&self) -> f64 {
+        self.models
+            .iter()
+            .map(|(model, totals)| pricing::calculate_usd(model, &totals.as_usage()))
+            .sum()
+    }
 }
 
 pub fn fold(
@@ -141,13 +173,12 @@ impl GroupBuilder {
             return None;
         }
 
-        let mut models = BTreeSet::new();
-        let mut tokens = TokenTotals::default();
+        let mut models: BTreeMap<String, TokenTotals> = BTreeMap::new();
         let mut begin = kept[0].timestamp;
         let mut end = kept[0].timestamp;
         for e in &kept {
-            models.insert(e.model.clone());
-            tokens.add(&e.usage);
+            let key = pricing::normalize_model_id(&e.model).to_string();
+            models.entry(key).or_default().add(&e.usage);
             if e.timestamp < begin {
                 begin = e.timestamp;
             }
@@ -178,7 +209,6 @@ impl GroupBuilder {
             begin,
             end,
             models,
-            tokens,
             jsonl_paths,
             title,
         })

@@ -167,34 +167,44 @@ pub struct TokenTotals {
 Keyed by session-id (per `yaml.md`: keyed maps, kebab-case keys, prefer keyed maps over list-of-dicts):
 
 ```yaml
-schema-version: 1
+schema-version: 2
 generated: 2026-04-27T19:42:08Z
 host: desk
 since: 2026-04-01T00:00:00-07:00
 until: 2026-04-27T19:42:08-07:00
-session-count: 287
+totals:
+  sessions: 287
+  spend-usd: 1234.56
+  models:
+    claude-opus-4-7:
+      input: ...
+      output: ...
+      cache-5m-write: ...
+      cache-1h-write: ...
+      cache-read: ...
+      total: ...
+      spend-usd: ...
+    claude-sonnet-4-6: { ... }
 sessions:
   9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042:
+    title: ship the report tool
     repo: tatari-tv/claude-report
     begin: 2026-04-27T18:11:32Z
     end: 2026-04-27T19:42:08Z
+    spend-usd: 3.65
     models:
-      - claude-opus-4-7
-      - claude-sonnet-4-6
-    tokens:
-      input: 12345
-      output: 6789
-      cache-5m-write: 0
-      cache-1h-write: 0
-      cache-read: 84321
-      total: 103455
-    jsonl-paths:
-      - /home/saidler/.claude/projects/-home-.../9d4c1f28-...jsonl
-      - /home/saidler/.claude/projects/-home-.../9d4c1f28-.../subagents/agent-aabb.jsonl
-    title: null
+      claude-opus-4-7:
+        input: 12345
+        output: 6789
+        cache-5m-write: 0
+        cache-1h-write: 0
+        cache-read: 84321
+        total: 103455
+        spend-usd: 1.23
+      claude-sonnet-4-6: { ... }
 ```
 
-Subagent JSONL files appear under their parent session's `jsonl-paths` and their tokens fold into the parent's totals.
+Subagent tokens fold into the parent session's per-model totals. JSONL paths are not serialized; the session-id is the file stem under `~/.claude/projects/<encoded-cwd>/`.
 
 ### API Design
 

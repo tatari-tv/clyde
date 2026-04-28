@@ -78,8 +78,9 @@ fn dedup_keeps_max_output_within_mid_rid_bucket() {
 
     let out = run_fold(&[f], parsed, false);
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0].tokens.output, 315);
-    assert_eq!(out[0].tokens.input, 1);
+    let opus = out[0].models.get("claude-opus-4-7").expect("opus bucket");
+    assert_eq!(opus.output, 315);
+    assert_eq!(opus.input, 1);
 }
 
 #[test]
@@ -108,11 +109,8 @@ fn multi_model_session_collects_models() {
 
     let out = run_fold(&[f], parsed, false);
     assert_eq!(out.len(), 1);
-    let models: Vec<_> = out[0].models.iter().cloned().collect();
-    assert_eq!(
-        models,
-        vec!["claude-opus-4-7".to_string(), "claude-sonnet-4-6".to_string()]
-    );
+    let model_keys: Vec<&String> = out[0].models.keys().collect();
+    assert_eq!(model_keys, vec!["claude-opus-4-7", "claude-sonnet-4-6"]);
 }
 
 #[test]
@@ -157,7 +155,7 @@ fn subagents_roll_up_under_parent_session() {
     assert_eq!(out.len(), 1);
     let s = &out[0];
     assert_eq!(s.session_id, SID_A);
-    assert_eq!(s.tokens.output, 150);
+    assert_eq!(s.total_tokens(), 1 + 100 + 1 + 50);
     assert_eq!(s.models.len(), 2);
     assert_eq!(s.jsonl_paths.len(), 2);
     assert_eq!(s.jsonl_paths[0], parent.path);

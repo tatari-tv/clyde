@@ -2,29 +2,36 @@
 
 use super::*;
 use crate::session::{SessionSummary, TokenTotals};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn ts(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
 }
 
+fn opus_totals() -> TokenTotals {
+    let mut t = TokenTotals::default();
+    t.add(&crate::parse::TokenUsage {
+        input_tokens: 100,
+        output_tokens: 200,
+        cache_5m_write_tokens: 50,
+        cache_1h_write_tokens: 0,
+        cache_read_tokens: 1000,
+    });
+    t
+}
+
 fn sample_summary(sid: &str, title: Option<&str>) -> SessionSummary {
+    let mut models = BTreeMap::new();
+    models.insert("claude-opus-4-7".to_string(), opus_totals());
     SessionSummary {
         session_id: sid.into(),
         repo: Some("tatari-tv/claude-report".into()),
         cwd: Some(PathBuf::from("/home/u/r")),
         begin: ts("2026-04-10T10:00:00Z"),
         end: ts("2026-04-10T11:00:00Z"),
-        models: BTreeSet::from(["claude-opus-4-7".to_string()]),
-        tokens: TokenTotals {
-            input: 100,
-            output: 200,
-            cache_5m_write: 50,
-            cache_1h_write: 0,
-            cache_read: 1000,
-            total: 1350,
-        },
+        models,
         jsonl_paths: vec![PathBuf::from("/path/to/parent.jsonl")],
         title: title.map(str::to_string),
     }
@@ -49,15 +56,19 @@ fn write_yaml_round_trips() {
     let report: Report = serde_yaml::from_str(&body).unwrap();
     assert_eq!(report.schema_version, SCHEMA_VERSION);
     assert_eq!(report.host, "desk");
-    assert_eq!(report.session_count, 1);
+    assert_eq!(report.totals.sessions, 1);
+    assert!(report.totals.spend_usd > 0.0);
     let entry = &report.sessions["9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042"];
     assert_eq!(entry.title.as_deref(), Some("do the thing"));
     assert_eq!(entry.repo.as_deref(), Some("tatari-tv/claude-report"));
-    assert_eq!(entry.tokens.total, 1350);
+    let opus = entry.models.get("claude-opus-4-7").unwrap();
+    assert_eq!(opus.input, 100);
+    assert_eq!(opus.output, 200);
+    assert!(opus.spend_usd > 0.0);
 }
 
 #[test]
-fn yaml_uses_kebab_case_keys() {
+fn yaml_uses_kebab_case_keys_and_no_jsonl_paths() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("claude-report.yml");
     let s = sample_summary("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", None);
@@ -71,21 +82,39 @@ fn yaml_uses_kebab_case_keys() {
     .unwrap();
 
     let body = fs::read_to_string(&path).unwrap();
-    assert!(
-        body.contains("schema-version:"),
-        "expected schema-version key in:\n{}",
-        body
-    );
-    assert!(
-        body.contains("session-count:"),
-        "expected session-count key in:\n{}",
-        body
-    );
-    assert!(body.contains("jsonl-paths:"), "expected jsonl-paths key in:\n{}", body);
+    assert!(body.contains("schema-version:"), "body:\n{}", body);
+    assert!(body.contains("totals:"), "body:\n{}", body);
+    assert!(body.contains("spend-usd:"), "body:\n{}", body);
     assert!(body.contains("cache-5m-write:"));
     assert!(body.contains("cache-1h-write:"));
     assert!(body.contains("cache-read:"));
     assert!(!body.contains("schema_version:"));
+    assert!(!body.contains("jsonl-paths:"), "jsonl-paths must not appear: {}", body);
+}
+
+#[test]
+fn title_appears_first_in_session_entry() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("claude-report.yml");
+    let s = sample_summary("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", Some("titled"));
+    write_yaml(
+        &path,
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+    )
+    .unwrap();
+
+    let body = fs::read_to_string(&path).unwrap();
+    let session_idx = body.find("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042:").unwrap();
+    let title_idx = body[session_idx..].find("title:").unwrap();
+    let repo_idx = body[session_idx..].find("repo:").unwrap();
+    assert!(
+        title_idx < repo_idx,
+        "title must appear before repo:\n{}",
+        &body[session_idx..]
+    );
 }
 
 #[test]
