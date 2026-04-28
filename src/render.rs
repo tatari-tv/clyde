@@ -70,8 +70,11 @@ pub enum Template {
 }
 
 fn render_via_opus_text(yaml_body: &str, prompt: &str) -> Result<String> {
-    let api_key =
-        title::api_key_from_env().ok_or_else(|| eyre::eyre!("ANTHROPIC_API_KEY is required for --prompt rendering"))?;
+    let api_key = title::api_key_from_env().ok_or_else(|| {
+        eyre::eyre!(
+            "ANTHROPIC_API_KEY is required for Opus rendering; pass --template <path> for the offline markdown path"
+        )
+    })?;
     summarize::opus(prompt, yaml_body, &api_key)
 }
 

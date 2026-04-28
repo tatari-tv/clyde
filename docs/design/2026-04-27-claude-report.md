@@ -40,9 +40,10 @@ There is no machine-readable inventory of Claude Code sessions on a developer ma
 
 ### Non-Goals
 
-- Not computing dollar costs. ccu owns pricing and the live statusline.
+- Not depending on the `ccu` binary at runtime. cr and ccu are separate CLIs with separate UX; cr does not shell out to ccu. They share a pricing library (see Phase 1b) but are otherwise independent.
+- Not building a live statusline. ccu owns that surface.
 - Not building a TUI, web UI, or daemon.
-- Not a replacement for ccu. Complementary: ccu = $/day, cr = sessions/repos/titles/document.
+- Not a replacement for ccu. Complementary: ccu = $/day live, cr = sessions/repos/titles/document.
 - Not merging across machines in v1. That ships as `cr merge`.
 - Not bundling a PDF engine. `cr render --pdf` shells out to `pandoc` and inherits its toolchain.
 
@@ -59,7 +60,7 @@ Titling is a step inside the scan pipeline, not a separate subcommand. v1 ships 
 Two pipelines, sharing only the YAML on disk:
 
 ```
-cr (default):
+cr collect (default when bare):
 +---------+    +---------+    +-----------+    +---------+    +---------+    +---------+
 | scan::  |--> | parse:: |--> | session:: |--> | repo::  |--> | title:: |--> | report::|
 | find    |    | (rayon) |    | fold,     |    | git     |    | haiku   |    | atomic  |
@@ -68,11 +69,17 @@ cr (default):
 +---------+    +---------+    +-----------+    +---------+    +---------+    +---------+
 
 cr render:
-+----------+    +----------+    +-------------+    +-----------------+
-| read::   |--> | render:: |--> | (markdown)  |--> | --pdf? pandoc   |
-| yaml     |    | template |    | to stdout   |    | else: write .md |
-| (input)  |    |          |    | or file     |    |                 |
-+----------+    +----------+    +-------------+    +-----------------+
++----------+    +----------+--branch--+    +----------+    +-------------+    +-----------------+
+| read::   |    | --template?         |--> | render:: |--> | (markdown)  |--> | --pdf? pandoc   |
+| yaml     |--> +----------+----------+    | (markdown|    | to stdout   |    | else: write .md |
+| (input)  |    | else                |--> |  or pmt) |    | or file     |    |                 |
++----------+    +----------+----------+    +----------+    +-------------+    +-----------------+
+                           |
+                           v (Opus path only)
+                +-------------------+
+                | persona whoami    |
+                | (5s wait-timeout) |
+                +-------------------+
 ```
 
 On-disk layout we walk:
@@ -98,11 +105,14 @@ src/
   config.rs     # Cli -> Config validation/defaults
   scan.rs       # discover JSONL files, classify parent vs subagent
   parse.rs      # JSONL -> AssistantEntry plus first cwd seen
+  pricing.rs    # model pricing table; calculate_usd -> Result<f64, UnknownModel>
+  persona.rs    # shells out to `persona whoami --json` with 5s timeout
   session.rs    # group, dedup, fold to SessionSummary
   repo.rs       # cwd -> Option<reposlug>
   report.rs     # SessionSummary list -> YAML on disk (atomic)
-  title.rs      # placeholder for future Haiku titling step
-  render.rs     # YAML -> markdown; --pdf shells out to pandoc
+  summarize.rs  # Anthropic API client for pmt-driven Opus rendering
+  title.rs      # Haiku titling step
+  render.rs     # YAML -> markdown via Opus pmt (default) or custom template; --pdf shells to pandoc
 ```
 
 ### Data Model
@@ -142,8 +152,7 @@ pub struct SessionSummary {
     pub cwd: Option<PathBuf>,
     pub begin: DateTime<Utc>,
     pub end: DateTime<Utc>,
-    pub models: BTreeSet<String>,
-    pub tokens: TokenTotals,
+    pub models: BTreeMap<String, TokenTotals>,  // per-model token breakdown
     pub jsonl_paths: Vec<PathBuf>,
     pub title: Option<String>,
 }
@@ -158,23 +167,31 @@ pub struct TokenTotals {
 }
 ```
 
+Per-model totals (rather than a single `tokens` plus `BTreeSet<String>` of model names) is what the report layer needs to compute per-model spend; collapsing to one total would have to be unrolled before pricing.
+
 `host` is captured once at the top of the YAML, not per session. `cr merge` will stamp per-session host when it folds reports together.
 
 `cwd` is held in the internal `SessionSummary` struct (it's the input to `repo::detect`) but is **not** serialized into the YAML. For repo-detected sessions it's redundant with the slug; for `repo: null` sessions, `jsonl-paths` is sufficient for debugging. Keeping it out of the output keeps the report machine-portable (no host-specific paths leaking) and tighter to read.
 
 #### YAML output
 
-Keyed by session-id (per `yaml.md`: keyed maps, kebab-case keys, prefer keyed maps over list-of-dicts):
+Keyed by session-id (per `yaml.md`: keyed maps, kebab-case keys, prefer keyed maps over list-of-dicts).
+
+`schema-version: 1` is the first stable schema; v2 is reserved for the next breaking shape change. The project hadn't shipped externally when the version label was reset, so collapsing the local v2 work back to v1 was a no-op for any consumer.
+
+Per-session and per-model `spend-usd` are `Option<f64>`: a number means tokens were priced, `null` means tokens were counted but the model isn't in the embedded pricing table. Per-session `untracked-models` lists exactly which models contributed unpriced tokens, so a 1M-untracked / 1-priced session can't pass for a real `$0.01` charge. `totals.untracked-models` is the deduped union across all sessions.
 
 ```yaml
-schema-version: 2
+schema-version: 1
 generated: 2026-04-27T19:42:08Z
 host: desk
 since: 2026-04-01T00:00:00-07:00
 until: 2026-04-27T19:42:08-07:00
 totals:
   sessions: 287
-  spend-usd: 1234.56
+  spend-usd: 1234.56          # sum of priced models only
+  untracked-models:
+    - claude-some-new-model
   models:
     claude-opus-4-7:
       input: ...
@@ -183,15 +200,23 @@ totals:
       cache-1h-write: ...
       cache-read: ...
       total: ...
-      spend-usd: ...
-    claude-sonnet-4-6: { ... }
+      spend-usd: 1.23
+    claude-some-new-model:
+      input: 500
+      output: 200
+      # ... cache fields ...
+      total: 700
+      spend-usd: null         # tokens counted, price unknown
 sessions:
   9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042:
     title: ship the report tool
     repo: tatari-tv/claude-report
     begin: 2026-04-27T18:11:32Z
     end: 2026-04-27T19:42:08Z
-    spend-usd: 3.65
+    spend-usd: 3.65            # null when every model in the session is untracked
+    untracked-models: []
+    jsonl-paths:
+      - /home/u/.claude/projects/-home-u-r/9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042.jsonl
     models:
       claude-opus-4-7:
         input: 12345
@@ -204,7 +229,7 @@ sessions:
       claude-sonnet-4-6: { ... }
 ```
 
-Subagent tokens fold into the parent session's per-model totals. JSONL paths are not serialized; the session-id is the file stem under `~/.claude/projects/<encoded-cwd>/`.
+Subagent tokens fold into the parent session's per-model totals. `jsonl-paths` lists the source files contributing to each session (parent first, then subagents) so debugging and future re-titling can find the original data without re-deriving the encoded path.
 
 ### API Design
 
@@ -239,10 +264,15 @@ cr [OPTIONS] [SUBCOMMAND]
     -o, --output <PATH>         output document path; "-" for stdout (markdown only)
                                 [default: ./claude-report.md, or ./claude-report.pdf with --pdf]
         --pdf                   render PDF instead of markdown (requires pandoc on PATH)
-        --template <PATH>       override the built-in markdown template
+        --template <PATH>       force the markdown-template path; suppresses the pmt+Opus default
+        --prompt <PATH>         override the baked-in default report.pmt
+        --include-tradeoffs     emit the optional Tradeoffs section in the rendered writeup
+        --pdf-engine <NAME>     pandoc PDF engine [default: wkhtmltopdf]
 ```
 
-Bare `cr` is sugar for `cr collect` with all defaults.
+Bare `cr` is sugar for `cr collect` with all defaults. The `Collect` subcommand is the default-when-bare; `cr merge` is a stub that returns "not implemented".
+
+`cr render` defaults to the pmt-via-Opus path: prompt resolution is `--prompt <path>` > workspace `./templates/report.pmt` > the binary's baked-in default (`include_str!("../templates/report.pmt")`). Passing `--template <path>` forces the older markdown-template path instead.
 
 Date-only forms (`2026-04-01`) are accepted for `--since`/`--until` and treated as local midnight. RFC 3339 forms are accepted as written.
 
@@ -264,10 +294,25 @@ pub struct RunResult {
 #### Phase 1: Scaffold and dependencies
 **Model:** sonnet
 
-- Add deps via `cargo add`: chrono (with `serde`), rayon, serde_json, gethostname.
+- Add deps via `cargo add`: chrono (with `serde`), rayon, serde_json, gethostname, wait-timeout, ureq.
 - Confirm crate-root `#![deny(...)]` is in place (already from scaffold).
-- Stub modules: empty `lib.rs`, `scan.rs`, `parse.rs`, `session.rs`, `repo.rs`, `report.rs`, `title.rs`. Re-export from `lib.rs`. Adapt existing `cli.rs` and `config.rs`.
+- Stub modules: empty `lib.rs`, `scan.rs`, `parse.rs`, `session.rs`, `repo.rs`, `report.rs`, `title.rs`, `pricing.rs` (carries the embedded JSON pricing table; see Phase 1b), `persona.rs`, `summarize.rs`, `render.rs`. Re-export from `lib.rs`. Adapt existing `cli.rs` and `config.rs`.
 - Verify `otto ci` passes on the empty skeleton.
+
+#### Phase 1b: Pricing
+**Model:** opus
+
+- `cr/src/pricing.rs` carries the pricing table directly (no shared crate yet). `data/pricing.json` is the canonical embedded form and is consumed via `include_str!`; the binary stays self-contained with no runtime fetch.
+- Extracting pricing into a shared `claude-pricing` crate (so cr and ccu can both consume one source) remains a follow-up: the cost of two parallel scrapers without a sync script outweighs the cost of two parallel pricing tables today. Defer until either binary actually produces a duplicate-fix incident.
+- API: `calculate_usd(model: &str, usage: &TokenUsage) -> Result<f64, UnknownModel>`. The `Err` branch keeps unknown-model handling explicit; consumers cannot silently collapse to `0.0`.
+- **Unknown model handling.** cr surfaces the gap in two layers:
+  1. Log a warning at `warn` level: `unknown model '<name>'; spend reported as untracked`.
+  2. Surface the gap in the report itself, not just stderr. Schema (tristate):
+     - `totals.models` stays canonical: every model the user ran appears here with its full token breakdown (input / output / cache).
+     - For untracked models, `models.<name>.spend-usd` is `null` (number = priced, `null` = tokens counted but unpriced, missing = model didn't appear).
+     - `totals.untracked-models: [name, ...]` is the deduped union of per-session unknowns. Per-session `untracked-models` flags exactly which models contributed unpriced tokens in that session.
+     - Per-session `spend-usd` is `Some(partial)` when at least one model is priced and `None` when every model is untracked, so a partial price can never silently look like a zero charge.
+- Tests: known-model pricing math, unknown-model returns `Err`, mixed-session shape (partial spend + per-session `untracked-models`), `Totals.untracked-models` is the deduped union across sessions, YAML round-trip with `null` reads back as `Option::None`.
 
 #### Phase 2: File discovery
 **Model:** sonnet
@@ -292,7 +337,7 @@ pub struct RunResult {
 
 - `repo::detect(cwd: &Path) -> Option<String>`.
 - Pre-check: if `cwd` no longer exists on disk (ENOENT), return `None` and log at `debug` (distinguishes a deleted project dir from a real git failure).
-- Run `git -C <cwd> rev-parse --show-toplevel`. **Reject the climb:** if the returned toplevel is not equal to or a prefix of `cwd`, treat as not-a-repo and return `None`. Without this guard, a session in `~/scratch/foo` whose parent `~` is itself tracked (e.g. dotfiles repo) would be falsely attributed to the dotfiles slug.
+- Run `git -C <cwd> rev-parse --show-toplevel`. **Reject blocked-roots climbs:** the implementation maintains a list of blocked toplevel roots (default: `$HOME`). If the toplevel matches a blocked root, treat as not-a-repo and return `None`. Without this guard, a session in `~/scratch/foo` whose parent `~` is itself tracked (e.g. dotfiles repo at `$HOME`) would be falsely attributed to the dotfiles slug. The blocked-roots approach catches dotfiles climbing without rejecting legitimate climbs (e.g. cwd in a deep subdir of a tracked repo).
 - Run `git -C <cwd> remote get-url origin`. **`origin` only by policy** — no `upstream` / `deploy` fallback. If `origin` does not exist, the session is reported as `repo: null`. Parse SSH (`git@github.com:org/repo.git`), HTTPS (`https://github.com/org/repo.git`), and `git://` forms. Strip optional trailing `.git`. Return `<org>/<repo>`.
 - Cache results in `HashMap<PathBuf, Option<String>>` so we don't shell out repeatedly for repos with multiple sessions.
 - Tests: SSH form, HTTPS form, with and without `.git`, non-repo dir, missing dir (ENOENT), repo with no origin, dotfiles-climb scenario (cwd is unversioned subdir of a tracked parent).
@@ -343,23 +388,22 @@ pub struct RunResult {
 #### Phase 9: Render to markdown / PDF
 **Model:** opus
 
-- `cr render` reads `claude-report.yml` and produces a justification document. Markdown is the default; `--pdf` shells out to `pandoc` to convert.
-- `render::to_markdown(report: &Report, template: &Template) -> String`. Built-in template renders:
-  - Header: period (`since`-`until`), host, total sessions, total tokens.
-  - "By repo" rollup table: reposlug, sessions, total tokens, top models. Sessions with `repo: null` grouped under "(no repo)".
-  - "Sessions" detail section: grouped by repo, each entry shows title (or `<untitled>`), session-id (short), begin-end window, models, total tokens.
-- Templating engine: hand-rolled `format!` with a `Template` enum for the v1 default; switch to `tera` only if a custom template is genuinely needed (`--template <path>`).
-- PDF path: write markdown to a `NamedTempFile`, run `pandoc <tmp> --pdf-engine=<engine> -o <output>.pdf`. Default engine is `wkhtmltopdf` (lighter than LaTeX, no 1GB+ texlive install required). User can override with `--pdf-engine=<name>`. Detect missing `pandoc` and surface a clear error directing the user to install it. If the chosen engine is missing, surface pandoc's error verbatim and point at the install path. PDF output path defaults to `./claude-report.pdf`.
+- `cr render` reads `claude-report.yml` and produces a justification document. The default flow wraps the report in a context block (persona + options + report) and sends it to Opus with the baked-in `templates/report.pmt`. `--pdf` then shells out to `pandoc` to convert the markdown to PDF.
+- Persona block: `cr render` shells out to `persona whoami --json` with a 5s timeout (`wait-timeout` crate). On success the parsed fields go under `persona:` in the context block; on missing binary, timeout, non-zero exit, or JSON parse error, render emits `persona: {}` and prints a single stderr line ("persona whoami failed; rendering anonymously"). The pmt is written to handle both shapes.
+- Options block: `--include-tradeoffs` becomes `options.include-tradeoffs: <bool>` in the context block. When `true` the pmt emits its optional Tradeoffs section; when `false` (the default) the section is dropped.
+- Prompt resolution when sending to Opus: `--prompt <path>` > workspace `./templates/report.pmt` > the binary's baked-in copy (`include_str!("../templates/report.pmt")`). A build-time invariant test asserts the embedded copy is byte-identical to the workspace template at compile time. The workspace override exists so local edits to the pmt take effect at runtime without rebuilding.
+- Custom markdown template (legacy path): `--template <path>` forces the older Tera-style template substitution and skips Opus. Useful for quick offline renders without API access.
+- PDF path: write markdown to a `NamedTempFile`, run `pandoc <tmp> --pdf-engine=<engine> -o <output>.pdf`. Default engine is `wkhtmltopdf` (lighter than LaTeX, no 1GB+ texlive install required). User can override with `--pdf-engine=<name>`. Detect missing `pandoc` and surface a clear error directing the user to install it. PDF output path defaults to `./claude-report.pdf`.
 - Output `-` (dash) goes to stdout (markdown only; PDF binary on stdout is rejected).
-- Tests: golden-file markdown rendering against a fixture YAML; PDF test gated on pandoc availability (skipped on CI without pandoc).
+- Tests: context-block construction (persona present/absent, options.include-tradeoffs true/false), prompt-resolution order, baked-in default == workspace template invariant, custom-template substitution, PDF test gated on pandoc availability.
 
 ## Alternatives Considered
 
 ### Alternative 1: Extend ccu instead of building cr
 - **Description:** Add a `ccu sessions` subcommand that emits the same YAML.
-- **Pros:** One binary, shared parsing code.
-- **Cons:** ccu is firmly framed as a *cost* tool with embedded pricing tables; sessions-as-data is a different concern. Mixing them couples release cycles and grows ccu's scope. ccu must never need network access for the statusline; `cr title` will eventually call Anthropic.
-- **Why not chosen:** Two tools, two concerns. Keep them separate.
+- **Pros:** One binary, no second CLI to install or document.
+- **Cons:** ccu is firmly framed as a *cost* tool with a live-statusline performance budget (no network calls, sub-100ms). Sessions-as-data is a different concern: cr will eventually call Anthropic for titling and shell out to pandoc for rendering, neither of which is acceptable on ccu's hot path. The CLI surfaces are different products even when the underlying data is the same.
+- **Why not chosen:** Two CLIs, two UX concerns. Code reuse for shared logic, when it eventually pays off (a `claude-pricing` crate and possibly a `claude-jsonl` parser crate), happens at the library layer without merging the binaries.
 
 ### Alternative 2: Decode cwd from the project-dir name
 - **Description:** Reverse `~/.claude/projects/-home-foo-bar` to `/home/foo/bar` by replacing `-` with `/`.
@@ -409,8 +453,10 @@ pub struct RunResult {
 - `gethostname` (added): host field.
 - `dirs` (present): `~/.claude` discovery.
 - `log` + `env_logger` (present): logging.
+- `ureq` (added): Anthropic API HTTP client (Haiku titling, Opus rendering).
+- `wait-timeout` (added): bound the `persona whoami` shell-out so an expired Okta session can't hang `cr render`.
 
-No `git2`/`gix`. We shell out to `git remote get-url origin`: one call per distinct cwd, result cached. Pulling a 1MB+ git library for one URL would be disproportionate.
+No `git2`/`gix`. We shell out to `git remote get-url origin`: one call per distinct cwd, result cached. Pulling a 1MB+ git library for one URL would be disproportionate. Same for `persona`: `Command::spawn()` with a `wait_timeout` is simpler than reimplementing the persona client.
 
 ### Performance
 
@@ -460,6 +506,8 @@ A first run on a fully populated `~/.claude` should complete in 1-3 seconds wall
 | `--pdf` works with pandoc but PDF engine (LaTeX/wkhtmltopdf) is missing | Med | Low | Default engine is `wkhtmltopdf` (cheap to install). Expose `--pdf-engine=<name>` for users who already have LaTeX. Surface pandoc's engine-missing error verbatim. |
 | Markdown template diverges from what management expects | Med | Med | Built-in template mirrors the structure of the existing March justification doc; `--template <path>` provides an escape hatch. |
 | Memory blow-up at extreme scale (gigabytes of JSONL) | Low | Med | At the target scale (~3k files / tens of MB) `par_iter` returning all entries is fine. Documented limitation: if a user accumulates >1 GB of session history, switch the rayon stage to fold-into-running-totals per file (constant memory per file). Not a v1 concern. |
+| Stale binary on user's machine encounters a model released after install | Med | Med (silent under-counting if mishandled) | Two-layer surface: `pricing::calculate_usd` returns `Err(UnknownModel)` rather than `0.0`; cr logs a `warn` AND emits an `untracked-models` block (per-session and totals) in the YAML so the rendered report explicitly calls out the gap instead of burying it. A stale binary cannot silently produce an undercounted total. |
+| Anthropic redesigns their pricing page (DOM/format change) | High over multi-year | Med | Pricing data lives in `data/pricing.json` and is updated by hand for now. When two binaries (cr + ccu) actually drift, factor pricing into a shared crate with one scraper. Until then the duplication is small and the sync cost is "edit one JSON file". |
 
 ## Open Questions
 
