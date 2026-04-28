@@ -155,21 +155,6 @@ fn custom_template_substitutes_placeholders() {
     );
 }
 
-fn render_config(input: &Path, output: &Path) -> Config {
-    Config {
-        log_level: "info".into(),
-        command: ResolvedCommand::Render(RenderConfig {
-            input: input.to_path_buf(),
-            output: output.to_path_buf(),
-            pdf: false,
-            template: None,
-            prompt: None,
-            include_tradeoffs: false,
-            pdf_engine: "wkhtmltopdf".into(),
-        }),
-    }
-}
-
 #[test]
 fn build_context_block_includes_options_and_report() {
     let yaml = "schema-version: 1\ntotals:\n  sessions: 0\n";
@@ -209,16 +194,77 @@ fn build_context_block_embeds_persona_when_present() {
 }
 
 #[test]
-fn render_run_writes_markdown_file() {
+fn render_run_writes_markdown_file_with_custom_template() {
     let tmp = TempDir::new().unwrap();
     let yml = tmp.path().join("claude-report.yml");
     let md = tmp.path().join("claude-report.md");
+    let template_path = tmp.path().join("template.md");
     let report = sample_report();
     fs::write(&yml, serde_yaml::to_string(&report).unwrap()).unwrap();
+    fs::write(&template_path, "host={{host}} sessions={{session-count}}").unwrap();
 
-    let cfg = render_config(&yml, &md);
+    let cfg = Config {
+        log_level: "info".into(),
+        command: ResolvedCommand::Render(RenderConfig {
+            input: yml.clone(),
+            output: md.clone(),
+            pdf: false,
+            template: Some(template_path),
+            prompt: None,
+            include_tradeoffs: false,
+            pdf_engine: "wkhtmltopdf".into(),
+        }),
+    };
     let result = crate::run(&cfg).unwrap();
     assert_eq!(result.sessions_emitted, 2);
     let body = fs::read_to_string(&md).unwrap();
-    assert!(body.contains("# Claude Code session report"));
+    assert_eq!(body, "host=desk sessions=2");
+}
+
+#[test]
+fn resolve_prompt_uses_explicit_path() {
+    let tmp = TempDir::new().unwrap();
+    let pmt = tmp.path().join("custom.pmt");
+    fs::write(&pmt, "EXPLICIT-PROMPT").unwrap();
+    let resolved = resolve_prompt(Some(&pmt), tmp.path()).unwrap();
+    assert_eq!(resolved, "EXPLICIT-PROMPT");
+}
+
+#[test]
+fn resolve_prompt_uses_workspace_file_when_no_explicit() {
+    let tmp = TempDir::new().unwrap();
+    let templates = tmp.path().join("templates");
+    fs::create_dir_all(&templates).unwrap();
+    fs::write(templates.join("report.pmt"), "WORKSPACE-PROMPT").unwrap();
+    let resolved = resolve_prompt(None, tmp.path()).unwrap();
+    assert_eq!(resolved, "WORKSPACE-PROMPT");
+}
+
+#[test]
+fn resolve_prompt_falls_back_to_baked_in_default() {
+    let tmp = TempDir::new().unwrap();
+    let resolved = resolve_prompt(None, tmp.path()).unwrap();
+    assert_eq!(resolved, DEFAULT_PROMPT);
+}
+
+#[test]
+fn resolve_prompt_workspace_edits_propagate_at_runtime() {
+    let tmp = TempDir::new().unwrap();
+    let templates = tmp.path().join("templates");
+    fs::create_dir_all(&templates).unwrap();
+    let pmt = templates.join("report.pmt");
+    fs::write(&pmt, "v1").unwrap();
+    assert_eq!(resolve_prompt(None, tmp.path()).unwrap(), "v1");
+    fs::write(&pmt, "v2").unwrap();
+    assert_eq!(resolve_prompt(None, tmp.path()).unwrap(), "v2");
+}
+
+#[test]
+fn baked_in_default_matches_workspace_template() {
+    let on_disk =
+        fs::read_to_string("templates/report.pmt").expect("templates/report.pmt must exist relative to crate root");
+    assert_eq!(
+        DEFAULT_PROMPT, on_disk,
+        "DEFAULT_PROMPT (include_str!) must be byte-identical to templates/report.pmt"
+    );
 }

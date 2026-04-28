@@ -11,6 +11,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 const STDOUT_SIGIL: &str = "-";
+pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
+const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
 
 pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
     log::info!(
@@ -25,13 +27,14 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
     let report: Report =
         serde_yaml::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
 
-    let markdown = if let Some(prompt_path) = cfg.prompt.as_deref() {
+    let markdown = if let Some(template_path) = cfg.template.as_deref() {
+        let template = load_template(Some(template_path))?;
+        to_markdown(&report, &template)
+    } else {
+        let prompt = resolve_prompt(cfg.prompt.as_deref(), Path::new("."))?;
         let persona_block = persona::whoami();
         let context = build_context_block(&body, cfg.include_tradeoffs, persona_block.as_ref());
-        render_via_opus(&context, prompt_path)?
-    } else {
-        let template = load_template(cfg.template.as_deref())?;
-        to_markdown(&report, &template)
+        render_via_opus_text(&context, &prompt)?
     };
 
     if cfg.pdf {
@@ -66,12 +69,23 @@ pub enum Template {
     Custom(String),
 }
 
-fn render_via_opus(yaml_body: &str, prompt_path: &Path) -> Result<String> {
-    let prompt = fs::read_to_string(prompt_path)
-        .with_context(|| format!("failed to read prompt template at {}", prompt_path.display()))?;
+fn render_via_opus_text(yaml_body: &str, prompt: &str) -> Result<String> {
     let api_key =
         title::api_key_from_env().ok_or_else(|| eyre::eyre!("ANTHROPIC_API_KEY is required for --prompt rendering"))?;
-    summarize::opus(&prompt, yaml_body, &api_key)
+    summarize::opus(prompt, yaml_body, &api_key)
+}
+
+pub(crate) fn resolve_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> Result<String> {
+    if let Some(path) = explicit {
+        return fs::read_to_string(path)
+            .with_context(|| format!("failed to read prompt template at {}", path.display()));
+    }
+    let workspace_pmt = workspace_dir.join(WORKSPACE_PROMPT_PATH);
+    if workspace_pmt.exists() {
+        return fs::read_to_string(&workspace_pmt)
+            .with_context(|| format!("failed to read workspace prompt at {}", workspace_pmt.display()));
+    }
+    Ok(DEFAULT_PROMPT.to_string())
 }
 
 pub(crate) fn build_context_block(

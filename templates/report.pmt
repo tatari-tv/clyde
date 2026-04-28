@@ -1,0 +1,144 @@
+You are writing a recurring monthly Claude Enterprise spend justification report. The audience is anyone responsible for the judicious use of company resources: management, finance, or the user themselves reviewing their own spend. The report explains what the AI spend produced over the period and lets the reader judge whether it was worth it.
+
+This is a recurring monthly report. The reader will see a similar report every month. Do not replicate prior-month structure verbatim; structure each month around what is actually most notable in this period's data.
+
+Output ONLY the markdown document. No preamble, no commentary, no fenced code block wrapping the whole output.
+
+# Hard prohibition: no speculative quantification
+
+This is the most important rule in the document. Read it twice.
+
+You MUST NOT write any sentence that estimates, compares, ratios, or speculates about cost, value, time, effort, productivity, headcount-equivalence, or counterfactual work hours. None of these phrasings, no matter how cautious, are permitted:
+
+- "$X is roughly N% of a senior engineer's monthly cost"
+- "would have required N hours of senior-engineer time"
+- "would have been a two-engineer-month effort done conventionally"
+- "produces the equivalent of a small team's output"
+- "even a 20% productivity lift clears the bar"
+- "saves the company $X in [SaaS / contractor / headcount]"
+- "if Claude weren't available, this would have cost..."
+- "design throughput would conventionally land at one document per N days"
+- "ROI is clear" / "the math works out" / "pays for itself"
+
+The reader can do their own math. Speculative quantification damages credibility; it presents made-up numbers as grounded analysis, and a careful reader will rip those numbers apart. The report's job is to present what was done, accurately. The reader decides whether it was worth the spend.
+
+If you find yourself starting to estimate effort, time, or cost displacement, stop and rewrite that paragraph as a factual description of what exists in the data: artifacts, repos, session titles, model spend, distribution.
+
+Numbers that ARE allowed are only the ones drawn directly from the context block: total spend, per-model spend, session counts, token counts, repo counts, dates, and exact session titles. That is the entire numeric vocabulary of this document.
+
+# What this document is for
+
+The document tells the reader what was produced this period, where the work concentrated, and what is changing next period. It does not argue that the spend was worth it. The artifacts and metrics make that case on their own; if they don't, no amount of prose will fix that.
+
+# Persona
+
+The user's identity is provided by `cr render` in the context block under `persona:`. Use the fields that are present (any of: name, title, team, organization, department, manager, email, github, location).
+
+If the persona block is empty or absent, omit the per-field lines from the header and refer to the user neutrally ("The user", or by login/email if either is available). Do not invent identity. Build the report from the data alone if the user is anonymous; that is acceptable.
+
+# Tradeoffs section toggle
+
+The context block contains an `options.include-tradeoffs` boolean. If `true`, emit the Tradeoffs section described below. If `false` or absent, omit it.
+
+# Required structure
+
+```
+---
+title: "Claude Usage Justification - <name-or-anonymous> - <period>"
+date: <generated date>
+type: note
+domain: work
+tags:
+
+  - claude
+  - enterprise
+  - usage
+  - justification
+
+---
+
+# Claude Enterprise Usage Justification
+
+**Author:** <persona.name or "[anonymous]">
+**Title:** <persona.title>          (omit this line if absent)
+**Team:** <persona.team>            (omit this line if absent)
+**Period:** <since> - <until>
+**Total Spend:** <total-spend>
+**Sessions:** <count> across <distinct repos> repositories
+
+---
+```
+
+Then these sections in order. Section bodies are described, not templated; write each one fresh based on what is most notable in this month's data.
+
+## Cost Summary
+A markdown table showing every model that appears in `totals.models`, sorted by `spend-usd` descending (with untracked-spend rows last). Columns: `Model`, `Sessions Using` (count of sessions where this model contributed any tokens), `Total Tokens`, `Spend`. End with a `Total` row summing the columns. Include every model present in the context block, even ones with zero spend (e.g., synthetic models); omitting them creates the impression of cherry-picking.
+
+For models where `spend-usd` is `null` in the context block (tokens counted but the binary's pricing table did not recognize the model), emit the row with `Spend` shown as `(untracked)` and exclude that row from the `Total` sum.
+
+If `totals.untracked-models` is non-empty, immediately after the table emit a single bolded sentence:
+
+> **Note: spend for the following models was not computed because they are not in this binary's pricing table: `<name>`, `<name>`. The total above understates actual spend. Update the cr binary to refresh pricing.**
+
+This is the only place in the document where you may flag a number as missing. If `totals.untracked-models` is empty or absent, do not emit this line.
+
+This table is the only quantitative content in the document. Do not paraphrase its numbers later in prose.
+
+## Executive Summary
+3 to 5 sentences. The headline a reader would skim in 30 seconds: which repos saw the most work, what concrete artifacts came out, and whether the trajectory is steady or shifting. No effort estimates, no productivity claims, no displacement framing. Just what happened.
+
+## What This Funded
+The concrete output, organized into impact tiers that come from this month's actual data, NOT a fixed taxonomy. Look at what was shipped and group accordingly:
+
+- If the month was dominated by one kind of work, use one tier.
+- If the month had distinct themes, use a tier per theme.
+- Tier headers describe what the work IS this month. Do not invent a tier (e.g., "R&D investments") if no R&D happened. Do not invent a tier (e.g., "Tools shipped to the team") if no tools were shipped to the team.
+
+Within each tier, surface specific repos and what was done, citing session titles from the context block where they ground a claim. A repo with two trivial sessions does not need a row. A repo with one major outcome deserves prose.
+
+Prefer bulleted lists with metrics in parentheses over running prose. Format example (use this shape):
+
+- `<repo-slug>` (N sessions, M tokens, $S spend): one-line factual summary citing 1-3 session titles.
+
+Cite session titles and per-session spend where useful (those are facts from the context block), but do not narrate dollar amounts as if they prove anything.
+
+## Usage Profile
+Describe the shape of the month, factually:
+
+- **Temporal distribution**: even? clustered on certain days? any multi-day gaps? One bullet, one sentence.
+- **Model mix**: a one-line factual note per model on what each was used for in this month's sessions, drawn from the titles and repos in which each model appeared (e.g., "Opus sessions clustered on design documents and architecture reviews").
+- **Outlier sessions**: a markdown table of the 5-10 single sessions with the largest individual spend. Columns: `Session` (title or short uuid if untitled), `Repo`, `Tokens`, `Spend`, `What it produced`. The "What it produced" column is a one-line factual statement of what the session delivered, drawn from the title or its repo context. No speculation about how long it would have taken otherwise.
+
+## Forward-Looking
+Two or three items. What's changing next month? Possibilities (use only if relevant):
+
+- Projects that are mid-build and likely to ship.
+- Investigations winding down.
+- New tools being trialed.
+- Structural changes the reader should know about (a policy change, a tool retirement).
+
+Phrase as factual statements about projects in flight: "X is past initial design and entering implementation", "Y is approaching a stable release", etc. No predictions about whether next month's spend will be higher, lower, or "more leveraged"; those are forecasts the data does not support.
+
+If nothing notable is changing, omit this section.
+
+## Tradeoffs
+ONLY emit this section if `options.include-tradeoffs` is `true` in the context block. Otherwise drop it entirely.
+
+A frank, specific assessment of where the spend was less effective this period: workflows that did not pan out, sessions that produced little, friction encountered, models or tools that disappointed. This section gives the report credibility by acknowledging where AI assistance fell short. 3 to 6 bullets. Each item must be specific to this period's data (cite the repo or session title where applicable). No generic Claude/AI complaints.
+
+## Conclusion
+Two sentences. Factual restatement of what shipped and what is in flight. No "the spend is justified" claim, no trajectory verdicts, no ROI language.
+
+# Strict rules
+
+- Output ONLY the markdown document. Nothing before, nothing after, no fenced code block around the whole thing.
+- Every metric is from the context block. Numbers not in the context (commits, PRs, Confluence, Jira, Slack, headcount equivalents, hours, days, weeks of work) are NEVER fabricated. Describe qualitatively or omit.
+- No effort estimates. No counterfactual cost comparisons. No productivity multipliers. No ROI language. No "would have taken N hours / required N engineers / saved $X". See the hard prohibition above.
+- No em dashes (the long dash). Use regular hyphens, commas, or semicolons. This rule has no exceptions.
+- Voice: factual, restrained, specific. The data carries the argument; the prose stays out of the way.
+- Exact strings: repo slugs, model names, dollar amounts, and session titles come straight from the context block.
+- Sort lists by impact (concrete shipped artifacts first), not alphabetically.
+- Do not invent sections, tiers, or themes that don't apply this period; drop them.
+- Prefer bulleted lists and tables for any content that carries metrics. Reserve running prose for the Executive Summary, Conclusion, and the lead-in sentence of each tier.
+
+# Context block follows
