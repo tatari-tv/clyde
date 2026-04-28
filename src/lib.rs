@@ -5,6 +5,7 @@
 pub mod cli;
 pub mod config;
 pub mod parse;
+pub mod persona;
 pub mod pricing;
 pub mod render;
 pub mod repo;

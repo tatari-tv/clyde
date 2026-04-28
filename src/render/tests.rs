@@ -173,7 +173,7 @@ fn render_config(input: &Path, output: &Path) -> Config {
 #[test]
 fn build_context_block_includes_options_and_report() {
     let yaml = "schema-version: 1\ntotals:\n  sessions: 0\n";
-    let block = build_context_block(yaml, true);
+    let block = build_context_block(yaml, true, None);
     assert!(block.contains("persona: {}"), "block:\n{}", block);
     assert!(block.contains("options:"), "block:\n{}", block);
     assert!(block.contains("include-tradeoffs: true"), "block:\n{}", block);
@@ -184,11 +184,28 @@ fn build_context_block_includes_options_and_report() {
 #[test]
 fn build_context_block_omits_tradeoffs_when_false() {
     let yaml = "schema-version: 1\n";
-    let block = build_context_block(yaml, false);
+    let block = build_context_block(yaml, false, None);
     assert!(block.contains("include-tradeoffs: false"));
     let parsed: serde_yaml::Value = serde_yaml::from_str(&block).expect("context block must be valid YAML");
     let opts = parsed.get("options").expect("options key");
     assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn build_context_block_embeds_persona_when_present() {
+    let yaml = "schema-version: 1\n";
+    let persona = crate::persona::PersonaBlock {
+        name: Some("Scott Idler".into()),
+        title: Some("Director, Engineering".into()),
+        email: Some("scott.idler@tatari.tv".into()),
+        ..Default::default()
+    };
+    let block = build_context_block(yaml, false, Some(&persona));
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&block).expect("must be valid YAML");
+    let p = parsed.get("persona").expect("persona key");
+    assert_eq!(p.get("name").and_then(|v| v.as_str()), Some("Scott Idler"));
+    assert_eq!(p.get("email").and_then(|v| v.as_str()), Some("scott.idler@tatari.tv"));
+    assert!(p.get("manager").is_none(), "missing manager must be omitted");
 }
 
 #[test]

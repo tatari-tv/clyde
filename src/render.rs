@@ -1,5 +1,6 @@
 use crate::RunResult;
 use crate::config::RenderConfig;
+use crate::persona::{self, PersonaBlock};
 use crate::report::{Report, SessionEntry};
 use crate::{summarize, title};
 use eyre::{Context, Result, bail};
@@ -25,7 +26,8 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
         serde_yaml::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
 
     let markdown = if let Some(prompt_path) = cfg.prompt.as_deref() {
-        let context = build_context_block(&body, cfg.include_tradeoffs);
+        let persona_block = persona::whoami();
+        let context = build_context_block(&body, cfg.include_tradeoffs, persona_block.as_ref());
         render_via_opus(&context, prompt_path)?
     } else {
         let template = load_template(cfg.template.as_deref())?;
@@ -72,9 +74,26 @@ fn render_via_opus(yaml_body: &str, prompt_path: &Path) -> Result<String> {
     summarize::opus(&prompt, yaml_body, &api_key)
 }
 
-pub(crate) fn build_context_block(report_yaml: &str, include_tradeoffs: bool) -> String {
+pub(crate) fn build_context_block(
+    report_yaml: &str,
+    include_tradeoffs: bool,
+    persona: Option<&PersonaBlock>,
+) -> String {
     let mut out = String::new();
-    out.push_str("persona: {}\n");
+    match persona {
+        Some(p) => match serde_yaml::to_string(p) {
+            Ok(yaml) if !yaml.trim().is_empty() => {
+                out.push_str("persona:\n");
+                for line in yaml.lines() {
+                    out.push_str("  ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            _ => out.push_str("persona: {}\n"),
+        },
+        None => out.push_str("persona: {}\n"),
+    }
     out.push_str("options:\n");
     out.push_str(&format!("  include-tradeoffs: {}\n", include_tradeoffs));
     out.push_str("report:\n");
