@@ -164,9 +164,31 @@ fn render_config(input: &Path, output: &Path) -> Config {
             pdf: false,
             template: None,
             prompt: None,
+            include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
         }),
     }
+}
+
+#[test]
+fn build_context_block_includes_options_and_report() {
+    let yaml = "schema-version: 1\ntotals:\n  sessions: 0\n";
+    let block = build_context_block(yaml, true);
+    assert!(block.contains("persona: {}"), "block:\n{}", block);
+    assert!(block.contains("options:"), "block:\n{}", block);
+    assert!(block.contains("include-tradeoffs: true"), "block:\n{}", block);
+    assert!(block.contains("report:"), "block:\n{}", block);
+    assert!(block.contains("  schema-version: 1"), "block:\n{}", block);
+}
+
+#[test]
+fn build_context_block_omits_tradeoffs_when_false() {
+    let yaml = "schema-version: 1\n";
+    let block = build_context_block(yaml, false);
+    assert!(block.contains("include-tradeoffs: false"));
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&block).expect("context block must be valid YAML");
+    let opts = parsed.get("options").expect("options key");
+    assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(false));
 }
 
 #[test]

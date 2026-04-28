@@ -25,7 +25,8 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
         serde_yaml::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
 
     let markdown = if let Some(prompt_path) = cfg.prompt.as_deref() {
-        render_via_opus(&body, prompt_path)?
+        let context = build_context_block(&body, cfg.include_tradeoffs);
+        render_via_opus(&context, prompt_path)?
     } else {
         let template = load_template(cfg.template.as_deref())?;
         to_markdown(&report, &template)
@@ -69,6 +70,20 @@ fn render_via_opus(yaml_body: &str, prompt_path: &Path) -> Result<String> {
     let api_key =
         title::api_key_from_env().ok_or_else(|| eyre::eyre!("ANTHROPIC_API_KEY is required for --prompt rendering"))?;
     summarize::opus(&prompt, yaml_body, &api_key)
+}
+
+pub(crate) fn build_context_block(report_yaml: &str, include_tradeoffs: bool) -> String {
+    let mut out = String::new();
+    out.push_str("persona: {}\n");
+    out.push_str("options:\n");
+    out.push_str(&format!("  include-tradeoffs: {}\n", include_tradeoffs));
+    out.push_str("report:\n");
+    for line in report_yaml.lines() {
+        out.push_str("  ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 fn load_template(custom: Option<&Path>) -> Result<Template> {

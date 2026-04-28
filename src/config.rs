@@ -33,6 +33,7 @@ pub struct RenderConfig {
     pub pdf: bool,
     pub template: Option<PathBuf>,
     pub prompt: Option<PathBuf>,
+    pub include_tradeoffs: bool,
     pub pdf_engine: String,
 }
 
@@ -65,6 +66,7 @@ impl TryFrom<Cli> for Config {
                     pdf,
                     template: args.template,
                     prompt: args.prompt,
+                    include_tradeoffs: args.include_tradeoffs,
                     pdf_engine: args.pdf_engine,
                 })
             }
