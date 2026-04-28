@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-use crate::config::{Config, ResolvedCommand, ScanConfig};
+use crate::config::{CollectConfig, Config, ResolvedCommand};
 use crate::report::Report;
 use std::fs;
 use std::io::Write;
@@ -20,10 +20,10 @@ fn write_jsonl(path: &Path, lines: &[&str]) {
     }
 }
 
-fn make_scan_config(projects_dir: &Path, output: &Path) -> Config {
+fn make_collect_config(projects_dir: &Path, output: &Path) -> Config {
     Config {
         log_level: "info".into(),
-        command: ResolvedCommand::Scan(ScanConfig {
+        command: ResolvedCommand::Collect(CollectConfig {
             since: "2026-01-01T00:00:00Z".parse().unwrap(),
             until: "2030-01-01T00:00:00Z".parse().unwrap(),
             output: output.to_path_buf(),
@@ -35,7 +35,7 @@ fn make_scan_config(projects_dir: &Path, output: &Path) -> Config {
 }
 
 #[test]
-fn end_to_end_scan_writes_yaml() {
+fn end_to_end_collect_writes_yaml() {
     let tmp = TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
     let project_a = projects.join("-home-saidler-repos-foo-bar");
@@ -63,7 +63,7 @@ fn end_to_end_scan_writes_yaml() {
     );
 
     let output = tmp.path().join("claude-report.yml");
-    let cfg = make_scan_config(&projects, &output);
+    let cfg = make_collect_config(&projects, &output);
 
     let result = crate::run(&cfg).unwrap();
     assert_eq!(result.sessions_emitted, 2);
@@ -97,7 +97,7 @@ fn end_to_end_title_preserved_across_runs() {
     );
 
     let output = tmp.path().join("claude-report.yml");
-    let cfg = make_scan_config(&projects, &output);
+    let cfg = make_collect_config(&projects, &output);
     crate::run(&cfg).unwrap();
 
     let body = fs::read_to_string(&output).unwrap();

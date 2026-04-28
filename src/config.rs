@@ -1,4 +1,4 @@
-use crate::cli::{Cli, ScanArgs};
+use crate::cli::{Cli, CollectArgs};
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use eyre::{Result, bail};
 use std::path::PathBuf;
@@ -11,13 +11,13 @@ pub struct Config {
 
 #[derive(Debug, Clone)]
 pub enum ResolvedCommand {
-    Scan(ScanConfig),
+    Collect(CollectConfig),
     Render(RenderConfig),
     Merge(MergeConfig),
 }
 
 #[derive(Debug, Clone)]
-pub struct ScanConfig {
+pub struct CollectConfig {
     pub since: DateTime<Utc>,
     pub until: DateTime<Utc>,
     pub output: PathBuf,
@@ -50,7 +50,8 @@ impl TryFrom<Cli> for Config {
     fn try_from(cli: Cli) -> Result<Self> {
         let log_level = cli.log_level.clone();
         let command = match cli.command {
-            None => ResolvedCommand::Scan(scan_config_from_args(cli.scan)?),
+            None => ResolvedCommand::Collect(collect_config_from_args(CollectArgs::default())?),
+            Some(crate::cli::Command::Collect(args)) => ResolvedCommand::Collect(collect_config_from_args(args)?),
             Some(crate::cli::Command::Render(args)) => {
                 let pdf = args.pdf;
                 let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT));
@@ -71,7 +72,7 @@ impl TryFrom<Cli> for Config {
     }
 }
 
-fn scan_config_from_args(args: ScanArgs) -> Result<ScanConfig> {
+fn collect_config_from_args(args: CollectArgs) -> Result<CollectConfig> {
     let since = match args.since {
         Some(s) => parse_datetime(&s)?,
         None => first_of_month_local_midnight(),
@@ -88,7 +89,7 @@ fn scan_config_from_args(args: ScanArgs) -> Result<ScanConfig> {
         .projects_dir
         .or_else(default_projects_dir)
         .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects/ path"))?;
-    Ok(ScanConfig {
+    Ok(CollectConfig {
         since,
         until,
         output,

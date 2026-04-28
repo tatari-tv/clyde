@@ -204,7 +204,7 @@ CLI:
 cr [OPTIONS] [SUBCOMMAND]
 
   Subcommands:
-    (none)   Default: scan, fold, title, write report
+    collect  Walk ~/.claude/projects, fold, title, write YAML report (default)
     render   Render YAML report to markdown (default) or PDF (--pdf)
     merge    Combine per-host reports into one (NOT YET IMPLEMENTED in v1)
 
@@ -213,7 +213,7 @@ cr [OPTIONS] [SUBCOMMAND]
     -h, --help
     -V, --version
 
-  Default-command options:
+  collect options (also used when no subcommand is given):
         --since <DATETIME>      include sessions whose window touches this time or later
                                 [default: first day of current month, local midnight]
         --until <DATETIME>      include sessions whose window touches this time or earlier
@@ -231,6 +231,8 @@ cr [OPTIONS] [SUBCOMMAND]
         --pdf                   render PDF instead of markdown (requires pandoc on PATH)
         --template <PATH>       override the built-in markdown template
 ```
+
+Bare `cr` is sugar for `cr collect` with all defaults.
 
 Date-only forms (`2026-04-01`) are accepted for `--since`/`--until` and treated as local midnight. RFC 3339 forms are accepted as written.
 

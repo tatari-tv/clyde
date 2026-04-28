@@ -12,7 +12,7 @@ pub mod scan;
 pub mod session;
 pub mod title;
 
-use crate::config::ScanConfig;
+use crate::config::CollectConfig;
 use crate::parse::ParseResult;
 use eyre::{Result, bail};
 use rayon::prelude::*;
@@ -29,7 +29,7 @@ pub struct RunResult {
 
 pub fn run(config: &Config) -> Result<RunResult> {
     match &config.command {
-        ResolvedCommand::Scan(cfg) => run_scan(cfg),
+        ResolvedCommand::Collect(cfg) => run_collect(cfg),
         ResolvedCommand::Render(cfg) => render::run(cfg),
         ResolvedCommand::Merge(_) => {
             bail!("`cr merge` is not implemented in this release");
@@ -37,9 +37,9 @@ pub fn run(config: &Config) -> Result<RunResult> {
     }
 }
 
-fn run_scan(cfg: &ScanConfig) -> Result<RunResult> {
+fn run_collect(cfg: &CollectConfig) -> Result<RunResult> {
     let files = scan::find_session_files(&cfg.projects_dir)?;
-    log::info!("run_scan: discovered {} session files", files.len());
+    log::info!("run_collect: discovered {} session files", files.len());
 
     let parsed: HashMap<PathBuf, ParseResult> = files
         .par_iter()
@@ -82,7 +82,7 @@ fn title_untitled_sessions(summaries: &mut [session::SessionSummary]) {
     let api_key = match title::api_key_from_env() {
         Some(k) => k,
         None => {
-            log::info!("run_scan: ANTHROPIC_API_KEY not set; skipping titling");
+            log::info!("run_collect: ANTHROPIC_API_KEY not set; skipping titling");
             return;
         }
     };
@@ -97,7 +97,7 @@ fn title_untitled_sessions(summaries: &mut [session::SessionSummary]) {
         return;
     }
 
-    log::info!("run_scan: titling {} sessions via Haiku", to_title.len());
+    log::info!("run_collect: titling {} sessions via Haiku", to_title.len());
     let titles: Vec<(usize, Option<String>)> = to_title
         .par_iter()
         .map(|&i| {

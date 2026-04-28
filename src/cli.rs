@@ -6,22 +6,25 @@ use std::path::PathBuf;
     name = "cr",
     about = "Scan Claude Code session JSONL files and emit a per-host YAML report",
     version = env!("GIT_DESCRIBE"),
-    after_help = "Logs are written to: ~/.local/share/claude-report/logs/claude-report.log",
-    args_conflicts_with_subcommands = true,
+    after_help = "Default subcommand is `collect`. Logs: ~/.local/share/claude-report/logs/claude-report.log",
 )]
 pub struct Cli {
     #[arg(short = 'l', long, global = true, default_value = "info")]
     pub log_level: String,
 
-    #[command(flatten)]
-    pub scan: ScanArgs,
-
     #[command(subcommand)]
     pub command: Option<Command>,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    Collect(CollectArgs),
+    Render(RenderArgs),
+    Merge(MergeArgs),
+}
+
 #[derive(clap::Args, Debug, Default)]
-pub struct ScanArgs {
+pub struct CollectArgs {
     #[arg(long)]
     pub since: Option<String>,
 
@@ -39,12 +42,6 @@ pub struct ScanArgs {
 
     #[arg(long)]
     pub skip_title: bool,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum Command {
-    Render(RenderArgs),
-    Merge(MergeArgs),
 }
 
 #[derive(clap::Args, Debug)]
