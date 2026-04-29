@@ -1,4 +1,3 @@
-// Simple pattern for git describe -> version
 use std::process::Command;
 
 fn main() {
@@ -12,12 +11,17 @@ fn main() {
                 Err(std::io::Error::other("git describe failed"))
             }
         })
-        .unwrap_or_else(|_| {
-            // Fallback to Cargo.toml version when git describe fails
-            env!("CARGO_PKG_VERSION").to_string()
-        });
+        .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string());
 
-    println!("cargo:rustc-env=GIT_DESCRIBE={}", git_describe);
+    let pricing_hash = std::fs::read_to_string("data/pricing-page.sha256")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    println!("cargo:rustc-env=GIT_DESCRIBE={git_describe}");
+    println!("cargo:rustc-env=PRICING_PAGE_SHA256={pricing_hash}");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/");
+    println!("cargo:rerun-if-changed=data/pricing.json");
+    println!("cargo:rerun-if-changed=data/pricing-page.sha256");
 }

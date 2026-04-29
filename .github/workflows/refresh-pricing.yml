@@ -1,0 +1,47 @@
+name: Refresh Pricing
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    name: Refresh pricing from Anthropic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run bin/update
+        run: bin/update
+
+      - name: Detect changes
+        id: changes
+        run: |
+          if git diff --quiet -- data/pricing.json data/pricing-page.sha256; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open pull request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: refresh-pricing
+          delete-branch: true
+          commit-message: 'data: refresh pricing from Anthropic'
+          title: 'data: refresh pricing from Anthropic'
+          body: |
+            Automated daily refresh of `data/pricing.json` from
+            <https://platform.claude.com/docs/en/about-claude/pricing.md>.
+
+            Review the diff carefully before merging — the awk parser is
+            the only piece of fragility in this pipeline.
+          add-paths: |
+            data/pricing.json
+            data/pricing-page.sha256
