@@ -101,19 +101,33 @@ fn check_tool(tool: &str, version_arg: &str) -> ToolStatus {
 }
 
 fn extract_version(output: &str) -> String {
-    if let Some(line) = output.lines().next() {
-        for word in line.split_whitespace() {
-            let trimmed = word.trim_start_matches('v');
-            if trimmed.contains('.') && trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                return trimmed.to_string();
-            }
+    let Some(line) = output.lines().next() else {
+        return String::new();
+    };
+    for word in line.split_whitespace() {
+        if let Some(v) = looks_like_version(word.trim_start_matches('v')) {
+            return v.to_string();
         }
-        let trimmed = line.trim();
-        if trimmed.contains('.') && trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            return trimmed.to_string();
+        // Handle single-token formats like `jq-1.8.1` where the version
+        // sits after a dash with no whitespace before it.
+        if let Some((_, suffix)) = word.rsplit_once('-')
+            && let Some(v) = looks_like_version(suffix)
+        {
+            return v.to_string();
         }
     }
+    if let Some(v) = looks_like_version(line.trim()) {
+        return v.to_string();
+    }
     String::new()
+}
+
+fn looks_like_version(s: &str) -> Option<&str> {
+    if s.contains('.') && s.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        Some(s)
+    } else {
+        None
+    }
 }
 
 fn get_tool_validation_help() -> String {
@@ -147,3 +161,6 @@ fn get_tool_validation_help() -> String {
     help.push_str("\nLogs: ~/.local/share/claude-report/logs/claude-report.log");
     help
 }
+
+#[cfg(test)]
+mod tests;
