@@ -120,6 +120,7 @@ fn get_tool_validation_help() -> String {
         ("persona", "--version", "cr render: persona block in context"),
         ("pandoc", "--version", "cr render --pdf"),
         ("git", "--version", "cr collect: repo detection"),
+        ("jq", "--version", "cr collect: query JSON report output"),
     ];
 
     let entries: Vec<(ToolStatus, &str, &str)> = tools
@@ -142,6 +143,7 @@ fn get_tool_validation_help() -> String {
             ver_w = max_ver,
         ));
     }
-    help.push_str("\nDefault subcommand is `collect`. Logs: ~/.local/share/claude-report/logs/claude-report.log");
+    help.push_str("\nDefault subcommand is `collect`.");
+    help.push_str("\nLogs: ~/.local/share/claude-report/logs/claude-report.log");
     help
 }

@@ -49,6 +49,16 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::from(2));
     }
 
+    if let ResolvedCommand::Collect(_) = config.command
+        && which::which("jq").is_err()
+    {
+        eprintln!(
+            "cr collect: jq is required to query the JSON report output but was not found on PATH.\n\
+             Install: brew install jq  (macOS) | apt install jq  (Debian/Ubuntu) | dnf install jq  (Fedora)"
+        );
+        return Ok(ExitCode::from(2));
+    }
+
     let result = run(&config).context("cr failed")?;
     println!(
         "wrote {} sessions to {}",
