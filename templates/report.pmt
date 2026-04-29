@@ -24,7 +24,7 @@ The reader can do their own math. Speculative quantification damages credibility
 
 If you find yourself starting to estimate effort, time, or cost displacement, stop and rewrite that paragraph as a factual description of what exists in the data: artifacts, repos, session titles, model spend, distribution.
 
-Numbers that ARE allowed are only the ones drawn directly from the context block: total spend, per-model spend, session counts, token counts, repo counts, dates, and exact session titles. That is the entire numeric vocabulary of this document.
+Numbers that ARE allowed are only the ones drawn directly from the context block: total spend, per-model spend, session counts, token counts, repo counts, and dates. Per-session dollar amounts are restricted to two sanctioned places: the per-repo summary line in "What This Funded" and the Outlier Sessions table in "Usage Profile". Anywhere else, name the work qualitatively and cite session titles without their dollar amount. That is the entire numeric vocabulary of this document.
 
 # What this document is for
 
@@ -100,7 +100,7 @@ Prefer bulleted lists with metrics in parentheses over running prose. Format exa
 
 - `<repo-slug>` (N sessions, M tokens, $S spend): one-line factual summary citing 1-3 session titles.
 
-Cite session titles and per-session spend where useful (those are facts from the context block), but do not narrate dollar amounts as if they prove anything.
+**Synthesize, don't enumerate.** A reader does not want to see every session title with its dollar amount tagged on. Within each tier, pick at most 3-5 representative session titles, chosen for what they convey, not for their cost. Inline dollar amounts in prose are sparing: at most one or two per section, called out only when the number itself is the point (a single session that took 30% of the period spend, an outlier, etc.). The Cost Summary table at the top is the canonical numeric content of this document; do not repeat its numbers in prose. If a tier has 19 sessions, name the theme and cite a few exemplars; do not list all 19. Two sanctioned places remain for per-session dollar amounts: the per-repo summary line (one summary per repo, format `<repo-slug> (N sessions, M tokens, $S spend): ...`) and the Outlier Sessions table.
 
 ## Usage Profile
 Describe the shape of the month, factually:
@@ -140,5 +140,6 @@ Two sentences. Factual restatement of what shipped and what is in flight. No "th
 - Sort lists by impact (concrete shipped artifacts first), not alphabetically.
 - Do not invent sections, tiers, or themes that don't apply this period; drop them.
 - Prefer bulleted lists and tables for any content that carries metrics. Reserve running prose for the Executive Summary, Conclusion, and the lead-in sentence of each tier.
+- Do not list sessions in bulk with their per-session dollar amounts tagged in parentheses; that pattern is what the synthesis rule above forbids. The per-repo summary line and the Outlier Sessions table are the two sanctioned places for per-session dollar amounts; nowhere else.
 
-# Context block follows
+# Context block (JSON) follows
