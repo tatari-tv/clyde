@@ -52,9 +52,8 @@ impl TryFrom<Cli> for Config {
     fn try_from(cli: Cli) -> Result<Self> {
         let log_level = cli.log_level.clone();
         let command = match cli.command {
-            None => ResolvedCommand::Collect(collect_config_from_args(CollectArgs::default())?),
-            Some(crate::cli::Command::Collect(args)) => ResolvedCommand::Collect(collect_config_from_args(args)?),
-            Some(crate::cli::Command::Render(args)) => {
+            crate::cli::Command::Collect(args) => ResolvedCommand::Collect(collect_config_from_args(args)?),
+            crate::cli::Command::Render(args) => {
                 let pdf = args.pdf;
                 let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT));
                 ResolvedCommand::Render(RenderConfig {
@@ -67,7 +66,7 @@ impl TryFrom<Cli> for Config {
                     pdf_engine: args.pdf_engine,
                 })
             }
-            Some(crate::cli::Command::Merge(args)) => ResolvedCommand::Merge(MergeConfig { inputs: args.inputs }),
+            crate::cli::Command::Merge(args) => ResolvedCommand::Merge(MergeConfig { inputs: args.inputs }),
         };
         Ok(Config { command, log_level })
     }

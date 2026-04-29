@@ -11,13 +11,14 @@ static HELP_TEXT: LazyLock<String> = LazyLock::new(get_tool_validation_help);
     about = "Scan Claude Code session JSONL files and emit a per-host JSON report",
     version = env!("GIT_DESCRIBE"),
     after_help = HELP_TEXT.as_str(),
+    arg_required_else_help = true,
 )]
 pub struct Cli {
     #[arg(short = 'l', long, global = true, default_value = "info")]
     pub log_level: String,
 
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Command,
 }
 
 #[derive(Subcommand, Debug)]
@@ -27,7 +28,7 @@ pub enum Command {
     Merge(MergeArgs),
 }
 
-#[derive(clap::Args, Debug, Default)]
+#[derive(clap::Args, Debug)]
 pub struct CollectArgs {
     #[arg(long)]
     pub since: Option<String>,
@@ -143,7 +144,6 @@ fn get_tool_validation_help() -> String {
             ver_w = max_ver,
         ));
     }
-    help.push_str("\nDefault subcommand is `collect`.");
     help.push_str("\nLogs: ~/.local/share/claude-report/logs/claude-report.log");
     help
 }
