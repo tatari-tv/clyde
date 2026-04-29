@@ -90,6 +90,12 @@ fn collect_config_from_args(args: CollectArgs) -> Result<CollectConfig> {
         .projects_dir
         .or_else(default_projects_dir)
         .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects/ path"))?;
+    if !projects_dir.is_dir() {
+        bail!(
+            "projects directory does not exist: {}\nPass --projects-dir <path> to override.",
+            projects_dir.display()
+        );
+    }
     Ok(CollectConfig {
         since,
         until,
