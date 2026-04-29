@@ -22,6 +22,7 @@ target
 
 # Generated report outputs from `cr collect` and `cr render`
 *claude-report*.yml
+*claude-report*.json
 *claude-report*.md
 
 # Claude Code project settings and local state

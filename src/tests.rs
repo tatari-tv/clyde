@@ -35,7 +35,7 @@ fn make_collect_config(projects_dir: &Path, output: &Path) -> Config {
 }
 
 #[test]
-fn end_to_end_collect_writes_yaml() {
+fn end_to_end_collect_writes_json() {
     let tmp = TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
     let project_a = projects.join("-home-saidler-repos-foo-bar");
@@ -62,7 +62,7 @@ fn end_to_end_collect_writes_yaml() {
         ],
     );
 
-    let output = tmp.path().join("claude-report.yml");
+    let output = tmp.path().join("claude-report.json");
     let cfg = make_collect_config(&projects, &output);
 
     let result = crate::run(&cfg).unwrap();
@@ -70,7 +70,7 @@ fn end_to_end_collect_writes_yaml() {
     assert_eq!(result.output_path, output);
 
     let body = fs::read_to_string(&output).unwrap();
-    let report: Report = serde_yaml::from_str(&body).unwrap();
+    let report: Report = serde_json::from_str(&body).unwrap();
     assert_eq!(report.totals.sessions, 2);
     assert!(report.sessions.contains_key(SID_A));
     assert!(report.sessions.contains_key(SID_B));
@@ -99,20 +99,20 @@ fn end_to_end_title_preserved_across_runs() {
         ],
     );
 
-    let output = tmp.path().join("claude-report.yml");
+    let output = tmp.path().join("claude-report.json");
     let cfg = make_collect_config(&projects, &output);
     crate::run(&cfg).unwrap();
 
     let body = fs::read_to_string(&output).unwrap();
-    let mut report: Report = serde_yaml::from_str(&body).unwrap();
+    let mut report: Report = serde_json::from_str(&body).unwrap();
     let entry = report.sessions.get_mut(SID_A).unwrap();
     entry.title = Some("hand-written title".into());
-    let edited = serde_yaml::to_string(&report).unwrap();
+    let edited = serde_json::to_string_pretty(&report).unwrap();
     fs::write(&output, edited).unwrap();
 
     crate::run(&cfg).unwrap();
 
     let body = fs::read_to_string(&output).unwrap();
-    let report: Report = serde_yaml::from_str(&body).unwrap();
+    let report: Report = serde_json::from_str(&body).unwrap();
     assert_eq!(report.sessions[SID_A].title.as_deref(), Some("hand-written title"));
 }

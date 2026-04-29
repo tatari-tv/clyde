@@ -4,7 +4,9 @@ use crate::persona::{self, PersonaBlock};
 use crate::report::{Report, SessionEntry};
 use crate::{summarize, title};
 use eyre::{Context, Result, bail};
+use serde::Serialize;
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -22,10 +24,18 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
         cfg.prompt
     );
 
+    if let Some(ext) = cfg.input.extension().and_then(OsStr::to_str)
+        && (ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
+    {
+        bail!(
+            "input file ends in .yml/.yaml; cr v0.1.2+ emits and reads JSON. Re-run cr collect to regenerate as .json."
+        );
+    }
+
     let body =
         fs::read_to_string(&cfg.input).with_context(|| format!("failed to read report at {}", cfg.input.display()))?;
     let report: Report =
-        serde_yaml::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
+        serde_json::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
 
     let output = match cfg.output.as_deref() {
         Some(p) => p.to_path_buf(),
@@ -38,7 +48,7 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
     } else {
         let prompt = resolve_prompt(cfg.prompt.as_deref(), Path::new("."))?;
         let persona_block = persona::whoami();
-        let context = build_context_block(&body, cfg.include_tradeoffs, persona_block.as_ref());
+        let context = build_context_block(&report, cfg.include_tradeoffs, persona_block.as_ref())?;
         render_via_opus_text(&context, &prompt)?
     };
 
@@ -78,13 +88,13 @@ pub enum Template {
     Custom(String),
 }
 
-fn render_via_opus_text(yaml_body: &str, prompt: &str) -> Result<String> {
+fn render_via_opus_text(json_body: &str, prompt: &str) -> Result<String> {
     let api_key = title::api_key_from_env().ok_or_else(|| {
         eyre::eyre!(
             "ANTHROPIC_API_KEY is required for Opus rendering; pass --template <path> for the offline markdown path"
         )
     })?;
-    summarize::opus(prompt, yaml_body, &api_key)
+    summarize::opus(prompt, json_body, &api_key)
 }
 
 pub(crate) fn resolve_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> Result<String> {
@@ -100,35 +110,32 @@ pub(crate) fn resolve_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> R
     Ok(DEFAULT_PROMPT.to_string())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct ContextBlock<'a> {
+    persona: &'a PersonaBlock,
+    options: ContextOptions,
+    report: &'a Report,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct ContextOptions {
+    include_tradeoffs: bool,
+}
+
 pub(crate) fn build_context_block(
-    report_yaml: &str,
+    report: &Report,
     include_tradeoffs: bool,
     persona: Option<&PersonaBlock>,
-) -> String {
-    let mut out = String::new();
-    match persona {
-        Some(p) => match serde_yaml::to_string(p) {
-            Ok(yaml) if !yaml.trim().is_empty() => {
-                out.push_str("persona:\n");
-                for line in yaml.lines() {
-                    out.push_str("  ");
-                    out.push_str(line);
-                    out.push('\n');
-                }
-            }
-            _ => out.push_str("persona: {}\n"),
-        },
-        None => out.push_str("persona: {}\n"),
-    }
-    out.push_str("options:\n");
-    out.push_str(&format!("  include-tradeoffs: {}\n", include_tradeoffs));
-    out.push_str("report:\n");
-    for line in report_yaml.lines() {
-        out.push_str("  ");
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
+) -> Result<String> {
+    let default_persona = PersonaBlock::default();
+    let block = ContextBlock {
+        persona: persona.unwrap_or(&default_persona),
+        options: ContextOptions { include_tradeoffs },
+        report,
+    };
+    serde_json::to_string(&block).context("failed to serialize context block to JSON")
 }
 
 fn load_template(custom: Option<&Path>) -> Result<Template> {

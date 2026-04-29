@@ -8,7 +8,7 @@ static HELP_TEXT: LazyLock<String> = LazyLock::new(get_tool_validation_help);
 #[derive(Parser, Debug)]
 #[command(
     name = "cr",
-    about = "Scan Claude Code session JSONL files and emit a per-host YAML report",
+    about = "Scan Claude Code session JSONL files and emit a per-host JSON report",
     version = env!("GIT_DESCRIBE"),
     after_help = HELP_TEXT.as_str(),
 )]

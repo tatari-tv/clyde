@@ -30,7 +30,7 @@ pub struct CollectConfig {
 pub struct RenderConfig {
     pub input: PathBuf,
     /// Explicit output path. When `None`, render::run resolves a default of the form
-    /// `./<YYYY-MM>-claude-report.{md,pdf}` using the `since` field from the input YAML.
+    /// `./<YYYY-MM>-claude-report.{md,pdf}` using the `since` field from the input JSON.
     pub output: Option<PathBuf>,
     pub pdf: bool,
     pub template: Option<PathBuf>,
@@ -44,7 +44,7 @@ pub struct MergeConfig {
     pub inputs: Vec<PathBuf>,
 }
 
-const DEFAULT_OUTPUT: &str = "./claude-report.yml";
+const DEFAULT_OUTPUT: &str = "./claude-report.json";
 
 impl TryFrom<Cli> for Config {
     type Error = eyre::Report;

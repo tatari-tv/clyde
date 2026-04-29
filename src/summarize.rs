@@ -10,9 +10,9 @@ const MAX_OUTPUT_TOKENS: u32 = 16_000;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
 const SYSTEM_PROMPT: &str = "You are a precise technical writer producing markdown documents from structured data. Output exactly what is asked - no preamble, no commentary, no fenced code block wrapping the whole output.";
 
-pub fn opus(prompt_template: &str, yaml_body: &str, api_key: &str) -> Result<String> {
-    let user_msg = format!("{}\n\n```yaml\n{}\n```\n", prompt_template.trim_end(), yaml_body);
-    debug!("summarize::opus: prompt+yaml bytes={}", user_msg.len());
+pub fn opus(prompt_template: &str, json_body: &str, api_key: &str) -> Result<String> {
+    let user_msg = format!("{}\n\n```json\n{}\n```\n", prompt_template.trim_end(), json_body);
+    debug!("summarize::opus: prompt+json bytes={}", user_msg.len());
 
     let body = MessagesRequest {
         model: OPUS_MODEL.into(),

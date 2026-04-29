@@ -43,11 +43,11 @@ fn sample_summary(sid: &str, title: Option<&str>) -> SessionSummary {
 }
 
 #[test]
-fn write_yaml_round_trips() {
+fn write_json_round_trips() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("claude-report.yml");
+    let path = tmp.path().join("claude-report.json");
     let s = sample_summary("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", Some("do the thing"));
-    let count = write_yaml(
+    let count = write_json(
         &path,
         std::slice::from_ref(&s),
         ts("2026-04-01T00:00:00Z"),
@@ -59,7 +59,7 @@ fn write_yaml_round_trips() {
     assert_eq!(count, 1);
 
     let body = fs::read_to_string(&path).unwrap();
-    let report: Report = serde_yaml::from_str(&body).unwrap();
+    let report: Report = serde_json::from_str(&body).unwrap();
     assert_eq!(report.schema_version, SCHEMA_VERSION);
     assert_eq!(report.host, "desk");
     assert_eq!(report.totals.sessions, 1);
@@ -77,11 +77,11 @@ fn write_yaml_round_trips() {
 }
 
 #[test]
-fn yaml_uses_kebab_case_keys_and_emits_jsonl_paths() {
+fn json_uses_kebab_case_keys_and_emits_jsonl_paths() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("claude-report.yml");
+    let path = tmp.path().join("claude-report.json");
     let s = sample_summary("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", None);
-    write_yaml(
+    write_json(
         &path,
         std::slice::from_ref(&s),
         ts("2026-04-01T00:00:00Z"),
@@ -92,27 +92,27 @@ fn yaml_uses_kebab_case_keys_and_emits_jsonl_paths() {
     .unwrap();
 
     let body = fs::read_to_string(&path).unwrap();
-    assert!(body.contains("schema-version:"), "body:\n{}", body);
-    assert!(body.contains("totals:"), "body:\n{}", body);
-    assert!(body.contains("spend-usd:"), "body:\n{}", body);
-    assert!(body.contains("cache-5m-write:"));
-    assert!(body.contains("cache-1h-write:"));
-    assert!(body.contains("cache-read:"));
+    assert!(body.contains("\"schema-version\":"), "body:\n{}", body);
+    assert!(body.contains("\"totals\":"), "body:\n{}", body);
+    assert!(body.contains("\"spend-usd\":"), "body:\n{}", body);
+    assert!(body.contains("\"cache-5m-write\":"));
+    assert!(body.contains("\"cache-1h-write\":"));
+    assert!(body.contains("\"cache-read\":"));
     assert!(
-        body.contains("untracked-models:"),
+        body.contains("\"untracked-models\":"),
         "untracked-models must appear: {}",
         body
     );
-    assert!(body.contains("jsonl-paths:"), "jsonl-paths must appear: {}", body);
-    assert!(!body.contains("schema_version:"));
+    assert!(body.contains("\"jsonl-paths\":"), "jsonl-paths must appear: {}", body);
+    assert!(!body.contains("\"schema_version\":"));
 }
 
 #[test]
 fn title_appears_first_in_session_entry() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("claude-report.yml");
+    let path = tmp.path().join("claude-report.json");
     let s = sample_summary("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", Some("titled"));
-    write_yaml(
+    write_json(
         &path,
         std::slice::from_ref(&s),
         ts("2026-04-01T00:00:00Z"),
@@ -123,9 +123,9 @@ fn title_appears_first_in_session_entry() {
     .unwrap();
 
     let body = fs::read_to_string(&path).unwrap();
-    let session_idx = body.find("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042:").unwrap();
-    let title_idx = body[session_idx..].find("title:").unwrap();
-    let repo_idx = body[session_idx..].find("repo:").unwrap();
+    let session_idx = body.find("\"9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042\":").unwrap();
+    let title_idx = body[session_idx..].find("\"title\":").unwrap();
+    let repo_idx = body[session_idx..].find("\"repo\":").unwrap();
     assert!(
         title_idx < repo_idx,
         "title must appear before repo:\n{}",
@@ -136,10 +136,10 @@ fn title_appears_first_in_session_entry() {
 #[test]
 fn load_existing_titles_returns_titles_only() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("claude-report.yml");
+    let path = tmp.path().join("claude-report.json");
     let titled = sample_summary("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", Some("do the thing"));
     let untitled = sample_summary("8b21c34d-1e22-4f5a-b91c-1234567890ab", None);
-    write_yaml(
+    write_json(
         &path,
         &[titled, untitled],
         ts("2026-04-01T00:00:00Z"),
@@ -159,7 +159,7 @@ fn load_existing_titles_returns_titles_only() {
 
 #[test]
 fn load_existing_titles_missing_path_is_empty() {
-    let titles = load_existing_titles(Path::new("/nonexistent/cr-test/missing.yml"));
+    let titles = load_existing_titles(Path::new("/nonexistent/cr-test/missing.json"));
     assert!(titles.is_empty());
 }
 
@@ -249,13 +249,13 @@ fn totals_untracked_models_dedupes_across_sessions() {
 }
 
 #[test]
-fn yaml_with_null_spend_round_trips_to_none() {
+fn json_with_null_spend_round_trips_to_none() {
     let mut models = BTreeMap::new();
     models.insert("not-a-real-model".into(), small_totals(1_000_000));
     let s = summary_with_models("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", models);
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("claude-report.yml");
-    write_yaml(
+    let path = tmp.path().join("claude-report.json");
+    write_json(
         &path,
         std::slice::from_ref(&s),
         ts("2026-04-01T00:00:00Z"),
@@ -265,8 +265,8 @@ fn yaml_with_null_spend_round_trips_to_none() {
     )
     .unwrap();
     let body = fs::read_to_string(&path).unwrap();
-    assert!(body.contains("spend-usd: null"), "body:\n{}", body);
-    let parsed: Report = serde_yaml::from_str(&body).unwrap();
+    assert!(body.contains("\"spend-usd\": null"), "body:\n{}", body);
+    let parsed: Report = serde_json::from_str(&body).unwrap();
     let entry = parsed.sessions.values().next().unwrap();
     assert_eq!(entry.spend_usd, None);
     let mt = entry.models.get("not-a-real-model").unwrap();
@@ -276,10 +276,10 @@ fn yaml_with_null_spend_round_trips_to_none() {
 #[test]
 fn write_is_atomic_via_rename() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("claude-report.yml");
+    let path = tmp.path().join("claude-report.json");
     let s = sample_summary("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", None);
 
-    write_yaml(
+    write_json(
         &path,
         std::slice::from_ref(&s),
         ts("2026-04-01T00:00:00Z"),
@@ -288,7 +288,7 @@ fn write_is_atomic_via_rename() {
         &pricing(),
     )
     .unwrap();
-    write_yaml(
+    write_json(
         &path,
         std::slice::from_ref(&s),
         ts("2026-04-01T00:00:00Z"),

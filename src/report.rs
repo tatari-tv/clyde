@@ -97,7 +97,7 @@ pub fn load_existing_titles(path: &Path) -> HashMap<String, String> {
             return HashMap::new();
         }
     };
-    let report: Report = match serde_yaml::from_str(&body) {
+    let report: Report = match serde_json::from_str(&body) {
         Ok(r) => r,
         Err(e) => {
             log::warn!("report: failed to parse existing report at {}: {}", path.display(), e);
@@ -113,7 +113,7 @@ pub fn load_existing_titles(path: &Path) -> HashMap<String, String> {
     out
 }
 
-pub fn write_yaml(
+pub fn write_json(
     path: &Path,
     summaries: &[SessionSummary],
     since: DateTime<Utc>,
@@ -122,7 +122,7 @@ pub fn write_yaml(
     pricing: &Pricing,
 ) -> Result<usize> {
     debug!(
-        "report::write_yaml: path={} sessions={} since={} until={} host={}",
+        "report::write_json: path={} sessions={} since={} until={} host={}",
         path.display(),
         summaries.len(),
         since,
@@ -131,7 +131,7 @@ pub fn write_yaml(
     );
 
     let report = build_report(summaries, since, until, host, pricing);
-    let yaml = serde_yaml::to_string(&report).context("failed to serialize report to YAML")?;
+    let json = serde_json::to_string_pretty(&report).context("failed to serialize report to JSON")?;
 
     let dir = path
         .parent()
@@ -143,8 +143,8 @@ pub fn write_yaml(
         .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
     {
         use std::io::Write;
-        tmp.write_all(yaml.as_bytes())
-            .context("failed to write YAML to temp file")?;
+        tmp.write_all(json.as_bytes())
+            .context("failed to write JSON to temp file")?;
         tmp.flush().context("failed to flush temp file")?;
     }
     tmp.persist(path)

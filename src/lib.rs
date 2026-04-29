@@ -76,7 +76,7 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     }
 
     let host = gethostname::gethostname().to_string_lossy().into_owned();
-    let count = report::write_yaml(&cfg.output, &summaries, cfg.since, cfg.until, &host, pricing)?;
+    let count = report::write_json(&cfg.output, &summaries, cfg.since, cfg.until, &host, pricing)?;
 
     Ok(RunResult {
         sessions_emitted: count,

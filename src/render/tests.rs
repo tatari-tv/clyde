@@ -157,36 +157,36 @@ fn custom_template_substitutes_placeholders() {
 
 #[test]
 fn build_context_block_includes_options_and_report() {
-    let yaml = "schema-version: 1\ntotals:\n  sessions: 0\n";
-    let block = build_context_block(yaml, true, None);
-    assert!(block.contains("persona: {}"), "block:\n{}", block);
-    assert!(block.contains("options:"), "block:\n{}", block);
-    assert!(block.contains("include-tradeoffs: true"), "block:\n{}", block);
-    assert!(block.contains("report:"), "block:\n{}", block);
-    assert!(block.contains("  schema-version: 1"), "block:\n{}", block);
+    let report = sample_report();
+    let block = build_context_block(&report, true, None).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
+    assert_eq!(parsed.get("persona"), Some(&serde_json::json!({})));
+    let opts = parsed.get("options").expect("options key");
+    assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(true));
+    let report_obj = parsed.get("report").expect("report key");
+    assert_eq!(report_obj.get("schema-version").and_then(|v| v.as_u64()), Some(1));
 }
 
 #[test]
 fn build_context_block_omits_tradeoffs_when_false() {
-    let yaml = "schema-version: 1\n";
-    let block = build_context_block(yaml, false, None);
-    assert!(block.contains("include-tradeoffs: false"));
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&block).expect("context block must be valid YAML");
+    let report = sample_report();
+    let block = build_context_block(&report, false, None).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     let opts = parsed.get("options").expect("options key");
     assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(false));
 }
 
 #[test]
 fn build_context_block_embeds_persona_when_present() {
-    let yaml = "schema-version: 1\n";
+    let report = sample_report();
     let persona = crate::persona::PersonaBlock {
         name: Some("Scott Idler".into()),
         title: Some("Director, Engineering".into()),
         email: Some("scott.idler@tatari.tv".into()),
         ..Default::default()
     };
-    let block = build_context_block(yaml, false, Some(&persona));
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&block).expect("must be valid YAML");
+    let block = build_context_block(&report, false, Some(&persona)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let p = parsed.get("persona").expect("persona key");
     assert_eq!(p.get("name").and_then(|v| v.as_str()), Some("Scott Idler"));
     assert_eq!(p.get("email").and_then(|v| v.as_str()), Some("scott.idler@tatari.tv"));
@@ -194,19 +194,30 @@ fn build_context_block_embeds_persona_when_present() {
 }
 
 #[test]
+fn build_context_block_uses_compact_json_not_pretty() {
+    let report = sample_report();
+    let block = build_context_block(&report, false, None).unwrap();
+    assert!(
+        !block.contains('\n'),
+        "context block must be compact (no newlines) to minimize Opus token cost: {}",
+        block
+    );
+}
+
+#[test]
 fn render_run_writes_markdown_file_with_custom_template() {
     let tmp = TempDir::new().unwrap();
-    let yml = tmp.path().join("claude-report.yml");
+    let json_path = tmp.path().join("claude-report.json");
     let md = tmp.path().join("claude-report.md");
     let template_path = tmp.path().join("template.md");
     let report = sample_report();
-    fs::write(&yml, serde_yaml::to_string(&report).unwrap()).unwrap();
+    fs::write(&json_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     fs::write(&template_path, "host={{host}} sessions={{session-count}}").unwrap();
 
     let cfg = Config {
         log_level: "info".into(),
         command: ResolvedCommand::Render(RenderConfig {
-            input: yml.clone(),
+            input: json_path.clone(),
             output: Some(md.clone()),
             pdf: false,
             template: Some(template_path),
@@ -219,6 +230,33 @@ fn render_run_writes_markdown_file_with_custom_template() {
     assert_eq!(result.sessions_emitted, 2);
     let body = fs::read_to_string(&md).unwrap();
     assert_eq!(body, "host=desk sessions=2");
+}
+
+#[test]
+fn render_run_rejects_yaml_input_extension() {
+    let tmp = TempDir::new().unwrap();
+    let yml = tmp.path().join("claude-report.yml");
+    fs::write(&yml, "schema-version: 1\n").unwrap();
+
+    let cfg = Config {
+        log_level: "info".into(),
+        command: ResolvedCommand::Render(RenderConfig {
+            input: yml,
+            output: None,
+            pdf: false,
+            template: None,
+            prompt: None,
+            include_tradeoffs: false,
+            pdf_engine: "wkhtmltopdf".into(),
+        }),
+    };
+    let err = crate::run(&cfg).unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains(".yml/.yaml") && msg.contains("JSON"),
+        "yaml-extension guard message must mention .yml/.yaml and JSON: {}",
+        msg
+    );
 }
 
 #[test]

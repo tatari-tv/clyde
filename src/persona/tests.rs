@@ -62,10 +62,10 @@ fn map_raw_handles_missing_fields() {
     assert_eq!(block.manager, None);
     assert_eq!(block.email.as_deref(), Some("scott.idler@tatari.tv"));
 
-    let yaml = serde_yaml::to_string(&block).unwrap();
-    assert!(!yaml.contains("name:"));
-    assert!(!yaml.contains("manager:"));
-    assert!(yaml.contains("email: scott.idler@tatari.tv"));
+    let json = serde_json::to_string(&block).unwrap();
+    assert!(!json.contains("\"name\":"));
+    assert!(!json.contains("\"manager\":"));
+    assert!(json.contains("\"email\":\"scott.idler@tatari.tv\""));
 }
 
 #[test]
