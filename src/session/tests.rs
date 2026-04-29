@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::parse::{AssistantEntry, ParseResult, TokenUsage};
 use crate::scan::{SessionFile, SessionFileKind};
+use claude_pricing::{AssistantEntry, ParseResult, TokenUsage};
 
 const SID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const SID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";

@@ -4,9 +4,7 @@
 
 pub mod cli;
 pub mod config;
-pub mod parse;
 pub mod persona;
-pub mod pricing;
 pub mod render;
 pub mod repo;
 pub mod report;
@@ -16,8 +14,8 @@ pub mod summarize;
 pub mod title;
 
 use crate::config::CollectConfig;
-use crate::parse::ParseResult;
-use eyre::{Result, bail};
+use claude_pricing::{ParseResult, Pricing, parse_jsonl_file};
+use eyre::{Context, Result, bail};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,8 +29,13 @@ pub struct RunResult {
 }
 
 pub fn run(config: &Config) -> Result<RunResult> {
+    let pricing = Pricing::auto("cr").context("failed to load pricing")?;
+    run_with_pricing(config, &pricing)
+}
+
+pub(crate) fn run_with_pricing(config: &Config, pricing: &Pricing) -> Result<RunResult> {
     match &config.command {
-        ResolvedCommand::Collect(cfg) => run_collect(cfg),
+        ResolvedCommand::Collect(cfg) => run_collect(cfg, pricing),
         ResolvedCommand::Render(cfg) => render::run(cfg),
         ResolvedCommand::Merge(_) => {
             bail!("`cr merge` is not implemented in this release");
@@ -40,13 +43,13 @@ pub fn run(config: &Config) -> Result<RunResult> {
     }
 }
 
-fn run_collect(cfg: &CollectConfig) -> Result<RunResult> {
+fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     let files = scan::find_session_files(&cfg.projects_dir)?;
     log::info!("run_collect: discovered {} session files", files.len());
 
     let parsed: HashMap<PathBuf, ParseResult> = files
         .par_iter()
-        .filter_map(|f| match parse::parse_jsonl_file(&f.path) {
+        .filter_map(|f| match parse_jsonl_file(&f.path) {
             Ok(r) => Some((f.path.clone(), r)),
             Err(e) => {
                 log::warn!("parse failed for {}: {}", f.path.display(), e);
@@ -73,7 +76,7 @@ fn run_collect(cfg: &CollectConfig) -> Result<RunResult> {
     }
 
     let host = gethostname::gethostname().to_string_lossy().into_owned();
-    let count = report::write_yaml(&cfg.output, &summaries, cfg.since, cfg.until, &host)?;
+    let count = report::write_yaml(&cfg.output, &summaries, cfg.since, cfg.until, &host, pricing)?;
 
     Ok(RunResult {
         sessions_emitted: count,

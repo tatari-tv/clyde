@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::session::{SessionSummary, TokenTotals};
+use claude_pricing::TokenUsage;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -10,9 +11,13 @@ fn ts(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
 }
 
+fn pricing() -> Pricing {
+    Pricing::embedded()
+}
+
 fn opus_totals() -> TokenTotals {
     let mut t = TokenTotals::default();
-    t.add(&crate::parse::TokenUsage {
+    t.add(&TokenUsage {
         input_tokens: 100,
         output_tokens: 200,
         cache_5m_write_tokens: 50,
@@ -48,6 +53,7 @@ fn write_yaml_round_trips() {
         ts("2026-04-01T00:00:00Z"),
         ts("2026-04-30T00:00:00Z"),
         "desk",
+        &pricing(),
     )
     .unwrap();
     assert_eq!(count, 1);
@@ -81,6 +87,7 @@ fn yaml_uses_kebab_case_keys_and_emits_jsonl_paths() {
         ts("2026-04-01T00:00:00Z"),
         ts("2026-04-30T00:00:00Z"),
         "desk",
+        &pricing(),
     )
     .unwrap();
 
@@ -111,6 +118,7 @@ fn title_appears_first_in_session_entry() {
         ts("2026-04-01T00:00:00Z"),
         ts("2026-04-30T00:00:00Z"),
         "desk",
+        &pricing(),
     )
     .unwrap();
 
@@ -137,6 +145,7 @@ fn load_existing_titles_returns_titles_only() {
         ts("2026-04-01T00:00:00Z"),
         ts("2026-04-30T00:00:00Z"),
         "desk",
+        &pricing(),
     )
     .unwrap();
 
@@ -156,7 +165,7 @@ fn load_existing_titles_missing_path_is_empty() {
 
 fn small_totals(input: u64) -> TokenTotals {
     let mut t = TokenTotals::default();
-    t.add(&crate::parse::TokenUsage {
+    t.add(&TokenUsage {
         input_tokens: input,
         output_tokens: 0,
         cache_5m_write_tokens: 0,
@@ -184,7 +193,7 @@ fn all_priced_session_has_some_spend_and_no_untracked() {
     let mut models = BTreeMap::new();
     models.insert("claude-opus-4-7".into(), opus_totals());
     let s = summary_with_models("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", models);
-    let entry = to_entry(&s);
+    let entry = to_entry(&s, &pricing());
     assert!(entry.spend_usd.is_some());
     assert!(entry.spend_usd.unwrap() > 0.0);
     assert!(entry.untracked_models.is_empty());
@@ -195,7 +204,7 @@ fn all_untracked_session_has_none_spend_and_lists_models() {
     let mut models = BTreeMap::new();
     models.insert("not-a-real-model".into(), small_totals(1_000_000));
     let s = summary_with_models("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", models);
-    let entry = to_entry(&s);
+    let entry = to_entry(&s, &pricing());
     assert_eq!(entry.spend_usd, None);
     assert_eq!(entry.untracked_models, vec!["not-a-real-model".to_string()]);
 }
@@ -206,7 +215,7 @@ fn mixed_session_has_partial_spend_and_flags_untracked() {
     models.insert("claude-opus-4-7".into(), opus_totals());
     models.insert("not-a-real-model".into(), small_totals(1_000_000));
     let s = summary_with_models("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", models);
-    let entry = to_entry(&s);
+    let entry = to_entry(&s, &pricing());
     assert!(entry.spend_usd.is_some(), "mixed session must report partial spend");
     assert!(entry.spend_usd.unwrap() > 0.0);
     assert_eq!(
@@ -231,6 +240,7 @@ fn totals_untracked_models_dedupes_across_sessions() {
         ts("2026-04-01T00:00:00Z"),
         ts("2026-04-30T00:00:00Z"),
         "desk",
+        &pricing(),
     );
     assert_eq!(
         report.totals.untracked_models,
@@ -251,6 +261,7 @@ fn yaml_with_null_spend_round_trips_to_none() {
         ts("2026-04-01T00:00:00Z"),
         ts("2026-04-30T00:00:00Z"),
         "desk",
+        &pricing(),
     )
     .unwrap();
     let body = fs::read_to_string(&path).unwrap();
@@ -274,6 +285,7 @@ fn write_is_atomic_via_rename() {
         ts("2026-04-01T00:00:00Z"),
         ts("2026-04-30T00:00:00Z"),
         "desk",
+        &pricing(),
     )
     .unwrap();
     write_yaml(
@@ -282,6 +294,7 @@ fn write_is_atomic_via_rename() {
         ts("2026-04-01T00:00:00Z"),
         ts("2026-04-30T00:00:00Z"),
         "desk",
+        &pricing(),
     )
     .unwrap();
 

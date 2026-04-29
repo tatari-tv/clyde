@@ -1,8 +1,7 @@
-use crate::parse::{AssistantEntry, ParseResult, TokenUsage};
-use crate::pricing;
 use crate::repo::Resolver;
 use crate::scan::{SessionFile, SessionFileKind};
 use chrono::{DateTime, Utc};
+use claude_pricing::{AssistantEntry, ParseResult, TokenUsage, normalize_model_id};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
@@ -61,13 +60,6 @@ pub struct SessionSummary {
 impl SessionSummary {
     pub fn total_tokens(&self) -> u64 {
         self.models.values().map(|t| t.total).sum()
-    }
-
-    pub fn total_spend_usd(&self) -> f64 {
-        self.models
-            .iter()
-            .filter_map(|(model, totals)| pricing::calculate_usd(model, &totals.as_usage()).ok())
-            .sum()
     }
 }
 
@@ -177,7 +169,7 @@ impl GroupBuilder {
         let mut begin = kept[0].timestamp;
         let mut end = kept[0].timestamp;
         for e in &kept {
-            let key = pricing::normalize_model_id(&e.model).to_string();
+            let key = normalize_model_id(&e.model).to_string();
             models.entry(key).or_default().add(&e.usage);
             if e.timestamp < begin {
                 begin = e.timestamp;

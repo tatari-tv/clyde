@@ -183,11 +183,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "claude-pricing"
+version = "0.1.0"
+source = "git+https://github.com/tatari-tv/claude-pricing?tag=v0.1.0#6c58aaa3ef9488e6e3fbc0f5c0dab540652bb295"
+dependencies = [
+ "chrono",
+ "dirs",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "ureq",
+]
+
+[[package]]
 name = "claude-report"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
+ "claude-pricing",
  "colored",
  "dirs",
  "env_logger",

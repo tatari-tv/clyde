@@ -1,6 +1,6 @@
-use crate::pricing;
 use crate::session::{SessionSummary, TokenTotals};
 use chrono::{DateTime, Utc};
+use claude_pricing::Pricing;
 use eyre::{Context, Result};
 use log::debug;
 use serde::{Deserialize, Serialize};
@@ -64,8 +64,8 @@ pub struct ModelTokens {
 }
 
 impl ModelTokens {
-    pub fn from_totals(model: &str, t: &TokenTotals) -> Self {
-        let spend_usd = match pricing::calculate_usd(model, &t.as_usage()) {
+    pub fn from_totals(model: &str, t: &TokenTotals, pricing: &Pricing) -> Self {
+        let spend_usd = match pricing.calculate_usd(model, &t.as_usage()) {
             Ok(f) => Some(round_cents(f)),
             Err(_) => None,
         };
@@ -119,6 +119,7 @@ pub fn write_yaml(
     since: DateTime<Utc>,
     until: DateTime<Utc>,
     host: &str,
+    pricing: &Pricing,
 ) -> Result<usize> {
     debug!(
         "report::write_yaml: path={} sessions={} since={} until={} host={}",
@@ -129,7 +130,7 @@ pub fn write_yaml(
         host
     );
 
-    let report = build_report(summaries, since, until, host);
+    let report = build_report(summaries, since, until, host, pricing);
     let yaml = serde_yaml::to_string(&report).context("failed to serialize report to YAML")?;
 
     let dir = path
@@ -152,13 +153,19 @@ pub fn write_yaml(
     Ok(report.totals.sessions)
 }
 
-fn build_report(summaries: &[SessionSummary], since: DateTime<Utc>, until: DateTime<Utc>, host: &str) -> Report {
+fn build_report(
+    summaries: &[SessionSummary],
+    since: DateTime<Utc>,
+    until: DateTime<Utc>,
+    host: &str,
+    pricing: &Pricing,
+) -> Report {
     let mut sessions = BTreeMap::new();
     let mut totals_models: BTreeMap<String, TokenTotals> = BTreeMap::new();
     let mut untracked: BTreeSet<String> = BTreeSet::new();
 
     for s in summaries {
-        let entry = to_entry(s);
+        let entry = to_entry(s, pricing);
         for name in &entry.untracked_models {
             untracked.insert(name.clone());
         }
@@ -170,7 +177,7 @@ fn build_report(summaries: &[SessionSummary], since: DateTime<Utc>, until: DateT
 
     let totals_model_entries: BTreeMap<String, ModelTokens> = totals_models
         .iter()
-        .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t)))
+        .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t, pricing)))
         .collect();
     let totals_spend: f64 = totals_model_entries.values().filter_map(|m| m.spend_usd).sum();
 
@@ -192,11 +199,11 @@ fn build_report(summaries: &[SessionSummary], since: DateTime<Utc>, until: DateT
     }
 }
 
-fn to_entry(s: &SessionSummary) -> SessionEntry {
+fn to_entry(s: &SessionSummary, pricing: &Pricing) -> SessionEntry {
     let models: BTreeMap<String, ModelTokens> = s
         .models
         .iter()
-        .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t)))
+        .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t, pricing)))
         .collect();
     let mut priced_sum = 0.0_f64;
     let mut priced_count = 0usize;
