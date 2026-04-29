@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   refresh:
@@ -45,3 +46,22 @@ jobs:
           add-paths: |
             data/pricing.json
             data/pricing-page.sha256
+
+      - name: Open issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh issue create \
+            --title "Refresh Pricing workflow failed (run ${GITHUB_RUN_ID})" \
+            --body "The daily pricing refresh workflow failed. Run: ${RUN_URL}
+
+          Likely causes (in rough order of probability):
+          - Anthropic restructured pricing.md and the awk + Python parsers no longer agree on the parse, or one of the regression checks tripped.
+          - GitHub Actions PR-creation permission is disabled at the org or repo level.
+          - Network issue fetching pricing.md.
+
+          Check the run log for the specific failure step." \
+            --label "automation" \
+            || echo "could not create issue (check 'issues: write' permission)"

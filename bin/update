@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
-# bin/update - Fetch Anthropic's pricing page and regenerate data/pricing.json
 #
-# This script fetches the raw markdown pricing page from Anthropic,
-# parses the "Model pricing" and "Long context pricing" tables using awk,
-# and generates data/pricing.json in the format expected by the Rust structs.
+# bin/update - orchestrator for the dual-parser pricing refresh.
+#
+# Pipeline:
+#   1. Fetch Anthropic's pricing.md (one HTTP request total).
+#   2. Run two independent parsers on the same input:
+#        bin/update.sh  - bash + awk
+#        bin/update.py  - stdlib Python 3
+#   3. Refuse to ship if their outputs disagree (semantic equality:
+#      5 == 5.0).
+#   4. Run three regression checks against the previous pricing.json:
+#        a. No model that existed previously is now missing.
+#        b. No per-model rate moves more than 5x in either direction.
+#        c. Every rate is within absolute bounds [$0.001, $1000]/MTok.
+#   5. Wrap the agreed pricing map with the v1 schema envelope and
+#      write data/pricing.json plus data/pricing-page.sha256.
 #
 # Usage:
-#   bin/update          # fetch, parse, generate, show diff
-#   bin/update --dry    # fetch and parse but don't write files
+#   bin/update          - fetch, parse, validate, write
+#   bin/update --dry    - fetch and validate but do not write any files
+#
+# This script is the only entrypoint the GitHub Actions cron calls;
+# everything else (the awk parser, the Python parser, the regression
+# checks) is invoked from here.
 
 set -euo pipefail
 
@@ -17,270 +32,236 @@ PRICING_FILE="$REPO_ROOT/data/pricing.json"
 HASH_FILE="$REPO_ROOT/data/pricing-page.sha256"
 SCHEMA_VERSION=1
 MIN_LIBRARY_VERSION="0.1.0"
-DATA_VERSION="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 DRY_RUN=false
 if [[ "${1:-}" == "--dry" ]]; then
     DRY_RUN=true
 fi
 
-echo "Fetching pricing page from Anthropic..."
-PAGE_CONTENT=$(curl -sS --max-time 30 "$PRICING_URL")
+DATA_VERSION="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-if [[ -z "$PAGE_CONTENT" ]]; then
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+PAGE_FILE="$WORKDIR/pricing.md"
+AWK_OUT="$WORKDIR/awk.json"
+PY_OUT="$WORKDIR/py.json"
+PRICING_MAP="$WORKDIR/pricing-map.json"
+NEW_PRICING_FILE="$WORKDIR/pricing.json"
+
+# -- Fetch ---------------------------------------------------------------
+echo "Fetching pricing page from Anthropic..."
+curl -sS --max-time 30 "$PRICING_URL" > "$PAGE_FILE"
+
+if [[ ! -s "$PAGE_FILE" ]]; then
     echo "Error: empty response from $PRICING_URL" >&2
     exit 1
 fi
 
-echo "Parsing model pricing table..."
+# -- Run both parsers on the same input ---------------------------------
+echo "Running bin/update.sh (awk parser)..."
+"$REPO_ROOT/bin/update.sh" < "$PAGE_FILE" > "$AWK_OUT"
 
-# Parse the main "Model pricing" table.
-# Table format: | Model | Base Input Tokens | 5m Cache Writes | 1h Cache Writes | Cache Hits & Refreshes | Output Tokens |
-# Column mapping: fields[3]=input, fields[4]=cache_5m, fields[5]=cache_1h, fields[6]=cache_read, fields[7]=output
-#
-# We also parse the "Long context pricing" table for >200K rates.
-# Table format: | Model | <= 200K input tokens | > 200K input tokens |
-# Data rows are multi-line per model: Input row has model name, Output row has empty model field.
+echo "Running bin/update.py (Python parser)..."
+"$REPO_ROOT/bin/update.py" < "$PAGE_FILE" > "$PY_OUT"
 
-# Use awk to extract both tables and produce a structured intermediate format.
-# Output: MODEL model_id input output cache_5m cache_1h cache_read
-#         LONG model_id long_input long_output
-PARSED=$(echo "$PAGE_CONTENT" | awk '
-BEGIN {
-    in_model_table = 0
-    in_long_table = 0
-    long_models_count = 0
-}
+# -- Cross-check ---------------------------------------------------------
+# Structural equality: 5 == 5.0, so the awk parser emitting raw integer
+# literals and the Python parser emitting float literals are treated as
+# equivalent. The diff we print on disagreement names exactly which
+# (model, field) pairs differ, so failure mode is debuggable.
+echo "Cross-checking parser outputs..."
+python3 - "$AWK_OUT" "$PY_OUT" <<'PYEOF'
+import json
+import sys
 
-# Detect start of model pricing table (header row containing "Input" and "Cache")
-/^\| Model/ && /Input/ && /[Cc]ache/ {
-    in_model_table = 1
-    in_long_table = 0
-    next
-}
+awk_out = json.load(open(sys.argv[1]))
+py_out = json.load(open(sys.argv[2]))
 
-# Detect start of long context pricing table (header containing "200K")
-/^\| Model/ && /200K/ {
-    in_long_table = 1
-    in_model_table = 0
-    next
-}
+if awk_out == py_out:
+    sys.exit(0)
 
-# Skip separator rows (|---|---|...)
-/^\|[-: |]+\|$/ { next }
+errors = []
+all_ids = sorted(set(awk_out) | set(py_out))
+for mid in all_ids:
+    if mid not in awk_out:
+        errors.append(f"  missing in awk:    {mid}")
+        continue
+    if mid not in py_out:
+        errors.append(f"  missing in python: {mid}")
+        continue
+    a, p = awk_out[mid], py_out[mid]
+    if a == p:
+        continue
+    fields = sorted(set(a) | set(p))
+    for field in fields:
+        av = a.get(field, "<missing>")
+        pv = p.get(field, "<missing>")
+        if av != pv:
+            errors.append(f"  {mid}.{field}: awk={av} python={pv}")
 
-# End of table on blank line or non-table line
-/^[^|]/ {
-    in_model_table = 0
-    in_long_table = 0
-}
+print("Parsers disagree. Refusing to ship:", file=sys.stderr)
+for e in errors:
+    print(e, file=sys.stderr)
+sys.exit(1)
+PYEOF
 
-# Extract first number from a table cell (handles "$5 / MTok", "Input: $10 / MTok", etc.)
-function extract_number(s,    tmp, parts, n) {
-    tmp = s
-    gsub(/[^0-9.]/, " ", tmp)
-    gsub(/^ +| +$/, "", tmp)
-    n = split(tmp, parts, / +/)
-    if (n > 0 && parts[1] != "") return parts[1] + 0
-    return 0
-}
+# Both parsers agreed. Use the awk output as the canonical pricing map
+# because its number formatting (5 vs 5.0) matches the historical shape
+# of data/pricing.json byte-for-byte, minimising diff noise.
+cp "$AWK_OUT" "$PRICING_MAP"
 
-# Normalize model name to ID: "Claude Opus 4.6" -> "claude-opus-4-6"
-function to_model_id(name,    id) {
-    id = tolower(name)
-    gsub(/^ +| +$/, "", id)
-    gsub(/ /, "-", id)
-    gsub(/\./, "-", id)
-    return id
-}
+# -- Regression checks ---------------------------------------------------
+echo "Running regression checks..."
 
-# Clean raw model name: strip annotations, markdown, bold/italic, whitespace
-function clean_model_name(raw,    name) {
-    name = raw
-    # Strip parenthesized annotations like ([deprecated](url))
-    sub(/ *\(.*/, "", name)
-    gsub(/\*+/, "", name)
-    gsub(/^ +| +$/, "", name)
-    return name
-}
+# Check #3 (absolute bounds) runs unconditionally; it does not need a
+# previous baseline.
+python3 - "$PRICING_MAP" <<'PYEOF'
+import json
+import sys
 
-# Process model pricing table rows
-in_model_table && /^\| *Claude/ {
-    n = split($0, fields, "|")
+LO = 0.001
+HI = 1000.0
 
-    model_raw = clean_model_name(fields[2])
-    model_id = to_model_id(model_raw)
+data = json.load(open(sys.argv[1]))
+errors = []
+for model, fields in data.items():
+    for field, value in fields.items():
+        if value < LO or value > HI:
+            errors.append(f"  {model}.{field} = {value} (outside [{LO}, {HI}])")
 
-    # Actual column order: Model | Base Input | 5m Cache Writes | 1h Cache Writes | Cache Hits & Refreshes | Output
-    #                              fields[3]    fields[4]         fields[5]         fields[6]                fields[7]
-    input_val = extract_number(fields[3])
-    cache_5m = extract_number(fields[4])
-    cache_1h = extract_number(fields[5])
-    cache_read = extract_number(fields[6])
-    output_val = extract_number(fields[7])
+if errors:
+    print(
+        "Regression check #3 failed: rate(s) outside absolute bounds [$0.001, $1000]/MTok",
+        file=sys.stderr,
+    )
+    for e in errors:
+        print(e, file=sys.stderr)
+    sys.exit(1)
+PYEOF
 
-    printf "MODEL %s %s %s %s %s %s\n", model_id, input_val, output_val, cache_5m, cache_1h, cache_read
-}
+# Checks #1 (no models lost) and #2 (no >5x rate movement) compare
+# against the existing data/pricing.json. On the very first run there
+# is nothing to compare against, so we skip them.
+if [[ -f "$PRICING_FILE" ]]; then
+    python3 - "$PRICING_MAP" "$PRICING_FILE" <<'PYEOF'
+import json
+import sys
 
-# Process long context pricing table - Input rows (contain "Claude" in model field)
-in_long_table && /^\|/ && /Claude/ {
-    n = split($0, fields, "|")
-    model_raw = clean_model_name(fields[2])
+MAX_RATIO = 5.0
 
-    # Reset model list for this group
-    long_models_count = 0
+new = json.load(open(sys.argv[1]))
+old_envelope = json.load(open(sys.argv[2]))
+# Accept both the v1 schema (with the "pricing" key) and the legacy
+# shape ({"pricing": {...}} but no schema_version) - serde and this
+# script both treat them identically.
+old = old_envelope.get("pricing", old_envelope)
 
-    # Handle combined model rows like "Claude Sonnet 4.6 / 4.5 / 4"
-    if (model_raw ~ / \/ /) {
-        num_parts = split(model_raw, parts, / \/ /)
-        # First part is full name: "Claude Sonnet 4.6"
-        base_name = parts[1]
-        # Extract prefix by removing last word: "Claude Sonnet 4.6" -> "Claude Sonnet"
-        prefix = base_name
-        sub(/ [^ ]+$/, "", prefix)
+# Check #1: no model that existed previously is now missing. New models
+# added by Anthropic are fine; quietly losing a model is a strong
+# signal that the parser dropped a row.
+missing = sorted(set(old.keys()) - set(new.keys()))
+if missing:
+    print(
+        "Regression check #1 failed: models present previously are missing now:",
+        file=sys.stderr,
+    )
+    for m in missing:
+        print(f"  {m}", file=sys.stderr)
+    sys.exit(1)
 
-        long_models_count = num_parts
-        long_models[1] = to_model_id(base_name)
-        for (j = 2; j <= num_parts; j++) {
-            variant = prefix " " parts[j]
-            gsub(/^ +| +$/, "", variant)
-            long_models[j] = to_model_id(variant)
-        }
-    } else {
-        long_models_count = 1
-        long_models[1] = to_model_id(model_raw)
-    }
+# Check #2: no per-model rate moves by more than MAX_RATIO. This is the
+# decimal-shift / unit-confusion guardrail. Real Anthropic price moves
+# rarely exceed 2-3x in a single update; 5x is conservative enough to
+# never trip on a genuine repricing while catching 100x parse errors.
+shifts = []
+for model in old.keys() & new.keys():
+    for field in old[model].keys() & new[model].keys():
+        old_v = old[model][field]
+        new_v = new[model][field]
+        if old_v <= 0 or new_v <= 0:
+            continue
+        ratio = max(old_v / new_v, new_v / old_v)
+        if ratio > MAX_RATIO:
+            shifts.append(
+                f"  {model}.{field}: {old_v} -> {new_v} ({ratio:.2f}x)"
+            )
 
-    # Extract >200K input price from the "> 200K" column (fields[4])
-    long_input_val = extract_number(fields[4])
-    for (j = 1; j <= long_models_count; j++) {
-        long_input[long_models[j]] = long_input_val
-    }
-    next
-}
-
-# Long context table - Output rows (empty model field, contains "Output")
-in_long_table && /^\|/ && /Output/ {
-    n = split($0, fields, "|")
-    long_output_val = extract_number(fields[4])
-
-    # Emit LONG lines for all stored model variants
-    for (j = 1; j <= long_models_count; j++) {
-        mid = long_models[j]
-        printf "LONG %s %s %s\n", mid, long_input[mid], long_output_val
-    }
-}
-')
-
-if [[ -z "$PARSED" ]]; then
-    echo "Error: failed to parse any pricing data from the page" >&2
-    echo "The page format may have changed. Check $PRICING_URL manually." >&2
-    exit 1
+if shifts:
+    print(
+        f"Regression check #2 failed: rate(s) moved more than {MAX_RATIO}x:",
+        file=sys.stderr,
+    )
+    for s in shifts:
+        print(s, file=sys.stderr)
+    sys.exit(1)
+PYEOF
 fi
 
-echo "Generating data/pricing.yml..."
+# -- Detect whether the pricing map actually changed --------------------
+# We always run, but we only rewrite data/pricing.json (and bump
+# data_version) when the new pricing map differs from what is already
+# committed. Without this guard, every cron run would replace the file
+# with the same prices and a fresh data_version timestamp, causing the
+# workflow to open an empty PR every day. data/pricing-page.sha256 is
+# always rewritten because it is a deterministic hash of the page bytes,
+# so it never produces a spurious diff.
+PRICING_CHANGED=true
+if [[ -f "$PRICING_FILE" ]]; then
+    if python3 - "$PRICING_MAP" "$PRICING_FILE" <<'PYEOF'
+import json
+import sys
 
-# Build the YAML output from the parsed data.
-# First pass: collect base pricing for each model.
-# Second pass: merge long context pricing.
-JSON_OUTPUT=$(echo "$PARSED" | awk \
-    -v schema_version="$SCHEMA_VERSION" \
-    -v data_version="$DATA_VERSION" \
-    -v min_library_version="$MIN_LIBRARY_VERSION" \
-    '
-BEGIN {
-    model_count = 0
-}
-
-# Collect base model pricing
-$1 == "MODEL" {
-    id = $2
-    if (!(id in seen)) {
-        seen[id] = 1
-        models[model_count++] = id
-    }
-    input[id] = $3
-    output[id] = $4
-    cache_5m[id] = $5
-    cache_1h[id] = $6
-    cache_read[id] = $7
-}
-
-# Collect long context pricing
-$1 == "LONG" {
-    id = $2
-    long_input[id] = $3
-    long_output[id] = $4
-}
-
-END {
-    print "{"
-    printf "  \"schema_version\": %s,\n", schema_version
-    printf "  \"data_version\": \"%s\",\n", data_version
-    printf "  \"min_library_version\": \"%s\",\n", min_library_version
-    print "  \"pricing\": {"
-    for (i = 0; i < model_count; i++) {
-        id = models[i]
-        if (i > 0) printf ",\n"
-        printf "    \"%s\": {\n", id
-        printf "      \"input_per_mtok\": %s,\n", input[id]
-        printf "      \"output_per_mtok\": %s,\n", output[id]
-        printf "      \"cache_5m_write_per_mtok\": %s,\n", cache_5m[id]
-        printf "      \"cache_1h_write_per_mtok\": %s,\n", cache_1h[id]
-        printf "      \"cache_read_per_mtok\": %s", cache_read[id]
-
-        # Add long context pricing if available
-        if (id in long_input && long_input[id] > 0) {
-            # Derive cache rates for >200K using standard multipliers:
-            #   cache_5m_write = input * 1.25
-            #   cache_1h_write = input * 2.0
-            #   cache_read = input * 0.1
-            li = long_input[id]
-            lo = long_output[id]
-            printf ",\n      \"input_per_mtok_above_200k\": %s", li
-            printf ",\n      \"output_per_mtok_above_200k\": %s", lo
-            printf ",\n      \"cache_5m_write_per_mtok_above_200k\": %s", li * 1.25
-            printf ",\n      \"cache_1h_write_per_mtok_above_200k\": %s", li * 2.0
-            printf ",\n      \"cache_read_per_mtok_above_200k\": %s", li * 0.1
-        }
-        printf "\n    }"
-    }
-    printf "\n  }\n"
-    print "}"
-}
-')
-
-if [[ -z "$JSON_OUTPUT" ]]; then
-    echo "Error: failed to generate JSON output" >&2
-    exit 1
+new = json.load(open(sys.argv[1]))
+old_envelope = json.load(open(sys.argv[2]))
+old = old_envelope.get("pricing", old_envelope)
+sys.exit(0 if new == old else 1)
+PYEOF
+    then
+        PRICING_CHANGED=false
+    fi
 fi
 
-# Compute SHA-256 of the full page content
-PAGE_HASH=$(echo "$PAGE_CONTENT" | sha256sum | cut -d' ' -f1)
+# -- Wrap with v1 envelope (only when prices changed) -------------------
+if [[ "$PRICING_CHANGED" == true ]]; then
+    jq \
+        --argjson schema_version "$SCHEMA_VERSION" \
+        --arg data_version "$DATA_VERSION" \
+        --arg min_library_version "$MIN_LIBRARY_VERSION" \
+        '{schema_version: $schema_version, data_version: $data_version, min_library_version: $min_library_version, pricing: .}' \
+        "$PRICING_MAP" > "$NEW_PRICING_FILE"
+fi
 
+PAGE_HASH="$(sha256sum "$PAGE_FILE" | cut -d' ' -f1)"
+
+# -- Dry run short-circuit ----------------------------------------------
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
-    echo "=== Dry run - would write: ==="
-    echo ""
-    echo "$JSON_OUTPUT"
+    if [[ "$PRICING_CHANGED" == true ]]; then
+        echo "=== Dry run - would write data/pricing.json: ==="
+        cat "$NEW_PRICING_FILE"
+    else
+        echo "=== Dry run - pricing unchanged, would NOT rewrite data/pricing.json ==="
+    fi
     echo ""
     echo "SHA-256: $PAGE_HASH"
     exit 0
 fi
 
-# Write files
-echo "$JSON_OUTPUT" > "$PRICING_FILE"
+# -- Write -------------------------------------------------------------
+if [[ "$PRICING_CHANGED" == true ]]; then
+    mv "$NEW_PRICING_FILE" "$PRICING_FILE"
+    echo "Wrote $PRICING_FILE (data_version=$DATA_VERSION)"
+else
+    echo "Pricing unchanged - left $PRICING_FILE intact"
+fi
 echo "$PAGE_HASH" > "$HASH_FILE"
+echo "Wrote $HASH_FILE"
 
-echo ""
-echo "Wrote $PRICING_FILE"
-echo "Wrote $HASH_FILE ($PAGE_HASH)"
-echo ""
-
-# Show git diff if in a git repo
 if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo ""
     echo "=== Changes ==="
-    git -C "$REPO_ROOT" diff data/pricing.json data/pricing-page.sha256 || true
+    git -C "$REPO_ROOT" diff --stat data/ || true
 fi
 
 echo ""
