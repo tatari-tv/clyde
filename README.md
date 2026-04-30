@@ -38,10 +38,10 @@ Claude Code runs `~/.claude/statusline.sh` and displays its output in your termi
 #!/bin/bash
 # ~/.claude/statusline.sh
 
-monthly=$(timeout 1s ccu monthly --total -m 1 2>/dev/null || echo "?")
-weekly=$(timeout 1s ccu weekly --total -w 1 2>/dev/null || echo "?")
-today=$(timeout 1s ccu today --total 2>/dev/null || echo "?")
-session=$(timeout 1s ccu session current --total 2>/dev/null || echo "?")
+monthly=$(timeout 5s ccu monthly --total -m 1 2>/dev/null || echo "?")
+weekly=$(timeout 5s ccu weekly --total -w 1 2>/dev/null || echo "?")
+today=$(timeout 5s ccu today --total 2>/dev/null || echo "?")
+session=$(timeout 5s ccu session current --total 2>/dev/null || echo "?")
 
 echo "M\$$monthly W\$$weekly D\$$today S\$$session"
 ```
@@ -65,9 +65,9 @@ LINES_ADDED=$(echo "$DATA" | jq -r '.cost.total_lines_added // 0')
 LINES_REMOVED=$(echo "$DATA" | jq -r '.cost.total_lines_removed // 0')
 
 # Cost summaries from ccu
-TODAY_COST=$(timeout 1s ccu today --total 2>/dev/null || echo 0)
-WEEK_COST=$(timeout 1s ccu weekly --total -w 1 2>/dev/null || echo 0)
-MONTH_COST=$(timeout 1s ccu monthly --total -m 1 2>/dev/null || echo 0)
+TODAY_COST=$(timeout 5s ccu today --total 2>/dev/null || echo 0)
+WEEK_COST=$(timeout 5s ccu weekly --total -w 1 2>/dev/null || echo 0)
+MONTH_COST=$(timeout 5s ccu monthly --total -m 1 2>/dev/null || echo 0)
 SESSION_COST=$(echo "$DATA" | jq -r '.cost.total_cost_usd // 0')
 
 # Format duration
@@ -93,6 +93,8 @@ To install either, copy it to `~/.claude/statusline.sh` and make it executable:
 cp statusline.d/nerdfonts ~/.claude/statusline.sh
 chmod +x ~/.claude/statusline.sh
 ```
+
+**Upgrading from a pre-migration ccu**: existing users have an installed `~/.claude/statusline.sh` with `_timeout 1`. The library's `ureq` client has 2s connect + 3s read timeouts; a 1s wrapper SIGTERMs mid-fetch on a cold cache and the cache never seeds. Re-run `ccu statusline` after upgrading to pick up the patched 5s timeout.
 
 ### Other Options
 
@@ -134,20 +136,30 @@ ccu weekly -g
 
 ## How It Works
 
-`ccu` reads Claude Code's native JSONL session files under `~/.claude/projects/`. No API keys, no config, no network access needed for normal operation. It uses parallel processing (rayon) to stay fast even with months of session history.
+`ccu` reads Claude Code's native JSONL session files under `~/.claude/projects/`. It uses parallel processing (rayon) to stay fast even with months of session history.
 
-## Pricing
+Pricing data and JSONL parsing are owned by the [`claude-pricing`](https://github.com/tatari-tv/claude-pricing) library. The library's pricing table auto-refreshes from a GitHub Pages feed behind a 24h cache, with an embedded baseline as fallback (so ccu still works offline).
 
-`ccu` ships with embedded pricing for all current Claude models, compiled into the binary. No config file or network connection is needed for normal operation.
+### Two caches
 
-### Checking for stale pricing
+| Cache | Path | Stores | Owner |
+|---|---|---|---|
+| Pricing | `~/.cache/claude-pricing/pricing.json` | Per-token rates | `claude-pricing` library |
+| Day | `~/.cache/ccu/<date>.json` | Aggregated `(cost, sessions)` per day | ccu |
+
+The pricing cache is shared across any tool that uses `claude-pricing`. The day cache is ccu's own optimization for statusline shells that invoke `ccu` on every prompt.
+
+### `--offline` flag
 
 ```bash
-# Check if the embedded pricing might be outdated
-ccu pricing --check
+ccu --offline today
 ```
 
-Exit codes: `0` = up to date, `1` = pricing page has changed (may be stale), `2` = fetch failed.
+Skips the network refresh entirely. ccu reads only `~/.config/ccu/pricing.json` (Linux) / `~/Library/Application Support/ccu/pricing.json` (macOS) if present, else the compile-time embedded baseline. Always sub-millisecond. The tradeoff: pricing only updates when ccu is reinstalled.
+
+Without `--offline`, the default `Pricing::auto` path can take up to ~5s on a cold cache (24h boundary) while it fetches the feed; subsequent runs hit the cache.
+
+## Pricing
 
 ### Viewing current pricing
 
@@ -157,29 +169,18 @@ ccu pricing --show
 
 ### Custom/enterprise rates
 
-Create or edit `~/.config/ccu/ccu.yml` to override specific model prices:
+Drop a `pricing.json` override at the platform-native config path:
 
-```yaml
-pricing:
-  claude-opus-4-6:
-    input_per_mtok: 4.50
-    output_per_mtok: 22.50
-    cache_5m_write_per_mtok: 5.63
-    cache_1h_write_per_mtok: 9.0
-    cache_read_per_mtok: 0.45
-```
+- Linux: `~/.config/ccu/pricing.json` (or `$XDG_CONFIG_HOME/ccu/pricing.json`)
+- macOS: `~/Library/Application Support/ccu/pricing.json`
 
-Config pricing overrides are merged on top of the embedded defaults. Models not in your config use the embedded values.
+The file follows the [`claude-pricing` feed schema](https://github.com/tatari-tv/claude-pricing) (a JSON object with `pricing:` keyed by model id). The library reads it on every invocation when present; `--offline` honors it too.
+
+The legacy `pricing:` field in `~/.config/ccu/ccu.yml` is silently ignored. If you had one, ccu now uses the library's pricing instead.
 
 ### Updating pricing (developers)
 
-When Anthropic changes their pricing, run:
-
-```bash
-bin/update
-```
-
-This fetches the live pricing page, parses it deterministically, and regenerates `data/pricing.yml`. Review the diff, commit, and cut a release.
+Pricing is no longer maintained in this repo. The [`claude-pricing`](https://github.com/tatari-tv/claude-pricing) library publishes pricing via a Pages feed; ccu refreshes from it automatically. To bump pricing, open a PR there.
 
 ## Version Reporting
 
