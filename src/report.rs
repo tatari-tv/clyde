@@ -217,7 +217,11 @@ fn to_entry(s: &SessionSummary, pricing: &Pricing) -> SessionEntry {
             None => untracked_models.push(name.clone()),
         }
     }
-    let spend_usd = if priced_count == 0 { None } else { Some(round_cents(priced_sum)) };
+    let spend_usd = if priced_count == 0 {
+        None
+    } else {
+        Some(round_cents(priced_sum))
+    };
     SessionEntry {
         title: s.title.clone(),
         repo: s.repo.clone(),

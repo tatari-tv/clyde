@@ -96,7 +96,13 @@ fn title_untitled_sessions(summaries: &mut [session::SessionSummary]) {
     let to_title: Vec<usize> = summaries
         .iter()
         .enumerate()
-        .filter_map(|(i, s)| if s.title.is_none() && parent_jsonl(s).is_some() { Some(i) } else { None })
+        .filter_map(|(i, s)| {
+            if s.title.is_none() && parent_jsonl(s).is_some() {
+                Some(i)
+            } else {
+                None
+            }
+        })
         .collect();
 
     if to_title.is_empty() {

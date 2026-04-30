@@ -89,7 +89,11 @@ fn check_tool(tool: &str, version_arg: &str) -> ToolStatus {
             let body = String::from_utf8_lossy(&output.stdout);
             let version = extract_version(&body);
             ToolStatus {
-                version: if version.is_empty() { "installed".to_string() } else { version },
+                version: if version.is_empty() {
+                    "installed".to_string()
+                } else {
+                    version
+                },
                 icon: "✅",
             }
         }
