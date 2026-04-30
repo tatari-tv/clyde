@@ -160,7 +160,10 @@ impl GroupBuilder {
         resolver: &mut Resolver,
         existing_titles: &HashMap<String, String>,
     ) -> Option<SessionSummary> {
-        let kept = dedupe(std::mem::take(&mut self.entries));
+        let kept: Vec<AssistantEntry> = dedupe(std::mem::take(&mut self.entries))
+            .into_iter()
+            .filter(|e| e.timestamp >= since && e.timestamp <= until)
+            .collect();
         if kept.is_empty() {
             return None;
         }
@@ -177,10 +180,6 @@ impl GroupBuilder {
             if e.timestamp > end {
                 end = e.timestamp;
             }
-        }
-
-        if end < since || begin > until {
-            return None;
         }
 
         let mut jsonl_paths = Vec::new();
