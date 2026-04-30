@@ -1,20 +1,7 @@
 use eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use crate::pricing::ModelPricing;
-
-/// Returns the XDG config directory: $XDG_CONFIG_HOME if set, else ~/.config.
-fn xdg_config_dir() -> Option<PathBuf> {
-    if let Ok(val) = std::env::var("XDG_CONFIG_HOME")
-        && !val.is_empty()
-    {
-        return Some(PathBuf::from(val));
-    }
-    dirs::home_dir().map(|h| h.join(".config"))
-}
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -23,8 +10,6 @@ pub struct Config {
     pub projects_dir: Option<PathBuf>,
     /// Log level (trace, debug, info, warn, error)
     pub log_level: Option<String>,
-    /// Pricing table - keyed by model name
-    pub pricing: HashMap<String, ModelPricing>,
 }
 
 impl Config {
@@ -38,8 +23,8 @@ impl Config {
             return Ok((config, Some(path.clone())));
         }
 
-        // Try XDG config dir ($XDG_CONFIG_HOME, or ~/.config)
-        if let Some(config_dir) = xdg_config_dir() {
+        // Platform-native config dir (Linux: $XDG_CONFIG_HOME or ~/.config; macOS: ~/Library/Application Support)
+        if let Some(config_dir) = dirs::config_dir() {
             let primary_config = config_dir.join("ccu").join("ccu.yml");
             if primary_config.exists() {
                 match Self::load_from_file(&primary_config) {
@@ -51,8 +36,8 @@ impl Config {
             }
         }
 
-        // No config file found - return empty config; caller merges embedded pricing
-        log::info!("No config file found, using embedded pricing defaults");
+        // No config file found - return empty config; library owns pricing
+        log::info!("No config file found, using library defaults");
         Ok((Config::default(), None))
     }
 
@@ -70,16 +55,25 @@ mod tests {
 
     #[test]
     fn test_config_deserialize_with_log_level() {
-        let yaml = "log_level: debug\npricing: {}\n";
+        let yaml = "log_level: debug\n";
         let config: Config = serde_yaml::from_str(yaml).expect("parse yaml");
         assert_eq!(config.log_level.as_deref(), Some("debug"));
     }
 
     #[test]
     fn test_config_deserialize_without_log_level() {
-        let yaml = "pricing: {}\n";
+        let yaml = "{}\n";
         let config: Config = serde_yaml::from_str(yaml).expect("parse yaml");
         assert!(config.log_level.is_none());
+    }
+
+    #[test]
+    fn test_config_silently_ignores_legacy_pricing_field() {
+        // Pre-migration ccu auto-wrote a `pricing:` field. After migration the field is
+        // gone from the struct; serde must silently ignore it so existing configs keep parsing.
+        let yaml = "log_level: warn\npricing:\n  claude-opus-4-6:\n    input_per_mtok: 5.0\n    output_per_mtok: 25.0\n    cache_5m_write_per_mtok: 6.25\n    cache_1h_write_per_mtok: 10.0\n    cache_read_per_mtok: 0.5\n";
+        let config: Config = serde_yaml::from_str(yaml).expect("parse yaml");
+        assert_eq!(config.log_level.as_deref(), Some("warn"));
     }
 
     #[test]
@@ -91,7 +85,6 @@ mod tests {
     #[test]
     fn test_load_no_config_does_not_error() {
         // Config::load(None) should never error, even if no config file exists.
-        // It returns either the loaded config or a default with empty pricing.
         let result = Config::load(None);
         assert!(result.is_ok(), "Config::load(None) should not error");
     }
@@ -100,14 +93,11 @@ mod tests {
     fn test_load_returns_path_for_explicit_config() {
         let path = PathBuf::from("/nonexistent/path/ccu.yml");
         let result = Config::load(Some(&path));
-        // explicit missing path should error, not return None
         assert!(result.is_err());
     }
 
     #[test]
     fn test_load_returns_none_path_when_no_config() {
-        // When no config file exists, path should be None
-        // (we can't guarantee no config exists in test env, just check it doesn't panic)
         let result = Config::load(None);
         assert!(result.is_ok());
     }

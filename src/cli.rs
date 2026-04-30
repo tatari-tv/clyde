@@ -28,6 +28,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_cache: bool,
 
+    /// Skip the network pricing refresh; use the user override or embedded baseline only
+    #[arg(long, global = true)]
+    pub offline: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -152,10 +156,6 @@ pub enum Command {
     },
     /// Manage model pricing configuration
     Pricing {
-        /// Fetch the live pricing page and check if embedded pricing may be stale
-        #[arg(long)]
-        check: bool,
-
         /// Display current pricing table
         #[arg(long)]
         show: bool,

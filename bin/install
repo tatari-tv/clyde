@@ -1,30 +1,12 @@
 #!/usr/bin/env bash
-# bin/install - Build and install ccu with current pricing embedded
+# bin/install - Build and install ccu locally
 #
-# This ensures the binary always ships with up-to-date pricing data
-# and a valid pricing-page hash for --check to compare against.
-#
-# Usage:
-#   bin/install              # update pricing, then cargo install
-#   bin/install --skip-update # skip pricing fetch, just build with existing data
+# Pricing data is now owned by the claude-pricing library (auto-refreshed
+# via a 24h-cached Pages feed). Local installs only need to compile.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-SKIP_UPDATE=false
-if [[ "${1:-}" == "--skip-update" ]]; then
-    SKIP_UPDATE=true
-fi
-
-if [[ "$SKIP_UPDATE" == false ]]; then
-    echo "=== Updating pricing data ==="
-    "$REPO_ROOT/bin/update"
-    echo ""
-fi
-
 echo "=== Building and installing ccu ==="
 cargo install --path "$REPO_ROOT"
-
-echo ""
-echo "Done. Verify with: ccu pricing --check"

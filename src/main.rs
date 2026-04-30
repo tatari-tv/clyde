@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use clap::{CommandFactory, FromArgMatches};
+use claude_pricing::{Pricing, PricingError, normalize_model_id};
 use eyre::{Context, Result};
 use log::{debug, info, warn};
 use rayon::prelude::*;
@@ -15,14 +16,12 @@ mod average;
 mod cache;
 mod cli;
 mod config;
+mod dates;
 mod graph;
 mod output;
-mod parser;
-mod pricing;
 mod scanner;
 mod statusline;
 mod table;
-mod update;
 
 use cli::{Cli, Command};
 use config::Config;
@@ -85,6 +84,7 @@ fn setup_logging(filter: &str, has_explicit_level: bool) -> Result<()> {
 fn compute_summaries(
     cli: &Cli,
     config: &Config,
+    pricing: &Pricing,
     start: NaiveDate,
     end: NaiveDate,
     verbose: bool,
@@ -108,13 +108,15 @@ fn compute_summaries(
 
     info!("Processing {} files (of {} total)", filtered.len(), all_files.len());
 
-    // Try cache for single-day, non-verbose, no-filter queries
-    let mtime_hash = cache::compute_mtime_hash(&filtered);
+    // Try cache for single-day, non-verbose, no-filter queries.
+    // The single-day load uses a per-day hash; for start==end the filtered set IS today's files,
+    // so this hash matches the per-day hash that the save loop will write below.
+    let single_day_hash = cache::compute_mtime_hash(&filtered);
     if !cli.no_cache
         && !verbose
         && cli.model.is_none()
         && start == end
-        && let Some(cached) = cache::load_cached_day(start, mtime_hash)
+        && let Some(cached) = cache::load_cached_day(start, single_day_hash)
     {
         let summary = DaySummary {
             date: start,
@@ -128,8 +130,8 @@ fn compute_summaries(
     let file_paths: Vec<_> = filtered.iter().map(|f| f.path.clone()).collect();
     let all_entries: Vec<_> = file_paths
         .par_iter()
-        .filter_map(|path| match parser::parse_jsonl_file(path) {
-            Ok(entries) => Some(entries),
+        .filter_map(|path| match claude_pricing::parse_jsonl_file(path) {
+            Ok(result) => Some(result.entries),
             Err(e) => {
                 warn!("Failed to parse {}: {}", path.display(), e);
                 None
@@ -164,31 +166,32 @@ fn compute_summaries(
             continue;
         }
 
-        let date = parser::local_date(&entry.timestamp);
+        let date = dates::local_date(&entry.timestamp);
         if date < start || date > end {
             continue;
         }
 
-        let normalized = pricing::normalize_model_id(&entry.model);
-
-        // Apply model filter if specified
+        // Apply model filter if specified (compare against normalized form)
+        let normalized = normalize_model_id(&entry.model);
         if let Some(ref model_filter) = cli.model
             && normalized != model_filter
         {
             continue;
         }
 
-        let model_pricing = match config.pricing.get(normalized) {
-            Some(p) => p,
-            None => {
+        let cost = match pricing.calculate_usd(&entry.model, &entry.usage) {
+            Ok(c) => c,
+            Err(PricingError::UnknownModel(_)) => {
                 if warned_models.insert(normalized.to_string()) {
                     warn!("Unknown model: {} (normalized: {})", entry.model, normalized);
                 }
                 continue;
             }
+            Err(e) => {
+                warn!("Pricing error for model {}: {}", entry.model, e);
+                continue;
+            }
         };
-
-        let cost = pricing::calculate_cost(model_pricing, &entry.usage);
 
         let deduped_entry = DedupedEntry {
             cost,
@@ -240,11 +243,16 @@ fn compute_summaries(
         .rev()
         .map(|(date, (cost, sessions))| {
             let session_count = sessions.len();
-            // Save to cache (skip if --no-cache)
-            if !cli.no_cache
-                && let Err(e) = cache::save_cached_day(date, cost, session_count, mtime_hash)
-            {
-                warn!("Failed to save cache for {}: {}", date, e);
+            // Save to cache (skip if --no-cache). Compute a per-day mtime hash so future
+            // single-day loads (which compute the same per-day hash) match. Multi-day
+            // queries previously wrote a combined hash that no single-day load could
+            // ever match - dead writes.
+            if !cli.no_cache {
+                let day_files = scanner::filter_by_date_range(&all_files, date, date);
+                let day_mtime_hash = cache::compute_mtime_hash(&day_files);
+                if let Err(e) = cache::save_cached_day(date, cost, session_count, day_mtime_hash) {
+                    warn!("Failed to save cache for {}: {}", date, e);
+                }
             }
             DaySummary {
                 date,
@@ -281,7 +289,53 @@ fn subtract_months(date: NaiveDate, n: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(target_year, target_month, 1).expect("valid date")
 }
 
-fn run(cli: &Cli, config: &Config) -> Result<()> {
+/// Display the effective pricing table by iterating the library's models view.
+fn pricing_show(pricing: &Pricing) -> Result<()> {
+    debug!("pricing_show");
+
+    let mut models: Vec<_> = pricing.models().collect();
+    if models.is_empty() {
+        eyre::bail!("No pricing data available.");
+    }
+    models.sort_by_key(|(name, _)| (*name).clone());
+
+    println!("Current pricing (per million tokens):\n");
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for (name, p) in &models {
+        rows.push(vec![
+            name.to_string(),
+            format!("${:.2}", p.input_per_mtok),
+            format!("${:.2}", p.output_per_mtok),
+            format!("${:.2}", p.cache_5m_write_per_mtok),
+            format!("${:.2}", p.cache_1h_write_per_mtok),
+            format!("${:.2}", p.cache_read_per_mtok),
+        ]);
+        if p.input_per_mtok_above_200k.is_some() {
+            rows.push(vec![
+                "  (>200K)".to_string(),
+                format!("${:.2}", p.input_per_mtok_above_200k.unwrap_or(0.0)),
+                format!("${:.2}", p.output_per_mtok_above_200k.unwrap_or(0.0)),
+                format!("${:.2}", p.cache_5m_write_per_mtok_above_200k.unwrap_or(0.0)),
+                format!("${:.2}", p.cache_1h_write_per_mtok_above_200k.unwrap_or(0.0)),
+                format!("${:.2}", p.cache_read_per_mtok_above_200k.unwrap_or(0.0)),
+            ]);
+        }
+    }
+
+    println!(
+        "{}",
+        table::build(
+            &["Model", "Input", "Output", "Cache5mW", "Cache1hW", "CacheR"],
+            rows,
+            &[1, 2, 3, 4, 5],
+        )
+    );
+
+    Ok(())
+}
+
+fn run(cli: &Cli, config: &Config, pricing: &Pricing) -> Result<()> {
     debug!("run: command={:?}", cli.command.as_ref().map(std::mem::discriminant));
 
     let today = Local::now().date_naive();
@@ -292,7 +346,7 @@ fn run(cli: &Cli, config: &Config) -> Result<()> {
                 Some(Command::Today { json, total, verbose }) => (*json, *total, *verbose),
                 _ => (false, false, false),
             };
-            let (days, sessions) = compute_summaries(cli, config, today, today, verbose)?;
+            let (days, sessions) = compute_summaries(cli, config, pricing, today, today, verbose)?;
             let summary = days.first().cloned().unwrap_or(DaySummary {
                 date: today,
                 cost: 0.0,
@@ -315,7 +369,7 @@ fn run(cli: &Cli, config: &Config) -> Result<()> {
         }
         Some(Command::Yesterday { json, total, verbose }) => {
             let yesterday = today - chrono::Duration::days(1);
-            let (days, sessions) = compute_summaries(cli, config, yesterday, yesterday, *verbose)?;
+            let (days, sessions) = compute_summaries(cli, config, pricing, yesterday, yesterday, *verbose)?;
             let summary = days.first().cloned().unwrap_or(DaySummary {
                 date: yesterday,
                 cost: 0.0,
@@ -344,7 +398,7 @@ fn run(cli: &Cli, config: &Config) -> Result<()> {
             graph: show_graph,
         }) => {
             let start = today - chrono::Duration::days(i64::from(*num_days) - 1);
-            let (days, ..) = compute_summaries(cli, config, start, today, false)?;
+            let (days, ..) = compute_summaries(cli, config, pricing, start, today, false)?;
 
             if *total {
                 let sum: f64 = days.iter().map(|d| d.cost).sum();
@@ -395,7 +449,7 @@ fn run(cli: &Cli, config: &Config) -> Result<()> {
                 let current_sunday = today - chrono::Duration::days(days_since_sunday);
                 current_sunday - chrono::Duration::weeks(i64::from(*num_weeks) - 1)
             };
-            let (days, ..) = compute_summaries(cli, config, start, today, false)?;
+            let (days, ..) = compute_summaries(cli, config, pricing, start, today, false)?;
 
             // Group by Sunday-based week (Sun-Sat)
             let mut weeks: BTreeMap<String, (f64, HashSet<String>)> = BTreeMap::new();
@@ -466,7 +520,7 @@ fn run(cli: &Cli, config: &Config) -> Result<()> {
                 let current_month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).expect("valid date");
                 subtract_months(current_month_start, *num_months - 1)
             };
-            let (days, ..) = compute_summaries(cli, config, start, today, false)?;
+            let (days, ..) = compute_summaries(cli, config, pricing, start, today, false)?;
 
             // Group by month
             let mut months: BTreeMap<String, (f64, HashSet<String>)> = BTreeMap::new();
@@ -524,7 +578,7 @@ fn run(cli: &Cli, config: &Config) -> Result<()> {
         Some(Command::Session { id }) => {
             // For session command, scan all recent files (last 30 days)
             let start = today - chrono::Duration::days(30);
-            let (_, sessions) = compute_summaries(cli, config, start, today, false)?;
+            let (_, sessions) = compute_summaries(cli, config, pricing, start, today, false)?;
 
             if id == "current" {
                 // Show the most recently active session
@@ -585,11 +639,7 @@ fn main() -> Result<()> {
     let matches = Cli::command().after_help(after_help).get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
 
-    // Early exits: handle before config load so these paths stay fast.
-    if let Some(Command::Pricing { check: true, .. }) = &cli.command {
-        let exit_code = update::check()?;
-        std::process::exit(exit_code);
-    }
+    // Statusline is a fast, no-config path - handle before config load.
     if let Some(Command::Statusline { name, list }) = &cli.command {
         if *list {
             statusline::list();
@@ -600,76 +650,30 @@ fn main() -> Result<()> {
     }
 
     // Load config once; use its log_level to initialize logging.
-    let (mut config, config_path) = Config::load(cli.config.as_ref()).context("Failed to load configuration")?;
+    let (config, _) = Config::load(cli.config.as_ref()).context("Failed to load configuration")?;
     let (filter, has_explicit_level) = resolve_log_filter(cli.log_level.as_deref(), config.log_level.as_deref());
     setup_logging(&filter, has_explicit_level).context("Failed to setup logging")?;
 
-    // Detect stale >200K tier pricing in user config. Anthropic eliminated the >200K
-    // long-context surcharge on 2026-03-13. Pre-2026-03-11 ccu installs auto-wrote
-    // ~/.config/ccu/ccu.yml with the then-current tiered pricing, and that file is
-    // never rewritten. Left in place, it over-bills any request with >200K input tokens.
-    let embedded = pricing::default_pricing();
-    let stale_models: Vec<&String> = config
-        .pricing
-        .iter()
-        .filter(|(model, user_pricing)| {
-            let user_has_premium = user_pricing.input_per_mtok_above_200k.is_some()
-                || user_pricing.output_per_mtok_above_200k.is_some()
-                || user_pricing.cache_5m_write_per_mtok_above_200k.is_some()
-                || user_pricing.cache_1h_write_per_mtok_above_200k.is_some()
-                || user_pricing.cache_read_per_mtok_above_200k.is_some();
-            if !user_has_premium {
-                return false;
-            }
-            match embedded.get(*model) {
-                Some(emb) => {
-                    emb.input_per_mtok_above_200k.is_none()
-                        && emb.output_per_mtok_above_200k.is_none()
-                        && emb.cache_5m_write_per_mtok_above_200k.is_none()
-                        && emb.cache_1h_write_per_mtok_above_200k.is_none()
-                        && emb.cache_read_per_mtok_above_200k.is_none()
-                }
-                None => false,
-            }
-        })
-        .map(|(model, _)| model)
-        .collect();
+    // Construct pricing once. --offline skips the network/library cache and uses
+    // ~/.config/ccu/pricing.json (if present) or the embedded baseline. Default is
+    // Pricing::auto: cache (24h TTL) -> fetch -> embedded fallback.
+    let pricing = if cli.offline {
+        Pricing::with_user_override("ccu").context("pricing override load failed")?
+    } else {
+        Pricing::auto("ccu").context("pricing fetch failed")?
+    };
 
-    if !stale_models.is_empty() {
-        let mut models: Vec<&str> = stale_models.iter().map(|s| s.as_str()).collect();
-        models.sort();
-        let path_display = config_path
-            .as_deref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "<unknown config path>".to_string());
-        eprintln!(
-            "warning: your {path} has stale *_above_200k pricing tiers for: {models}.\n\
-             Anthropic eliminated the >200K long-context surcharge for these models on 2026-03-13,\n\
-             so leaving them in place over-bills any request with >200K input tokens.\n\
-             \n\
-             To fix, either:\n  \
-               - delete {path} entirely (the binary's embedded pricing covers everything), or\n  \
-               - remove just the *_above_200k lines from the affected model entries.\n",
-            path = path_display,
-            models = models.join(", ")
-        );
-    }
+    info!(
+        "Pricing source: {:?}, models={}",
+        pricing.source(),
+        pricing.models().count()
+    );
 
-    // Merge: embedded pricing is the base layer, config file pricing overrides
-    let mut effective = embedded;
-    for (model, model_pricing) in config.pricing.drain() {
-        effective.insert(model, model_pricing);
-    }
-    config.pricing = effective;
-
-    info!("Config loaded, {} models in pricing table", config.pricing.len());
-
-    // Pricing --show displays effective pricing (embedded + config overrides)
     if let Some(Command::Pricing { .. }) = &cli.command {
-        return update::show(&config);
+        return pricing_show(&pricing);
     }
 
-    run(&cli, &config).context("Application failed")?;
+    run(&cli, &config, &pricing).context("Application failed")?;
 
     Ok(())
 }
@@ -743,8 +747,6 @@ mod tests {
 
     #[test]
     fn test_resolve_log_filter_default_not_explicit() {
-        // Default path (no env, no config, no CLI) returns explicit=false
-        // Only reliable when RUST_LOG is unset; we check the shape, not the exact value
         let (filter, _) = resolve_log_filter(None, None);
         assert!(!filter.is_empty());
     }

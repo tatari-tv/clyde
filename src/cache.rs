@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use crate::scanner::SessionFile;
 
-const CACHE_VERSION: u64 = 3;
+const CACHE_VERSION: u64 = 4;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CachedDay {
