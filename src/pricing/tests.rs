@@ -70,7 +70,7 @@ fn normalize_without_date() {
 
 #[test]
 fn normalize_bare_names() {
-    assert_eq!(normalize_model_id("opus"), "claude-opus-4-7");
+    assert_eq!(normalize_model_id("opus"), "claude-opus-4-8");
     assert_eq!(normalize_model_id("sonnet"), "claude-sonnet-4-6");
     assert_eq!(normalize_model_id("haiku"), "claude-haiku-4-5");
 }

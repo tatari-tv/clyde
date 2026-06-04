@@ -43,7 +43,7 @@ pub fn default_pricing() -> &'static HashMap<String, ModelPricing> {
 
 pub fn normalize_model_id(model_id: &str) -> &str {
     match model_id {
-        "opus" => return "claude-opus-4-7",
+        "opus" => return "claude-opus-4-8",
         "sonnet" => return "claude-sonnet-4-6",
         "haiku" => return "claude-haiku-4-5",
         _ => {}

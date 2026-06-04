@@ -9,11 +9,15 @@
 #        bin/update.py  - stdlib Python 3
 #   3. Refuse to ship if their outputs disagree (semantic equality:
 #      5 == 5.0).
-#   4. Run three regression checks against the previous pricing.json:
-#        a. No model that existed previously is now missing.
-#        b. No per-model rate moves more than 5x in either direction.
-#        c. Every rate is within absolute bounds [$0.001, $1000]/MTok.
-#   5. Wrap the agreed pricing map with the v1 schema envelope and
+#   4. Carry forward any model the prior pricing.json had but today's
+#      parse lacks. Anthropic delists deprecated models from the page
+#      (Opus 3, Sonnet 3.7, Haiku 3); historical session logs still
+#      reference those ids, so we keep their last-known rates. Every
+#      carried-forward model is logged so a genuine parser drop is visible.
+#   5. Run two regression checks against the previous pricing.json:
+#        a. No per-model rate moves more than 5x in either direction.
+#        b. Every rate is within absolute bounds [$0.001, $1000]/MTok.
+#   6. Wrap the agreed pricing map with the v1 schema envelope and
 #      write data/pricing.json plus data/pricing-page.sha256.
 #
 # Usage:
@@ -111,6 +115,44 @@ PYEOF
 # of data/pricing.json byte-for-byte, minimising diff noise.
 cp "$AWK_OUT" "$PRICING_MAP"
 
+# -- Carry forward delisted models --------------------------------------
+# Anthropic periodically removes deprecated models from the pricing page
+# (e.g. Opus 3, Sonnet 3.7, Haiku 3). Historical session logs still
+# reference those ids, so dropping them would leave ccu/cr unable to
+# price old sessions. We union any model present in the prior
+# data/pricing.json but absent from today's parse back into the map at
+# its last-known rates. The two-parser cross-check above remains the
+# guard against a parser accidentally dropping a row that is *still* on
+# the page; every carried-forward model is logged loudly so an operator
+# reviewing the diff can spot a genuine drop masquerading as a delisting.
+if [[ -f "$PRICING_FILE" ]]; then
+    python3 - "$PRICING_MAP" "$PRICING_FILE" <<'PYEOF'
+import json
+import sys
+
+map_path = sys.argv[1]
+new = json.load(open(map_path))
+old_envelope = json.load(open(sys.argv[2]))
+old = old_envelope.get("pricing", old_envelope)
+
+carried = sorted(set(old.keys()) - set(new.keys()))
+for model in carried:
+    new[model] = old[model]
+
+if carried:
+    print(
+        f"Carried forward {len(carried)} delisted model(s) from prior pricing.json:",
+        file=sys.stderr,
+    )
+    for m in carried:
+        print(f"  {m}", file=sys.stderr)
+
+with open(map_path, "w") as f:
+    json.dump(new, f, indent=2)
+    f.write("\n")
+PYEOF
+fi
+
 # -- Regression checks ---------------------------------------------------
 echo "Running regression checks..."
 
@@ -140,9 +182,11 @@ if errors:
     sys.exit(1)
 PYEOF
 
-# Checks #1 (no models lost) and #2 (no >5x rate movement) compare
-# against the existing data/pricing.json. On the very first run there
-# is nothing to compare against, so we skip them.
+# Check #2 (no >5x rate movement) compares against the existing
+# data/pricing.json. On the very first run there is nothing to compare
+# against, so we skip it. (Check #1 - no models lost - is now satisfied
+# structurally by the carry-forward step above, so it no longer runs as
+# a hard fail here.)
 if [[ -f "$PRICING_FILE" ]]; then
     python3 - "$PRICING_MAP" "$PRICING_FILE" <<'PYEOF'
 import json
@@ -156,19 +200,6 @@ old_envelope = json.load(open(sys.argv[2]))
 # shape ({"pricing": {...}} but no schema_version) - serde and this
 # script both treat them identically.
 old = old_envelope.get("pricing", old_envelope)
-
-# Check #1: no model that existed previously is now missing. New models
-# added by Anthropic are fine; quietly losing a model is a strong
-# signal that the parser dropped a row.
-missing = sorted(set(old.keys()) - set(new.keys()))
-if missing:
-    print(
-        "Regression check #1 failed: models present previously are missing now:",
-        file=sys.stderr,
-    )
-    for m in missing:
-        print(f"  {m}", file=sys.stderr)
-    sys.exit(1)
 
 # Check #2: no per-model rate moves by more than MAX_RATIO. This is the
 # decimal-shift / unit-confusion guardrail. Real Anthropic price moves

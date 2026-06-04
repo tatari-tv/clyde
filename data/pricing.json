@@ -1,8 +1,15 @@
 {
   "schema_version": 1,
-  "data_version": "2026-04-28T12:00:00Z",
+  "data_version": "2026-06-04T05:55:43Z",
   "min_library_version": "0.1.0",
   "pricing": {
+    "claude-opus-4-8": {
+      "input_per_mtok": 5,
+      "output_per_mtok": 25,
+      "cache_5m_write_per_mtok": 6.25,
+      "cache_1h_write_per_mtok": 10,
+      "cache_read_per_mtok": 0.5
+    },
     "claude-opus-4-7": {
       "input_per_mtok": 5,
       "output_per_mtok": 25,
@@ -59,13 +66,6 @@
       "cache_1h_write_per_mtok": 6,
       "cache_read_per_mtok": 0.3
     },
-    "claude-sonnet-3-7": {
-      "input_per_mtok": 3,
-      "output_per_mtok": 15,
-      "cache_5m_write_per_mtok": 3.75,
-      "cache_1h_write_per_mtok": 6,
-      "cache_read_per_mtok": 0.3
-    },
     "claude-haiku-4-5": {
       "input_per_mtok": 1,
       "output_per_mtok": 5,
@@ -80,6 +80,13 @@
       "cache_1h_write_per_mtok": 1.6,
       "cache_read_per_mtok": 0.08
     },
+    "claude-haiku-3": {
+      "input_per_mtok": 0.25,
+      "output_per_mtok": 1.25,
+      "cache_5m_write_per_mtok": 0.3,
+      "cache_1h_write_per_mtok": 0.5,
+      "cache_read_per_mtok": 0.03
+    },
     "claude-opus-3": {
       "input_per_mtok": 15,
       "output_per_mtok": 75,
@@ -87,12 +94,12 @@
       "cache_1h_write_per_mtok": 30,
       "cache_read_per_mtok": 1.5
     },
-    "claude-haiku-3": {
-      "input_per_mtok": 0.25,
-      "output_per_mtok": 1.25,
-      "cache_5m_write_per_mtok": 0.3,
-      "cache_1h_write_per_mtok": 0.5,
-      "cache_read_per_mtok": 0.03
+    "claude-sonnet-3-7": {
+      "input_per_mtok": 3,
+      "output_per_mtok": 15,
+      "cache_5m_write_per_mtok": 3.75,
+      "cache_1h_write_per_mtok": 6,
+      "cache_read_per_mtok": 0.3
     }
   }
 }
