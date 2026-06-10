@@ -3,7 +3,13 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'data/**'
+      - '**/*.md'
   pull_request:
+    paths-ignore:
+      - 'data/**'
+      - '**/*.md'
 
 env:
   RUST_VERSION: 1.94.0

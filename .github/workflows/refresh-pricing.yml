@@ -41,8 +41,12 @@ jobs:
             Automated daily refresh of `data/pricing.json` from
             <https://platform.claude.com/docs/en/about-claude/pricing.md>.
 
-            Review the diff carefully before merging — the awk parser is
+            Review the diff carefully before merging - the awk parser is
             the only piece of fragility in this pipeline.
+
+            This is a data-only refresh: do **not** bump the crate version or
+            re-pin consumers (`ccu`, `cr`). They pick up the new feed at runtime
+            within 24h. Cut a tag only for library code changes (`src/**`).
           add-paths: |
             data/pricing.json
             data/pricing-page.sha256
