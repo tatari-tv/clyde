@@ -189,18 +189,32 @@ fn fetch_and_cache(cfg: &FetchConfig) -> Result<Pricing, PricingError> {
         message: e.to_string(),
     })?;
 
-    write_cache_atomic(&cfg.cache_path(), &bytes)?;
-    let _ = std::fs::remove_file(cfg.last_attempt_path());
-
+    // Validate before writing: a malformed feed returns Err here, and an
+    // incompatible feed (schema too new, or min_library_version above this
+    // crate) returns Ok(embedded()) - not Err - via the fallback in
+    // Pricing::from_bytes. Caching either would poison the cache (and, worse,
+    // overwrite a still-valid older cache). Only persist genuinely fetched,
+    // compatible bytes.
     let fetched_at = Utc::now();
-    Pricing::from_bytes(
+    let pricing = Pricing::from_bytes(
         &bytes,
         cfg.url.clone(),
         Source::Fetched {
             url: cfg.url.clone(),
             fetched_at,
         },
-    )
+    )?;
+    if !matches!(pricing.source(), Source::Fetched { .. }) {
+        return Err(PricingError::Fetch {
+            url: cfg.url.clone(),
+            message: "fetched feed is incompatible with this library".to_string(),
+        });
+    }
+
+    write_cache_atomic(&cfg.cache_path(), &bytes)?;
+    let _ = std::fs::remove_file(cfg.last_attempt_path());
+
+    Ok(pricing)
 }
 
 fn write_cache_atomic(target: &Path, bytes: &[u8]) -> Result<(), PricingError> {

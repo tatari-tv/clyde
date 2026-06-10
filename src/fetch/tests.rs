@@ -158,6 +158,10 @@ fn malformed_response_falls_back_and_records_failure() {
     mock.assert();
     assert!(matches!(p.source(), crate::feed::Source::Embedded));
     assert!(cfg.last_attempt_path().exists());
+    assert!(
+        !cfg.cache_path().exists(),
+        "malformed feed must not be written to cache"
+    );
 }
 
 #[test]
@@ -285,4 +289,92 @@ fn schema_mismatch_falls_back() {
     mock.assert();
     assert!(matches!(p.source(), crate::feed::Source::Embedded));
     assert!(cfg.last_attempt_path().exists());
+    assert!(
+        !cfg.cache_path().exists(),
+        "schema-incompatible feed must not be written to cache"
+    );
+}
+
+#[test]
+fn incompatible_library_version_does_not_poison_cache() {
+    // min_library_version far above the crate version: from_bytes returns
+    // Ok(embedded) rather than Err, so the fix must reject it explicitly
+    // before writing the cache.
+    let feed = r#"{
+        "schema_version": 1,
+        "data_version": "2026-04-28T00:00:00Z",
+        "min_library_version": "999.0.0",
+        "pricing": {
+            "claude-opus-4-7": {
+                "input_per_mtok": 5,
+                "output_per_mtok": 25,
+                "cache_5m_write_per_mtok": 6.25,
+                "cache_1h_write_per_mtok": 10,
+                "cache_read_per_mtok": 0.5
+            }
+        }
+    }"#;
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(feed)
+        .create();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        &format!("{}/pricing.json", server.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+
+    let p = auto_with_config("test-app", &cfg).unwrap();
+    mock.assert();
+    assert!(matches!(p.source(), crate::feed::Source::Embedded));
+    assert!(
+        cfg.last_attempt_path().exists(),
+        "failure recorded for incompatible feed"
+    );
+    assert!(
+        !cfg.cache_path().exists(),
+        "library-incompatible feed must not be written to cache"
+    );
+}
+
+#[test]
+fn incompatible_feed_preserves_existing_valid_cache() {
+    // A stale-but-valid cache must survive a fetch that returns an
+    // incompatible feed: the bad bytes never overwrite the good cache.
+    let bad_feed = r#"{
+        "schema_version": 1,
+        "min_library_version": "999.0.0",
+        "pricing": {}
+    }"#;
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(bad_feed)
+        .create();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        &format!("{}/pricing.json", server.url()),
+        dir.path(),
+        Duration::from_millis(1),
+        Duration::from_secs(3600),
+    );
+    std::fs::write(cfg.cache_path(), V1_FEED).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+
+    let p = auto_with_config("test-app", &cfg).unwrap();
+    mock.assert();
+    assert!(
+        matches!(p.source(), crate::feed::Source::Fetched { .. }),
+        "served the preserved cache"
+    );
+    assert!(p.lookup("claude-opus-4-7").is_some(), "good cache still usable");
+    let on_disk = std::fs::read_to_string(cfg.cache_path()).unwrap();
+    assert_eq!(on_disk, V1_FEED, "valid cache must be left untouched");
 }
