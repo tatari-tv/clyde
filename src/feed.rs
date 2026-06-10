@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::PricingError;
 use crate::parse::TokenUsage;
-use crate::pricing::{ModelPricing, calculate_cost, default_pricing, normalize_model_id};
+use crate::pricing::{
+    FamilyRule, ModelPricing, calculate_cost, default_aliases, default_family_rules, default_pricing, normalize_with,
+};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 pub const DEFAULT_FEED_URL: &str = "https://tatari-tv.github.io/claude-pricing/pricing.json";
 const LIBRARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -24,6 +26,8 @@ pub enum Source {
 pub struct Pricing {
     schema_version: u32,
     data_version: Option<String>,
+    aliases: HashMap<String, String>,
+    family_rules: Vec<FamilyRule>,
     pricing: HashMap<String, ModelPricing>,
     source: Source,
 }
@@ -36,6 +40,10 @@ pub(crate) struct PricingFeed {
     pub data_version: Option<String>,
     #[serde(default = "default_min_library_version")]
     pub min_library_version: String,
+    #[serde(default)]
+    pub aliases: HashMap<String, String>,
+    #[serde(default)]
+    pub family_rules: Vec<FamilyRule>,
     pub pricing: HashMap<String, ModelPricing>,
 }
 
@@ -52,6 +60,8 @@ impl Pricing {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             data_version: None,
+            aliases: default_aliases().clone(),
+            family_rules: default_family_rules().to_vec(),
             pricing: default_pricing().clone(),
             source: Source::Embedded,
         }
@@ -112,24 +122,48 @@ impl Pricing {
             feed.pricing.len()
         );
 
+        // A feed that carries no normalization tables at all (a v1/legacy feed,
+        // or a hand-written user override) must not silently regress bare-alias
+        // and family resolution to empty. Substitute the embedded tables so
+        // `lookup("opus")` keeps working; a feed that ships either block is
+        // honored as authoritative.
+        let (aliases, family_rules) = if feed.aliases.is_empty() && feed.family_rules.is_empty() {
+            debug!(
+                "claude-pricing: feed at {} carries no aliases/family_rules; using embedded normalization tables",
+                source_label
+            );
+            (default_aliases().clone(), default_family_rules().to_vec())
+        } else {
+            (feed.aliases, feed.family_rules)
+        };
+
         Ok(Self {
             schema_version: feed.schema_version,
             data_version: feed.data_version,
+            aliases,
+            family_rules,
             pricing: feed.pricing,
             source,
         })
     }
 
     pub fn lookup(&self, model: &str) -> Option<&ModelPricing> {
-        let key = normalize_model_id(model);
+        let key = normalize_with(model, &self.aliases, &self.family_rules);
         self.pricing.get(key)
     }
 
     pub fn calculate_usd(&self, model: &str, usage: &TokenUsage) -> Result<f64, PricingError> {
-        let pricing = self
-            .lookup(model)
-            .ok_or_else(|| PricingError::UnknownModel(model.to_string()))?;
-        Ok(calculate_cost(pricing, usage))
+        let key = normalize_with(model, &self.aliases, &self.family_rules);
+        match self.pricing.get(key) {
+            Some(pricing) => Ok(calculate_cost(pricing, usage)),
+            None => {
+                warn!(
+                    "claude-pricing: no pricing for model `{}` (normalized to `{}`); returning UnknownModel",
+                    model, key
+                );
+                Err(PricingError::UnknownModel(model.to_string()))
+            }
+        }
     }
 
     pub fn data_version(&self) -> Option<&str> {

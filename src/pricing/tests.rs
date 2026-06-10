@@ -79,7 +79,10 @@ fn normalize_bare_names() {
 fn normalize_older_naming() {
     assert_eq!(normalize_model_id("claude-3-7-sonnet-20250219"), "claude-sonnet-3-7");
     assert_eq!(normalize_model_id("claude-3-5-haiku-20241022"), "claude-haiku-3-5");
-    assert_eq!(normalize_model_id("claude-3-5-sonnet-20241022"), "claude-sonnet-3-5");
+    // claude-3-5-sonnet has no family rule: its old canonical `claude-sonnet-3-5`
+    // was never present in the pricing data (it has always failed to price), so
+    // the dangling rule was removed. It now date-strips to its own base.
+    assert_eq!(normalize_model_id("claude-3-5-sonnet-20241022"), "claude-3-5-sonnet");
     assert_eq!(normalize_model_id("claude-3-opus-20240229"), "claude-opus-3");
     assert_eq!(normalize_model_id("claude-3-haiku-20240307"), "claude-haiku-3");
 }
@@ -90,6 +93,55 @@ fn normalize_older_naming_without_date() {
     assert_eq!(normalize_model_id("claude-3-5-haiku"), "claude-haiku-3-5");
     assert_eq!(normalize_model_id("claude-3-opus"), "claude-opus-3");
     assert_eq!(normalize_model_id("claude-3-haiku"), "claude-haiku-3");
+}
+
+#[test]
+fn embedded_normalization_contract_is_valid() {
+    // Feed contract (gating): every alias target and every family canonical must
+    // be a real pricing key, and no prefix may be empty. This is the check that
+    // catches a dangling canonical like the historical
+    // claude-3-5-sonnet -> claude-sonnet-3-5 (canonical never present in pricing).
+    let pricing = default_pricing();
+    for (alias, target) in default_aliases() {
+        assert!(
+            pricing.contains_key(target),
+            "alias `{alias}` -> `{target}` has no pricing entry"
+        );
+    }
+    for rule in default_family_rules() {
+        assert!(!rule.prefix.is_empty(), "family rule has an empty prefix");
+        assert!(
+            pricing.contains_key(&rule.canonical),
+            "family rule `{}` -> `{}` has no pricing entry",
+            rule.prefix,
+            rule.canonical
+        );
+    }
+}
+
+#[test]
+fn every_normalization_sample_prices_not_just_normalizes() {
+    // The pre-existing normalize_* tests assert only string normalization. This
+    // asserts the full path actually PRICES - the gap the claude-3-5-sonnet bug
+    // hid in (it normalized cleanly but had no pricing entry to land on).
+    let p = crate::feed::Pricing::embedded();
+    let usage = crate::parse::TokenUsage {
+        input_tokens: 1_000_000,
+        output_tokens: 0,
+        cache_5m_write_tokens: 0,
+        cache_1h_write_tokens: 0,
+        cache_read_tokens: 0,
+    };
+    for alias in default_aliases().keys() {
+        assert!(p.calculate_usd(alias, &usage).is_ok(), "alias `{alias}` fails to price");
+    }
+    for rule in default_family_rules() {
+        let sample = format!("{}-20240101", rule.prefix);
+        assert!(
+            p.calculate_usd(&sample, &usage).is_ok(),
+            "family sample `{sample}` fails to price"
+        );
+    }
 }
 
 #[test]

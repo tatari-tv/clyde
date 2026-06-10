@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use log::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::error::PricingError;
@@ -26,48 +27,98 @@ pub struct ModelPricing {
 }
 
 const LONG_CONTEXT_THRESHOLD: u64 = 200_000;
+const DATE_SUFFIX_LEN: usize = 8;
 const EMBEDDED_PRICING_JSON: &str = include_str!("../data/pricing.json");
+
+/// A naming-family normalization rule carried by the feed: any model id whose
+/// (date-stripped) form starts with `prefix` canonicalizes to `canonical`.
+/// Rules are applied in order; the first matching prefix wins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FamilyRule {
+    pub prefix: String,
+    pub canonical: String,
+}
 
 #[derive(Deserialize)]
 struct PricingFile {
+    #[serde(default)]
+    aliases: HashMap<String, String>,
+    #[serde(default)]
+    family_rules: Vec<FamilyRule>,
     pricing: HashMap<String, ModelPricing>,
 }
 
-pub fn default_pricing() -> &'static HashMap<String, ModelPricing> {
-    static CELL: OnceLock<HashMap<String, ModelPricing>> = OnceLock::new();
+struct EmbeddedData {
+    pricing: HashMap<String, ModelPricing>,
+    aliases: HashMap<String, String>,
+    family_rules: Vec<FamilyRule>,
+}
+
+fn embedded_data() -> &'static EmbeddedData {
+    static CELL: OnceLock<EmbeddedData> = OnceLock::new();
     CELL.get_or_init(|| {
         let parsed: PricingFile = serde_json::from_str(EMBEDDED_PRICING_JSON).expect("embedded pricing JSON is valid");
-        parsed.pricing
+        EmbeddedData {
+            pricing: parsed.pricing,
+            aliases: parsed.aliases,
+            family_rules: parsed.family_rules,
+        }
     })
 }
 
+pub fn default_pricing() -> &'static HashMap<String, ModelPricing> {
+    &embedded_data().pricing
+}
+
+pub(crate) fn default_aliases() -> &'static HashMap<String, String> {
+    &embedded_data().aliases
+}
+
+pub(crate) fn default_family_rules() -> &'static [FamilyRule] {
+    &embedded_data().family_rules
+}
+
+/// Normalize a model id to its canonical pricing key using the embedded
+/// alias/family tables. The instance method `Pricing::lookup` uses the live
+/// feed's tables instead, so a refreshed feed can introduce new aliases or
+/// naming families with no rebuild; this free function is the offline/embedded
+/// entry point and keeps its `(&str) -> &str` signature for API stability.
 pub fn normalize_model_id(model_id: &str) -> &str {
-    match model_id {
-        "opus" => return "claude-opus-4-8",
-        "sonnet" => return "claude-sonnet-4-6",
-        "haiku" => return "claude-haiku-4-5",
-        _ => {}
+    normalize_with(model_id, default_aliases(), default_family_rules())
+}
+
+/// Data-driven normalization: exact alias first, then strip a trailing
+/// `-YYYYMMDD` date, then the first matching family prefix, else the
+/// date-stripped base. This is the same algorithm the hardcoded version
+/// implemented, with the alias map and family list supplied as data.
+pub(crate) fn normalize_with<'a>(
+    model_id: &'a str,
+    aliases: &'a HashMap<String, String>,
+    family_rules: &'a [FamilyRule],
+) -> &'a str {
+    if let Some(canonical) = aliases.get(model_id) {
+        return canonical;
     }
 
-    let base = if let Some(pos) = model_id.rfind('-') {
-        let suffix = &model_id[pos + 1..];
-        if suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_digit()) {
-            &model_id[..pos]
-        } else {
-            model_id
+    let base = strip_date_suffix(model_id);
+
+    for rule in family_rules {
+        if base.starts_with(&rule.prefix) {
+            return &rule.canonical;
         }
-    } else {
-        model_id
-    };
-
-    match base {
-        s if s.starts_with("claude-3-7-sonnet") => "claude-sonnet-3-7",
-        s if s.starts_with("claude-3-5-haiku") => "claude-haiku-3-5",
-        s if s.starts_with("claude-3-5-sonnet") => "claude-sonnet-3-5",
-        s if s.starts_with("claude-3-opus") => "claude-opus-3",
-        s if s.starts_with("claude-3-haiku") => "claude-haiku-3",
-        _ => base,
     }
+
+    base
+}
+
+fn strip_date_suffix(model_id: &str) -> &str {
+    if let Some(pos) = model_id.rfind('-') {
+        let suffix = &model_id[pos + 1..];
+        if suffix.len() == DATE_SUFFIX_LEN && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return &model_id[..pos];
+        }
+    }
+    model_id
 }
 
 fn tiered_cost(tokens: u64, total_input: u64, standard_rate: f64, premium_rate: Option<f64>) -> f64 {
@@ -115,10 +166,16 @@ pub fn calculate_cost(pricing: &ModelPricing, usage: &TokenUsage) -> f64 {
 
 pub fn calculate_usd(model: &str, usage: &TokenUsage) -> Result<f64, PricingError> {
     let key = normalize_model_id(model);
-    let pricing = default_pricing()
-        .get(key)
-        .ok_or_else(|| PricingError::UnknownModel(model.to_string()))?;
-    Ok(calculate_cost(pricing, usage))
+    match default_pricing().get(key) {
+        Some(pricing) => Ok(calculate_cost(pricing, usage)),
+        None => {
+            warn!(
+                "claude-pricing: no pricing for model `{}` (normalized to `{}`); returning UnknownModel",
+                model, key
+            );
+            Err(PricingError::UnknownModel(model.to_string()))
+        }
+    }
 }
 
 #[cfg(test)]

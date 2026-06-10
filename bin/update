@@ -17,7 +17,8 @@
 #   5. Run two regression checks against the previous pricing.json:
 #        a. No per-model rate moves more than 5x in either direction.
 #        b. Every rate is within absolute bounds [$0.001, $1000]/MTok.
-#   6. Wrap the agreed pricing map with the v1 schema envelope and
+#   6. Wrap the agreed pricing map with the v2 schema envelope, splice in
+#      the committed normalization policy (data/normalization.json), and
 #      write data/pricing.json plus data/pricing-page.sha256.
 #
 # Usage:
@@ -33,13 +34,27 @@ set -euo pipefail
 PRICING_URL="https://platform.claude.com/docs/en/about-claude/pricing.md"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PRICING_FILE="$REPO_ROOT/data/pricing.json"
+NORMALIZATION_FILE="$REPO_ROOT/data/normalization.json"
 HASH_FILE="$REPO_ROOT/data/pricing-page.sha256"
-SCHEMA_VERSION=1
+SCHEMA_VERSION=2
+# min_library_version gates compatible-schema feeds against older library logic.
+# The schema_version bump (1 -> 2) already forces pre-schema-2 crates to fall back
+# to their embedded baseline, so this value is for diagnostics, not safety. Bump it
+# to the crate version that ships schema-2 understanding when that release is cut.
 MIN_LIBRARY_VERSION="0.1.0"
 
 DRY_RUN=false
 if [[ "${1:-}" == "--dry" ]]; then
     DRY_RUN=true
+fi
+
+# The normalization policy (bare aliases + family-collapsing rules) is
+# human-authored and committed separately; it is spliced into the published
+# envelope below. Refuse to publish a schema-2 feed without it - a missing
+# policy file would silently strip alias resolution from every consumer.
+if [[ ! -f "$NORMALIZATION_FILE" ]]; then
+    echo "Error: $NORMALIZATION_FILE not found; cannot build a schema-$SCHEMA_VERSION feed" >&2
+    exit 1
 fi
 
 DATA_VERSION="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -229,38 +244,52 @@ if shifts:
 PYEOF
 fi
 
-# -- Detect whether the pricing map actually changed --------------------
-# We always run, but we only rewrite data/pricing.json (and bump
-# data_version) when the new pricing map differs from what is already
-# committed. Without this guard, every cron run would replace the file
-# with the same prices and a fresh data_version timestamp, causing the
-# workflow to open an empty PR every day. data/pricing-page.sha256 is
-# always rewritten because it is a deterministic hash of the page bytes,
-# so it never produces a spurious diff.
+# -- Build the merged v2 artifact ---------------------------------------
+# The published feed is the pricing map wrapped in the schema envelope with
+# the human-authored normalization policy (data/normalization.json) spliced
+# in. Keys are emitted in a fixed order so the on-disk artifact is stable and
+# diff-friendly. This always builds; the change check below decides whether to
+# write it.
+jq -n \
+    --argjson schema_version "$SCHEMA_VERSION" \
+    --arg data_version "$DATA_VERSION" \
+    --arg min_library_version "$MIN_LIBRARY_VERSION" \
+    --slurpfile norm "$NORMALIZATION_FILE" \
+    --slurpfile pricing "$PRICING_MAP" \
+    '{
+        schema_version: $schema_version,
+        data_version: $data_version,
+        min_library_version: $min_library_version,
+        aliases: $norm[0].aliases,
+        family_rules: $norm[0].family_rules,
+        pricing: $pricing[0]
+    }' > "$NEW_PRICING_FILE"
+
+# -- Detect whether the artifact actually changed -----------------------
+# We only rewrite data/pricing.json when the new artifact differs from what is
+# committed, comparing everything EXCEPT data_version (whose timestamp always
+# moves). This now catches both pricing-map changes AND normalization-policy
+# edits, so a data/normalization.json change alone produces a refreshed
+# artifact - the gap a pricing-only diff would have missed. data/pricing-page.sha256
+# is always rewritten (deterministic hash of the page bytes, no spurious diff).
 PRICING_CHANGED=true
 if [[ -f "$PRICING_FILE" ]]; then
-    if python3 - "$PRICING_MAP" "$PRICING_FILE" <<'PYEOF'
+    if python3 - "$NEW_PRICING_FILE" "$PRICING_FILE" <<'PYEOF'
 import json
 import sys
 
-new = json.load(open(sys.argv[1]))
-old_envelope = json.load(open(sys.argv[2]))
-old = old_envelope.get("pricing", old_envelope)
+def normalize(doc):
+    d = dict(doc)
+    d.pop("data_version", None)
+    return d
+
+new = normalize(json.load(open(sys.argv[1])))
+old = normalize(json.load(open(sys.argv[2])))
 sys.exit(0 if new == old else 1)
 PYEOF
     then
         PRICING_CHANGED=false
     fi
-fi
-
-# -- Wrap with v1 envelope (only when prices changed) -------------------
-if [[ "$PRICING_CHANGED" == true ]]; then
-    jq \
-        --argjson schema_version "$SCHEMA_VERSION" \
-        --arg data_version "$DATA_VERSION" \
-        --arg min_library_version "$MIN_LIBRARY_VERSION" \
-        '{schema_version: $schema_version, data_version: $data_version, min_library_version: $min_library_version, pricing: .}' \
-        "$PRICING_MAP" > "$NEW_PRICING_FILE"
 fi
 
 PAGE_HASH="$(sha256sum "$PAGE_FILE" | cut -d' ' -f1)"

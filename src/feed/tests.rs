@@ -189,9 +189,65 @@ fn from_bytes_records_source() {
 fn embedded_pricing_json_loads_via_feed() {
     let bytes = include_bytes!("../../data/pricing.json");
     let p = Pricing::from_bytes(bytes, "data/pricing.json".to_string(), Source::Embedded).unwrap();
-    assert_eq!(p.schema_version(), 1);
-    assert!(p.data_version().is_some(), "v1 feed should carry data_version");
+    assert_eq!(p.schema_version(), CURRENT_SCHEMA_VERSION);
+    assert!(p.data_version().is_some(), "feed should carry data_version");
     assert!(p.lookup("claude-opus-4-7").is_some());
+    // schema v2: bare aliases and family rules now resolve from the feed itself.
+    assert!(p.lookup("opus").is_some(), "alias resolves via feed-carried table");
+    assert!(
+        p.lookup("claude-3-opus-20240229").is_some(),
+        "family rule resolves via feed"
+    );
+}
+
+#[test]
+fn block_less_feed_falls_back_to_embedded_normalization() {
+    // A v1-shaped feed (no aliases/family_rules) must still resolve bare aliases
+    // via the embedded tables rather than regressing to empty - the regression
+    // the Staff Engineer flagged for v1 caches / hand-written overrides.
+    let v1 = r#"{
+        "schema_version": 1,
+        "pricing": {
+            "claude-opus-4-8": {
+                "input_per_mtok": 5,
+                "output_per_mtok": 25,
+                "cache_5m_write_per_mtok": 6.25,
+                "cache_1h_write_per_mtok": 10,
+                "cache_read_per_mtok": 0.5
+            }
+        }
+    }"#;
+    let p = Pricing::from_bytes(v1.as_bytes(), "v1.test".to_string(), Source::Embedded).unwrap();
+    assert!(
+        p.lookup("opus").is_some(),
+        "bare alias resolves via embedded-table fallback on a block-less feed"
+    );
+    assert!(p.lookup("claude-opus-4-8").is_some());
+}
+
+#[test]
+fn feed_with_blocks_is_authoritative_over_embedded() {
+    // A feed that ships its own aliases is honored as-is; the embedded table is
+    // not merged in on top.
+    let feed = r#"{
+        "schema_version": 2,
+        "aliases": { "flagship": "claude-opus-4-8" },
+        "pricing": {
+            "claude-opus-4-8": {
+                "input_per_mtok": 5,
+                "output_per_mtok": 25,
+                "cache_5m_write_per_mtok": 6.25,
+                "cache_1h_write_per_mtok": 10,
+                "cache_read_per_mtok": 0.5
+            }
+        }
+    }"#;
+    let p = Pricing::from_bytes(feed.as_bytes(), "v2.test".to_string(), Source::Embedded).unwrap();
+    assert!(p.lookup("flagship").is_some(), "feed-supplied alias resolves");
+    assert!(
+        p.lookup("opus").is_none(),
+        "embedded alias not merged when the feed carries its own table"
+    );
 }
 
 #[test]

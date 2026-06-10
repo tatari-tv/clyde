@@ -1,7 +1,30 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "data_version": "2026-06-10T04:29:25Z",
   "min_library_version": "0.1.0",
+  "aliases": {
+    "opus": "claude-opus-4-8",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5"
+  },
+  "family_rules": [
+    {
+      "prefix": "claude-3-7-sonnet",
+      "canonical": "claude-sonnet-3-7"
+    },
+    {
+      "prefix": "claude-3-5-haiku",
+      "canonical": "claude-haiku-3-5"
+    },
+    {
+      "prefix": "claude-3-opus",
+      "canonical": "claude-opus-3"
+    },
+    {
+      "prefix": "claude-3-haiku",
+      "canonical": "claude-haiku-3"
+    }
+  ],
   "pricing": {
     "claude-fable-5": {
       "input_per_mtok": 10,
