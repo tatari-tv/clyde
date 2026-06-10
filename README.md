@@ -112,13 +112,19 @@ LLM-based parsing was explicitly ruled out for correctness; the Slack thread and
 
 ## Schema
 
-The feed is a v1-schema JSON envelope:
+The feed is a schema-2 JSON envelope:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "data_version": "2026-04-28T12:00:00Z",
-  "min_library_version": "0.1.0",
+  "min_library_version": "2.0.0",
+  "aliases": {
+    "opus": "claude-opus-4-8"
+  },
+  "family_rules": [
+    { "prefix": "claude-3-7-sonnet", "canonical": "claude-sonnet-3-7" }
+  ],
   "pricing": {
     "claude-opus-4-7": {
       "input_per_mtok": 5,
@@ -131,10 +137,26 @@ The feed is a v1-schema JSON envelope:
 }
 ```
 
-- `schema_version` - current is `1`. The library refuses to load a feed with a higher schema version than it knows about.
+- `schema_version` - current is `2`. The library refuses to load a feed with a higher schema version than it knows about.
 - `data_version` - timestamp of the last actual price change. Stable across cron runs that produced no diff.
 - `min_library_version` - if set higher than the consuming library's version, the library logs a warning but still loads.
-- `pricing` - map keyed by model id. `normalize_model_id` strips datestamps (`claude-opus-4-7-20251001` -> `claude-opus-4-7`) before lookup so consumers do not have to.
+- `aliases` / `family_rules` - model-id normalization policy (schema 2+), authored in `data/normalization.json` and spliced into the published feed by `bin/update`. Bare aliases (`opus`) and family-collapsing prefixes resolve to canonical pricing keys. See the Versioning rule below.
+- `pricing` - map keyed by model id. `normalize_model_id` strips datestamps (`claude-opus-4-7-20251001` -> `claude-opus-4-7`) and applies the aliases/family rules before lookup so consumers do not have to.
+
+---
+
+## Versioning: crate MAJOR == feed `schema_version` (DO NOT desync)
+
+The crate's **major version is locked to the feed `schema_version`**:
+
+> **`vN.x.x` ⇔ `schema_version N`.** A `v2` tag means schema 2. A `v3` tag means schema 3.
+
+- Bumping the feed `schema_version` **is** a **major** crate bump, and vice versa - the two move together, always.
+- Minor/patch crate bumps are library changes that keep the **same** schema (parser tweaks, new pricing fields that don't change the envelope contract).
+- `min_library_version` in the published feed is set to the crate version that ships that schema (so the schema-2 feed advertises `2.0.0`).
+- **Never let the tag major and the feed `schema_version` diverge.** If you bump one without the other, consumers pin a tag whose schema number lies about what the library understands - which is exactly the confusion this rule exists to prevent.
+
+History note: the crate sat at `0.x` during schema 1 (the convention was adopted with schema 2), so the first schema-2 release is `v2.0.0` - there is intentionally no `v1.x` line.
 
 ---
 
@@ -184,4 +206,4 @@ docs/design/       # Design doc(s)
 | `ccu` | [tatari-tv/claude-cost-usage](https://github.com/tatari-tv/claude-cost-usage) | CLI cost summaries, statusline embed |
 | `cr` | [tatari-tv/claude-report](https://github.com/tatari-tv/claude-report) | JSON report + Opus-rendered markdown writeup |
 
-Both pin to a tagged release. To bump pricing in either tool, do nothing: the library's runtime fetch picks up the new feed within 24h. To bump library code (parser changes, schema additions), cut a tag here and bump the dependency in the consumer.
+Both pin to a tagged release (`tag = "vN.x.x"`). To bump pricing in either tool, do nothing: the library's runtime fetch picks up the new feed within 24h. To bump library code (parser changes, schema additions), cut a tag here and bump the dependency in the consumer. A **schema** change is a **major** tag bump (see Versioning) - when the tag major changes, the consumer is moving to a new feed schema, so re-pin and re-test deliberately.

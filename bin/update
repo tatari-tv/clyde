@@ -41,7 +41,7 @@ SCHEMA_VERSION=2
 # The schema_version bump (1 -> 2) already forces pre-schema-2 crates to fall back
 # to their embedded baseline, so this value is for diagnostics, not safety. Bump it
 # to the crate version that ships schema-2 understanding when that release is cut.
-MIN_LIBRARY_VERSION="0.1.0"
+MIN_LIBRARY_VERSION="2.0.0"
 
 DRY_RUN=false
 if [[ "${1:-}" == "--dry" ]]; then
