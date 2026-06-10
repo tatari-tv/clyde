@@ -1,8 +1,22 @@
 {
   "schema_version": 1,
-  "data_version": "2026-06-04T05:55:43Z",
+  "data_version": "2026-06-10T04:29:25Z",
   "min_library_version": "0.1.0",
   "pricing": {
+    "claude-fable-5": {
+      "input_per_mtok": 10,
+      "output_per_mtok": 50,
+      "cache_5m_write_per_mtok": 12.5,
+      "cache_1h_write_per_mtok": 20,
+      "cache_read_per_mtok": 1
+    },
+    "claude-mythos-5": {
+      "input_per_mtok": 10,
+      "output_per_mtok": 50,
+      "cache_5m_write_per_mtok": 12.5,
+      "cache_1h_write_per_mtok": 20,
+      "cache_read_per_mtok": 1
+    },
     "claude-opus-4-8": {
       "input_per_mtok": 5,
       "output_per_mtok": 25,
