@@ -184,8 +184,8 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claude-pricing"
-version = "0.2.0"
-source = "git+https://github.com/tatari-tv/claude-pricing?tag=v0.2.0#a5d58395c42479a56efba169fa2959489033d8b6"
+version = "2.0.0"
+source = "git+https://github.com/tatari-tv/claude-pricing?tag=v2.0.0#3d3d30e7fd1c593c1150ee5bd84abbf9f262750a"
 dependencies = [
  "chrono",
  "dirs",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "claude-report"
-version = "0.1.10"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",

@@ -233,7 +233,7 @@ fn render_built_in(report: &Report) -> String {
         by_repo_with_none.entry(key).or_default().push((sid.clone(), entry));
     }
     for (key, mut entries) in by_repo_with_none {
-        entries.sort_by(|a, b| a.1.begin.cmp(&b.1.begin));
+        entries.sort_by_key(|a| a.1.begin);
         out.push_str(&format!("### {}\n\n", key));
         for (sid, entry) in entries {
             let title = entry.title.as_deref().unwrap_or("<untitled>");
