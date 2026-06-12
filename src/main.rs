@@ -28,7 +28,7 @@ use config::Config;
 use output::{DaySummary, SessionSummary};
 
 fn log_file_path() -> PathBuf {
-    dirs::data_local_dir()
+    config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ccu")
         .join("logs")
