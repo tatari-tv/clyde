@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use std::str::FromStr;
 
 fn setup_logging(level: &str) -> Result<()> {
-    let log_dir = dirs::data_local_dir()
+    let log_dir = claude_report::config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("claude-report")
         .join("logs");
