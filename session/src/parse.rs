@@ -58,6 +58,50 @@ pub fn parse_sessions(files: &[SessionFile]) -> Vec<ParsedSession> {
     sessions
 }
 
+/// Parse a single, already-identified session from an explicit transcript layout: a `parent`
+/// JSONL plus an optional `subagents_dir`. This is the read path enrichment uses to recover a
+/// session's high-signal `body` on demand — either live (parent under `~/.claude/projects`,
+/// subagents at `<project>/<id>/subagents`) or archived (both under the Phase 1.5 staged copy).
+/// Returns `None` when no readable transcript file exists for the session.
+pub fn parse_one(session_id: &str, parent: &Path, subagents_dir: &Path) -> Option<ParsedSession> {
+    debug!(
+        "parse::parse_one: session_id={} parent={} subagents_dir={}",
+        session_id,
+        parent.display(),
+        subagents_dir.display()
+    );
+    let mut files: Vec<SessionFile> = Vec::new();
+    if parent.is_file() {
+        files.push(SessionFile {
+            path: parent.to_path_buf(),
+            group_id: session_id.to_string(),
+            kind: SessionFileKind::Parent,
+        });
+    }
+    if subagents_dir.is_dir() {
+        match fs::read_dir(subagents_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                        files.push(SessionFile {
+                            path,
+                            group_id: session_id.to_string(),
+                            kind: SessionFileKind::Subagent,
+                        });
+                    }
+                }
+            }
+            Err(e) => warn!("parse::parse_one: failed to read {}: {}", subagents_dir.display(), e),
+        }
+    }
+    if files.is_empty() {
+        warn!("parse::parse_one: no transcript files for {session_id}");
+        return None;
+    }
+    parse_sessions(&files).into_iter().next()
+}
+
 fn parse_group(group_id: &str, files: &[&SessionFile]) -> Option<ParsedSession> {
     trace!("parse::parse_group: group_id={} files={}", group_id, files.len());
     let mut acc = Acc::new(group_id);

@@ -16,8 +16,11 @@ use colored::Colorize;
 use eyre::{Context, Result};
 use log::{LevelFilter, warn};
 
-use cli::{Cli, Command, LsArgs, OpenArgs, ReindexArgs, SearchArgs, SessionsCommand, StageArgs, TagArgs};
-use sessions::{Db, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, StageStats};
+use cli::{Cli, Command, EnrichArgs, LsArgs, OpenArgs, ReindexArgs, SearchArgs, SessionsCommand, StageArgs, TagArgs};
+use sessions::{
+    AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit,
+    SessionRecord, StageStats,
+};
 
 /// Max width of a title in the human (terminal) listing before it is truncated with an ellipsis.
 const TITLE_DISPLAY_WIDTH: usize = 80;
@@ -59,6 +62,8 @@ fn run(cli: Cli) -> Result<()> {
             SessionsCommand::Tag(args) => cmd_tag(&db, args),
             SessionsCommand::Reindex(args) => cmd_reindex(&db, args),
             SessionsCommand::Stage(args) => cmd_stage(&db, args),
+            SessionsCommand::Enrich(args) => cmd_enrich(&db, args),
+            SessionsCommand::Doctor => cmd_doctor(&db),
         },
     }
 }
@@ -163,6 +168,47 @@ fn cmd_stage(db: &Db, args: StageArgs) -> Result<()> {
     let staged_root = session::paths::staged_dir();
     let stats = sessions::stage_dormant(db, dormant_before, &staged_root)?;
     print_stage(&stats);
+    Ok(())
+}
+
+fn cmd_enrich(db: &Db, args: EnrichArgs) -> Result<()> {
+    // Enrich off fresh mtimes so dormancy and grown-since detection reflect the latest activity.
+    lazy_reindex(db, false);
+    if args.show_payload.is_some() && !args.dry_run {
+        eyre::bail!("--show-payload only applies with --dry-run");
+    }
+    if args.id.is_some() && args.all {
+        eyre::bail!("pass a session id OR --all, not both");
+    }
+    // --all and a single id ignore dormancy; the default sweep honors it.
+    let dormant_before = if args.all || args.id.is_some() {
+        None
+    } else {
+        Some(cli::parse_since(&args.dormant_after)?)
+    };
+    let opts = EnrichOptions {
+        dormant_before,
+        all: args.all,
+        only: args.id,
+        dry_run: args.dry_run,
+        show_payload: args.show_payload,
+        max_attempts: args.max_attempts,
+        token_budget: args.budget_tokens,
+    };
+    let stats = if args.dry_run {
+        // No off-machine calls, no key needed: the gate is previewed, not opened.
+        sessions::enrich::<AnthropicClient>(db, None, &opts)?
+    } else {
+        let client = AnthropicClient::from_env()?;
+        sessions::enrich(db, Some(&client), &opts)?
+    };
+    print_enrich(&stats);
+    Ok(())
+}
+
+fn cmd_doctor(db: &Db) -> Result<()> {
+    let summary = db.enrich_summary()?;
+    print_doctor(&summary);
     Ok(())
 }
 
@@ -284,6 +330,68 @@ fn print_stage(stats: &StageStats) {
     } else {
         print_json(stats);
     }
+}
+
+fn print_enrich(stats: &EnrichStats) {
+    if !std::io::stdout().is_terminal() {
+        print_json(stats);
+        return;
+    }
+    // Dry-run: show the per-session gate decisions the operator is previewing.
+    if stats.dry_run {
+        for d in &stats.details {
+            let send = if d.would_send { "send".green() } else { "skip".dimmed() };
+            let metrics = match (d.redaction_count, d.payload_bytes) {
+                (Some(r), Some(b)) => format!("{r} redactions, {b}B"),
+                _ => "-".to_string(),
+            };
+            println!(
+                "{}  {}  {}  {}  {}",
+                short_id(&d.session_id).yellow(),
+                d.scope.as_str().cyan(),
+                send,
+                metrics.dimmed(),
+                d.status.dimmed(),
+            );
+        }
+    }
+    let verb = if stats.dry_run { "would enrich" } else { "enriched" };
+    let n = if stats.dry_run { stats.would_enrich } else { stats.enriched };
+    println!(
+        "{} considered {}, {} {}, skipped-personal {}, skipped-empty {}, failed {} ({} redactions, {} tokens in / {} out)",
+        "✓".green(),
+        stats.considered,
+        verb,
+        n,
+        stats.skipped_personal,
+        stats.skipped_empty,
+        stats.failed,
+        stats.redactions,
+        stats.tokens_in,
+        stats.tokens_out,
+    );
+}
+
+fn print_doctor(summary: &EnrichSummary) {
+    if !std::io::stdout().is_terminal() {
+        print_json(summary);
+        return;
+    }
+    let last = summary
+        .last_enriched_at
+        .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "never".to_string());
+    println!(
+        "{} {} sessions: enriched {}, never-enriched {}, skipped-personal {}, skipped-empty {}, failed {}",
+        "✓".green(),
+        summary.total,
+        summary.enriched,
+        summary.never_enriched,
+        summary.skipped_personal,
+        summary.skipped_empty,
+        summary.failed,
+    );
+    println!("  last successful enrichment: {}", last.dimmed());
 }
 
 fn print_json<T: serde::Serialize + ?Sized>(value: &T) {

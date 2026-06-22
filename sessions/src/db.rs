@@ -17,11 +17,12 @@ use log::{debug, trace, warn};
 use rusqlite::{Connection, OptionalExtension, params};
 use session::ParsedSession;
 
-use crate::model::{Filters, MatchSource, SearchHit, SessionRecord};
+use crate::model::{EnrichSummary, Filters, MatchSource, SearchHit, SessionRecord};
 
 /// Bumped whenever the schema changes; drives `PRAGMA user_version` migrations.
 /// v2 added `staged_path` (Phase 1.5 transcript staging).
-const SCHEMA_VERSION: i64 = 2;
+/// v3 added the Phase 2 enrichment state (`scope`, `enriched_at`, …).
+const SCHEMA_VERSION: i64 = 3;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -46,7 +47,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost            REAL,
     host            TEXT NOT NULL,
     archived        INTEGER NOT NULL DEFAULT 0,
-    staged_path     TEXT
+    staged_path     TEXT,
+    scope             TEXT,
+    enriched_at       TEXT,
+    enriched_modified TEXT,
+    enrich_model      TEXT,
+    prompt_version    INTEGER,
+    enrich_status     TEXT,
+    last_error        TEXT,
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    redaction_count   INTEGER,
+    tokens_in         INTEGER,
+    tokens_out        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(title, tags, summary);
@@ -65,6 +77,21 @@ pub enum Upsert {
     Inserted,
     Updated,
     SkippedUnchanged,
+}
+
+/// The successful-enrichment payload [`Db::set_enrichment`] writes. `tags = None` preserves the
+/// session's existing tags (the manual-tag default); `Some` replaces them.
+pub struct EnrichSuccess<'a> {
+    pub summary: &'a str,
+    pub tags: Option<&'a [String]>,
+    pub scope: &'a str,
+    /// The session `modified` mtime this enrichment ran against (grown-since detection).
+    pub enriched_modified: DateTime<Utc>,
+    pub enrich_model: &'a str,
+    pub prompt_version: i64,
+    pub redaction_count: usize,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
 }
 
 /// A handle to the navigational store. Single-writer by design (a CLI process at a time).
@@ -197,13 +224,7 @@ impl Db {
     }
 
     fn rebuild_high_signal_fts(&self, id: i64, title: Option<&str>, tags: &str, summary: Option<&str>) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM sessions_fts WHERE rowid = ?1", params![id])?;
-        self.conn.execute(
-            "INSERT INTO sessions_fts (rowid, title, tags, summary) VALUES (?1,?2,?3,?4)",
-            params![id, title.unwrap_or(""), tags, summary.unwrap_or("")],
-        )?;
-        Ok(())
+        rebuild_high_signal_fts_on(&self.conn, id, title, tags, summary)
     }
 
     fn rebuild_body_fts(&self, id: i64, body: &str) -> Result<()> {
@@ -236,6 +257,170 @@ impl Db {
             .execute("UPDATE sessions SET tags = ?2 WHERE id = ?1", params![id, joined])?;
         self.rebuild_high_signal_fts(id, title.as_deref(), &joined, summary.as_deref())?;
         Ok(true)
+    }
+
+    /// Write a successful enrichment for `session_id` in one transaction: the `summary`, optional
+    /// `tags` (None preserves existing tags — the manual-tag default), the `scope`, the
+    /// observability/state fields, and a rebuilt high-signal FTS row. Resets `attempts` to 0 and
+    /// clears `last_error`. Returns `false` if no such session exists.
+    ///
+    /// This is the enrichment writer — deliberately NOT [`Self::upsert_session`], which *preserves*
+    /// `tags`/`summary` across reindex (so the parser can never clobber enrichment) and therefore
+    /// cannot also be the thing that writes them.
+    pub fn set_enrichment(&self, session_id: &str, e: &EnrichSuccess<'_>, now: DateTime<Utc>) -> Result<bool> {
+        debug!(
+            "Db::set_enrichment: session_id={} scope={} model={} prompt_version={} redactions={} tokens_in={} tokens_out={} overwrite_tags={}",
+            session_id,
+            e.scope,
+            e.enrich_model,
+            e.prompt_version,
+            e.redaction_count,
+            e.tokens_in,
+            e.tokens_out,
+            e.tags.is_some()
+        );
+        let row: Option<(i64, Option<String>, String)> = self
+            .conn
+            .query_row(
+                "SELECT id, title, tags FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((id, title, existing_tags)) = row else {
+            return Ok(false);
+        };
+        let new_tags = match e.tags {
+            Some(tags) => tags.join(" "),
+            None => existing_tags,
+        };
+
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE sessions SET summary=?2, tags=?3, scope=?4, enriched_at=?5, enriched_modified=?6, \
+             enrich_model=?7, prompt_version=?8, enrich_status='ok', last_error=NULL, attempts=0, \
+             redaction_count=?9, tokens_in=?10, tokens_out=?11 WHERE id=?1",
+            params![
+                id,
+                e.summary,
+                new_tags,
+                e.scope,
+                now.to_rfc3339(),
+                e.enriched_modified.to_rfc3339(),
+                e.enrich_model,
+                e.prompt_version,
+                e.redaction_count as i64,
+                e.tokens_in as i64,
+                e.tokens_out as i64,
+            ],
+        )?;
+        rebuild_high_signal_fts_on(&tx, id, title.as_deref(), &new_tags, Some(e.summary))?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Record a non-failure skip (`skipped-personal` / `skipped-empty`): persist the `scope` and
+    /// `status` for observability without touching `enriched_at` (the session stays un-enriched).
+    /// Returns `false` if no such session exists.
+    pub fn record_enrich_skip(&self, session_id: &str, scope: &str, status: &str) -> Result<bool> {
+        debug!("Db::record_enrich_skip: session_id={session_id} scope={scope} status={status}");
+        let n = self.conn.execute(
+            "UPDATE sessions SET scope=?2, enrich_status=?3 WHERE session_id=?1",
+            params![session_id, scope, status],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Record a failed enrichment attempt: set `status='failed'`, store `last_error`, and bump
+    /// `attempts` (the backoff/max-attempts accountant — the selection predicate stops retrying
+    /// once `attempts` hits the cap). Leaves `enriched_at` NULL. Returns `false` if absent.
+    pub fn record_enrich_failure(&self, session_id: &str, scope: &str, last_error: &str) -> Result<bool> {
+        warn!("Db::record_enrich_failure: session_id={session_id} scope={scope} last_error={last_error}");
+        let n = self.conn.execute(
+            "UPDATE sessions SET scope=?2, enrich_status='failed', last_error=?3, attempts=attempts+1 \
+             WHERE session_id=?1",
+            params![session_id, scope, last_error],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Sessions eligible for an enrichment pass. Excludes archived sessions with no staged copy
+    /// (nothing to read), and rows that have exhausted `max_attempts`. Unless `all`, also requires
+    /// the session be un-enriched, grown since last enrichment, or below the current
+    /// `prompt_version`, and skips rows already recorded `skipped-personal`. Dormancy is applied in
+    /// Rust (mirrors [`Self::staging_candidates`]). Scope is NOT filtered here — the routing gate
+    /// is the orchestrator's job, so personal sessions still surface (once) to be recorded skipped.
+    pub fn enrich_candidates(
+        &self,
+        dormant_before: Option<DateTime<Utc>>,
+        prompt_version: i64,
+        max_attempts: i64,
+        all: bool,
+    ) -> Result<Vec<SessionRecord>> {
+        debug!(
+            "Db::enrich_candidates: dormant_before={dormant_before:?} prompt_version={prompt_version} max_attempts={max_attempts} all={all}"
+        );
+        let mut sql = format!(
+            "SELECT {COLS} FROM sessions s WHERE NOT (s.archived = 1 AND s.staged_path IS NULL) AND s.attempts < ?1"
+        );
+        let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(max_attempts)];
+        if !all {
+            sql.push_str(" AND (s.enrich_status IS NULL OR s.enrich_status != 'skipped-personal')");
+            sql.push_str(
+                " AND (s.enriched_at IS NULL OR s.modified > s.enriched_modified OR s.prompt_version IS NULL OR s.prompt_version < ?2)",
+            );
+            binds.push(Box::new(prompt_version));
+        }
+        sql.push_str(" ORDER BY s.modified DESC");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::types::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        let records: Vec<SessionRecord> = stmt
+            .query_map(bind_refs.as_slice(), map_record)?
+            .collect::<rusqlite::Result<_>>()?;
+        let candidates = match dormant_before {
+            Some(cutoff) => records.into_iter().filter(|r| r.modified <= cutoff).collect(),
+            None => records,
+        };
+        Ok(candidates)
+    }
+
+    /// Whether a session has ever been successfully enriched (`enriched_at IS NOT NULL`). Lets the
+    /// orchestrator tell klod-written tags (safe to refresh) from manually-set tags (preserved by
+    /// default). Returns `false` for an absent session.
+    pub fn is_enriched(&self, session_id: &str) -> Result<bool> {
+        let enriched: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT enriched_at FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(matches!(enriched, Some(Some(_))))
+    }
+
+    /// Roll-up of enrichment state for `klod sessions doctor`.
+    pub fn enrich_summary(&self) -> Result<EnrichSummary> {
+        debug!("Db::enrich_summary");
+        let count = |sql: &str| -> Result<usize> {
+            let n: i64 = self.conn.query_row(sql, [], |r| r.get(0))?;
+            Ok(n as usize)
+        };
+        let last_raw: Option<String> = self
+            .conn
+            .query_row("SELECT MAX(enriched_at) FROM sessions", [], |r| r.get(0))
+            .optional()?
+            .flatten();
+        Ok(EnrichSummary {
+            total: count("SELECT COUNT(*) FROM sessions")?,
+            enriched: count("SELECT COUNT(*) FROM sessions WHERE enrich_status = 'ok'")?,
+            never_enriched: count("SELECT COUNT(*) FROM sessions WHERE enriched_at IS NULL")?,
+            skipped_personal: count("SELECT COUNT(*) FROM sessions WHERE enrich_status = 'skipped-personal'")?,
+            skipped_empty: count("SELECT COUNT(*) FROM sessions WHERE enrich_status = 'skipped-empty'")?,
+            failed: count("SELECT COUNT(*) FROM sessions WHERE enrich_status = 'failed'")?,
+            last_enriched_at: last_raw.as_deref().and_then(parse_dt),
+        })
     }
 
     /// Record the directory holding the durable staged copy for a session. Returns `false` if no
@@ -412,6 +597,23 @@ impl Db {
     }
 }
 
+/// Rebuild the high-signal FTS row for `id` on an explicit connection (or transaction, via Deref),
+/// so both the autocommit callers and the transactional [`Db::set_enrichment`] share one body.
+fn rebuild_high_signal_fts_on(
+    conn: &Connection,
+    id: i64,
+    title: Option<&str>,
+    tags: &str,
+    summary: Option<&str>,
+) -> Result<()> {
+    conn.execute("DELETE FROM sessions_fts WHERE rowid = ?1", params![id])?;
+    conn.execute(
+        "INSERT INTO sessions_fts (rowid, title, tags, summary) VALUES (?1,?2,?3,?4)",
+        params![id, title.unwrap_or(""), tags, summary.unwrap_or("")],
+    )?;
+    Ok(())
+}
+
 /// Apply the four mandatory PRAGMAs. WAL is per-database (sticky); the rest are per-connection.
 fn apply_pragmas(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -432,6 +634,19 @@ fn migrate(conn: &Connection) -> Result<()> {
     tx.execute_batch(SCHEMA_SQL).context("schema batch")?;
     // v2: add staged_path to pre-existing v1 tables (no-op on fresh DBs / CREATE above).
     ensure_column(&tx, "sessions", "staged_path", "TEXT")?;
+    // v3: Phase 2 enrichment state (no-op on fresh DBs / CREATE above). `attempts` is the only
+    // NOT NULL column; SQLite back-fills existing rows with the DEFAULT, so the ALTER is safe.
+    ensure_column(&tx, "sessions", "scope", "TEXT")?;
+    ensure_column(&tx, "sessions", "enriched_at", "TEXT")?;
+    ensure_column(&tx, "sessions", "enriched_modified", "TEXT")?;
+    ensure_column(&tx, "sessions", "enrich_model", "TEXT")?;
+    ensure_column(&tx, "sessions", "prompt_version", "INTEGER")?;
+    ensure_column(&tx, "sessions", "enrich_status", "TEXT")?;
+    ensure_column(&tx, "sessions", "last_error", "TEXT")?;
+    ensure_column(&tx, "sessions", "attempts", "INTEGER NOT NULL DEFAULT 0")?;
+    ensure_column(&tx, "sessions", "redaction_count", "INTEGER")?;
+    ensure_column(&tx, "sessions", "tokens_in", "INTEGER")?;
+    ensure_column(&tx, "sessions", "tokens_out", "INTEGER")?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())

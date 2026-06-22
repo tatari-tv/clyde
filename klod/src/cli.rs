@@ -49,6 +49,10 @@ pub enum SessionsCommand {
     Reindex(ReindexArgs),
     /// Stage durable copies of dormant transcripts before the 30-day TTL reaps them.
     Stage(StageArgs),
+    /// Enrich dormant sessions: fill tags + summary via a Haiku pass (work-scoped only).
+    Enrich(EnrichArgs),
+    /// Report enrichment health: counts and the last successful enrichment.
+    Doctor,
 }
 
 #[derive(clap::Args, Debug)]
@@ -125,6 +129,32 @@ pub struct StageArgs {
     /// Stage every non-archived session regardless of dormancy.
     #[arg(long)]
     pub all: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct EnrichArgs {
+    /// Enrich exactly one session by id or unique prefix (manual; bypasses dormancy + eligibility,
+    /// and overrides manual-tag preservation).
+    pub id: Option<String>,
+    /// Re-enrich every eligible session (vocabulary refresh; overwrites manual tags).
+    #[arg(long)]
+    pub all: bool,
+    /// Treat a session as dormant once it has been idle this long (e.g. 7d, 24h). Mirrors `stage`.
+    #[arg(long, default_value = "7d")]
+    pub dormant_after: String,
+    /// Preview the gate's decisions (scope, would-send, redaction count, payload size) without
+    /// sending anything off-machine.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Dry-run only: write each redacted payload under this directory for the operator to inspect.
+    #[arg(long)]
+    pub show_payload: Option<PathBuf>,
+    /// Per-session attempt cap before a repeatedly-failing session stops being retried.
+    #[arg(long, default_value_t = sessions::enrich::DEFAULT_MAX_ATTEMPTS)]
+    pub max_attempts: i64,
+    /// Halt the sweep once cumulative tokens (in + out) reach this budget.
+    #[arg(long)]
+    pub budget_tokens: Option<u64>,
 }
 
 /// Parse a `--since` value: a relative span like `7d`/`24h`/`90m`/`30s`/`2w`, an RFC 3339

@@ -10,11 +10,17 @@
 //! Lib-only and returns typed data; only the `klod` binary prints.
 
 pub mod db;
+pub mod enrich;
 pub mod index;
+pub mod llm;
 pub mod model;
 pub mod stage;
 
-pub use db::{Db, Upsert};
+pub use db::{Db, EnrichSuccess, Upsert};
+pub use enrich::{EnrichOptions, enrich};
 pub use index::reindex;
-pub use model::{Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, StageStats};
+pub use llm::{AnthropicClient, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment};
+pub use model::{
+    EnrichDetail, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, StageStats,
+};
 pub use stage::stage_dormant;

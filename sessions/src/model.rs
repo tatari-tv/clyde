@@ -85,6 +85,65 @@ pub struct ReindexStats {
     pub archived: usize,
 }
 
+/// Per-session outcome from an enrichment pass — also the per-session row `--dry-run` prints so
+/// the operator can inspect the gate's decisions before the first off-machine call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EnrichDetail {
+    pub session_id: String,
+    /// `work` / `personal` — the routing classification.
+    pub scope: String,
+    /// Whether this session's content would be (dry-run) / was (live) sent off-machine.
+    pub would_send: bool,
+    /// Secret shapes stripped from the payload (0 when none, `None` when no payload was built).
+    pub redaction_count: Option<usize>,
+    /// Size of the redacted payload in bytes (`None` when no payload was built).
+    pub payload_bytes: Option<usize>,
+    /// Terminal status for this session: `ok` / `skipped-personal` / `skipped-empty` / `failed` /
+    /// `would-enrich` (dry-run).
+    pub status: String,
+}
+
+/// Counts from an enrichment sweep (Phase 2). The off-machine send gate's tally.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EnrichStats {
+    /// Sessions that matched the selection predicate and were considered.
+    pub considered: usize,
+    /// Work-scoped sessions successfully enriched (`ok`).
+    pub enriched: usize,
+    /// Personal-scoped sessions skipped by the routing invariant (never sent to the work account).
+    pub skipped_personal: usize,
+    /// Sessions with no high-signal body to summarize.
+    pub skipped_empty: usize,
+    /// Sessions whose enrichment call failed (recorded for bounded retry).
+    pub failed: usize,
+    /// Dry-run only: work-scoped, non-empty sessions that *would* be sent.
+    pub would_enrich: usize,
+    /// Total secret shapes stripped across all built payloads.
+    pub redactions: usize,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    /// True when this was a `--dry-run` (no off-machine calls were made).
+    pub dry_run: bool,
+    /// Per-session decisions (always populated for dry-run; empty otherwise).
+    pub details: Vec<EnrichDetail>,
+}
+
+/// Roll-up of enrichment state across the whole catalog, for `klod sessions doctor`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EnrichSummary {
+    pub total: usize,
+    pub enriched: usize,
+    pub never_enriched: usize,
+    pub skipped_personal: usize,
+    pub skipped_empty: usize,
+    pub failed: usize,
+    /// Most recent successful enrichment across all sessions (the last-successful-sweep probe).
+    pub last_enriched_at: Option<DateTime<Utc>>,
+}
+
 /// Counts from a staging sweep (Phase 1.5).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]

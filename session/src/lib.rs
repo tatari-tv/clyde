@@ -14,7 +14,10 @@
 pub mod model;
 pub mod parse;
 pub mod paths;
+pub mod redact;
 pub mod scan;
+pub mod scope;
 pub mod stage;
 
 pub use model::{ParsedSession, SessionFile, SessionFileKind};
+pub use scope::{Scope, classify};

@@ -1,0 +1,54 @@
+#![allow(clippy::unwrap_used)]
+
+use super::*;
+use std::path::PathBuf;
+
+fn classify_str(s: &str) -> Scope {
+    classify(Some(&PathBuf::from(s)))
+}
+
+#[test]
+fn work_paths_classify_work() {
+    assert_eq!(classify_str("/home/saidler/repos/tatari-tv/klod/main"), Scope::Work);
+    assert_eq!(classify_str("/home/saidler/repos/tatari-tv/philo"), Scope::Work);
+    // The org marker can sit anywhere in the path, not only at a fixed depth.
+    assert_eq!(classify_str("/some/other/root/tatari-tv/repo"), Scope::Work);
+}
+
+#[test]
+fn personal_paths_classify_personal() {
+    assert_eq!(classify_str("/home/saidler/repos/scottidler/loopr"), Scope::Personal);
+    assert_eq!(
+        classify_str("/home/saidler/repos/danielmiessler/fabric"),
+        Scope::Personal
+    );
+}
+
+#[test]
+fn unknown_and_missing_cwd_fail_safe_to_personal() {
+    // No cwd at all -> personal (never assumed shippable to the work account).
+    assert_eq!(classify(None), Scope::Personal);
+    // A bare home dir, /tmp, anything unrecognized -> personal.
+    assert_eq!(classify_str("/home/saidler"), Scope::Personal);
+    assert_eq!(classify_str("/tmp/scratch"), Scope::Personal);
+    assert_eq!(classify_str(""), Scope::Personal);
+}
+
+#[test]
+fn substring_of_work_org_is_not_work() {
+    // Exact-component match only: a personal repo that merely contains the marker as a substring
+    // must NOT be misclassified as work.
+    assert_eq!(
+        classify_str("/home/saidler/repos/scottidler/tatari-tv-notes"),
+        Scope::Personal
+    );
+    assert_eq!(classify_str("/home/saidler/tatari-tv-personal/x"), Scope::Personal);
+}
+
+#[test]
+fn scope_tokens_are_stable() {
+    assert_eq!(Scope::Work.as_str(), "work");
+    assert_eq!(Scope::Personal.as_str(), "personal");
+    assert!(Scope::Work.is_work());
+    assert!(!Scope::Personal.is_work());
+}
