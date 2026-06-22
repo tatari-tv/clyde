@@ -487,6 +487,7 @@ dependencies = [
  "colored",
  "env_logger",
  "eyre",
+ "libc",
  "log",
  "serde",
  "serde_json",

@@ -23,12 +23,29 @@ use sessions::{Db, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord,
 const TITLE_DISPLAY_WIDTH: usize = 80;
 
 fn main() -> Result<()> {
+    reset_sigpipe();
     let log_path = session::paths::data_root().join("logs").join("klod.log");
     let after_help = format!("Logs are written to: {}", log_path.display());
     let cli = Cli::from_arg_matches(&Cli::command().after_help(after_help).get_matches())?;
     setup_logging(&cli.log_level, &log_path)?;
     run(cli)
 }
+
+/// Restore the default `SIGPIPE` disposition. Rust ignores SIGPIPE by default, which turns a
+/// closed stdout (e.g. `klod sessions search x | head`) into an EPIPE that `println!` unwraps
+/// into a panic. Resetting to `SIG_DFL` makes klod die quietly on a broken pipe like any Unix
+/// filter. Done before any output is produced.
+#[cfg(unix)]
+fn reset_sigpipe() {
+    // SAFETY: single-threaded startup, before any I/O; the only effect is restoring the OS
+    // default handler for SIGPIPE.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
 
 fn run(cli: Cli) -> Result<()> {
     let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
