@@ -1,0 +1,22 @@
+[package]
+name = "sessions"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "klod navigational layer: index, FTS5, search/ls/open over Claude sessions"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+eyre = "0.6.12"
+gethostname = "1.1.0"
+log = "0.4.33"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+session = { version = "0.1.0", path = "../session" }
+
+[dev-dependencies]
+tempfile = "3.27.0"

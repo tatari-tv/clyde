@@ -1,0 +1,28 @@
+[package]
+name = "klod"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Catalog, search, and resume Claude Code sessions"
+build = "build.rs"
+
+[[bin]]
+name = "klod"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = "0.4.45"
+clap = { version = "4.6.1", features = ["derive"] }
+colored = "3.1.1"
+env_logger = "0.11.10"
+eyre = "0.6.12"
+log = "0.4.33"
+serde = "1.0.228"
+serde_json = "1.0.150"
+session = { version = "0.1.0", path = "../session" }
+sessions = { version = "0.1.0", path = "../sessions" }
+
+[dev-dependencies]

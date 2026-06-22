@@ -1,0 +1,74 @@
+otto:
+  api: 1
+  tasks: [ci]
+  envs:
+    VERSION: "$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')"
+    # 1500-line-per-file rule (rules/rust.md). Decompose, do not raise.
+    BLOAT_MAX_LINES: "1500"
+
+tasks:
+  lint:
+    help: "Run whitespace and convention linting"
+    bash: |
+      whitespace -r
+      echo ""
+      echo "=== Deny _variable binding pattern ==="
+      if grep -rn --include='*.rs' -P '(\blet\s+(mut\s+)?|[(,]\s*|\|\s*|\bfor\s+)_[a-zA-Z]' */src/; then
+        echo ""
+        echo "❌ Found _variable binding pattern."
+        echo "   Use _ to discard or use the variable — never _varname."
+        exit 1
+      fi
+      echo "✅ No _variable patterns found"
+
+  bloat:
+    help: "Fail if any source file exceeds BLOAT_MAX_LINES (default 1500)"
+    bash: |
+      LIMIT="${BLOAT_MAX_LINES:-1500}"
+      FAILED=0
+      echo "=== Checking file line counts (limit: $LIMIT) ==="
+      while IFS= read -r file; do
+        lines=$(wc -l < "$file")
+        if [ "$lines" -gt "$LIMIT" ]; then
+          delta=$((lines - LIMIT))
+          echo "  FAIL: $file ($lines lines, +$delta over limit)"
+          FAILED=1
+        fi
+      done < <(find . -type f -name "*.rs" -not -path "*/target/*" -not -path "*/.git/*")
+      if [ "$FAILED" -eq 1 ]; then
+        echo ""
+        echo "Decompose these files into modules before proceeding."
+        exit 1
+      fi
+      echo "All files within $LIMIT line limit"
+
+  check:
+    help: "Run all quality checks (compile, clippy, format)"
+    bash: |
+      echo "=== Checking compilation ==="
+      cargo check --workspace --all-targets --all-features
+      echo ""
+      echo "=== Running Clippy ==="
+      cargo clippy --workspace --all-targets --all-features -- -D warnings
+      echo ""
+      echo "=== Checking format ==="
+      cargo fmt --all --check
+      echo ""
+      echo "✅ All checks passed!"
+
+  test:
+    help: "Run all tests"
+    bash: |
+      cargo test --workspace
+
+  ci:
+    help: "Full CI pipeline (lint + bloat + check + test in parallel)"
+    before: [lint, bloat, check, test]
+    bash: |
+      echo "✅ All CI checks passed!"
+
+  build:
+    help: "Build release binary"
+    bash: |
+      cargo build --release
+      echo "✅ Release build complete"
