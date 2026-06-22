@@ -44,7 +44,10 @@ pub struct MergeConfig {
     pub inputs: Vec<PathBuf>,
 }
 
-const DEFAULT_OUTPUT: &str = "./claude-report.json";
+/// Default *input* path for `cr render` when `-i` is omitted. Collect no longer writes here
+/// by default (see `default_collect_output`); render's default input is intentionally left
+/// as the legacy CWD path and is out of Phase 0 scope.
+const DEFAULT_RENDER_INPUT: &str = "./claude-report.json";
 
 impl TryFrom<Cli> for Config {
     type Error = eyre::Report;
@@ -55,7 +58,7 @@ impl TryFrom<Cli> for Config {
             crate::cli::Command::Collect(args) => ResolvedCommand::Collect(collect_config_from_args(args)?),
             crate::cli::Command::Render(args) => {
                 let pdf = args.pdf;
-                let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT));
+                let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_INPUT));
                 ResolvedCommand::Render(RenderConfig {
                     input,
                     output: args.output,
@@ -84,7 +87,10 @@ fn collect_config_from_args(args: CollectArgs) -> Result<CollectConfig> {
     if since > until {
         bail!("--since ({}) is after --until ({})", since, until);
     }
-    let output = args.output.unwrap_or_else(|| PathBuf::from(DEFAULT_OUTPUT));
+    let output = match args.output {
+        Some(p) => p,
+        None => default_collect_output()?,
+    };
     let projects_dir = args
         .projects_dir
         .or_else(default_projects_dir)
@@ -107,6 +113,17 @@ fn collect_config_from_args(args: CollectArgs) -> Result<CollectConfig> {
 
 fn default_projects_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("projects"))
+}
+
+/// Default `cr collect` output: a timestamped file under the XDG data dir, so repeated runs
+/// never clobber a prior report. Mirrors rkvr's `chrono::Local` `%Y-%m-%d-%H%M%S` stamp.
+/// Shape: `<xdg-data>/claude-report/claude-report-YYYY-MM-DD-HHMMSS.json`.
+fn default_collect_output() -> Result<PathBuf> {
+    let dir = xdg_data_dir()
+        .ok_or_else(|| eyre::eyre!("could not determine XDG data dir (set HOME or XDG_DATA_HOME)"))?
+        .join("claude-report");
+    let stamp = Local::now().format("%Y-%m-%d-%H%M%S");
+    Ok(dir.join(format!("claude-report-{stamp}.json")))
 }
 
 /// XDG data dir, honoring `$XDG_DATA_HOME` and falling back to `$HOME/.local/share`.

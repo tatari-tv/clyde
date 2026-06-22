@@ -58,7 +58,18 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
         })
         .collect();
 
-    let existing_titles = report::load_existing_titles(&cfg.output);
+    // Titles are cached across runs in the report file. With the timestamped default output
+    // (Phase 0) the exact output never pre-exists, so seed from the newest prior report in the
+    // same directory; otherwise every run would re-bill Haiku (or lose titles when no API key).
+    let titles_source = if cfg.output.exists() {
+        Some(cfg.output.clone())
+    } else {
+        latest_prior_report(&cfg.output)
+    };
+    let existing_titles = titles_source
+        .as_deref()
+        .map(report::load_existing_titles)
+        .unwrap_or_default();
     let mut resolver = repo::Resolver::new();
 
     let mut summaries = session::fold(
@@ -138,6 +149,27 @@ fn title_untitled_sessions(summaries: &mut [session::SessionSummary]) {
     for (i, t) in titles {
         summaries[i].title = t;
     }
+}
+
+/// Find the most recent prior `claude-report-*.json` in `output`'s directory, excluding
+/// `output` itself. The `%Y-%m-%d-%H%M%S` stamp is lexically ordered, so the greatest
+/// filename is the newest report — used to carry cached titles forward across timestamped runs.
+fn latest_prior_report(output: &std::path::Path) -> Option<PathBuf> {
+    let dir = output.parent()?;
+    let current = output.file_name();
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name() != current
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("claude-report-") && n.ends_with(".json"))
+        })
+        .collect();
+    candidates.sort();
+    candidates.pop()
 }
 
 fn parent_jsonl(s: &session::SessionSummary) -> Option<&std::path::Path> {

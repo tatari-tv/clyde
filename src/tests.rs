@@ -87,6 +87,73 @@ fn end_to_end_collect_writes_json() {
 }
 
 #[test]
+fn latest_prior_report_picks_newest_excluding_self() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    for name in [
+        "claude-report-2026-06-20-101010.json",
+        "claude-report-2026-06-21-090000.json",
+        "claude-report-2026-06-21-235959.json",
+        "not-a-report.json",
+        "claude-report-latest.txt",
+    ] {
+        fs::write(dir.join(name), "{}").unwrap();
+    }
+    // The output we are about to write (does not exist yet).
+    let output = dir.join("claude-report-2026-06-22-000000.json");
+    let prior = crate::latest_prior_report(&output).unwrap();
+    assert_eq!(prior, dir.join("claude-report-2026-06-21-235959.json"));
+}
+
+#[test]
+fn latest_prior_report_none_when_no_prior() {
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("claude-report-2026-06-22-000000.json");
+    assert!(crate::latest_prior_report(&output).is_none());
+}
+
+#[test]
+fn latest_prior_report_excludes_output_itself() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    let output = dir.join("claude-report-2026-06-22-000000.json");
+    fs::write(&output, "{}").unwrap();
+    // Only the output file is present; it must be excluded, so no prior.
+    assert!(crate::latest_prior_report(&output).is_none());
+}
+
+#[test]
+fn title_carries_forward_across_timestamped_outputs() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let project = projects.join("-home-saidler-repos-foo");
+    write_jsonl(
+        &project.join(format!("{}.jsonl", SID_A)),
+        &[
+            r#"{"type":"assistant","sessionId":"abc","timestamp":"2026-04-10T10:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1}}}"#,
+        ],
+    );
+
+    let reports = tmp.path().join("reports");
+    let first = reports.join("claude-report-2026-06-21-090000.json");
+    let cfg1 = make_collect_config(&projects, &first);
+    crate::run(&cfg1).unwrap();
+
+    // Hand-edit the first (older) report to carry a title.
+    let mut report: Report = serde_json::from_str(&fs::read_to_string(&first).unwrap()).unwrap();
+    report.sessions.get_mut(SID_A).unwrap().title = Some("carried title".into());
+    fs::write(&first, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+    // A later run with a *different* timestamped output must inherit the title.
+    let second = reports.join("claude-report-2026-06-21-235959.json");
+    let cfg2 = make_collect_config(&projects, &second);
+    crate::run(&cfg2).unwrap();
+
+    let report: Report = serde_json::from_str(&fs::read_to_string(&second).unwrap()).unwrap();
+    assert_eq!(report.sessions[SID_A].title.as_deref(), Some("carried title"));
+}
+
+#[test]
 fn end_to_end_title_preserved_across_runs() {
     let tmp = TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
