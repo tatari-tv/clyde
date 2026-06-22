@@ -186,10 +186,25 @@ fn cmd_enrich(db: &Db, args: EnrichArgs) -> Result<()> {
     } else {
         Some(cli::parse_since(&args.dormant_after)?)
     };
+    // Resolve a manual id/prefix to one concrete session (same fuzzy contract as open/tag).
+    let only = match &args.id {
+        Some(needle) => match db.resolve_id(needle)?.as_slice() {
+            [id] => Some(id.clone()),
+            [] => {
+                eprintln!("{} no session matches {:?}", "✗".red(), needle);
+                std::process::exit(1);
+            }
+            many => {
+                eprintln!("{} {:?} is ambiguous ({} matches)", "✗".red(), needle, many.len());
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
     let opts = EnrichOptions {
         dormant_before,
         all: args.all,
-        only: args.id,
+        only,
         dry_run: args.dry_run,
         show_payload: args.show_payload,
         max_attempts: args.max_attempts,

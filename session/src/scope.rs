@@ -6,19 +6,28 @@
 //! from the session's stored `cwd` (a pure function of metadata, unit-testable, run before any
 //! payload is built).
 //!
-//! The repo-identity convention (`~/repos/<org>/<repo>`, per `~/repos/CLAUDE.md`): paths under a
-//! work org (`tatari-tv/`) are `work`; everything else — including unclassifiable paths and a
-//! missing `cwd` — is `personal`. The default is **fail-safe**: an unknown session is never
-//! assumed shippable to the work account.
+//! The repo-identity convention (`~/repos/<org>/<repo>`, per `~/repos/CLAUDE.md`): the **org**
+//! is the component immediately under `repos/`. A session is `work` iff its org slot is a work
+//! org (`tatari-tv`); everything else — a personal org, a path with no `repos/` anchor, an
+//! unclassifiable path, or a missing `cwd` — is `personal`. The default is **fail-safe**: an
+//! unknown session is never assumed shippable to the work account.
+//!
+//! Classification keys off the org *slot*, not any matching component anywhere in the path. That
+//! is deliberately stricter than a "contains `tatari-tv`" test: a personal repo merely *named*
+//! `tatari-tv` (`~/repos/scottidler/tatari-tv`) or a scratchpad under `/tmp/tatari-tv/` is
+//! **personal** — the safe direction. The cost is that a genuine work session run outside a
+//! `~/repos/tatari-tv/` path is classified personal and skipped (un-enriched), which is the
+//! acceptable failure direction (never the reverse).
 
 use std::path::Path;
 
 use log::trace;
 
-/// The org path-component(s) that mark a session as work-scoped. A path is work-scoped iff one of
-/// its components matches exactly (substring matches do not count, so `tatari-tv-notes` under a
-/// personal root is still personal).
+/// The org names that mark a session as work-scoped, matched only in the org slot.
 const WORK_ORGS: &[&str] = &["tatari-tv"];
+/// The path component that, by the `~/repos/<org>/<repo>` convention, immediately precedes the
+/// org. Classification reads the component right after this, never an org name found elsewhere.
+const REPOS_ANCHOR: &str = "repos";
 
 /// Work/personal classification of a session, decided from its `cwd`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,18 +58,21 @@ impl Scope {
 /// direction that keeps personal content off the work account.
 pub fn classify(cwd: Option<&Path>) -> Scope {
     let scope = match cwd {
-        Some(path) if has_work_component(path) => Scope::Work,
+        Some(path) if has_work_org(path) => Scope::Work,
         _ => Scope::Personal,
     };
     trace!("scope::classify: cwd={:?} -> {}", cwd, scope.as_str());
     scope
 }
 
-/// True if any path component exactly matches a work org marker.
-fn has_work_component(path: &Path) -> bool {
-    path.components()
-        .filter_map(|c| c.as_os_str().to_str())
-        .any(|c| WORK_ORGS.contains(&c))
+/// True iff the path's org slot — the component immediately after a `repos` component — is a work
+/// org. Requires the `repos/<org>` adjacency, so an org name appearing anywhere else (a repo named
+/// `tatari-tv`, a `/tmp/tatari-tv/` scratch dir) does not classify as work.
+fn has_work_org(path: &Path) -> bool {
+    let comps: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
+    comps
+        .windows(2)
+        .any(|w| w[0] == REPOS_ANCHOR && WORK_ORGS.contains(&w[1]))
 }
 
 #[cfg(test)]

@@ -11,8 +11,8 @@ fn classify_str(s: &str) -> Scope {
 fn work_paths_classify_work() {
     assert_eq!(classify_str("/home/saidler/repos/tatari-tv/klod/main"), Scope::Work);
     assert_eq!(classify_str("/home/saidler/repos/tatari-tv/philo"), Scope::Work);
-    // The org marker can sit anywhere in the path, not only at a fixed depth.
-    assert_eq!(classify_str("/some/other/root/tatari-tv/repo"), Scope::Work);
+    // The org dir itself (no repo beneath) is still work.
+    assert_eq!(classify_str("/home/saidler/repos/tatari-tv"), Scope::Work);
 }
 
 #[test]
@@ -43,6 +43,21 @@ fn substring_of_work_org_is_not_work() {
         Scope::Personal
     );
     assert_eq!(classify_str("/home/saidler/tatari-tv-personal/x"), Scope::Personal);
+}
+
+#[test]
+fn work_org_only_matches_the_org_slot_not_anywhere() {
+    // (Codex audit finding) A personal repo *named* `tatari-tv` sits in the repo slot, not the org
+    // slot — it must classify personal, never get shipped to the work account.
+    assert_eq!(
+        classify_str("/home/saidler/repos/scottidler/tatari-tv"),
+        Scope::Personal
+    );
+    // A `tatari-tv` component with no `repos/` anchor (scratchpad, alt root) is personal.
+    assert_eq!(classify_str("/tmp/tatari-tv/scratch"), Scope::Personal);
+    assert_eq!(classify_str("/home/saidler/work/tatari-tv/x"), Scope::Personal);
+    // Only the component immediately after `repos` is the org; depth below it stays work.
+    assert_eq!(classify_str("/home/saidler/repos/tatari-tv/anything/deep"), Scope::Work);
 }
 
 #[test]

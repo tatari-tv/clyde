@@ -28,6 +28,8 @@ const MAX_OUTPUT_TOKENS: u32 = 512;
 /// cross-run backoff is the `attempts` column; this is the within-call layer).
 const MAX_HTTP_RETRIES: u32 = 3;
 const RETRY_BACKOFF_MS: u64 = 2_000;
+/// Upper bound on stored tags (the design specifies 3-7); a chatty reply is clamped, not rejected.
+const MAX_TAGS: usize = 7;
 
 const SYSTEM_PROMPT: &str = "\
 You catalog past Claude Code coding sessions so they can be found later. Given the text of one \
@@ -128,12 +130,7 @@ impl Completer for AnthropicClient {
             .map(|b| b.text.as_str())
             .ok_or_else(|| eyre!("Anthropic response had no text block"))?;
         let parsed = parse_enrich_json(text).context("Anthropic response was not the expected JSON")?;
-        let tags: Vec<String> = parsed
-            .tags
-            .into_iter()
-            .map(|t| t.trim().to_lowercase())
-            .filter(|t| !t.is_empty())
-            .collect();
+        let tags = normalize_tags(parsed.tags);
         if tags.is_empty() || parsed.summary.trim().is_empty() {
             bail!("Anthropic response had empty tags or summary");
         }
@@ -198,6 +195,25 @@ fn error_snippet(resp: reqwest::blocking::Response) -> String {
         Ok(t) => t.chars().take(200).collect(),
         Err(_) => "<unreadable body>".to_string(),
     }
+}
+
+/// Enforce the tag contract on a model reply: lowercase, trim, collapse internal whitespace to a
+/// single hyphen (the design's "no spaces within a tag"), drop empties, dedupe preserving order,
+/// and clamp to `MAX_TAGS`. A reply with too many or sloppy tags is normalized, not rejected.
+fn normalize_tags(raw: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in raw {
+        let norm = tag.trim().to_lowercase();
+        if norm.is_empty() {
+            continue;
+        }
+        let norm = norm.split_whitespace().collect::<Vec<_>>().join("-");
+        if !out.contains(&norm) {
+            out.push(norm);
+        }
+    }
+    out.truncate(MAX_TAGS);
+    out
 }
 
 /// Parse the model's reply as the enrichment JSON. Tolerates leading/trailing prose or fences by

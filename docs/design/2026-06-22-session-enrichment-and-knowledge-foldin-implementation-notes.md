@@ -85,3 +85,47 @@ Execution decisions confirmed with the user before coding:
 - **Phases 3 & 4 not implemented.** Phase 3 is second-brain work (own doc); Phase 4 (the
   `session` core usage/IDs extension + cr/ccu/permit migration) is deferred. Do not read the
   design doc as fully implemented.
+
+## Post-audit revisions
+
+External Implementation Audit (Architect/Gemini + Staff Engineer/Codex, 2026-06-22, against
+commit `af95ff1`). The audit confirmed the load-bearing controls as implemented: gate ordering
+(personal skipped before any payload is built; single-id path does **not** bypass the gate),
+redaction-before-send, transactional `set_enrichment` distinct from `upsert_session`, idempotent
+v3 migration, manual-tag preservation, and parse-from-staged layout matching Phase 1.5. The
+following were folded in or corrected as a result.
+
+### Fixes folded in
+- **Scope classifier hardened to the org slot (the one real invariant gap).** `session::scope`
+  previously matched `tatari-tv` as *any* path component, so a personal repo named `tatari-tv`
+  (`~/repos/scottidler/tatari-tv`) or a `/tmp/tatari-tv/` scratchpad would classify **work** and
+  be sent to the work account. `classify` now matches only the org *slot* — the component
+  immediately after a `repos` component — per the `~/repos/<org>/<repo>` convention. Strictly
+  fail-safe: it can now only *under*-classify work (wrongly skip), never *over*-classify (wrongly
+  send). New table tests cover the named-repo and scratchpad cases.
+- **`klod sessions enrich <id>` now resolves fuzzy/prefix ids** via `db.resolve_id` (same contract
+  as `open`/`tag`), matching its help text. Previously it passed the raw arg to `db.get` (exact
+  match only). `klod/src/main.rs::cmd_enrich`.
+- **Tag contract enforced** (`sessions::llm::normalize_tags`): lowercase, internal whitespace →
+  hyphen, dedupe, clamp to 7. A parseable-but-sloppy model reply is normalized, not stored as-is.
+
+### Corrections to earlier claims in this file (superseding, per append-only)
+- The Phase 2 section / commit described failure handling as "retries with backoff." Accurate
+  statement: it is a **bounded max-attempts cap** (selection excludes `attempts >= max_attempts`),
+  not temporal/exponential backoff — there is no `next_retry_at`, so a cron retries a failing
+  session every run until the cap. (In-call HTTP retry/backoff does exist in `llm.rs`, but that is
+  per-call, not the durable per-session backoff.) Whether to add temporal backoff is taken to the
+  reviewers for consensus (below).
+- The "halts before a send that would cross the budget" wording is imprecise: the guard checks
+  *accumulated* tokens before each send, and per-request usage is only known *after* the call, so
+  it can overshoot by up to one request. The budget is **token-only**; no cost budget exists.
+  Taken to the reviewers for consensus (below).
+
+### Open / under-consensus (post-audit)
+- **Temporal retry backoff (#3)** — bounded cap vs. add `next_retry_at`. Consensus pending.
+- **Cost budget + ≤1-request token overshoot (#4)** — accept token-only for v1? Consensus pending.
+- **`doctor` depth (#5)** — aggregate counts vs. explicit stale-row listing and true
+  last-*sweep* (vs last-*row*) semantics. Consensus pending.
+- The pre-existing design Open Questions (cwd-as-scope proxy for *content* misclassification,
+  account/data-retention, sweep cadence, multi-host) remain the user's call; the path-shape gap
+  in the proxy is now fixed, the content-level limitation is not (needs content inspection).
