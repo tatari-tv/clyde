@@ -170,7 +170,9 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         };
         match completer.enrich(&redacted) {
             Ok(out) => {
-                let overwrite_tags = force || rec.tags.is_empty() || db.is_enriched(&rec.session_id)?;
+                // Preserve tags only when they are manually owned and not force-overridden;
+                // enrichment-owned or absent tags are refreshed.
+                let overwrite_tags = force || rec.tags.is_empty() || !db.tags_are_manual(&rec.session_id)?;
                 let success = EnrichSuccess {
                     summary: &out.summary,
                     tags: overwrite_tags.then_some(out.tags.as_slice()),

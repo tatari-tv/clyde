@@ -22,7 +22,8 @@ use crate::model::{EnrichSummary, Filters, MatchSource, SearchHit, SessionRecord
 /// Bumped whenever the schema changes; drives `PRAGMA user_version` migrations.
 /// v2 added `staged_path` (Phase 1.5 transcript staging).
 /// v3 added the Phase 2 enrichment state (`scope`, `enriched_at`, …).
-const SCHEMA_VERSION: i64 = 3;
+/// v4 added `tags_source` so manual-tag preservation tracks ownership, not enrichment state.
+const SCHEMA_VERSION: i64 = 4;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -58,7 +59,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     attempts          INTEGER NOT NULL DEFAULT 0,
     redaction_count   INTEGER,
     tokens_in         INTEGER,
-    tokens_out        INTEGER
+    tokens_out        INTEGER,
+    tags_source       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(title, tags, summary);
@@ -237,8 +239,9 @@ impl Db {
         Ok(())
     }
 
-    /// Set the tags for a session (space-joined storage), rebuilding the high-signal FTS row.
-    /// Returns `false` if no such session exists.
+    /// Set the tags for a session (space-joined storage), rebuilding the high-signal FTS row, and
+    /// mark them `tags_source = 'manual'` so enrichment preserves them by default — including when
+    /// the session was already enriched. Returns `false` if no such session exists.
     pub fn set_tags(&self, session_id: &str, tags: &[String]) -> Result<bool> {
         debug!("Db::set_tags: session_id={} tags={:?}", session_id, tags);
         let joined = tags.join(" ");
@@ -253,8 +256,10 @@ impl Db {
         let Some((id, title, summary)) = row else {
             return Ok(false);
         };
-        self.conn
-            .execute("UPDATE sessions SET tags = ?2 WHERE id = ?1", params![id, joined])?;
+        self.conn.execute(
+            "UPDATE sessions SET tags = ?2, tags_source = 'manual' WHERE id = ?1",
+            params![id, joined],
+        )?;
         self.rebuild_high_signal_fts(id, title.as_deref(), &joined, summary.as_deref())?;
         Ok(true)
     }
@@ -294,12 +299,16 @@ impl Db {
             Some(tags) => tags.join(" "),
             None => existing_tags,
         };
+        // Mark ownership 'enrich' only when we actually wrote tags; otherwise leave the existing
+        // marker (so a preserved 'manual' stays manual) via COALESCE.
+        let tags_source: Option<&str> = e.tags.map(|_| "enrich");
 
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "UPDATE sessions SET summary=?2, tags=?3, scope=?4, enriched_at=?5, enriched_modified=?6, \
              enrich_model=?7, prompt_version=?8, enrich_status='ok', last_error=NULL, attempts=0, \
-             redaction_count=?9, tokens_in=?10, tokens_out=?11 WHERE id=?1",
+             redaction_count=?9, tokens_in=?10, tokens_out=?11, \
+             tags_source=COALESCE(?12, tags_source) WHERE id=?1",
             params![
                 id,
                 e.summary,
@@ -312,6 +321,7 @@ impl Db {
                 e.redaction_count as i64,
                 e.tokens_in as i64,
                 e.tokens_out as i64,
+                tags_source,
             ],
         )?;
         rebuild_high_signal_fts_on(&tx, id, title.as_deref(), &new_tags, Some(e.summary))?;
@@ -385,19 +395,20 @@ impl Db {
         Ok(candidates)
     }
 
-    /// Whether a session has ever been successfully enriched (`enriched_at IS NOT NULL`). Lets the
-    /// orchestrator tell klod-written tags (safe to refresh) from manually-set tags (preserved by
-    /// default). Returns `false` for an absent session.
-    pub fn is_enriched(&self, session_id: &str) -> Result<bool> {
-        let enriched: Option<Option<String>> = self
+    /// Whether a session's current tags were set manually (`tags_source = 'manual'`). The
+    /// orchestrator preserves these by default — regardless of whether the session was already
+    /// enriched — so a post-enrichment manual retag is never clobbered except by `--all`/`<id>`.
+    /// Returns `false` for an absent session or one with enrichment-owned / no tags.
+    pub fn tags_are_manual(&self, session_id: &str) -> Result<bool> {
+        let source: Option<Option<String>> = self
             .conn
             .query_row(
-                "SELECT enriched_at FROM sessions WHERE session_id = ?1",
+                "SELECT tags_source FROM sessions WHERE session_id = ?1",
                 params![session_id],
                 |r| r.get(0),
             )
             .optional()?;
-        Ok(matches!(enriched, Some(Some(_))))
+        Ok(matches!(source, Some(Some(s)) if s == "manual"))
     }
 
     /// Roll-up of enrichment state for `klod sessions doctor`.
@@ -647,6 +658,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(&tx, "sessions", "redaction_count", "INTEGER")?;
     ensure_column(&tx, "sessions", "tokens_in", "INTEGER")?;
     ensure_column(&tx, "sessions", "tokens_out", "INTEGER")?;
+    // v4: tag-ownership marker ('manual' / 'enrich' / NULL) for manual-tag preservation.
+    ensure_column(&tx, "sessions", "tags_source", "TEXT")?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())

@@ -89,10 +89,10 @@ fn write_empty_transcript(dir: &Path, id: &str) -> PathBuf {
     path
 }
 
-/// Insert a session row whose live transcript is `parent` under `project_dir`, with `cwd` driving
+/// Build a parsed record whose live transcript is `parent` under `project_dir`, with `cwd` driving
 /// scope classification.
-fn insert(db: &Db, dir: &Path, id: &str, cwd: &str, parent: &Path) {
-    let parsed = ParsedSession {
+fn parsed_record(dir: &Path, id: &str, cwd: &str, parent: &Path) -> ParsedSession {
+    ParsedSession {
         session_id: id.to_string(),
         cwd: Some(PathBuf::from(cwd)),
         project_dir: dir.to_path_buf(),
@@ -106,8 +106,12 @@ fn insert(db: &Db, dir: &Path, id: &str, cwd: &str, parent: &Path) {
         modified: dt("2026-06-21T10:00:00Z"),
         body: "indexed body".into(),
         jsonl_paths: vec![parent.to_path_buf()],
-    };
-    db.upsert_session(&parsed, "desk").unwrap();
+    }
+}
+
+/// Insert a session row (see [`parsed_record`]).
+fn insert(db: &Db, dir: &Path, id: &str, cwd: &str, parent: &Path) {
+    db.upsert_session(&parsed_record(dir, id, cwd, parent), "desk").unwrap();
 }
 
 #[test]
@@ -240,6 +244,40 @@ fn manual_tags_preserved_by_default_overwritten_with_all() {
     enrich(&db, Some(&fake2), &opts).unwrap();
     let rec = db.get(UUID_A).unwrap().unwrap();
     assert_eq!(rec.tags, vec!["auto-tag".to_string()], "--all overwrites manual tags");
+}
+
+#[test]
+fn manual_retag_after_enrichment_survives_later_default_reenrich() {
+    // (Codex consensus finding) A manual retag of an ALREADY-enriched session must be preserved by
+    // a later default re-enrichment — ownership is tracked via tags_source, not enrichment state.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "work content that grows over time");
+    let db = Db::open_memory().unwrap();
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
+
+    // First default enrich: auto tags written (tags_source = 'enrich').
+    let fake = Fake::ok(&["auto-one"]);
+    enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(db.get(UUID_A).unwrap().unwrap().tags, vec!["auto-one".to_string()]);
+
+    // Operator manually curates tags after enrichment (tags_source -> 'manual').
+    db.set_tags(UUID_A, &["curated".into()]).unwrap();
+
+    // Session grows (resumed): re-upsert with a newer mtime so it re-enters the candidate set.
+    let mut grown = parsed_record(tmp.path(), UUID_A, WORK_CWD, &parent);
+    grown.modified = dt("2026-06-25T10:00:00Z");
+    db.upsert_session(&grown, "desk").unwrap();
+
+    // Default re-enrich: must refresh summary/state but PRESERVE the manual tags.
+    let fake2 = Fake::ok(&["auto-two"]);
+    let stats = enrich(&db, Some(&fake2), &EnrichOptions::default()).unwrap();
+    assert_eq!(stats.enriched, 1, "grown session was re-enriched");
+    let rec = db.get(UUID_A).unwrap().unwrap();
+    assert_eq!(
+        rec.tags,
+        vec!["curated".to_string()],
+        "post-enrichment manual tags preserved"
+    );
 }
 
 #[test]

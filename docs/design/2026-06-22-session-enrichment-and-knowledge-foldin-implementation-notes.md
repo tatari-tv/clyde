@@ -129,3 +129,30 @@ following were folded in or corrected as a result.
 - The pre-existing design Open Questions (cwd-as-scope proxy for *content* misclassification,
   account/data-retention, sweep cadence, multi-host) remain the user's call; the path-shape gap
   in the proxy is now fixed, the content-level limitation is not (needs content inspection).
+
+### Consensus outcome (supersedes "under-consensus" above)
+A second review round (Architect + Staff Engineer, both re-verified against `7a16d99`) reached
+**full agreement**:
+- **#3 temporal backoff — not built (consensus: acceptable for v1).** A daily cron's invocation
+  schedule *is* the inter-run spacing; the in-call HTTP backoff handles transient 429/5xx; the
+  max-attempts cap bounds total retries. `next_retry_at`/exponential backoff is over-engineering
+  at a daily cadence — revisit only if the trigger goes sub-hourly.
+- **#4 token-only budget — kept (consensus: acceptable).** The ≤1-request overshoot is unavoidable
+  (usage is known only post-call) and costs cents; with the model pinned, tokens are a direct cost
+  proxy. No separate cost budget for v1.
+- **#5 doctor — aggregate only (consensus: acceptable).** A row-level stale listing belongs in a
+  future `klod sessions ls --enrich-status failed`, not in the health probe.
+- **Path-based scope (open q a) — acceptable as-is; do NOT add a git-remote signal.** `sessions.db`
+  records no remote URL/org (only `cwd`/`project_dir`/`git_branch`), so it would be new I/O and
+  wiring, not a cheap use of existing data; path convention is fast, deterministic, and fail-safe.
+- **Manual-tag default = preserve (open q b) — confirmed correct,** and a real gap was found and
+  **fixed**: preservation previously keyed off `is_enriched`, so a manual retag of an
+  already-enriched session would be clobbered by a later default re-enrichment. Now tag ownership
+  is tracked explicitly via a `tags_source` column (`manual`/`enrich`): `set_tags` marks `manual`,
+  `set_enrichment` marks `enrich` only when it writes tags, and the orchestrator preserves
+  `manual` tags regardless of enrichment state (overridden only by `--all`/`<id>`). Schema v4;
+  regression test `manual_retag_after_enrichment_survives_later_default_reenrich`.
+- **No release blockers.** One operability note both reviewers raised: after a session exhausts
+  `max_attempts`, recovery is manual (targeted `enrich <id>` or a higher `--max-attempts`) — worth
+  documenting for operators, not a blocker.
+- Account/data-retention, sweep cadence, and multi-host remain user/ops decisions (unchanged).
