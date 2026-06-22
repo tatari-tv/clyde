@@ -47,6 +47,8 @@ pub enum SessionsCommand {
     Tag(TagArgs),
     /// Reindex the catalog from ~/.claude/projects (incremental, mtime-skip).
     Reindex(ReindexArgs),
+    /// Stage durable copies of dormant transcripts before the 30-day TTL reaps them.
+    Stage(StageArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -113,6 +115,16 @@ pub struct ReindexArgs {
     /// Override the Claude projects dir (default: ~/.claude/projects).
     #[arg(long)]
     pub projects_dir: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct StageArgs {
+    /// Treat a session as dormant once it has been idle this long (e.g. 7d, 24h). Default 7d.
+    #[arg(long, default_value = "7d")]
+    pub dormant_after: String,
+    /// Stage every non-archived session regardless of dormancy.
+    #[arg(long)]
+    pub all: bool,
 }
 
 /// Parse a `--since` value: a relative span like `7d`/`24h`/`90m`/`30s`/`2w`, an RFC 3339

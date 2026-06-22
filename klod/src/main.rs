@@ -16,8 +16,8 @@ use colored::Colorize;
 use eyre::{Context, Result};
 use log::{LevelFilter, warn};
 
-use cli::{Cli, Command, LsArgs, OpenArgs, ReindexArgs, SearchArgs, SessionsCommand, TagArgs};
-use sessions::{Db, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord};
+use cli::{Cli, Command, LsArgs, OpenArgs, ReindexArgs, SearchArgs, SessionsCommand, StageArgs, TagArgs};
+use sessions::{Db, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, StageStats};
 
 /// Max width of a title in the human (terminal) listing before it is truncated with an ellipsis.
 const TITLE_DISPLAY_WIDTH: usize = 80;
@@ -41,6 +41,7 @@ fn run(cli: Cli) -> Result<()> {
             SessionsCommand::Open(args) => cmd_open(&db, args),
             SessionsCommand::Tag(args) => cmd_tag(&db, args),
             SessionsCommand::Reindex(args) => cmd_reindex(&db, args),
+            SessionsCommand::Stage(args) => cmd_stage(&db, args),
         },
     }
 }
@@ -74,17 +75,12 @@ fn cmd_ls(db: &Db, args: LsArgs) -> Result<()> {
 
 fn cmd_open(db: &Db, args: OpenArgs) -> Result<()> {
     lazy_reindex(db, args.no_reindex);
-    let ids = db.resolve_id(&args.id)?;
-    match ids.as_slice() {
+    let id = match db.resolve_id(&args.id)?.as_slice() {
         [] => {
             eprintln!("{} no session matches {:?}", "✗".red(), args.id);
             std::process::exit(1);
         }
-        [id] => {
-            // The actionable line, alone on stdout so it is copy-pasteable / pipeable.
-            println!("claude --resume {id}");
-            Ok(())
-        }
+        [id] => id.clone(),
         many => {
             eprintln!("{} {} sessions match {:?}:", "→".blue(), many.len(), args.id);
             for id in many {
@@ -92,7 +88,23 @@ fn cmd_open(db: &Db, args: OpenArgs) -> Result<()> {
             }
             std::process::exit(1);
         }
+    };
+    let Some(rec) = db.get(&id)? else {
+        eprintln!("{} session {id} vanished between resolve and fetch", "✗".red());
+        std::process::exit(1);
+    };
+    if !rec.archived {
+        // Live transcript: the actionable resume line, alone on stdout (copy-pasteable / pipeable).
+        println!("claude --resume {id}");
+    } else if let Some(staged) = &rec.staged_path {
+        // Reaped by the 30-day TTL, but Phase 1.5 staged a durable copy.
+        eprintln!("{} transcript reaped by TTL; staged copy:", "→".blue());
+        println!("{}", staged.display());
+    } else {
+        eprintln!("{} transcript reaped by TTL and no staged copy exists", "✗".red());
+        std::process::exit(1);
     }
+    Ok(())
 }
 
 fn cmd_tag(db: &Db, args: TagArgs) -> Result<()> {
@@ -124,6 +136,16 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
         .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects (set HOME)"))?;
     let stats = sessions::reindex(db, &projects_dir)?;
     print_reindex(&stats);
+    Ok(())
+}
+
+fn cmd_stage(db: &Db, args: StageArgs) -> Result<()> {
+    // Stage off fresh mtimes, so dormancy reflects the latest activity.
+    lazy_reindex(db, false);
+    let dormant_before = if args.all { None } else { Some(cli::parse_since(&args.dormant_after)?) };
+    let staged_root = session::paths::staged_dir();
+    let stats = sessions::stage_dormant(db, dormant_before, &staged_root)?;
+    print_stage(&stats);
     Ok(())
 }
 
@@ -226,6 +248,21 @@ fn print_reindex(stats: &ReindexStats) {
             stats.upserted,
             stats.skipped_unchanged,
             stats.archived,
+        );
+    } else {
+        print_json(stats);
+    }
+}
+
+fn print_stage(stats: &StageStats) {
+    if std::io::stdout().is_terminal() {
+        println!(
+            "{} considered {}, staged {}, up-to-date {} ({} files copied)",
+            "✓".green(),
+            stats.considered,
+            stats.staged,
+            stats.up_to_date,
+            stats.files_copied,
         );
     } else {
         print_json(stats);

@@ -26,6 +26,7 @@ klod sessions ls --repo loopr --since 7d    # metadata filters: repo / date / ta
 klod sessions open <id-or-prefix>           # prints the `claude --resume <uuid>` line
 klod sessions tag <id> terraform s3         # set search tags (space-separated)
 klod sessions reindex                       # incremental, mtime-skip
+klod sessions stage --dormant-after 7d      # durably copy dormant transcripts before the TTL reaps them
 ```
 
 Search / ls / open lazily reindex first (incremental, cheap) so the catalog is fresh; pass
@@ -35,6 +36,7 @@ Search / ls / open lazily reindex first (incremental, cheap) so the catalog is f
 
 ```
 $XDG_DATA_HOME/klod/sessions.db    # the index (rebuildable from JSONL: delete + reindex)
+$XDG_DATA_HOME/klod/staged/        # durable transcript copies (TTL insurance, via `stage`)
 $XDG_DATA_HOME/klod/logs/klod.log
 ```
 

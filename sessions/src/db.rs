@@ -9,7 +9,7 @@
 //! (title + tags + summary) used for ranking; `sessions_body_fts` indexes transcript text for
 //! content recall. Both are keyed by `rowid = sessions.id` and rebuilt in lockstep with the row.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use eyre::{Context, Result};
@@ -20,7 +20,8 @@ use session::ParsedSession;
 use crate::model::{Filters, MatchSource, SearchHit, SessionRecord};
 
 /// Bumped whenever the schema changes; drives `PRAGMA user_version` migrations.
-const SCHEMA_VERSION: i64 = 1;
+/// v2 added `staged_path` (Phase 1.5 transcript staging).
+const SCHEMA_VERSION: i64 = 2;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -44,7 +45,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     modified        TEXT NOT NULL,
     cost            REAL,
     host            TEXT NOT NULL,
-    archived        INTEGER NOT NULL DEFAULT 0
+    archived        INTEGER NOT NULL DEFAULT 0,
+    staged_path     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(title, tags, summary);
@@ -55,7 +57,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS sessions_body_fts USING fts5(body);
 /// stays in sync with one source of truth.
 const COLS: &str = "s.id, s.session_id, s.cwd, s.project_dir, s.transcript_path, s.title, \
      s.first_prompt, s.summary, s.tags, s.git_branch, s.model, s.n_msgs, s.created, s.modified, \
-     s.cost, s.host, s.archived";
+     s.cost, s.host, s.archived, s.staged_path";
 
 /// Outcome of a single [`Db::upsert_session`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +238,38 @@ impl Db {
         Ok(true)
     }
 
+    /// Record the directory holding the durable staged copy for a session. Returns `false` if no
+    /// such session exists.
+    pub fn set_staged_path(&self, session_id: &str, staged_dir: &Path) -> Result<bool> {
+        debug!(
+            "Db::set_staged_path: session_id={} dir={}",
+            session_id,
+            staged_dir.display()
+        );
+        let n = self.conn.execute(
+            "UPDATE sessions SET staged_path = ?2 WHERE session_id = ?1",
+            params![session_id, staged_dir.to_string_lossy()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Non-archived sessions eligible for staging: all of them when `dormant_before` is `None`,
+    /// else only those whose `modified` (mtime) is at or before the cutoff.
+    pub fn staging_candidates(&self, dormant_before: Option<DateTime<Utc>>) -> Result<Vec<SessionRecord>> {
+        debug!("Db::staging_candidates: dormant_before={:?}", dormant_before);
+        let filters = Filters {
+            since: None,
+            include_archived: false,
+            ..Default::default()
+        };
+        let all = self.list(&filters)?;
+        let candidates = match dormant_before {
+            Some(cutoff) => all.into_iter().filter(|r| r.modified <= cutoff).collect(),
+            None => all,
+        };
+        Ok(candidates)
+    }
+
     /// Mark rows whose transcript no longer exists on disk as archived (TTL-reaped), and clear
     /// the flag on any that reappeared. Returns the count currently archived.
     pub fn reconcile_archived(&self) -> Result<usize> {
@@ -370,7 +404,7 @@ impl Db {
                 Ok(SearchHit {
                     record: map_record(row)?,
                     matched,
-                    score: row.get(17)?,
+                    score: row.get(18)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -396,8 +430,24 @@ fn migrate(conn: &Connection) -> Result<()> {
     debug!("migrate: user_version {version} -> {SCHEMA_VERSION}");
     let tx = conn.unchecked_transaction()?;
     tx.execute_batch(SCHEMA_SQL).context("schema batch")?;
+    // v2: add staged_path to pre-existing v1 tables (no-op on fresh DBs / CREATE above).
+    ensure_column(&tx, "sessions", "staged_path", "TEXT")?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Idempotently add `column` to `table` if absent (probe `PRAGMA table_info` first). All three
+/// args are hardcoded identifiers — never user input — so interpolation is safe.
+fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(rusqlite::Result::ok)
+        .any(|name| name == column);
+    if !exists {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+    }
     Ok(())
 }
 
@@ -424,6 +474,7 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         cost: row.get(14)?,
         host: row.get(15)?,
         archived: row.get::<_, i64>(16)? != 0,
+        staged_path: row.get::<_, Option<String>>(17)?.map(PathBuf::from),
     })
 }
 

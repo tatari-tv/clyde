@@ -12,7 +12,9 @@
 pub mod db;
 pub mod index;
 pub mod model;
+pub mod stage;
 
 pub use db::{Db, Upsert};
 pub use index::reindex;
-pub use model::{Filters, MatchSource, ReindexStats, SearchHit, SessionRecord};
+pub use model::{Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, StageStats};
+pub use stage::stage_dormant;

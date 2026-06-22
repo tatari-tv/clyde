@@ -33,6 +33,9 @@ pub struct SessionRecord {
     pub host: String,
     /// `true` once the transcript has been reaped by Claude's 30-day TTL.
     pub archived: bool,
+    /// Directory holding the durable staged copy (Phase 1.5), once staged; `None` otherwise.
+    /// Survives the TTL reap, so `open`/trace still resolve an archived session's content.
+    pub staged_path: Option<PathBuf>,
 }
 
 /// Where a search hit matched, so ranking can put high-signal hits above body-only hits.
@@ -80,4 +83,18 @@ pub struct ReindexStats {
     pub upserted: usize,
     pub skipped_unchanged: usize,
     pub archived: usize,
+}
+
+/// Counts from a staging sweep (Phase 1.5).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct StageStats {
+    /// Sessions that matched the dormancy filter and were considered for staging.
+    pub considered: usize,
+    /// Sessions for which at least one transcript file was (re)copied.
+    pub staged: usize,
+    /// Sessions already up to date (staged copy current with the live transcript).
+    pub up_to_date: usize,
+    /// Total transcript files copied across all staged sessions.
+    pub files_copied: usize,
 }
