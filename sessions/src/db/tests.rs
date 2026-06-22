@@ -17,6 +17,7 @@ fn parsed(session_id: &str, transcript: &str) -> ParsedSession {
         project_dir: PathBuf::from("/home/saidler/.claude/projects/-home-saidler-repos-tatari-tv-marquee"),
         ai_title: Some("Terraform Marquee bucket setup".into()),
         first_prompt: Some("set up the bucket".into()),
+        command_name: None,
         git_branch: Some("main".into()),
         model: Some("claude-opus-4-8".into()),
         n_msgs: 12,

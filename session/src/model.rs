@@ -39,6 +39,9 @@ pub struct ParsedSession {
     pub ai_title: Option<String>,
     /// First genuine user prompt (command/caveat/system wrappers skipped). Title fallback.
     pub first_prompt: Option<String>,
+    /// The invoked slash-command / skill name (last one, excluding `/clear`), for sessions that
+    /// opened with a command and so have neither an ai-title nor a typed first prompt.
+    pub command_name: Option<String>,
     /// Git branch the session ran on (first `gitBranch` seen).
     pub git_branch: Option<String>,
     /// The most recent assistant model id seen (e.g. `claude-opus-4-8`).
@@ -56,8 +59,12 @@ pub struct ParsedSession {
 }
 
 impl ParsedSession {
-    /// The display title: Claude's `ai-title` when present, else the first user prompt.
+    /// The display title: Claude's `ai-title` when present, else the first genuine user prompt,
+    /// else the invoked command/skill name (for command-opened sessions Claude never titled).
     pub fn title(&self) -> Option<&str> {
-        self.ai_title.as_deref().or(self.first_prompt.as_deref())
+        self.ai_title
+            .as_deref()
+            .or(self.first_prompt.as_deref())
+            .or(self.command_name.as_deref())
     }
 }

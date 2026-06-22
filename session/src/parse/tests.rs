@@ -122,9 +122,87 @@ fn first_prompt_is_capped() {
 }
 
 #[test]
+fn command_opened_session_titles_from_skill_name() {
+    // A /clear-then-skill session: no ai-title, no typed prompt, skill body injected. Title
+    // should fall back to the invoked skill name, not the "Base directory for this skill:" dump.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    write(
+        &path,
+        &[
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:00Z","message":{"content":"<local-command-caveat>Caveat: the messages below were generated while running local commands</local-command-caveat>"}}"#,
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:01Z","message":{"content":"<command-name>/clear</command-name>"}}"#,
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:02Z","message":{"content":"<command-name>/how-to-execute-a-plan</command-name>"}}"#,
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:03Z","message":{"content":"Base directory for this skill: /home/saidler/.claude/skills/how-to-execute-a-plan\n\n# How to Execute a Plan"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:04Z","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"starting phase 1"}]}}"#,
+        ],
+    );
+    let s = &parse_sessions(&[parent_file(path)])[0];
+    assert_eq!(s.ai_title, None);
+    assert_eq!(s.first_prompt, None, "skill-body injection is not a prompt");
+    assert_eq!(
+        s.command_name.as_deref(),
+        Some("how-to-execute-a-plan"),
+        "/clear excluded, skill wins"
+    );
+    assert_eq!(s.title(), Some("how-to-execute-a-plan"));
+    // Skill boilerplate stays out of the body; real assistant content stays in.
+    assert!(!s.body.contains("Base directory for this skill"));
+    assert!(s.body.contains("starting phase 1"));
+}
+
+#[test]
+fn typed_prompt_after_clear_wins_over_command_name() {
+    // The common "clear and keep working" case: a real typed prompt follows /clear.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    write(
+        &path,
+        &[
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:00Z","message":{"content":"<command-name>/clear</command-name>"}}"#,
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:01Z","message":{"content":"now wire up the retry logic"}}"#,
+        ],
+    );
+    let s = &parse_sessions(&[parent_file(path)])[0];
+    assert_eq!(s.title(), Some("now wire up the retry logic"));
+}
+
+#[test]
+fn local_command_stdout_is_noise() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    write(
+        &path,
+        &[
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:00Z","message":{"content":"<command-name>/model</command-name>"}}"#,
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:01Z","message":{"content":"<local-command-stdout>Set model to Fable 5</local-command-stdout>"}}"#,
+        ],
+    );
+    let s = &parse_sessions(&[parent_file(path)])[0];
+    assert_eq!(s.first_prompt, None, "local-command-stdout is not a prompt");
+    assert_eq!(s.title(), Some("model"));
+}
+
+#[test]
+fn extract_command_name_edges() {
+    assert_eq!(
+        extract_command_name("<command-name>/how-to-execute-a-plan</command-name>").as_deref(),
+        Some("how-to-execute-a-plan")
+    );
+    assert_eq!(extract_command_name("  <command-name>/clear</command-name>  "), None);
+    assert_eq!(extract_command_name("not a command"), None);
+    assert_eq!(extract_command_name("<command-name></command-name>"), None);
+}
+
+#[test]
 fn helpers_handle_edges() {
     assert!(is_command_noise("   "));
     assert!(is_command_noise("<system-reminder>foo"));
+    assert!(is_command_noise(
+        "<task-notification><status>failed</status></task-notification>"
+    ));
+    assert!(is_command_noise("[Request interrupted by user]"));
+    assert!(is_command_noise("[Request interrupted by user for tool use]"));
     assert!(!is_command_noise("real prompt"));
     assert_eq!(cap_chars("héllo", 2), "hé");
     assert_eq!(

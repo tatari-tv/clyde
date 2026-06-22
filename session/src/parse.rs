@@ -23,6 +23,8 @@ const MAX_BODY_CHARS: usize = 500_000;
 /// injected reminders). The first user text that is *not* one of these becomes `first_prompt`.
 const NOISE_PREFIXES: &[&str] = &[
     "<local-command-caveat>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
     "<command-name>",
     "<command-message>",
     "<command-args>",
@@ -32,6 +34,12 @@ const NOISE_PREFIXES: &[&str] = &[
     "<bash-stdout>",
     "<bash-stderr>",
     "<user-prompt-submit-hook>",
+    "<task-notification>",
+    // Skill loading injects the skill body as a user message; it is not a real prompt.
+    "Base directory for this skill:",
+    // Claude Code injects these as user-role messages when you interrupt a turn.
+    "[Request interrupted by user]",
+    "[Request interrupted by user for tool use]",
 ];
 
 /// Group discovered files by parent session id and parse each group into one record.
@@ -72,6 +80,7 @@ struct Acc {
     git_branch: Option<String>,
     ai_title: Option<String>,
     first_prompt: Option<String>,
+    command_name: Option<String>,
     model: Option<String>,
     n_msgs: usize,
     created: Option<DateTime<Utc>>,
@@ -90,6 +99,7 @@ impl Acc {
             git_branch: None,
             ai_title: None,
             first_prompt: None,
+            command_name: None,
             model: None,
             n_msgs: 0,
             created: None,
@@ -158,6 +168,9 @@ impl Acc {
                 self.n_msgs += 1;
                 let text = extract_text(v.get("message").and_then(|m| m.get("content")));
                 let trimmed = text.trim();
+                if let Some(cmd) = extract_command_name(trimmed) {
+                    self.command_name = Some(cmd); // last meaningful command wins
+                }
                 if !is_command_noise(trimmed) {
                     if self.first_prompt.is_none() {
                         self.first_prompt = Some(cap_chars(trimmed, MAX_FIRST_PROMPT_CHARS));
@@ -211,6 +224,7 @@ impl Acc {
             project_dir,
             ai_title: self.ai_title,
             first_prompt: self.first_prompt,
+            command_name: self.command_name,
             git_branch: self.git_branch,
             model: self.model,
             n_msgs: self.n_msgs,
@@ -249,6 +263,24 @@ fn extract_text(content: Option<&Value>) -> String {
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// Extract the invoked command/skill name from a `<command-name>…</command-name>` user message,
+/// stripping a leading `/`. Returns `None` for non-command messages and for `/clear` (which is
+/// context-clearing, not a session topic), so the last *meaningful* command becomes the title.
+fn extract_command_name(text: &str) -> Option<String> {
+    let inner = text
+        .trim()
+        .strip_prefix("<command-name>")?
+        .split("</command-name>")
+        .next()?
+        .trim()
+        .trim_start_matches('/')
+        .trim();
+    if inner.is_empty() || inner == "clear" {
+        return None;
+    }
+    Some(inner.to_string())
 }
 
 fn is_command_noise(s: &str) -> bool {
