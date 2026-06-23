@@ -567,10 +567,13 @@ impl Db {
         };
         let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
 
-        let high = self.search_table("sessions_fts", &fts, include_archived, MatchSource::HighSignal)?;
+        // Bound each table query with the combined `limit` so the intermediate result set never
+        // grows past what the final `truncate` keeps — neither table can contribute more than
+        // `limit` rows to the merge, so the SQL `LIMIT` is sound and caps query work/memory.
+        let high = self.search_table("sessions_fts", &fts, include_archived, MatchSource::HighSignal, limit)?;
         let mut seen: std::collections::HashSet<String> = high.iter().map(|h| h.record.session_id.clone()).collect();
         let mut hits = high;
-        for hit in self.search_table("sessions_body_fts", &fts, include_archived, MatchSource::Body)? {
+        for hit in self.search_table("sessions_body_fts", &fts, include_archived, MatchSource::Body, limit)? {
             if seen.insert(hit.record.session_id.clone()) {
                 hits.push(hit);
             }
@@ -585,6 +588,7 @@ impl Db {
         fts_query: &str,
         include_archived: bool,
         matched: MatchSource,
+        limit: usize,
     ) -> Result<Vec<SearchHit>> {
         // `fts_table` is a hardcoded identifier (never user input), so interpolating it is safe;
         // the user query is bound via params.
@@ -592,11 +596,11 @@ impl Db {
             "SELECT {COLS}, bm25({fts_table}) AS score FROM {fts_table} \
              JOIN sessions s ON s.id = {fts_table}.rowid \
              WHERE {fts_table} MATCH ?1 AND (?2 = 1 OR s.archived = 0) \
-             ORDER BY score"
+             ORDER BY score LIMIT ?3"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let hits = stmt
-            .query_map(params![fts_query, include_archived as i64], |row| {
+            .query_map(params![fts_query, include_archived as i64, limit as i64], |row| {
                 Ok(SearchHit {
                     record: map_record(row)?,
                     matched,

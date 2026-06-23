@@ -41,36 +41,53 @@ fn serve_stdout_carries_only_jsonrpc_frames() {
     stdin.write_all(init.as_bytes()).expect("write initialize");
     stdin.write_all(b"\n").expect("write newline");
     stdin.flush().expect("flush initialize");
+    // Closing stdin signals EOF after the request, so the server answers then shuts down — which
+    // lets the reader thread drain stdout to completion (no hang) and we can inspect EVERY line.
+    drop(stdin);
 
-    // Read the first response line on a worker thread so a hung server can't wedge the test.
+    // Drain ALL of stdout to EOF on a worker thread so a hung server can't wedge the test, and so
+    // we can assert on every line the server emitted — not just the first.
     let (tx, rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut buf = BufReader::new(stdout);
-        let mut line = String::new();
-        let n = buf.read_line(&mut line).unwrap_or(0);
-        let _ = tx.send((n, line));
+        let mut lines = Vec::new();
+        loop {
+            let mut line = String::new();
+            match buf.read_line(&mut line) {
+                Ok(0) => break, // EOF
+                Ok(_) => lines.push(line),
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(lines);
     });
 
-    let (n, line) = rx
+    let lines = rx
         .recv_timeout(RESPONSE_TIMEOUT)
-        .expect("server did not respond within the timeout");
-    assert!(n > 0, "server closed stdout without responding to initialize");
+        .expect("server did not respond / close stdout within the timeout");
 
-    // The response line MUST be a JSON-RPC frame, not a stray log/print line.
-    let frame: serde_json::Value = serde_json::from_str(line.trim())
-        .unwrap_or_else(|e| panic!("stdout line is not JSON-RPC: {e}\nline: {line:?}"));
-    assert_eq!(
-        frame["jsonrpc"], "2.0",
-        "initialize response is not jsonrpc 2.0: {frame}"
-    );
-    assert_eq!(frame["id"], 1, "initialize response id mismatch: {frame}");
+    // Every non-empty stdout line MUST be a JSON-RPC frame — no stray log/print line may leak.
+    let mut saw_init_response = false;
+    for line in &lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let frame: serde_json::Value = serde_json::from_str(line.trim())
+            .unwrap_or_else(|e| panic!("stdout line is not JSON-RPC: {e}\nline: {line:?}"));
+        assert_eq!(frame["jsonrpc"], "2.0", "stdout frame is not jsonrpc 2.0: {frame}");
+        if frame["id"] == 1 {
+            assert!(
+                frame.get("result").is_some(),
+                "initialize response carries no result: {frame}"
+            );
+            saw_init_response = true;
+        }
+    }
     assert!(
-        frame.get("result").is_some(),
-        "initialize response carries no result: {frame}"
+        saw_init_response,
+        "server never emitted the initialize response (id 1); lines: {lines:?}"
     );
 
-    // Closing stdin signals EOF; the server shuts down cleanly.
-    drop(stdin);
     reader.join().expect("reader thread");
     let _ = child.wait();
 }

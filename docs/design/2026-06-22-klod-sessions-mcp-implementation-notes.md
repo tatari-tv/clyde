@@ -120,3 +120,43 @@ Running, append-only record of how the implementation interprets or diverges fro
 - None. (The design's one open question — `sessions serve` vs top-level `serve` —
   was resolved to the grouped `sessions serve`, as the design was already
   leaning.)
+
+## Post-audit fixes (Architect + Staff Engineer review)
+
+After shipping v0.1.0, the implementation was audited by the Architect (Gemini)
+and Staff Engineer (Codex). The Architect found zero gaps; the Staff Engineer
+raised three findings, all addressed here:
+
+### Design decisions
+- **Bounded the search intermediate result set (Staff Engineer #1, Medium).**
+  `Db::search` clamped only the response, not the query: `search_table` ran each
+  FTS query with no SQL `LIMIT`, collected every match into a `Vec`, then
+  truncated. Added `LIMIT ?3` to `search_table` and threaded the combined `limit`
+  into both calls (`sessions/src/db.rs:search`/`search_table`). Sound because
+  neither table can contribute more than `limit` rows to the merge. This also
+  tightens the CLI's `search`, which shares `Db::search`.
+- **Made `SQLITE_BUSY` an explicit, named retry signal (Staff Engineer #2,
+  Low/Med).** The design promised a "retryable `internal_error` naming
+  `SQLITE_BUSY`"; the code surfaced the rusqlite error generically. Added
+  `SessionsMcpServer::db_err` (`sessions/src/mcp.rs`), which downcasts the eyre
+  report chain to `rusqlite::Error::SqliteFailure` and, on `DatabaseBusy` /
+  `DatabaseLocked`, returns an `internal_error` whose message starts
+  `SQLITE_BUSY:` and says to retry. All DB-query call sites route through it; the
+  mutex-poison path stays on `err`.
+- **Closed the test gaps (Staff Engineer #3, Low).** Added
+  `sessions_ls_clamps_limit_to_hard_max` (mirrors the search clamp test). Rewrote
+  the `klod/tests/serve.rs` smoke test to drain ALL of stdout to EOF and assert
+  every non-empty line is a JSON-RPC frame (it previously checked only the first
+  line, contradicting its own comment).
+
+### Deviations
+- None. Both reviewers agreed the `projects_dir` omission is a correct v1
+  simplification.
+
+### Tradeoffs
+- Staff Engineer #1 lives in `Db::search` (shared with the CLI), so the fix
+  intentionally touches the shared query path rather than adding MCP-only
+  clamping — one bounded implementation for both surfaces.
+
+### Open questions
+- None.

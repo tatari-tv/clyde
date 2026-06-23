@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "klod"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "clap",
@@ -1781,7 +1781,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "dirs",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "sessions"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "eyre",

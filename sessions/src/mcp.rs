@@ -117,6 +117,25 @@ impl SessionsMcpServer {
         McpError::invalid_params(e.to_string(), None)
     }
 
+    /// Map a DB query failure to an MCP error. A post-`busy_timeout` `SQLITE_BUSY` (the catalog
+    /// lost the cross-process write race even after waiting) is surfaced as an `internal_error`
+    /// that explicitly names `SQLITE_BUSY` so the agent knows the call is **retryable** rather than
+    /// a permanent failure; every other DB/IO error falls through to the generic `err`.
+    fn db_err(e: eyre::Report) -> McpError {
+        for cause in e.chain() {
+            if let Some(rusqlite::Error::SqliteFailure(inner, _)) = cause.downcast_ref::<rusqlite::Error>()
+                && matches!(
+                    inner.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                )
+            {
+                warn!("SessionsMcpServer: SQLITE_BUSY after busy_timeout (retryable): {e}");
+                return McpError::internal_error(format!("SQLITE_BUSY: catalog is busy, retry the call ({e})"), None);
+            }
+        }
+        Self::err(e)
+    }
+
     /// Map a resolved record to the 3-state open result by **existence**, not the `archived`
     /// flag: prefer the live transcript if it is on disk (robust to a TTL reap between lookup and
     /// use), else a durable staged copy that exists, else nothing to open.
@@ -162,7 +181,8 @@ impl SessionsMcpServer {
 
         let hits = Self::block_in_place_compat(|| -> Result<Vec<SearchHit>, McpError> {
             let db = self.db.lock().map_err(Self::err)?;
-            db.search(&req.query, Some(limit), include_archived).map_err(Self::err)
+            db.search(&req.query, Some(limit), include_archived)
+                .map_err(Self::db_err)
         })?;
 
         debug!("sessions_search: returning {} hits", hits.len());
@@ -200,7 +220,7 @@ impl SessionsMcpServer {
 
         let records = Self::block_in_place_compat(|| -> Result<Vec<SessionRecord>, McpError> {
             let db = self.db.lock().map_err(Self::err)?;
-            db.list(&filters).map_err(Self::err)
+            db.list(&filters).map_err(Self::db_err)
         })?;
 
         debug!("sessions_ls: returning {} records", records.len());
@@ -221,7 +241,7 @@ impl SessionsMcpServer {
         debug!("session_open: id={:?}", req.id);
         let result = Self::block_in_place_compat(|| -> Result<OpenResult, McpError> {
             let db = self.db.lock().map_err(Self::err)?;
-            let ids = db.resolve_id(&req.id).map_err(Self::err)?;
+            let ids = db.resolve_id(&req.id).map_err(Self::db_err)?;
             let id = match ids.as_slice() {
                 [id] => id.clone(),
                 [] => return Err(Self::invalid(format!("no session matches {:?}", req.id))),
@@ -235,7 +255,7 @@ impl SessionsMcpServer {
             };
             let rec = db
                 .get(&id)
-                .map_err(Self::err)?
+                .map_err(Self::db_err)?
                 .ok_or_else(|| Self::err(format!("session {id} vanished between resolve and fetch")))?;
             Ok(Self::open_result_for(rec))
         })?;

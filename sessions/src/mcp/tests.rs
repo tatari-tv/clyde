@@ -117,6 +117,31 @@ async fn sessions_search_clamps_limit_to_hard_max() {
 }
 
 #[tokio::test]
+async fn sessions_ls_clamps_limit_to_hard_max() {
+    let db = Db::open_memory().unwrap();
+    // Seed more rows than the hard cap, then ask for far more than the cap.
+    let n = tools::LS_LIMIT_MAX as usize + 5;
+    for i in 0..n {
+        let id = format!("{i:08x}-0000-4000-8000-000000000000");
+        db.upsert_session(&parsed(&id, &format!("/tmp/{i}.jsonl"), "marquee", "x"), "desk")
+            .unwrap();
+    }
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("sessions_ls", json!({"limit": 100000}))
+        .await
+        .expect("dispatch");
+    let v = first_content_as_json(&result);
+    assert_eq!(
+        v["count"],
+        tools::LS_LIMIT_MAX,
+        "ls rows must clamp to LS_LIMIT_MAX: {}",
+        v["count"]
+    );
+}
+
+#[tokio::test]
 async fn sessions_ls_filters_by_repo() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl", "marquee", "x"), "desk")
