@@ -68,7 +68,7 @@ pub struct SessionRef {
 /// `transcript_path` if it is on disk, else the `staged_path` if present, else `Unavailable` —
 /// robust to a transcript reaped between catalog lookup and use.
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case", tag = "state")]
+#[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case", tag = "state")]
 pub enum OpenResult {
     /// Live transcript present: the agent can resume.
     Resumeable {

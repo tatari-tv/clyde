@@ -290,3 +290,6 @@ pub async fn serve_stdio(db_path: &Path, projects_dir: &Path, opts: ServeOpts) -
     info!("serve_stdio: client disconnected, shutting down");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
