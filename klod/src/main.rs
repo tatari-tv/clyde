@@ -251,13 +251,14 @@ fn print_hits(hits: &[SearchHit]) {
         println!("{}", "no matching sessions".dimmed());
         return;
     }
+    let msgs_width = msgs_column_width(hits.iter().map(|h| h.record.n_msgs));
     for hit in hits {
         let marker = match hit.matched {
             MatchSource::HighSignal => "●".green(),
             MatchSource::Body => "○".dimmed(),
         };
         print!("{marker} ");
-        print_record_line(&hit.record);
+        print_record_line(&hit.record, msgs_width);
     }
 }
 
@@ -270,8 +271,9 @@ fn print_records(records: &[SessionRecord]) {
         println!("{}", "no sessions".dimmed());
         return;
     }
+    let msgs_width = msgs_column_width(records.iter().map(|r| r.n_msgs));
     for rec in records {
-        print_record_line(rec);
+        print_record_line(rec, msgs_width);
     }
 }
 
@@ -293,11 +295,17 @@ fn truncate_title(raw: &str) -> String {
     }
 }
 
-/// One human-readable line: `<short-id>  <title>  <repo:branch>  <n>msgs  <date> [tags] (archived)`.
-fn print_record_line(rec: &SessionRecord) {
+/// One human-readable line: `<short-id>  <date>  <n>  <title>  <repo:branch>[tags] (archived)`.
+/// `msgs_width` right-justifies the message count so the title column lines up across rows.
+fn print_record_line(rec: &SessionRecord, msgs_width: usize) {
     let title = display_title(rec);
     let repo = rec.cwd.as_deref().and_then(|c| c.rsplit('/').next()).unwrap_or("-");
-    let branch = rec.git_branch.as_deref().unwrap_or("-");
+    // A detached HEAD (or a cwd outside any repo) is recorded as the literal "HEAD" by Claude
+    // Code; that's not a meaningful branch name, so render it as an empty branch (`repo:`).
+    let branch = match rec.git_branch.as_deref() {
+        None | Some("HEAD") => "",
+        Some(b) => b,
+    };
     let date = rec.modified.format("%Y-%m-%d");
     let tags = if rec.tags.is_empty() {
         String::new()
@@ -306,15 +314,21 @@ fn print_record_line(rec: &SessionRecord) {
     };
     let archived = if rec.archived { " (archived)".red().to_string() } else { String::new() };
     println!(
-        "{}  {}  {}  {}msgs  {}{}{}",
+        "{} {} {:>width$} {}  {}{}{}",
         short_id(&rec.session_id).yellow(),
+        date.to_string().dimmed(),
+        rec.n_msgs,
         title.as_str().bold(),
         format!("{repo}:{branch}").cyan(),
-        rec.n_msgs,
-        date.to_string().dimmed(),
         tags.green(),
         archived,
+        width = msgs_width,
     );
+}
+
+/// Width of the widest message count across `counts`, for right-justified column alignment.
+fn msgs_column_width(counts: impl Iterator<Item = i64>) -> usize {
+    counts.map(|n| n.to_string().len()).max().unwrap_or(1)
 }
 
 fn print_reindex(stats: &ReindexStats) {
