@@ -13,6 +13,7 @@ pub mod db;
 pub mod enrich;
 pub mod index;
 pub mod llm;
+pub mod mcp;
 pub mod model;
 pub mod stage;
 
@@ -20,6 +21,7 @@ pub use db::{Db, EnrichSuccess, Upsert};
 pub use enrich::{EnrichOptions, enrich};
 pub use index::reindex;
 pub use llm::{AnthropicClient, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment};
+pub use mcp::{ServeOpts, SessionsMcpServer, serve_stdio};
 pub use model::{
     EnrichDetail, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, StageStats,
 };

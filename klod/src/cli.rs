@@ -53,6 +53,9 @@ pub enum SessionsCommand {
     Enrich(EnrichArgs),
     /// Report enrichment health: counts and the last successful enrichment.
     Doctor,
+    /// Serve the session catalog over MCP (stdio). Intended to be spawned by an MCP host
+    /// (e.g. Claude Code), not run by hand: it speaks JSON-RPC on stdin/stdout.
+    Serve(ServeArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -155,6 +158,16 @@ pub struct EnrichArgs {
     /// Halt the sweep once cumulative tokens (in + out) reach this budget.
     #[arg(long)]
     pub budget_tokens: Option<u64>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ServeArgs {
+    /// Override the Claude projects dir (default: ~/.claude/projects).
+    #[arg(long)]
+    pub projects_dir: Option<PathBuf>,
+    /// Skip the one-time reindex at startup (serve a possibly-stale catalog).
+    #[arg(long)]
+    pub no_reindex: bool,
 }
 
 /// Parse a `--since` value: a relative span like `7d`/`24h`/`90m`/`30s`/`2w`, an RFC 3339

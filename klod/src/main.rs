@@ -16,10 +16,12 @@ use colored::Colorize;
 use eyre::{Context, Result};
 use log::{LevelFilter, warn};
 
-use cli::{Cli, Command, EnrichArgs, LsArgs, OpenArgs, ReindexArgs, SearchArgs, SessionsCommand, StageArgs, TagArgs};
+use cli::{
+    Cli, Command, EnrichArgs, LsArgs, OpenArgs, ReindexArgs, SearchArgs, ServeArgs, SessionsCommand, StageArgs, TagArgs,
+};
 use sessions::{
     AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit,
-    SessionRecord, StageStats,
+    ServeOpts, SessionRecord, StageStats,
 };
 
 /// Max width of a title in the human (terminal) listing before it is truncated with an ellipsis.
@@ -30,8 +32,26 @@ fn main() -> Result<()> {
     let log_path = session::paths::data_root().join("logs").join("klod.log");
     let after_help = format!("Logs are written to: {}", log_path.display());
     let cli = Cli::from_arg_matches(&Cli::command().after_help(after_help).get_matches())?;
-    setup_logging(&cli.log_level, &log_path)?;
+    // Serve mode keeps stdout reserved for JSON-RPC frames: rmcp/tokio emit via `tracing`, so
+    // route logging through a file-target tracing subscriber (which also bridges `log`) instead
+    // of env_logger. Every other subcommand logs through env_logger as before.
+    if is_serve(&cli) {
+        setup_serve_tracing(&cli.log_level, &log_path)?;
+    } else {
+        setup_logging(&cli.log_level, &log_path)?;
+    }
     run(cli)
+}
+
+/// True when the parsed command is `klod sessions serve` — the one arm that owns stdout for the
+/// MCP protocol and therefore needs the file-target tracing subscriber.
+fn is_serve(cli: &Cli) -> bool {
+    matches!(
+        cli.command,
+        Command::Sessions {
+            command: SessionsCommand::Serve(_)
+        }
+    )
 }
 
 /// Restore the default `SIGPIPE` disposition. Rust ignores SIGPIPE by default, which turns a
@@ -52,20 +72,43 @@ fn reset_sigpipe() {}
 
 fn run(cli: Cli) -> Result<()> {
     let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
-    let db = Db::open_at(&db_path)?;
 
     match cli.command {
-        Command::Sessions { command } => match command {
-            SessionsCommand::Search(args) => cmd_search(&db, args),
-            SessionsCommand::Ls(args) => cmd_ls(&db, args),
-            SessionsCommand::Open(args) => cmd_open(&db, args),
-            SessionsCommand::Tag(args) => cmd_tag(&db, args),
-            SessionsCommand::Reindex(args) => cmd_reindex(&db, args),
-            SessionsCommand::Stage(args) => cmd_stage(&db, args),
-            SessionsCommand::Enrich(args) => cmd_enrich(&db, args),
-            SessionsCommand::Doctor => cmd_doctor(&db),
-        },
+        // Serve owns its own catalog handle (inside the async server) and needs a Tokio runtime,
+        // so it is handled before opening the synchronous `Db` the other arms share.
+        Command::Sessions {
+            command: SessionsCommand::Serve(args),
+        } => cmd_serve(&db_path, args),
+        Command::Sessions { command } => {
+            let db = Db::open_at(&db_path)?;
+            match command {
+                SessionsCommand::Search(args) => cmd_search(&db, args),
+                SessionsCommand::Ls(args) => cmd_ls(&db, args),
+                SessionsCommand::Open(args) => cmd_open(&db, args),
+                SessionsCommand::Tag(args) => cmd_tag(&db, args),
+                SessionsCommand::Reindex(args) => cmd_reindex(&db, args),
+                SessionsCommand::Stage(args) => cmd_stage(&db, args),
+                SessionsCommand::Enrich(args) => cmd_enrich(&db, args),
+                SessionsCommand::Doctor => cmd_doctor(&db),
+                // Unreachable: the outer arm above peels `Serve` off before the Db is opened.
+                SessionsCommand::Serve(_) => unreachable!("Serve is dispatched before opening Db"),
+            }
+        }
     }
+}
+
+/// Bring up the MCP server on stdio. `klod`'s `main`/`run` are synchronous, so the runtime is
+/// built explicitly here and the only async work is the serve path; no other subcommand changes.
+fn cmd_serve(db_path: &std::path::Path, args: ServeArgs) -> Result<()> {
+    let projects_dir = args
+        .projects_dir
+        .or_else(session::paths::claude_projects_dir)
+        .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects (set HOME)"))?;
+    let opts = ServeOpts {
+        reindex_on_start: !args.no_reindex,
+    };
+    let runtime = tokio::runtime::Runtime::new().context("failed to build the serve Tokio runtime")?;
+    runtime.block_on(sessions::serve_stdio(db_path, &projects_dir, opts))
 }
 
 fn cmd_search(db: &Db, args: SearchArgs) -> Result<()> {
@@ -450,6 +493,29 @@ fn setup_logging(level: &str, log_path: &PathBuf) -> Result<()> {
     env_logger::Builder::new()
         .filter_level(level)
         .target(env_logger::Target::Pipe(Box::new(file)))
+        .init();
+    Ok(())
+}
+
+/// Serve-mode logging: a file-target `tracing` subscriber, NOT env_logger. rmcp and tokio emit
+/// via `tracing` (not `log`), and stdout is reserved for JSON-RPC framing, so their output must
+/// land in the log file. `tracing_subscriber::fmt().init()` also installs the `tracing-log`
+/// bridge, so klod's own `log::*` records (e.g. reindex warnings) are captured by the same
+/// subscriber. Mutually exclusive with [`setup_logging`]: installing both would race for the
+/// global `log` logger slot and panic.
+fn setup_serve_tracing(level: &str, log_path: &PathBuf) -> Result<()> {
+    if let Some(dir) = log_path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("failed to create log dir {}", dir.display()))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .with_context(|| format!("failed to open log file {}", log_path.display()))?;
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(level))
+        .with_writer(file)
+        .with_ansi(false)
         .init();
     Ok(())
 }
