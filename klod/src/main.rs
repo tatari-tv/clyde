@@ -122,7 +122,7 @@ fn cmd_search(db: &Db, args: SearchArgs) -> Result<()> {
 fn cmd_ls(db: &Db, args: LsArgs) -> Result<()> {
     lazy_reindex(db, args.no_reindex);
     let since = match args.since.as_deref() {
-        Some(s) => Some(cli::parse_since(s)?),
+        Some(s) => Some(sessions::parse_since(s)?),
         None => None,
     };
     let filters = Filters {
@@ -207,7 +207,7 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
 fn cmd_stage(db: &Db, args: StageArgs) -> Result<()> {
     // Stage off fresh mtimes, so dormancy reflects the latest activity.
     lazy_reindex(db, false);
-    let dormant_before = if args.all { None } else { Some(cli::parse_since(&args.dormant_after)?) };
+    let dormant_before = if args.all { None } else { Some(sessions::parse_since(&args.dormant_after)?) };
     let staged_root = session::paths::staged_dir();
     let stats = sessions::stage_dormant(db, dormant_before, &staged_root)?;
     print_stage(&stats);
@@ -227,7 +227,7 @@ fn cmd_enrich(db: &Db, args: EnrichArgs) -> Result<()> {
     let dormant_before = if args.all || args.id.is_some() {
         None
     } else {
-        Some(cli::parse_since(&args.dormant_after)?)
+        Some(sessions::parse_since(&args.dormant_after)?)
     };
     // Resolve a manual id/prefix to one concrete session (same fuzzy contract as open/tag).
     let only = match &args.id {

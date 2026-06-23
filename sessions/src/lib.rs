@@ -15,6 +15,7 @@ pub mod index;
 pub mod llm;
 pub mod mcp;
 pub mod model;
+pub mod since;
 pub mod stage;
 
 pub use db::{Db, EnrichSuccess, Upsert};
@@ -25,4 +26,5 @@ pub use mcp::{ServeOpts, SessionsMcpServer, serve_stdio};
 pub use model::{
     EnrichDetail, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, StageStats,
 };
+pub use since::parse_since;
 pub use stage::stage_dormant;
