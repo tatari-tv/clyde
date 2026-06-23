@@ -42,20 +42,6 @@ else
     CTX_WIN="$CTX_SIZE"
 fi
 
-# --- Format tokens ---
-fmt_tok() {
-    local t="$1"
-    if [[ $t -ge 1000000 ]]; then
-        awk -v t="$t" 'BEGIN{printf "%.1fM", t/1000000}'
-    elif [[ $t -ge 1000 ]]; then
-        awk -v t="$t" 'BEGIN{printf "%.0fK", t/1000}'
-    else
-        echo "$t"
-    fi
-}
-TOK_IN_FMT=$(fmt_tok "$TOK_IN")
-TOK_OUT_FMT=$(fmt_tok "$TOK_OUT")
-
 # --- ANSI helpers ---
 RST=$'\033[0m'
 BOLD=$'\033[1m'
@@ -235,17 +221,16 @@ fi
 end_seg
 
 # =====================
-# LINE 2: model | tokens | burn rate | used% | costs | duration
+# LINE 2: model | used% | burn rate | costs | duration
 # =====================
 PREV_BG=""
 OUT+="\n"
 
-seg "${MODEL}(${CTX_WIN}) " "$L2_B" "$L2_B_FG"
+seg "${MODEL} " "$L2_B" "$L2_B_FG"
 seg "${CTX} " "$L2_A" "$L2_A_FG"
-seg "↓${TOK_IN_FMT} ↑${TOK_OUT_FMT} " "$L2_B" "$L2_B_FG"
-seg "🔥${TOK_HR_FMT} " "$L2_A" "$L2_A_FG"
-seg "\$${M_COST}$(fgr_split $L2_B_FG)|$(fgr_split $L2_B_FG)\$${W_COST}$(fgr_split $L2_B_FG)|$(fgr_split $L2_B_FG)\$${T_COST}$(fgr_split $L2_B_FG)|$(fgr_split $L2_B_FG)\$${S_COST} " "$L2_B" "$L2_B_FG"
-seg "${DUR} " "$L2_A" "$L2_A_FG"
+seg "🔥${TOK_HR_FMT} " "$L2_B" "$L2_B_FG"
+seg "\$${M_COST}$(fgr_split $L2_A_FG)|$(fgr_split $L2_A_FG)\$${W_COST}$(fgr_split $L2_A_FG)|$(fgr_split $L2_A_FG)\$${T_COST}$(fgr_split $L2_A_FG)|$(fgr_split $L2_A_FG)\$${S_COST} " "$L2_A" "$L2_A_FG"
+seg "${DUR} " "$L2_B" "$L2_B_FG"
 end_seg
 
 echo -e "$OUT"
