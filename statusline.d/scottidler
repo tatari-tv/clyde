@@ -148,12 +148,44 @@ T_COST=$(echo | fc "$TODAY_COST")
 W_COST=$(echo | fc "$WEEK_COST")
 M_COST=$(echo | fc "$MONTH_COST")
 
-# --- Git branch ---
+# --- Git branch + bare-worktree awareness ---
+# In clone's bare-container layout the worktree dir is a *slug* of the branch
+# (slugify_branch: lowercase, non-alnum -> '-'), so the on-disk leaf only equals
+# the branch for brand-new branches; pre-existing branches with '/' or caps
+# diverge. We never read the branch from the path: branch comes from git, the
+# repo identity from the container (--git-common-dir -> .bare -> parent), and a
+# marker signals whether the leaf slug matches the real branch (≡) or not (≈).
 GIT_BRANCH=""
+WT_MARKER=""         # ≡ (slug==branch) / ≈ (slug diverges); empty unless bare worktree
+WT_MARKER_COLOR=""
+WT_IDENTITY=""       # org/repo[/subpath] when in a bare worktree, else empty
 if [[ -n "$CWD" ]] && git -C "$CWD" rev-parse --is-inside-work-tree &>/dev/null; then
-    GIT_BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-    if [[ -n "$GIT_BRANCH" ]]; then
-        [[ -n "$(git -C "$CWD" status --porcelain 2>/dev/null | head -1)" ]] && GIT_BRANCH+="*"
+    BRANCH_CLEAN=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    DIRTY=""
+    [[ -n "$(git -C "$CWD" status --porcelain 2>/dev/null | head -1)" ]] && DIRTY="*"
+    GIT_BRANCH="${BRANCH_CLEAN}${DIRTY}"
+
+    # --git-common-dir resolves to <container>/.bare from inside ANY worktree.
+    COMMON_DIR=$(git -C "$CWD" rev-parse --git-common-dir 2>/dev/null || echo "")
+    case "$COMMON_DIR" in
+        /*) COMMON_ABS="$COMMON_DIR" ;;
+        "") COMMON_ABS="" ;;
+        *)  COMMON_ABS="$CWD/$COMMON_DIR" ;;
+    esac
+    if [[ -n "$COMMON_ABS" && "$(basename "$COMMON_ABS")" == ".bare" ]]; then
+        CONTAINER=$(cd "$(dirname "$COMMON_ABS")" 2>/dev/null && pwd || echo "")
+        if [[ -n "$CONTAINER" ]]; then
+            ORG=$(basename "$(dirname "$CONTAINER")")
+            REPO=$(basename "$CONTAINER")
+            PREFIX=$(git -C "$CWD" rev-parse --show-prefix 2>/dev/null || echo "")
+            WT_IDENTITY="${ORG}/${REPO}${PREFIX:+/${PREFIX%/}}"
+            LEAF=$(basename "$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")")
+            if [[ "$LEAF" == "$BRANCH_CLEAN" ]]; then
+                WT_MARKER="≡"; WT_MARKER_COLOR=$ACCENT_OK
+            else
+                WT_MARKER="≈"; WT_MARKER_COLOR=$ACCENT_WARN
+            fi
+        fi
     fi
 fi
 
@@ -180,11 +212,21 @@ L2_B_FG="50;10;15"  # darker red text
 # =====================
 # LINE 1: CWD | hostname | git branch +/- | model(ctx)
 # =====================
-seg "${DISPLAY_CWD} " "$L1_B" "$L1_B_FG"
+# In a bare worktree show the repo identity (org/repo[/subpath]); otherwise the path.
+if [[ -n "$WT_IDENTITY" ]]; then
+    seg "${WT_IDENTITY} " "$L1_B" "$L1_B_FG"
+else
+    seg "${DISPLAY_CWD} " "$L1_B" "$L1_B_FG"
+fi
 seg "🌐 ${HOSTNAME_SHORT} " "$L1_A" "$L1_A_FG"
 
 if [[ -n "$GIT_BRANCH" ]]; then
-    seg " ${GIT_BRANCH} " "$L1_B" "$L1_B_FG"
+    if [[ -n "$WT_MARKER" ]]; then
+        # ≡/≈ marker colored to signal slug==branch (green) vs diverged (amber).
+        seg " $(fgr_split $WT_MARKER_COLOR)${WT_MARKER}$(fgr_split $L1_B_FG) ${GIT_BRANCH} " "$L1_B" "$L1_B_FG"
+    else
+        seg " ${GIT_BRANCH} " "$L1_B" "$L1_B_FG"
+    fi
     if [[ "$LINES_ADDED" != "0" || "$LINES_REMOVED" != "0" ]]; then
         seg " $(fgr_split $ACCENT_OK)+${LINES_ADDED}$(fgr_split $ACCENT_ERROR)-${LINES_REMOVED} " "$L1_A" "$L1_A_FG"
     fi
