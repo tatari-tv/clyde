@@ -1,0 +1,13 @@
+[package]
+name = "common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Shared clyde umbrella surface: common CLI globals passed from clyde to each tool"
+
+[lib]
+name = "common"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,38 @@
+[package]
+name = "clyde"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Catalog, search, and resume Claude Code sessions"
+build = "build.rs"
+
+[[bin]]
+name = "clyde"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+colored = { workspace = true }
+common = { path = "../common" }
+cost = { path = "../cost" }
+dirs = { workspace = true }
+env_logger = { workspace = true }
+eyre = { workspace = true }
+libc = "0.2.186"
+log = { workspace = true }
+permit = { path = "../permit" }
+report = { path = "../report" }
+rusqlite = { workspace = true, features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+session = { version = "0.1.0", path = "../session" }
+sessions = { version = "0.1.0", path = "../sessions" }
+tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

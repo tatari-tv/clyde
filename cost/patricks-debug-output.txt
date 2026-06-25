@@ -1,0 +1,73 @@
+~ at ☸ staging                                                                                                                                                                                                     took 8m11s at 2026-03-11 14:23:45
+❮ curl -fsSL https://raw.githubusercontent.com/scottidler/claude-cost-usage/main/install.sh | bash
+ccu-install: Installing ccu v0.3.11 (macos-arm64)
+ccu-install: Downloading https://github.com/scottidler/claude-cost-usage/releases/download/v0.3.11/ccu-v0.3.11-macos-arm64.tar.gz
+ccu-install: Verifying checksum
+ccu-install: Extracting binary
+ccu-install: Installing to /usr/local/bin (requires sudo)
+Password:
+ccu-install: Installed ccu to /usr/local/bin/ccu
+ccu v0.3.11
+
+~ at ☸ staging                                                                                                                                                                                                        took 7s at 2026-03-11 14:23:54
+❯ ccu --version
+ccu v0.3.11
+
+~ at ☸ staging                                                                                                                                                                                                                at 2026-03-11 14:23:57
+❯ ccu
+No config file found at /Users/pshelby/Library/Application Support/ccu/ccu.yml
+Would you like to fetch pricing data now? [Y/n] Y
+Fetching pricing from Anthropic docs...
+Extracting pricing via claude...
+Error: Failed to parse LLM output as YAML
+
+Caused by:
+    invalid type: string "It looks like the WebFetch tool needs permission approval. Could you approve the WebFetch permission so I can retrieve the full pricing page? The provided markdown only contains base input/output pricing — it's missing cache write/read rates and long context pricing, which are on the separate [pricing page](https://docs.anthropic.com/en/docs/about-claude/pricing).\nAlternatively, if you can paste the pricing page markdown here, I can extract everything from it.\nWith only the data available in the provided markdown, here's what I can produce (no cache or long-context fields since they aren't in the source)", expected struct PricingOnly
+
+Location:
+    src/update.rs:64:70
+
+~ at ☸ staging                                                                                                                                                                                                       took 32s at 2026-03-11 14:25:17
+❌1 ❯ ccu --log-level=DEBUG
+No config file found at /Users/pshelby/Library/Application Support/ccu/ccu.yml
+Would you like to fetch pricing data now? [Y/n]
+Fetching pricing from Anthropic docs...
+Extracting pricing via claude...
+Error: Failed to parse LLM output as YAML
+
+Caused by:
+    invalid type: string "I can't fetch the pricing page without permission. Based on the data available in the provided markdown, here's what I can extract. Note that the page only includes base input/output pricing — it references a separate pricing page for cache rates and long context pricing that I wasn't able to fetch.\nFrom the provided markdown, the only pricing data available is", expected struct PricingOnly
+
+Location:
+    src/update.rs:64:70
+
+~ at ☸ staging                                                                                                                                                                                                       took 25s at 2026-03-11 14:25:47
+❌1 ❯ ccu --log-level=DEBUG today
+No config file found at /Users/pshelby/Library/Application Support/ccu/ccu.yml
+Would you like to fetch pricing data now? [Y/n]
+Fetching pricing from Anthropic docs...
+Extracting pricing via claude...
+Error: Failed to parse LLM output as YAML
+
+Caused by:
+    invalid type: string "The models overview page you provided only lists base input/output pricing. It doesn't include cache write, cache read, or long context pricing — it explicitly says to see the pricing page for those. I tried to fetch the pricing page but need your permission to use WebFetch.\nCould you either", expected struct PricingOnly
+
+Location:
+    src/update.rs:64:70
+
+~ at ☸ staging                                                                                                                                                                                                       took 31s at 2026-03-11 14:27:08
+❌1 ❯ rm -rf /Users/pshelby/Library/Application\ Support/ccu
+
+~ at ☸ staging                                                                                                                                                                                                                at 2026-03-11 14:27:10
+❯ ccu --log-level=DEBUG today
+No config file found at /Users/pshelby/Library/Application Support/ccu/ccu.yml
+Would you like to fetch pricing data now? [Y/n]
+Fetching pricing from Anthropic docs...
+Extracting pricing via claude...
+Error: Failed to parse LLM output as YAML
+
+Caused by:
+    invalid type: string "I can't fetch the pricing page without permission. The provided markdown only contains base input/output pricing — it explicitly says to see the pricing page for cache rates, long context pricing, and batch discounts.\nBased on **only what's in the provided markdown**, plus the standard cache ratio rules you specified, here's what I can produce. However, I need the actual pricing page for accurate cache and long-context numbers.\nWant me to try fetching the pricing page again (you'd need to approve the WebFetch permission), or should I use the known/standard Anthropic pricing from my training data to fill in the gaps?", expected struct PricingOnly
+
+Location:
+    src/update.rs:64:70

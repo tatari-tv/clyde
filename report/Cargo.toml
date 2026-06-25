@@ -1,0 +1,40 @@
+[package]
+name = "report"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+build = "build.rs"
+description = "Scan Claude Code session JSONL files and emit a per-host JSON report"
+
+[lib]
+name = "report"
+path = "src/lib.rs"
+
+# Compat shim: the standalone `cr` binary parses the Parser-deriving ReportCli wrapper and calls
+# report::run in-process. Behavior-exact with the pre-merge tool; clyde nests ReportArgs instead.
+[[bin]]
+name = "cr"
+path = "src/bin/cr.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive"] }
+claude-pricing = { path = "../pricing", features = ["fetch"] }
+colored = { workspace = true }
+common = { path = "../common" }
+dirs = { workspace = true }
+env_logger = { workspace = true }
+eyre = { workspace = true }
+gethostname = "1.1.0"
+log = { workspace = true }
+rayon = { workspace = true }
+regex = "1.12.3"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+ureq = { workspace = true, features = ["json"] }
+wait-timeout = "0.2.1"
+which = { workspace = true }

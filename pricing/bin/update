@@ -1,0 +1,328 @@
+#!/usr/bin/env bash
+#
+# bin/update - orchestrator for the dual-parser pricing refresh.
+#
+# Pipeline:
+#   1. Fetch Anthropic's pricing.md (one HTTP request total).
+#   2. Run two independent parsers on the same input:
+#        bin/update.sh  - bash + awk
+#        bin/update.py  - stdlib Python 3
+#   3. Refuse to ship if their outputs disagree (semantic equality:
+#      5 == 5.0).
+#   4. Carry forward any model the prior pricing.json had but today's
+#      parse lacks. Anthropic delists deprecated models from the page
+#      (Opus 3, Sonnet 3.7, Haiku 3); historical session logs still
+#      reference those ids, so we keep their last-known rates. Every
+#      carried-forward model is logged so a genuine parser drop is visible.
+#   5. Run two regression checks against the previous pricing.json:
+#        a. No per-model rate moves more than 5x in either direction.
+#        b. Every rate is within absolute bounds [$0.001, $1000]/MTok.
+#   6. Wrap the agreed pricing map with the v2 schema envelope, splice in
+#      the committed normalization policy (data/normalization.json), and
+#      write data/pricing.json plus data/pricing-page.sha256.
+#
+# Usage:
+#   bin/update          - fetch, parse, validate, write
+#   bin/update --dry    - fetch and validate but do not write any files
+#
+# This script is the only entrypoint the GitHub Actions cron calls;
+# everything else (the awk parser, the Python parser, the regression
+# checks) is invoked from here.
+
+set -euo pipefail
+
+PRICING_URL="https://platform.claude.com/docs/en/about-claude/pricing.md"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PRICING_FILE="$REPO_ROOT/data/pricing.json"
+NORMALIZATION_FILE="$REPO_ROOT/data/normalization.json"
+HASH_FILE="$REPO_ROOT/data/pricing-page.sha256"
+SCHEMA_VERSION=2
+# min_library_version gates compatible-schema feeds against older library logic.
+# The schema_version bump (1 -> 2) already forces pre-schema-2 crates to fall back
+# to their embedded baseline, so this value is for diagnostics, not safety. Bump it
+# to the crate version that ships schema-2 understanding when that release is cut.
+MIN_LIBRARY_VERSION="2.0.0"
+
+DRY_RUN=false
+if [[ "${1:-}" == "--dry" ]]; then
+    DRY_RUN=true
+fi
+
+# The normalization policy (bare aliases + family-collapsing rules) is
+# human-authored and committed separately; it is spliced into the published
+# envelope below. Refuse to publish a schema-2 feed without it - a missing
+# policy file would silently strip alias resolution from every consumer.
+if [[ ! -f "$NORMALIZATION_FILE" ]]; then
+    echo "Error: $NORMALIZATION_FILE not found; cannot build a schema-$SCHEMA_VERSION feed" >&2
+    exit 1
+fi
+
+DATA_VERSION="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+PAGE_FILE="$WORKDIR/pricing.md"
+AWK_OUT="$WORKDIR/awk.json"
+PY_OUT="$WORKDIR/py.json"
+PRICING_MAP="$WORKDIR/pricing-map.json"
+NEW_PRICING_FILE="$WORKDIR/pricing.json"
+
+# -- Fetch ---------------------------------------------------------------
+echo "Fetching pricing page from Anthropic..."
+curl -sS --max-time 30 "$PRICING_URL" > "$PAGE_FILE"
+
+if [[ ! -s "$PAGE_FILE" ]]; then
+    echo "Error: empty response from $PRICING_URL" >&2
+    exit 1
+fi
+
+# -- Run both parsers on the same input ---------------------------------
+echo "Running bin/update.sh (awk parser)..."
+"$REPO_ROOT/bin/update.sh" < "$PAGE_FILE" > "$AWK_OUT"
+
+echo "Running bin/update.py (Python parser)..."
+"$REPO_ROOT/bin/update.py" < "$PAGE_FILE" > "$PY_OUT"
+
+# -- Cross-check ---------------------------------------------------------
+# Structural equality: 5 == 5.0, so the awk parser emitting raw integer
+# literals and the Python parser emitting float literals are treated as
+# equivalent. The diff we print on disagreement names exactly which
+# (model, field) pairs differ, so failure mode is debuggable.
+echo "Cross-checking parser outputs..."
+python3 - "$AWK_OUT" "$PY_OUT" <<'PYEOF'
+import json
+import sys
+
+awk_out = json.load(open(sys.argv[1]))
+py_out = json.load(open(sys.argv[2]))
+
+if awk_out == py_out:
+    sys.exit(0)
+
+errors = []
+all_ids = sorted(set(awk_out) | set(py_out))
+for mid in all_ids:
+    if mid not in awk_out:
+        errors.append(f"  missing in awk:    {mid}")
+        continue
+    if mid not in py_out:
+        errors.append(f"  missing in python: {mid}")
+        continue
+    a, p = awk_out[mid], py_out[mid]
+    if a == p:
+        continue
+    fields = sorted(set(a) | set(p))
+    for field in fields:
+        av = a.get(field, "<missing>")
+        pv = p.get(field, "<missing>")
+        if av != pv:
+            errors.append(f"  {mid}.{field}: awk={av} python={pv}")
+
+print("Parsers disagree. Refusing to ship:", file=sys.stderr)
+for e in errors:
+    print(e, file=sys.stderr)
+sys.exit(1)
+PYEOF
+
+# Both parsers agreed. Use the awk output as the canonical pricing map
+# because its number formatting (5 vs 5.0) matches the historical shape
+# of data/pricing.json byte-for-byte, minimising diff noise.
+cp "$AWK_OUT" "$PRICING_MAP"
+
+# -- Carry forward delisted models --------------------------------------
+# Anthropic periodically removes deprecated models from the pricing page
+# (e.g. Opus 3, Sonnet 3.7, Haiku 3). Historical session logs still
+# reference those ids, so dropping them would leave ccu/cr unable to
+# price old sessions. We union any model present in the prior
+# data/pricing.json but absent from today's parse back into the map at
+# its last-known rates. The two-parser cross-check above remains the
+# guard against a parser accidentally dropping a row that is *still* on
+# the page; every carried-forward model is logged loudly so an operator
+# reviewing the diff can spot a genuine drop masquerading as a delisting.
+if [[ -f "$PRICING_FILE" ]]; then
+    python3 - "$PRICING_MAP" "$PRICING_FILE" <<'PYEOF'
+import json
+import sys
+
+map_path = sys.argv[1]
+new = json.load(open(map_path))
+old_envelope = json.load(open(sys.argv[2]))
+old = old_envelope.get("pricing", old_envelope)
+
+carried = sorted(set(old.keys()) - set(new.keys()))
+for model in carried:
+    new[model] = old[model]
+
+if carried:
+    print(
+        f"Carried forward {len(carried)} delisted model(s) from prior pricing.json:",
+        file=sys.stderr,
+    )
+    for m in carried:
+        print(f"  {m}", file=sys.stderr)
+
+with open(map_path, "w") as f:
+    json.dump(new, f, indent=2)
+    f.write("\n")
+PYEOF
+fi
+
+# -- Regression checks ---------------------------------------------------
+echo "Running regression checks..."
+
+# Check #3 (absolute bounds) runs unconditionally; it does not need a
+# previous baseline.
+python3 - "$PRICING_MAP" <<'PYEOF'
+import json
+import sys
+
+LO = 0.001
+HI = 1000.0
+
+data = json.load(open(sys.argv[1]))
+errors = []
+for model, fields in data.items():
+    for field, value in fields.items():
+        if value < LO or value > HI:
+            errors.append(f"  {model}.{field} = {value} (outside [{LO}, {HI}])")
+
+if errors:
+    print(
+        "Regression check #3 failed: rate(s) outside absolute bounds [$0.001, $1000]/MTok",
+        file=sys.stderr,
+    )
+    for e in errors:
+        print(e, file=sys.stderr)
+    sys.exit(1)
+PYEOF
+
+# Check #2 (no >5x rate movement) compares against the existing
+# data/pricing.json. On the very first run there is nothing to compare
+# against, so we skip it. (Check #1 - no models lost - is now satisfied
+# structurally by the carry-forward step above, so it no longer runs as
+# a hard fail here.)
+if [[ -f "$PRICING_FILE" ]]; then
+    python3 - "$PRICING_MAP" "$PRICING_FILE" <<'PYEOF'
+import json
+import sys
+
+MAX_RATIO = 5.0
+
+new = json.load(open(sys.argv[1]))
+old_envelope = json.load(open(sys.argv[2]))
+# Accept both the v1 schema (with the "pricing" key) and the legacy
+# shape ({"pricing": {...}} but no schema_version) - serde and this
+# script both treat them identically.
+old = old_envelope.get("pricing", old_envelope)
+
+# Check #2: no per-model rate moves by more than MAX_RATIO. This is the
+# decimal-shift / unit-confusion guardrail. Real Anthropic price moves
+# rarely exceed 2-3x in a single update; 5x is conservative enough to
+# never trip on a genuine repricing while catching 100x parse errors.
+shifts = []
+for model in old.keys() & new.keys():
+    for field in old[model].keys() & new[model].keys():
+        old_v = old[model][field]
+        new_v = new[model][field]
+        if old_v <= 0 or new_v <= 0:
+            continue
+        ratio = max(old_v / new_v, new_v / old_v)
+        if ratio > MAX_RATIO:
+            shifts.append(
+                f"  {model}.{field}: {old_v} -> {new_v} ({ratio:.2f}x)"
+            )
+
+if shifts:
+    print(
+        f"Regression check #2 failed: rate(s) moved more than {MAX_RATIO}x:",
+        file=sys.stderr,
+    )
+    for s in shifts:
+        print(s, file=sys.stderr)
+    sys.exit(1)
+PYEOF
+fi
+
+# -- Build the merged v2 artifact ---------------------------------------
+# The published feed is the pricing map wrapped in the schema envelope with
+# the human-authored normalization policy (data/normalization.json) spliced
+# in. Keys are emitted in a fixed order so the on-disk artifact is stable and
+# diff-friendly. This always builds; the change check below decides whether to
+# write it.
+jq -n \
+    --argjson schema_version "$SCHEMA_VERSION" \
+    --arg data_version "$DATA_VERSION" \
+    --arg min_library_version "$MIN_LIBRARY_VERSION" \
+    --slurpfile norm "$NORMALIZATION_FILE" \
+    --slurpfile pricing "$PRICING_MAP" \
+    '{
+        schema_version: $schema_version,
+        data_version: $data_version,
+        min_library_version: $min_library_version,
+        aliases: $norm[0].aliases,
+        family_rules: $norm[0].family_rules,
+        pricing: $pricing[0]
+    }' > "$NEW_PRICING_FILE"
+
+# -- Detect whether the artifact actually changed -----------------------
+# We only rewrite data/pricing.json when the new artifact differs from what is
+# committed, comparing everything EXCEPT data_version (whose timestamp always
+# moves). This now catches both pricing-map changes AND normalization-policy
+# edits, so a data/normalization.json change alone produces a refreshed
+# artifact - the gap a pricing-only diff would have missed. data/pricing-page.sha256
+# is always rewritten (deterministic hash of the page bytes, no spurious diff).
+PRICING_CHANGED=true
+if [[ -f "$PRICING_FILE" ]]; then
+    if python3 - "$NEW_PRICING_FILE" "$PRICING_FILE" <<'PYEOF'
+import json
+import sys
+
+def normalize(doc):
+    d = dict(doc)
+    d.pop("data_version", None)
+    return d
+
+new = normalize(json.load(open(sys.argv[1])))
+old = normalize(json.load(open(sys.argv[2])))
+sys.exit(0 if new == old else 1)
+PYEOF
+    then
+        PRICING_CHANGED=false
+    fi
+fi
+
+PAGE_HASH="$(sha256sum "$PAGE_FILE" | cut -d' ' -f1)"
+
+# -- Dry run short-circuit ----------------------------------------------
+if [[ "$DRY_RUN" == true ]]; then
+    echo ""
+    if [[ "$PRICING_CHANGED" == true ]]; then
+        echo "=== Dry run - would write data/pricing.json: ==="
+        cat "$NEW_PRICING_FILE"
+    else
+        echo "=== Dry run - pricing unchanged, would NOT rewrite data/pricing.json ==="
+    fi
+    echo ""
+    echo "SHA-256: $PAGE_HASH"
+    exit 0
+fi
+
+# -- Write -------------------------------------------------------------
+if [[ "$PRICING_CHANGED" == true ]]; then
+    mv "$NEW_PRICING_FILE" "$PRICING_FILE"
+    echo "Wrote $PRICING_FILE (data_version=$DATA_VERSION)"
+else
+    echo "Pricing unchanged - left $PRICING_FILE intact"
+fi
+echo "$PAGE_HASH" > "$HASH_FILE"
+echo "Wrote $HASH_FILE"
+
+if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo ""
+    echo "=== Changes ==="
+    git -C "$REPO_ROOT" diff --stat data/ || true
+fi
+
+echo ""
+echo "Done. Review the changes, then commit and cut a release."

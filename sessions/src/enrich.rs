@@ -1,5 +1,5 @@
 //! Enrichment sweep (Phase 2): fill `tags` and `summary` for dormant sessions via a cheap LLM
-//! pass — the first klod path that ships session content off-machine.
+//! pass — the first clyde path that ships session content off-machine.
 //!
 //! The order is the gate: classify scope, **skip personal before any payload is built** (the
 //! routing invariant — no personal content reaches the work account), parse the high-signal body

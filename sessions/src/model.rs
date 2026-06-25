@@ -1,4 +1,4 @@
-//! Typed rows and queries for the navigational store. These are what the `klod` binary renders.
+//! Typed rows and queries for the navigational store. These are what the `clyde` binary renders.
 
 use std::path::PathBuf;
 
@@ -130,7 +130,7 @@ pub struct EnrichStats {
     pub details: Vec<EnrichDetail>,
 }
 
-/// Roll-up of enrichment state across the whole catalog, for `klod sessions doctor`.
+/// Roll-up of enrichment state across the whole catalog, for `clyde sessions doctor`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct EnrichSummary {

@@ -1,0 +1,192 @@
+use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
+use std::sync::LazyLock;
+
+static HELP_TEXT: LazyLock<String> = LazyLock::new(get_tool_validation_help);
+
+/// The report command surface, nested under `clyde report ...`. Derives `Args` (not `Parser`)
+/// so it can be a `Subcommand` payload in the clyde umbrella; carries no common globals (clyde
+/// owns `--log-level`).
+#[derive(Args, Debug)]
+pub struct ReportArgs {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+/// Standalone wrapper for the `cr` compat shim. Owns the common `--log-level` global (so
+/// `cr --log-level ...` still works) and flattens [`ReportArgs`]. The `globals()` accessor is the
+/// integration seam: it reconstructs [`common::Globals`] from this wrapper's own fields so the
+/// shim and `clyde report` drive `report::run` through the exact same code path.
+#[derive(Parser, Debug)]
+#[command(
+    name = "cr",
+    about = "Scan Claude Code session JSONL files and emit a per-host JSON report",
+    version = env!("GIT_DESCRIBE"),
+    after_help = HELP_TEXT.as_str(),
+    arg_required_else_help = true,
+)]
+pub struct ReportCli {
+    #[arg(short = 'l', long, global = true, default_value = "info")]
+    pub log_level: String,
+
+    #[command(flatten)]
+    pub args: ReportArgs,
+}
+
+impl ReportCli {
+    /// Reconstruct the common globals from the shim wrapper's fields.
+    pub fn globals(&self) -> common::Globals {
+        common::Globals {
+            log_level: Some(self.log_level.clone()),
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    Collect(CollectArgs),
+    Render(RenderArgs),
+    Merge(MergeArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct CollectArgs {
+    #[arg(long)]
+    pub since: Option<String>,
+
+    #[arg(long)]
+    pub until: Option<String>,
+
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    #[arg(long)]
+    pub projects_dir: Option<PathBuf>,
+
+    #[arg(long)]
+    pub no_rollup: bool,
+
+    #[arg(long)]
+    pub skip_title: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct RenderArgs {
+    #[arg(short, long)]
+    pub input: Option<PathBuf>,
+
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    #[arg(long)]
+    pub pdf: bool,
+
+    #[arg(long)]
+    pub template: Option<PathBuf>,
+
+    #[arg(long)]
+    pub prompt: Option<PathBuf>,
+
+    #[arg(long)]
+    pub include_tradeoffs: bool,
+
+    #[arg(long, default_value = "wkhtmltopdf")]
+    pub pdf_engine: String,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct MergeArgs {
+    pub inputs: Vec<PathBuf>,
+}
+
+struct ToolStatus {
+    version: String,
+    icon: &'static str,
+}
+
+fn check_tool(tool: &str, version_arg: &str) -> ToolStatus {
+    match ProcessCommand::new(tool).arg(version_arg).output() {
+        Ok(output) if output.status.success() => {
+            let body = String::from_utf8_lossy(&output.stdout);
+            let version = extract_version(&body);
+            ToolStatus {
+                version: if version.is_empty() {
+                    "installed".to_string()
+                } else {
+                    version
+                },
+                icon: "✅",
+            }
+        }
+        _ => ToolStatus {
+            version: "not found".to_string(),
+            icon: "❌",
+        },
+    }
+}
+
+fn extract_version(output: &str) -> String {
+    let Some(line) = output.lines().next() else {
+        return String::new();
+    };
+    for word in line.split_whitespace() {
+        if let Some(v) = looks_like_version(word.trim_start_matches('v')) {
+            return v.to_string();
+        }
+        // Handle single-token formats like `jq-1.8.1` where the version
+        // sits after a dash with no whitespace before it.
+        if let Some((_, suffix)) = word.rsplit_once('-')
+            && let Some(v) = looks_like_version(suffix)
+        {
+            return v.to_string();
+        }
+    }
+    if let Some(v) = looks_like_version(line.trim()) {
+        return v.to_string();
+    }
+    String::new()
+}
+
+fn looks_like_version(s: &str) -> Option<&str> {
+    if s.contains('.') && s.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        Some(s)
+    } else {
+        None
+    }
+}
+
+fn get_tool_validation_help() -> String {
+    let tools: &[(&str, &str, &str)] = &[
+        ("persona", "--version", "cr render: persona block in context"),
+        ("pandoc", "--version", "cr render --pdf"),
+        ("git", "--version", "cr collect: repo detection"),
+        ("jq", "--version", "cr collect: query JSON report output"),
+    ];
+
+    let entries: Vec<(ToolStatus, &str, &str)> = tools
+        .iter()
+        .map(|(name, arg, purpose)| (check_tool(name, arg), *name, *purpose))
+        .collect();
+
+    let max_name = entries.iter().map(|(_, n, _)| n.len()).max().unwrap_or(0);
+    let max_ver = entries.iter().map(|(s, _, _)| s.version.len()).max().unwrap_or(0);
+
+    let mut help = String::from("REQUIRED TOOLS:\n");
+    for (status, name, purpose) in &entries {
+        help.push_str(&format!(
+            "  {} {:<name_w$}  {:>ver_w$}  ({})\n",
+            status.icon,
+            name,
+            status.version,
+            purpose,
+            name_w = max_name,
+            ver_w = max_ver,
+        ));
+    }
+    help.push_str("\nLogs: ~/.local/share/claude-report/logs/claude-report.log");
+    help
+}
+
+#[cfg(test)]
+mod tests;

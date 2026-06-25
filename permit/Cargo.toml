@@ -1,0 +1,40 @@
+[package]
+name = "permit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+build = "build.rs"
+description = "Manage Claude Code permission hygiene - log, audit, suggest, report"
+
+[lib]
+name = "permit"
+path = "src/lib.rs"
+
+# Compat shim: the standalone `claude-permit` binary parses the Parser-deriving PermitCli wrapper
+# and calls permit::run in-process. Behavior-exact with the pre-merge tool, including the
+# hook-safe `{}`-on-failure contract; clyde nests PermitArgs instead.
+[[bin]]
+name = "claude-permit"
+path = "src/bin/claude-permit.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive"] }
+colored = { workspace = true }
+common = { path = "../common" }
+dirs = { workspace = true }
+env_logger = { workspace = true }
+eyre = { workspace = true }
+log = { workspace = true }
+rusqlite = { workspace = true, features = ["bundled"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+terminal_size = "0.4.4"
+which = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

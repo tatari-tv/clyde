@@ -1,6 +1,6 @@
 //! Shared `--since` / `since` parsing for the CLI and the MCP layer.
 //!
-//! A single implementation so `klod sessions ls --since 7d` and the `sessions_ls` MCP tool's
+//! A single implementation so `clyde sessions ls --since 7d` and the `sessions_ls` MCP tool's
 //! `since` field interpret spans and dates identically.
 
 use chrono::{DateTime, Duration, Utc};

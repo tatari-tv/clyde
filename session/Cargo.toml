@@ -3,7 +3,7 @@ name = "session"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Shared core for klod: locate and parse Claude Code session JSONL transcripts"
+description = "Shared core for clyde: locate and parse Claude Code session JSONL transcripts"
 
 [lints]
 workspace = true
