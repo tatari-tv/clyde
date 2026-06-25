@@ -27,9 +27,12 @@ pub(crate) struct FetchConfig {
 
 impl FetchConfig {
     pub fn from_env() -> Self {
+        // Cache lives under the unified clyde home (was `claude-pricing`). Disposable: not
+        // migrated by bootstrap, it simply refetches at the new path on first run.
         let cache_dir = dirs::cache_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("claude-pricing");
+            .join("clyde")
+            .join("pricing");
         Self {
             url: std::env::var(FEED_URL_ENV).unwrap_or_else(|_| DEFAULT_FEED_URL.to_string()),
             cache_dir,

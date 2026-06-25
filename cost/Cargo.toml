@@ -1,29 +1,41 @@
 [package]
-name = "ccu"
-version = "0.5.3"
-edition = "2024"
-authors = ["Scott Idler <scott.a.idler@gmail.com>"]
+name = "cost"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 build = "build.rs"
 description = "Fast CLI tool for tracking Claude Code session costs from JSONL logs"
 
+[lib]
+name = "cost"
+path = "src/lib.rs"
+
+# Compat shim: the standalone `ccu` binary parses the Parser-deriving CostCli wrapper and calls
+# cost::run in-process. Behavior-exact with the pre-merge tool; clyde nests CostArgs instead.
+[[bin]]
+name = "ccu"
+path = "src/bin/ccu.rs"
+
+[lints]
+workspace = true
+
 [dependencies]
-chrono = "0.4.44"
-claude-pricing = { git = "https://github.com/tatari-tv/claude-pricing", tag = "v2.0.0", version = "2.0.0", features = ["fetch"] }
+chrono = { workspace = true }
+claude-pricing = { path = "../pricing", features = ["fetch"] }
 comfy-table = "7.1"
-clap = { version = "4.5.60", features = ["derive", "env"] }
-dirs = "6.0.0"
-env_logger = "0.11.9"
-eyre = "0.6.12"
-log = "0.4.29"
+clap = { workspace = true, features = ["derive", "env"] }
+common = { path = "../common" }
+dirs = { workspace = true }
+env_logger = { workspace = true }
+eyre = { workspace = true }
+log = { workspace = true }
 rasciichart = "0.2.17"
-rayon = "1.11.0"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-serde_yaml = "0.9.34"
+rayon = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 sparklines = "0.3.0"
 include_dir = "0.7.4"
 
-[build-dependencies]
-
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile = { workspace = true }

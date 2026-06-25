@@ -1,34 +1,40 @@
 [package]
-name = "claude-report"
-version = "0.2.1"
-edition = "2024"
-authors = ["Scott Idler <scott.idler@tatari.tv>"]
+name = "report"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 build = "build.rs"
 description = "Scan Claude Code session JSONL files and emit a per-host JSON report"
 
+[lib]
+name = "report"
+path = "src/lib.rs"
+
+# Compat shim: the standalone `cr` binary parses the Parser-deriving ReportCli wrapper and calls
+# report::run in-process. Behavior-exact with the pre-merge tool; clyde nests ReportArgs instead.
 [[bin]]
 name = "cr"
-path = "src/main.rs"
+path = "src/bin/cr.rs"
+
+[lints]
+workspace = true
 
 [dependencies]
-chrono = { version = "0.4.44", features = ["serde"] }
-clap = { version = "4.6.1", features = ["derive"] }
-claude-pricing = { git = "https://github.com/tatari-tv/claude-pricing", tag = "v2.0.0", version = "2.0.0", features = ["fetch"] }
-colored = "3.1.1"
-dirs = "6.0.0"
-env_logger = "0.11.10"
-eyre = "0.6.12"
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive"] }
+claude-pricing = { path = "../pricing", features = ["fetch"] }
+colored = { workspace = true }
+common = { path = "../common" }
+dirs = { workspace = true }
+env_logger = { workspace = true }
+eyre = { workspace = true }
 gethostname = "1.1.0"
-log = "0.4.29"
-rayon = "1.12.0"
+log = { workspace = true }
+rayon = { workspace = true }
 regex = "1.12.3"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-tempfile = "3.27.0"
-ureq = { version = "3.3.0", features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+ureq = { workspace = true, features = ["json"] }
 wait-timeout = "0.2.1"
-which = "8.0.2"
-# Dependencies will be added via cargo add
-
-[build-dependencies]
-# For build.rs if needed
+which = { workspace = true }

@@ -1,8 +1,13 @@
+# NOTE: version stays explicit at 2.0.0 and does NOT inherit version.workspace. The crate's
+# major version is contractually locked to the pricing feed `schema_version` (see CLAUDE.md and
+# feed.rs `LIBRARY_VERSION = env!("CARGO_PKG_VERSION")`, compared against the feed's
+# `min_library_version`). Dropping it to the workspace 0.x line would make every fetched feed be
+# rejected as "library too old". This is the one intentional exception to the single-version line.
 [package]
 name = "claude-pricing"
 version = "2.0.0"
-edition = "2024"
-authors = ["Scott Idler <scott.idler@tatari.tv>"]
+edition.workspace = true
+authors.workspace = true
 build = "build.rs"
 description = "Shared Claude pricing, JSONL parsing, and cost math for Tatari tools"
 license = "MIT"
@@ -12,19 +17,22 @@ repository = "https://github.com/tatari-tv/claude-pricing"
 name = "claude_pricing"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
-chrono = { version = "0.4.44", features = ["serde"] }
-dirs = "6.0.0"
-log = "0.4.29"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-thiserror = "2.0.18"
-tempfile = { version = "3.13", optional = true }
-ureq = { version = "3.3.0", optional = true }
+chrono = { workspace = true, features = ["serde"] }
+dirs = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
 
 [features]
 fetch = ["dep:tempfile", "dep:ureq"]
 
 [dev-dependencies]
 mockito = "1.7.2"
-tempfile = "3.13"
+tempfile = { workspace = true }

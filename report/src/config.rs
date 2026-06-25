@@ -1,4 +1,4 @@
-use crate::cli::{Cli, CollectArgs};
+use crate::cli::CollectArgs;
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use eyre::{Result, bail};
 use std::path::PathBuf;
@@ -49,30 +49,28 @@ pub struct MergeConfig {
 /// as the legacy CWD path and is out of Phase 0 scope.
 const DEFAULT_RENDER_INPUT: &str = "./claude-report.json";
 
-impl TryFrom<Cli> for Config {
-    type Error = eyre::Report;
-
-    fn try_from(cli: Cli) -> Result<Self> {
-        let log_level = cli.log_level.clone();
-        let command = match cli.command {
-            crate::cli::Command::Collect(args) => ResolvedCommand::Collect(collect_config_from_args(args)?),
-            crate::cli::Command::Render(args) => {
-                let pdf = args.pdf;
-                let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_INPUT));
-                ResolvedCommand::Render(RenderConfig {
-                    input,
-                    output: args.output,
-                    pdf,
-                    template: args.template,
-                    prompt: args.prompt,
-                    include_tradeoffs: args.include_tradeoffs,
-                    pdf_engine: args.pdf_engine,
-                })
-            }
-            crate::cli::Command::Merge(args) => ResolvedCommand::Merge(MergeConfig { inputs: args.inputs }),
-        };
-        Ok(Config { command, log_level })
-    }
+/// Resolve a parsed `cr`/`clyde report` subcommand into its validated [`ResolvedCommand`].
+/// Split out of the former `TryFrom<Cli>` so `report::run` can own building the [`Config`] from
+/// the nested [`crate::cli::ReportArgs`] plus the common globals.
+pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> {
+    let resolved = match command {
+        crate::cli::Command::Collect(args) => ResolvedCommand::Collect(collect_config_from_args(args)?),
+        crate::cli::Command::Render(args) => {
+            let pdf = args.pdf;
+            let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_INPUT));
+            ResolvedCommand::Render(RenderConfig {
+                input,
+                output: args.output,
+                pdf,
+                template: args.template,
+                prompt: args.prompt,
+                include_tradeoffs: args.include_tradeoffs,
+                pdf_engine: args.pdf_engine,
+            })
+        }
+        crate::cli::Command::Merge(args) => ResolvedCommand::Merge(MergeConfig { inputs: args.inputs }),
+    };
+    Ok(resolved)
 }
 
 fn collect_config_from_args(args: CollectArgs) -> Result<CollectConfig> {

@@ -1,6 +1,19 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
+/// The permit command surface, nested under `clyde permit ...`. Derives `Args` (not `Parser`) so
+/// it can be a `Subcommand` payload in the clyde umbrella. permit has no common globals of its
+/// own (it never exposed `--log-level`).
+#[derive(Args)]
+pub struct PermitArgs {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+/// Standalone wrapper for the `claude-permit` compat shim. permit never accepted `--log-level`,
+/// so the wrapper adds no common globals; `globals()` returns the default (log level unset),
+/// which preserves the pre-merge `RUST_LOG`/`env_logger` default behavior exactly. `clyde permit`
+/// still drives the level via clyde's own top-level `--log-level`.
 #[derive(Parser)]
 #[command(
     name = "claude-permit",
@@ -8,9 +21,17 @@ use std::path::PathBuf;
     version = env!("GIT_DESCRIBE"),
     after_help = "Logs are written to: ~/.local/share/claude-permit/logs/claude-permit.log"
 )]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Command,
+pub struct PermitCli {
+    #[command(flatten)]
+    pub args: PermitArgs,
+}
+
+impl PermitCli {
+    /// Reconstruct the common globals from the shim wrapper. permit carries none, so this is the
+    /// default (`log_level: None`).
+    pub fn globals(&self) -> common::Globals {
+        common::Globals::default()
+    }
 }
 
 #[derive(Subcommand)]

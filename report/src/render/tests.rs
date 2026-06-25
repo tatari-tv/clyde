@@ -226,7 +226,7 @@ fn render_run_writes_markdown_file_with_custom_template() {
             pdf_engine: "wkhtmltopdf".into(),
         }),
     };
-    let result = crate::run(&cfg).unwrap();
+    let result = crate::run_with_config(&cfg).unwrap();
     assert_eq!(result.sessions_emitted, 2);
     let body = fs::read_to_string(&md).unwrap();
     assert_eq!(body, "host=desk sessions=2");
@@ -250,7 +250,7 @@ fn render_run_rejects_yaml_input_extension() {
             pdf_engine: "wkhtmltopdf".into(),
         }),
     };
-    let err = crate::run(&cfg).unwrap_err();
+    let err = crate::run_with_config(&cfg).unwrap_err();
     let msg = format!("{}", err);
     assert!(
         msg.contains(".yml/.yaml") && msg.contains("JSON"),

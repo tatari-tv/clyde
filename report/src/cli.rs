@@ -1,10 +1,23 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::LazyLock;
 
 static HELP_TEXT: LazyLock<String> = LazyLock::new(get_tool_validation_help);
 
+/// The report command surface, nested under `clyde report ...`. Derives `Args` (not `Parser`)
+/// so it can be a `Subcommand` payload in the clyde umbrella; carries no common globals (clyde
+/// owns `--log-level`).
+#[derive(Args, Debug)]
+pub struct ReportArgs {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+/// Standalone wrapper for the `cr` compat shim. Owns the common `--log-level` global (so
+/// `cr --log-level ...` still works) and flattens [`ReportArgs`]. The `globals()` accessor is the
+/// integration seam: it reconstructs [`common::Globals`] from this wrapper's own fields so the
+/// shim and `clyde report` drive `report::run` through the exact same code path.
 #[derive(Parser, Debug)]
 #[command(
     name = "cr",
@@ -13,12 +26,21 @@ static HELP_TEXT: LazyLock<String> = LazyLock::new(get_tool_validation_help);
     after_help = HELP_TEXT.as_str(),
     arg_required_else_help = true,
 )]
-pub struct Cli {
+pub struct ReportCli {
     #[arg(short = 'l', long, global = true, default_value = "info")]
     pub log_level: String,
 
-    #[command(subcommand)]
-    pub command: Command,
+    #[command(flatten)]
+    pub args: ReportArgs,
+}
+
+impl ReportCli {
+    /// Reconstruct the common globals from the shim wrapper's fields.
+    pub fn globals(&self) -> common::Globals {
+        common::Globals {
+            log_level: Some(self.log_level.clone()),
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

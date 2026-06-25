@@ -39,9 +39,10 @@ pub fn compute_mtime_hash(files: &[&SessionFile]) -> u64 {
     hasher.finish()
 }
 
-/// Get the cache directory (~/.cache/ccu/)
+/// Get the cache directory (~/.cache/clyde/cost/). Disposable day-cost cache: not migrated by
+/// bootstrap, it rebuilds at this clyde-namespaced path on first run (was ~/.cache/ccu/).
 pub fn cache_dir() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.join("ccu"))
+    dirs::cache_dir().map(|d| d.join("clyde").join("cost"))
 }
 
 /// Try to load a cached day summary

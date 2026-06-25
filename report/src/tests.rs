@@ -65,7 +65,7 @@ fn end_to_end_collect_writes_json() {
     let output = tmp.path().join("claude-report.json");
     let cfg = make_collect_config(&projects, &output);
 
-    let result = crate::run(&cfg).unwrap();
+    let result = crate::run_with_config(&cfg).unwrap();
     assert_eq!(result.sessions_emitted, 2);
     assert_eq!(result.output_path, output);
 
@@ -137,7 +137,7 @@ fn title_carries_forward_across_timestamped_outputs() {
     let reports = tmp.path().join("reports");
     let first = reports.join("claude-report-2026-06-21-090000.json");
     let cfg1 = make_collect_config(&projects, &first);
-    crate::run(&cfg1).unwrap();
+    crate::run_with_config(&cfg1).unwrap();
 
     // Hand-edit the first (older) report to carry a title.
     let mut report: Report = serde_json::from_str(&fs::read_to_string(&first).unwrap()).unwrap();
@@ -147,7 +147,7 @@ fn title_carries_forward_across_timestamped_outputs() {
     // A later run with a *different* timestamped output must inherit the title.
     let second = reports.join("claude-report-2026-06-21-235959.json");
     let cfg2 = make_collect_config(&projects, &second);
-    crate::run(&cfg2).unwrap();
+    crate::run_with_config(&cfg2).unwrap();
 
     let report: Report = serde_json::from_str(&fs::read_to_string(&second).unwrap()).unwrap();
     assert_eq!(report.sessions[SID_A].title.as_deref(), Some("carried title"));
@@ -168,7 +168,7 @@ fn end_to_end_title_preserved_across_runs() {
 
     let output = tmp.path().join("claude-report.json");
     let cfg = make_collect_config(&projects, &output);
-    crate::run(&cfg).unwrap();
+    crate::run_with_config(&cfg).unwrap();
 
     let body = fs::read_to_string(&output).unwrap();
     let mut report: Report = serde_json::from_str(&body).unwrap();
@@ -177,7 +177,7 @@ fn end_to_end_title_preserved_across_runs() {
     let edited = serde_json::to_string_pretty(&report).unwrap();
     fs::write(&output, edited).unwrap();
 
-    crate::run(&cfg).unwrap();
+    crate::run_with_config(&cfg).unwrap();
 
     let body = fs::read_to_string(&output).unwrap();
     let report: Report = serde_json::from_str(&body).unwrap();

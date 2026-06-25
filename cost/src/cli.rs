@@ -1,13 +1,12 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(
-    name = "ccu",
-    about = "Claude Code cost and usage tracker",
-    version = env!("GIT_DESCRIBE"),
-)]
-pub struct Cli {
+/// The cost command surface, nested under `clyde cost ...`. Derives `Args` (not `Parser`) so it
+/// can be a `Subcommand` payload in the clyde umbrella. Tool-unique globals (`--offline`,
+/// `--config`, `--path`, `--model`, `--no-cache`) stay here; only the common `--log-level` is
+/// owned by clyde and lives on the [`CostCli`] wrapper.
+#[derive(Args)]
+pub struct CostArgs {
     /// Path to config file
     #[arg(short, long)]
     pub config: Option<PathBuf>,
@@ -20,10 +19,6 @@ pub struct Cli {
     #[arg(long)]
     pub model: Option<String>,
 
-    /// Set log level (trace, debug, info, warn, error)
-    #[arg(long, env = "CCU_LOG_LEVEL")]
-    pub log_level: Option<String>,
-
     /// Skip the cost cache, recompute from JSONL
     #[arg(long)]
     pub no_cache: bool,
@@ -34,6 +29,34 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+/// Standalone wrapper for the `ccu` compat shim. Owns the common `--log-level` global (preserving
+/// the `CCU_LOG_LEVEL` env binding) and flattens [`CostArgs`]. `globals()` reconstructs
+/// [`common::Globals`] so the shim and `clyde cost` drive `cost::run` identically.
+#[derive(Parser)]
+#[command(
+    name = "ccu",
+    about = "Claude Code cost and usage tracker",
+    version = env!("GIT_DESCRIBE"),
+    after_help = "Parses Claude Code JSONL session logs to compute cost summaries.\n\nLogs are written to: ~/.local/share/ccu/logs/ccu.log",
+)]
+pub struct CostCli {
+    /// Set log level (trace, debug, info, warn, error)
+    #[arg(long, env = "CCU_LOG_LEVEL")]
+    pub log_level: Option<String>,
+
+    #[command(flatten)]
+    pub args: CostArgs,
+}
+
+impl CostCli {
+    /// Reconstruct the common globals from the shim wrapper's fields.
+    pub fn globals(&self) -> common::Globals {
+        common::Globals {
+            log_level: self.log_level.clone(),
+        }
+    }
 }
 
 #[derive(Subcommand)]

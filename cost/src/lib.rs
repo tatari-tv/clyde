@@ -2,8 +2,12 @@
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
+//! `cost` (was `ccu`): Claude Code cost/usage tracking over JSONL logs. Library form for the
+//! clyde umbrella; the `ccu` compat shim in `src/bin/ccu.rs` and `clyde cost` both drive
+//! [`run`]. `run` owns the statusline/pricing pre-flight special-casing, logging setup, and the
+//! process exit code, preserving the pre-merge tool's behavior exactly.
+
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
-use clap::{CommandFactory, FromArgMatches};
 use claude_pricing::{Pricing, PricingError, normalize_model_id};
 use eyre::{Context, Result};
 use log::{debug, info, warn};
@@ -14,7 +18,7 @@ use std::path::PathBuf;
 
 mod average;
 mod cache;
-mod cli;
+pub mod cli;
 mod config;
 mod dates;
 mod graph;
@@ -23,11 +27,14 @@ mod scanner;
 mod statusline;
 mod table;
 
-use cli::{Cli, Command};
 use config::Config;
 use output::{DaySummary, SessionSummary};
 
-fn log_file_path() -> PathBuf {
+pub use cli::{Command, CostArgs, CostCli};
+
+/// Path to ccu's log file. `pub` so the `ccu` compat shim can render the same dynamic
+/// `Logs are written to: ...` after-help line the pre-merge binary showed.
+pub fn log_file_path() -> PathBuf {
     config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ccu")
@@ -82,7 +89,7 @@ fn setup_logging(filter: &str, has_explicit_level: bool) -> Result<()> {
 
 /// Compute daily summaries from JSONL files for a date range
 fn compute_summaries(
-    cli: &Cli,
+    args: &CostArgs,
     config: &Config,
     pricing: &Pricing,
     start: NaiveDate,
@@ -91,10 +98,10 @@ fn compute_summaries(
 ) -> Result<(Vec<DaySummary>, Vec<SessionSummary>)> {
     debug!(
         "compute_summaries: start={}, end={}, verbose={}, model={:?}",
-        start, end, verbose, cli.model
+        start, end, verbose, args.model
     );
 
-    let projects_dir = cli
+    let projects_dir = args
         .path
         .clone()
         .or_else(|| config.projects_dir.clone())
@@ -112,9 +119,9 @@ fn compute_summaries(
     // The single-day load uses a per-day hash; for start==end the filtered set IS today's files,
     // so this hash matches the per-day hash that the save loop will write below.
     let single_day_hash = cache::compute_mtime_hash(&filtered);
-    if !cli.no_cache
+    if !args.no_cache
         && !verbose
-        && cli.model.is_none()
+        && args.model.is_none()
         && start == end
         && let Some(cached) = cache::load_cached_day(start, single_day_hash)
     {
@@ -173,7 +180,7 @@ fn compute_summaries(
 
         // Apply model filter if specified (compare against normalized form)
         let normalized = normalize_model_id(&entry.model);
-        if let Some(ref model_filter) = cli.model
+        if let Some(ref model_filter) = args.model
             && normalized != model_filter
         {
             continue;
@@ -247,7 +254,7 @@ fn compute_summaries(
             // single-day loads (which compute the same per-day hash) match. Multi-day
             // queries previously wrote a combined hash that no single-day load could
             // ever match - dead writes.
-            if !cli.no_cache {
+            if !args.no_cache {
                 let day_files = scanner::filter_by_date_range(&all_files, date, date);
                 let day_mtime_hash = cache::compute_mtime_hash(&day_files);
                 if let Err(e) = cache::save_cached_day(date, cost, session_count, day_mtime_hash) {
@@ -273,7 +280,7 @@ fn compute_summaries(
         .collect();
 
     // Prune old cache entries
-    if !cli.no_cache
+    if !args.no_cache
         && let Err(e) = cache::prune_cache(90)
     {
         warn!("Failed to prune cache: {}", e);
@@ -335,18 +342,66 @@ fn pricing_show(pricing: &Pricing) -> Result<()> {
     Ok(())
 }
 
-fn run(cli: &Cli, config: &Config, pricing: &Pricing) -> Result<()> {
-    debug!("run: command={:?}", cli.command.as_ref().map(std::mem::discriminant));
+/// Behavior-exact entry point for both the `ccu` shim and `clyde cost`. Owns the statusline and
+/// pricing pre-flight special-casing (handled before normal dispatch in the pre-merge tool),
+/// config load, logging setup, pricing construction, and the process exit code.
+pub fn run(args: CostArgs, globals: common::Globals) -> Result<i32> {
+    // Statusline is a fast, no-config path - handle before config load.
+    if let Some(Command::Statusline { name, list }) = &args.command {
+        if *list {
+            statusline::list();
+        } else {
+            statusline::install(name.as_deref())?;
+        }
+        return Ok(0);
+    }
+
+    // Load config once; use its log_level (and the merged --log-level/CCU_LOG_LEVEL global) to
+    // initialize logging.
+    let (config, _) = Config::load(args.config.as_ref()).context("Failed to load configuration")?;
+    let (filter, has_explicit_level) = resolve_log_filter(globals.log_level.as_deref(), config.log_level.as_deref());
+    setup_logging(&filter, has_explicit_level).context("Failed to setup logging")?;
+
+    // Construct pricing once. --offline skips the network/library cache and uses
+    // ~/.config/clyde/pricing.json (if present) or the embedded baseline. Default is
+    // Pricing::auto: cache (24h TTL) -> fetch -> embedded fallback.
+    let pricing = if args.offline {
+        Pricing::with_user_override("clyde").context("pricing override load failed")?
+    } else {
+        Pricing::auto("clyde").context("pricing fetch failed")?
+    };
+
+    info!(
+        "Pricing source: {:?}, models={}",
+        pricing.source(),
+        pricing.models().count()
+    );
+
+    if let Some(Command::Pricing { .. }) = &args.command {
+        pricing_show(&pricing)?;
+        return Ok(0);
+    }
+
+    dispatch(&args, &config, &pricing).context("Application failed")?;
+
+    Ok(0)
+}
+
+fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
+    debug!(
+        "dispatch: command={:?}",
+        args.command.as_ref().map(std::mem::discriminant)
+    );
 
     let today = Local::now().date_naive();
 
-    match &cli.command {
+    match &args.command {
         None | Some(Command::Today { .. }) => {
-            let (json, total, verbose) = match &cli.command {
+            let (json, total, verbose) = match &args.command {
                 Some(Command::Today { json, total, verbose }) => (*json, *total, *verbose),
                 _ => (false, false, false),
             };
-            let (days, sessions) = compute_summaries(cli, config, pricing, today, today, verbose)?;
+            let (days, sessions) = compute_summaries(args, config, pricing, today, today, verbose)?;
             let summary = days.first().cloned().unwrap_or(DaySummary {
                 date: today,
                 cost: 0.0,
@@ -369,7 +424,7 @@ fn run(cli: &Cli, config: &Config, pricing: &Pricing) -> Result<()> {
         }
         Some(Command::Yesterday { json, total, verbose }) => {
             let yesterday = today - chrono::Duration::days(1);
-            let (days, sessions) = compute_summaries(cli, config, pricing, yesterday, yesterday, *verbose)?;
+            let (days, sessions) = compute_summaries(args, config, pricing, yesterday, yesterday, *verbose)?;
             let summary = days.first().cloned().unwrap_or(DaySummary {
                 date: yesterday,
                 cost: 0.0,
@@ -398,7 +453,7 @@ fn run(cli: &Cli, config: &Config, pricing: &Pricing) -> Result<()> {
             graph: show_graph,
         }) => {
             let start = today - chrono::Duration::days(i64::from(*num_days) - 1);
-            let (days, ..) = compute_summaries(cli, config, pricing, start, today, false)?;
+            let (days, ..) = compute_summaries(args, config, pricing, start, today, false)?;
 
             if *total {
                 let sum: f64 = days.iter().map(|d| d.cost).sum();
@@ -449,7 +504,7 @@ fn run(cli: &Cli, config: &Config, pricing: &Pricing) -> Result<()> {
                 let current_sunday = today - chrono::Duration::days(days_since_sunday);
                 current_sunday - chrono::Duration::weeks(i64::from(*num_weeks) - 1)
             };
-            let (days, ..) = compute_summaries(cli, config, pricing, start, today, false)?;
+            let (days, ..) = compute_summaries(args, config, pricing, start, today, false)?;
 
             // Group by Sunday-based week (Sun-Sat)
             let mut weeks: BTreeMap<String, (f64, HashSet<String>)> = BTreeMap::new();
@@ -520,7 +575,7 @@ fn run(cli: &Cli, config: &Config, pricing: &Pricing) -> Result<()> {
                 let current_month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).expect("valid date");
                 subtract_months(current_month_start, *num_months - 1)
             };
-            let (days, ..) = compute_summaries(cli, config, pricing, start, today, false)?;
+            let (days, ..) = compute_summaries(args, config, pricing, start, today, false)?;
 
             // Group by month
             let mut months: BTreeMap<String, (f64, HashSet<String>)> = BTreeMap::new();
@@ -572,13 +627,13 @@ fn run(cli: &Cli, config: &Config, pricing: &Pricing) -> Result<()> {
             }
         }
         Some(Command::Pricing { .. }) | Some(Command::Statusline { .. }) => {
-            // Handled in main() before run() is called
-            unreachable!("Pricing and Statusline commands should be handled before run()")
+            // Handled in run() before dispatch() is called
+            unreachable!("Pricing and Statusline commands should be handled before dispatch()")
         }
         Some(Command::Session { id }) => {
             // For session command, scan all recent files (last 30 days)
             let start = today - chrono::Duration::days(30);
-            let (_, sessions) = compute_summaries(cli, config, pricing, start, today, false)?;
+            let (_, sessions) = compute_summaries(args, config, pricing, start, today, false)?;
 
             if id == "current" {
                 // Show the most recently active session
@@ -629,125 +684,5 @@ fn run(cli: &Cli, config: &Config, pricing: &Pricing) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let log_path = log_file_path();
-    let display = dirs::home_dir()
-        .and_then(|h| log_path.strip_prefix(&h).ok().map(|p| format!("~/{}", p.display())))
-        .unwrap_or_else(|| log_path.display().to_string());
-    let after_help =
-        format!("Parses Claude Code JSONL session logs to compute cost summaries.\n\nLogs are written to: {display}");
-    let matches = Cli::command().after_help(after_help).get_matches();
-    let cli = Cli::from_arg_matches(&matches)?;
-
-    // Statusline is a fast, no-config path - handle before config load.
-    if let Some(Command::Statusline { name, list }) = &cli.command {
-        if *list {
-            statusline::list();
-        } else {
-            statusline::install(name.as_deref())?;
-        }
-        return Ok(());
-    }
-
-    // Load config once; use its log_level to initialize logging.
-    let (config, _) = Config::load(cli.config.as_ref()).context("Failed to load configuration")?;
-    let (filter, has_explicit_level) = resolve_log_filter(cli.log_level.as_deref(), config.log_level.as_deref());
-    setup_logging(&filter, has_explicit_level).context("Failed to setup logging")?;
-
-    // Construct pricing once. --offline skips the network/library cache and uses
-    // ~/.config/ccu/pricing.json (if present) or the embedded baseline. Default is
-    // Pricing::auto: cache (24h TTL) -> fetch -> embedded fallback.
-    let pricing = if cli.offline {
-        Pricing::with_user_override("ccu").context("pricing override load failed")?
-    } else {
-        Pricing::auto("ccu").context("pricing fetch failed")?
-    };
-
-    info!(
-        "Pricing source: {:?}, models={}",
-        pricing.source(),
-        pricing.models().count()
-    );
-
-    if let Some(Command::Pricing { .. }) = &cli.command {
-        return pricing_show(&pricing);
-    }
-
-    run(&cli, &config, &pricing).context("Application failed")?;
-
-    Ok(())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_subtract_months_same_year() {
-        let date = NaiveDate::from_ymd_opt(2026, 6, 1).expect("valid date");
-        let result = subtract_months(date, 3);
-        assert_eq!(result, NaiveDate::from_ymd_opt(2026, 3, 1).expect("valid date"));
-    }
-
-    #[test]
-    fn test_subtract_months_cross_year() {
-        let date = NaiveDate::from_ymd_opt(2026, 3, 1).expect("valid date");
-        let result = subtract_months(date, 5);
-        assert_eq!(result, NaiveDate::from_ymd_opt(2025, 10, 1).expect("valid date"));
-    }
-
-    #[test]
-    fn test_subtract_months_january_edge() {
-        let date = NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date");
-        let result = subtract_months(date, 1);
-        assert_eq!(result, NaiveDate::from_ymd_opt(2025, 12, 1).expect("valid date"));
-    }
-
-    #[test]
-    fn test_subtract_months_zero() {
-        let date = NaiveDate::from_ymd_opt(2026, 3, 1).expect("valid date");
-        let result = subtract_months(date, 0);
-        assert_eq!(result, date);
-    }
-
-    #[test]
-    fn test_subtract_months_twelve() {
-        let date = NaiveDate::from_ymd_opt(2026, 3, 1).expect("valid date");
-        let result = subtract_months(date, 12);
-        assert_eq!(result, NaiveDate::from_ymd_opt(2025, 3, 1).expect("valid date"));
-    }
-
-    #[test]
-    fn test_resolve_log_filter_cli_level() {
-        let (filter, explicit) = resolve_log_filter(Some("debug"), None);
-        assert_eq!(filter, "ccu=debug");
-        assert!(explicit);
-    }
-
-    #[test]
-    fn test_resolve_log_filter_cli_level_trace() {
-        let (filter, explicit) = resolve_log_filter(Some("trace"), None);
-        assert_eq!(filter, "ccu=trace");
-        assert!(explicit);
-    }
-
-    #[test]
-    fn test_resolve_log_filter_config_level() {
-        let (filter, explicit) = resolve_log_filter(None, Some("info"));
-        assert_eq!(filter, "ccu=info");
-        assert!(explicit);
-    }
-
-    #[test]
-    fn test_resolve_log_filter_none_falls_through() {
-        // When both CLI and config level are None, falls through to RUST_LOG/default
-        let (filter, _) = resolve_log_filter(None, None);
-        assert!(!filter.is_empty());
-    }
-
-    #[test]
-    fn test_resolve_log_filter_default_not_explicit() {
-        let (filter, _) = resolve_log_filter(None, None);
-        assert!(!filter.is_empty());
-    }
-}
+mod tests;
