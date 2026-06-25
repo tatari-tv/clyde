@@ -1,13 +1,13 @@
-# Design Document: clyde — umbrella CLI for Claude Code tooling
+# Design Document: clyde - umbrella CLI for Claude Code tooling
 
 **Author:** Scott Idler
 **Date:** 2026-06-24
-**Status:** In Review
-**Review Passes Completed:** 5/5
+**Status:** In Review (v2, post architect + staff-engineer review)
+**Review Passes Completed:** 5/5 self + `/architect` + `/staff-engineer`
 
 ## Summary
 
-Rename the `klod` workspace to `clyde` and absorb four sibling repos — `claude-report` (`cr`), `claude-cost-usage` (`ccu`), `claude-permit`, and the shared `claude-pricing` library — into it as workspace member crates. The result is a single `clyde` binary that dispatches subcommands (`clyde sessions`, `clyde report`, `clyde cost`, `clyde permit`) over a set of focused library crates, following the established `second-brain`/`sb` umbrella pattern. Old binary names continue to work via compat shims, and a new `clyde bootstrap` repoints the live integrations (statusline, permission hook, enrich timer) at the renamed binary.
+Rename the `klod` workspace to `clyde` and absorb four sibling repos (`claude-report` / `cr`, `claude-cost-usage` / `ccu`, `claude-permit`, and the shared `claude-pricing` library) into it as workspace member crates. The result is a single `clyde` binary that dispatches subcommands (`clyde sessions`, `clyde report`, `clyde cost`, `clyde permit`) over a set of focused library crates, following the `second-brain`/`sb` umbrella pattern. The three old tool binaries (`cr`, `ccu`, `claude-permit`) survive as compat shims with behavior-exact semantics; there is no `klod` shim. A new `clyde bootstrap` migrates all config/data/cache under a single clyde home and repoints the live integrations (statusline, permission hook, enrich timer); `clyde doctor` verifies them.
 
 ## Problem Statement
 
@@ -17,10 +17,10 @@ Rename the `klod` workspace to `clyde` and absorb four sibling repos — `claude
 
 Three other Claude-Code-adjacent CLIs live in their own repos and share an internal pricing library:
 
-- `tatari-tv/claude-report` — binary `cr`, v0.2.1 — repo/session reporting.
-- `tatari-tv/claude-cost-usage` — binary `ccu`, v0.5.3 — cost/usage; installs a Claude Code **statusline**.
-- `tatari-tv/claude-permit` — binary `claude-permit`, v0.1.20 — permission hygiene; runs as a Claude Code **hook**.
-- `tatari-tv/claude-pricing` — library `claude_pricing`, v2.0.0 — pricing data + live fetch; consumed by `cr` and `ccu` as a pinned git dependency. No other consumers.
+- `tatari-tv/claude-report` - binary `cr`, v0.2.1 - repo/session reporting.
+- `tatari-tv/claude-cost-usage` - binary `ccu`, v0.5.3 - cost/usage; installs a Claude Code **statusline**.
+- `tatari-tv/claude-permit` - binary `claude-permit`, v0.1.20 - permission hygiene; runs as a Claude Code **hook** and keeps an events database.
+- `tatari-tv/claude-pricing` - library `claude_pricing`, v2.0.0 - pricing data + live fetch; consumed by `cr` and `ccu` as a pinned git dependency. No other consumers.
 
 (`scottidler/claude-permit` is a stale fork at v0.1.7; out of scope, left untouched.)
 
@@ -30,26 +30,35 @@ The `klod` name grates and reads as a typo of "claude," while colliding conceptu
 
 ### Goals
 
-- Rename `klod` → `clyde` (repo, binary, crate, XDG paths) with data migration.
+- Rename `klod` to `clyde` (repo, binary, crate, XDG paths) with data migration.
 - Absorb `cr`, `ccu`, `claude-permit`, and `claude-pricing` into the `clyde` workspace as member crates, preserving git history.
 - Expose them as subcommands of a single `clyde` binary using the `sb` umbrella pattern (library crates + thin dispatch bin).
-- Keep the old binary names (`cr`, `ccu`, `claude-permit`) working during transition via compat shims.
-- Repoint live integrations (ccu statusline, permit hook, enrich systemd timer) at `clyde` via a `clyde bootstrap` command, and report their health via `clyde doctor`.
+- Keep the old binary names (`cr`, `ccu`, `claude-permit`) working with behavior-exact compat shims during transition.
+- Unify all absorbed tools' config, data, and cache under a single clyde home, migrated by `clyde bootstrap`.
+- Repoint live integrations (ccu statusline, permit hook, enrich systemd timer) at `clyde`, and report their health via `clyde doctor`.
 - Collapse to a single flat workspace version line.
 
 ### Non-Goals
 
-- Rewriting any tool's internal logic or feature set. Absorption is structural, not behavioral.
-- Merging the per-tool config schemas into one file. Configs are relocated, not unified.
+- Rewriting any tool's internal logic or feature set. Absorption is structural; observable behavior is preserved (see Compatibility Contract).
+- Merging the per-tool config schemas into one file. Config files are relocated under one directory, not merged into one schema.
 - Touching `scottidler/claude-permit`.
 - Publishing to crates.io.
-- Building a new statusline/hook/report feature. Only the wiring changes.
+- Building a new statusline/hook/report feature. Only the wiring and packaging change.
+
+## Compatibility Contract
+
+This contract governs the shims, the `run()` signatures, and migration. Decided: **behavior-exact, name = clyde.**
+
+- **Behavior-exact for the shims.** `cr`, `ccu`, `claude-permit` preserve their exit codes, stdout/stderr output, and behavior-critical contracts byte-for-byte. In particular, `claude-permit`'s hook contract is preserved exactly: on a `log` failure it prints `{}` to stdout and exits 0 so it never blocks Claude Code.
+- **Name = clyde in help text only.** Help/usage strings render under `clyde <tool>`; the standalone shim help renders under the old name. No other observable difference.
+- **Paths move, with fallback.** Config/data/cache relocate to the clyde home (see Data Model). Readers fall back to the legacy path until `bootstrap` migrates, so a tool invoked before bootstrap still finds its existing state.
 
 ## Proposed Solution
 
 ### Overview
 
-A single Cargo workspace, `tatari-tv/clyde`, where every tool is a **library crate that exports its own clap CLI struct, command enum, and `run()` entry**, and a thin `clyde` binary wraps those CLIs into one top-level command tree and dispatches one line per arm. This is exactly how `second-brain/sb` composes `borg`/`cortex`/`oracle`. (`git-tools`, by contrast, is a bag of independent binaries with no umbrella — explicitly *not* the model here.)
+A single Cargo workspace, `tatari-tv/clyde`, where each absorbed tool is a library crate and a thin `clyde` binary composes them into one top-level command tree. This follows `second-brain/sb`. Note the precedent precisely: `sb`'s per-tool wrapper CLIs live in `sb/src/cli/*` and dispatch to wrapper methods, the member CLI structs derive `Args` (not `Parser`), and `sb` ships no compat shims. clyde adopts the same `Args`-based composition and adds shims of its own (a deliberate extension, not part of the sb precedent). `git-tools`, by contrast, is a bag of independent binaries with no umbrella, and is explicitly not the model here.
 
 ### Architecture
 
@@ -60,222 +69,282 @@ tatari-tv/clyde            (renamed from tatari-tv/klod)
   clyde/                   thin umbrella bin (was klod/): top-level CLI, dispatch, bootstrap, doctor
   session/                 (unchanged lib)
   sessions/                (unchanged lib)
-  report/                  was claude-report   → lib: ReportCli + run(); compat [[bin]] cr
-  cost/                    was claude-cost-usage→ lib: CostCli   + run(); compat [[bin]] ccu
-  permit/                  was claude-permit    → lib: PermitCli + run(); compat [[bin]] claude-permit
-  pricing/                 was claude-pricing   → lib claude_pricing (no bin)
+  report/                  was claude-report    -> lib; compat [[bin]] cr
+  cost/                    was claude-cost-usage -> lib; compat [[bin]] ccu
+  permit/                  was claude-permit     -> lib; compat [[bin]] claude-permit
+  pricing/                 was claude-pricing    -> lib claude_pricing (no bin)
 ```
 
-**Crate renaming** — member dir, package name, and lib name move to single words, except `pricing`, whose lib name must stay `claude_pricing` so consumers' `claude_pricing::…` paths and its public API are untouched:
+**Crate renaming.** Member dir, package name, and lib name move to single words, except `pricing`, whose lib name stays `claude_pricing` so consumers' `claude_pricing::...` paths and its public API are untouched.
 
 | Dir | Package name | Lib name (`use`) | Compat bin |
 |-----|--------------|------------------|------------|
 | `report/` | `report` | `report` | `cr` |
 | `cost/` | `cost` | `cost` | `ccu` |
 | `permit/` | `permit` | `permit` | `claude-permit` |
-| `pricing/` | `claude-pricing` (unchanged) | `claude_pricing` (unchanged) | — |
+| `pricing/` | `claude-pricing` (unchanged) | `claude_pricing` (unchanged) | - |
 
-Top-level dispatch in `clyde/src/cli.rs`, mirroring `sb` (`SessionsCli` is klod's existing `sessions` command tree, carried over verbatim):
+### The clap two-type shape (load-bearing)
+
+Both reviewers flagged that the naive "one struct that derives `Parser`, nested directly under clyde" cannot work in clap v4:
+
+- A type used as a `Subcommand` tuple-variant payload must derive `Args`, not `Parser`.
+- An `Args` struct has no `::parse()`, so a shim cannot call `<T as Parser>::parse()` on the same type.
+- Common globals collide: clyde and each tool both declaring a global `--log-level` panics at startup.
+
+Resolution, mirroring how `sb` composes members. Each absorbed crate exposes two types plus one entry function:
 
 ```rust
-pub enum Cmd {
-    Sessions(SessionsCli),   // existing klod commands, unchanged
-    Report(report::ReportCli),
-    Cost(cost::CostCli),
-    Permit(permit::PermitCli),
-    Bootstrap(BootstrapArgs),
-    Doctor(DoctorArgs),
+// report/src/lib.rs
+#[derive(clap::Args)]
+pub struct ReportArgs { /* tool-specific flags + its own #[command(subcommand)] */ }
+
+// Standalone wrapper for the `cr` shim: owns the common globals so `cr --log-level ...` still works.
+#[derive(clap::Parser)]
+pub struct ReportCli {
+    #[command(flatten)] pub args: ReportArgs,
+    #[arg(long, global = true)] pub log_level: Option<LevelFilter>,
 }
 
-match cli.cmd {
-    Cmd::Sessions(c)  => sessions_dispatch(c),
-    Cmd::Report(c)    => report::run(c),
-    Cmd::Cost(c)      => cost::run(c),
-    Cmd::Permit(c)    => permit::run(c),
-    Cmd::Bootstrap(a) => bootstrap::run(a),
-    Cmd::Doctor(a)    => doctor::run(a),
-}
+// Entry point. Returns the intended process exit code; callers map it to process::exit.
+pub fn run(args: ReportArgs, globals: Globals) -> eyre::Result<i32>;
 ```
+
+- `clyde` owns the single set of **common** globals (`--log-level`, verbosity) at the top level and passes them down as `Globals`. Nested `*Args` structs do not redeclare common globals (that is what removes the collision). Tool-unique globals (for example ccu's `--offline`) stay on the tool's `*Args` and remain reachable as `clyde cost --offline`.
+- `clyde` nests the `Args` inner: `Cmd::Report(report::ReportArgs)`, and dispatches `report::run(args, globals)`.
+- The `cr` shim parses the `Parser` outer (`ReportCli::parse()`), reconstructs `Globals`, and calls the same `report::run`. Same code path, same behavior.
+
+### Output and exit ownership
+
+To honor the behavior-exact contract, each tool's exit codes, final printing, and pre-flight special-casing move into its `run()` so both the shim and `clyde <tool>` produce identical results:
+
+- `report::run` owns the jq validation, the exit-code-2 path, and the final output printing currently in `claude-report/src/main.rs`.
+- `cost::run` owns the statusline and pricing special-casing that currently precedes normal run in `claude-cost-usage/src/main.rs`.
+- `permit::run` owns the hook-safe contract: on `log` failure, print `{}` and return 0, never blocking Claude Code (currently in `claude-permit/src/main.rs`).
+
+`run()` returns `eyre::Result<i32>`; both shim `main` and the clyde dispatch arm do `process::exit(code)`.
 
 ### Command Surface
 
 | Command | Was | Notes |
 |---------|-----|-------|
-| `clyde sessions <search\|ls\|open\|tag\|reindex\|stage\|enrich\|doctor\|serve>` | `klod sessions …` | Unchanged; already nested under `sessions`. |
-| `clyde report …` | `cr …` | `ReportCli` becomes a nested subcommand. |
-| `clyde cost …` | `ccu …` | Includes `clyde cost statusline` (the installer). |
-| `clyde permit …` | `claude-permit …` | Includes `clyde permit log` (the hook entry, reads stdin). |
-| `clyde bootstrap` | — | New: install/repoint statusline, permit hook, enrich timer; migrate paths/config. |
-| `clyde doctor` | — | New: health-check all integrations + data/config locations. |
+| `clyde sessions <search\|ls\|open\|tag\|reindex\|stage\|enrich\|doctor\|serve>` | `klod sessions ...` | Unchanged; already nested under `sessions`. |
+| `clyde report ...` | `cr ...` | `ReportArgs` nested under clyde. |
+| `clyde cost ...` | `ccu ...` | Includes `clyde cost statusline` (the installer). |
+| `clyde permit ...` | `claude-permit ...` | Includes `clyde permit log` (hook entry, reads stdin) and `clyde permit install`. |
+| `clyde bootstrap` | - | New: migrate paths/config/data; install/repoint statusline, permit hook, enrich timer. |
+| `clyde doctor` | - | New: health-check integrations + resolved data/config/cache locations. |
 
 ### Compat Shims
 
-Each domain lib crate declares a thin compat `[[bin]]` that parses its own top-level CLI and calls its `run()` — in-process, so it does not depend on `clyde` being on PATH and has identical behavior to the pre-merge tool:
+Each domain lib crate declares a thin compat `[[bin]]` that parses its `Parser` outer wrapper and calls its `run()` in-process, so it does not depend on `clyde` being on PATH and behaves identically to the pre-merge tool:
 
 ```rust
 // cost/src/bin/ccu.rs
-fn main() -> eyre::Result<()> { cost::run(<cost::CostCli as clap::Parser>::parse()) }
+fn main() {
+    let cli = <cost::CostCli as clap::Parser>::parse();
+    let code = cost::run(cli.args, cli.globals()).unwrap_or_else(|e| { eprintln!("{e:?}"); 1 });
+    std::process::exit(code);
+}
 ```
 
-- `report/` → `[[bin]] cr`
-- `cost/` → `[[bin]] ccu`
-- `permit/` → `[[bin]] claude-permit`
+- `report/` -> `[[bin]] cr`
+- `cost/` -> `[[bin]] ccu`
+- `permit/` -> `[[bin]] claude-permit`
 
-Shims are the transition safety net for muscle memory and any config we miss; `clyde bootstrap` does the clean repoint to `clyde …`. They install as their own targets (e.g. `cargo install --path cost --bin ccu`); `install.sh` installs `clyde` plus the three shims.
+Shims are a transition bridge; `clyde bootstrap` does the clean repoint to `clyde ...`. They install as their own targets (for example `cargo install --path cost --bin ccu`); `install.sh` installs `clyde` plus the three shims. There is no `klod` shim (see Resolved Decisions).
 
 ### Integration Rewiring
 
-Three live integrations reference the **old binary names** and break on rename. `clyde bootstrap` installs/repoints them; `clyde doctor` verifies them. Shims cover the binary-name path as a fallback.
+Every place a tool writes its own name into an external integration must emit the clyde form. That is two distinct surfaces, not one:
 
-1. **Statusline** — `ccu` ships a `Statusline` installer writing a Claude Code statusline that invokes the binary. Repoint to `clyde cost`. Surfaced as `clyde cost statusline` and orchestrated by `clyde bootstrap`.
-2. **Permission hook** — Claude Code `settings.json` hook calls `claude-permit log` on stdin. Repoint to `clyde permit log`.
-3. **Enrich systemd user timer** — an external `~/.config/systemd/user/*.timer`/`.service` on the desk machine runs `klod sessions enrich` daily at 03:00 with an env-file API key. `bootstrap` regenerates the unit's `ExecStart` to `clyde sessions enrich` and reloads the unit. It only **repoints an existing** unit — it does not create a timer on machines that never had one — unless `bootstrap --install-timer` is passed explicitly.
+1. **The tools' own installers** (fresh installs): `claude-cost-usage`'s statusline installer (`statusline.d/*` templates hard-code `ccu`) and `claude-permit`'s `cmd/install.rs` (writes `claude-permit log` into `~/.claude/settings.json`) must be rewritten to emit `clyde cost` / `clyde permit log`.
+2. **`clyde bootstrap`** (existing installs): migrates and repoints what is already on disk.
+
+The three live integrations:
+
+1. **Statusline.** `ccu`'s statusline installer writes a shell snippet invoking the binary. New installs emit `clyde cost`; `bootstrap` rewrites an existing snippet. `doctor` reports the snippet's target.
+2. **Permission hook.** Claude Code `settings.json` calls `claude-permit log` on stdin. `bootstrap` rewrites the exact `claude-permit log` invocation to `clyde permit log` in both global and local settings, preserving matchers and ordering. New installs (`clyde permit install`) emit the clyde form.
+3. **Enrich systemd user timer.** The live unit on the desk machine (`~/.config/systemd/user/klod-enrich.service`) has `EnvironmentFile=%h/.config/klod/enrich.env` and `ExecStart=%h/.cargo/bin/klod --log-level info sessions enrich`. `bootstrap` rewrites `ExecStart` to `clyde sessions enrich`, moves the `EnvironmentFile` to `%h/.config/clyde/enrich.env`, renames the unit file to `clyde-enrich.service` (removing the old unit), and runs `systemctl --user daemon-reload`. It repoints an existing unit only (no creation without `--install-timer`), preserves env-file permissions, never logs key material, and verifies via `systemctl --user cat`. `doctor` reports the unit name, `ExecStart`, and last-run.
+
+### Atomic bootstrap semantics
+
+`bootstrap` is idempotent and fails safe:
+
+- Each file it rewrites (settings.json, statusline snippet, systemd unit, env file) is backed up first to `<path>.clyde.bak` before modification.
+- Write order: migrate data/config/cache first (so a repointed integration finds its state), then rewrite integration references.
+- If any step fails after an earlier step succeeded, `bootstrap` reports exactly which steps completed and leaves the backups in place; re-running is safe (already-migrated steps are no-ops).
+- `doctor` fails hard (non-zero) while any integration still resolves to an old binary name or any tool's state still lives only at a legacy path.
 
 ### Data Model
 
-No schema changes. The sessions SQLite catalog and each tool's config keep their current shapes; only their **filesystem locations** change:
+No schema changes. Stores and configs keep their current shapes; locations move under one clyde home, and the `claude-permit` events database is migrated (its omission would silently orphan permission history). Verified source paths are cited.
 
 | Concern | Before | After | Migration |
 |---------|--------|-------|-----------|
-| sessions data | `$XDG_DATA_HOME/klod/` | `$XDG_DATA_HOME/clyde/` | `bootstrap` moves dir if present; new default otherwise. |
-| config | `$XDG_CONFIG_HOME/klod/` | `$XDG_CONFIG_HOME/clyde/` | same. |
-| cache | `$XDG_CACHE_HOME/klod/` | `$XDG_CACHE_HOME/clyde/` | same. |
-| permit config | `~/.config/claude-permit/…` (`claude-permit.yml`) | `~/.config/clyde/permit.yml` | `bootstrap` copies forward; falls back to old path read if new absent. |
-| report config | existing path | `~/.config/clyde/report.yml` | same. |
-| cost config | existing path | `~/.config/clyde/cost.yml` | same. |
+| sessions data | `$XDG_DATA_HOME/klod/` | `$XDG_DATA_HOME/clyde/` | move dir if present, else fresh. (`session/src/paths.rs`) |
+| klod config/cache | `$XDG_{CONFIG,CACHE}_HOME/klod/` | `.../clyde/` | move. |
+| permit events DB | `~/.local/share/claude-permit/events.db` | `~/.local/share/clyde/events.db` | **move** (not copy, not fresh); `doctor` checks presence + row count. (`claude-permit/src/db/store.rs`) |
+| permit config | `~/.config/claude-permit/` | `~/.config/clyde/permit.yml` | move; read-fallback to old until migrated. |
+| cost config | `~/.config/ccu/ccu.yml` | `~/.config/clyde/cost.yml` | move; read-fallback. (`claude-cost-usage/src/config.rs`) |
+| cost day cache | `dirs::cache_dir()/ccu` | `dirs::cache_dir()/clyde/cost` | move; cold cache self-heals if skipped. (`claude-cost-usage/src/cache.rs`) |
+| pricing override | `~/.config/ccu/pricing.json`, `~/.config/cr/pricing.json` (disjoint) | `~/.config/clyde/pricing.json` (single) | merge old overrides; `cost`/`report` pass `app_name = "clyde"`. (`claude-pricing/src/fetch.rs`) |
+| pricing cache | `dirs::cache_dir()/claude-pricing` | `dirs::cache_dir()/clyde/pricing` | move; self-heals if skipped. (`claude-pricing/src/feed.rs`) |
+
+Note: `claude-report` has no YAML config file (its config is CLI-derived; output goes to XDG data). There is no `report.yml`. (`claude-report/src/config.rs`)
 
 ### API Design
 
-Each absorbed crate's public library surface is minimal and uniform:
-
 ```rust
-// e.g. report/src/lib.rs
-pub use cli::ReportCli;     // #[derive(Parser)] top-level args incl. its own subcommands
-pub fn run(cli: ReportCli) -> eyre::Result<()>;
+// each absorbed crate, e.g. report
+pub struct ReportArgs;          // #[derive(Args)], nested under clyde
+pub struct ReportCli;           // #[derive(Parser)], wraps ReportArgs + common globals, for the cr shim
+pub fn run(args: ReportArgs, globals: Globals) -> eyre::Result<i32>;
 ```
 
-`pricing/` keeps its current public API (`claude_pricing::…`) and its `fetch` feature; consumers switch from the git dep to `claude-pricing = { path = "../pricing", features = ["fetch"] }`.
+`pricing/` keeps its public API (`claude_pricing::...`) and its `fetch` feature; consumers switch from the git dep to `claude-pricing = { path = "../pricing", features = ["fetch"] }` and pass `app_name = "clyde"`.
 
 ### Implementation Plan
 
-#### Phase 0: Rename klod → clyde
+#### Phase 0: Rename klod to clyde
 **Model:** sonnet
 - Create a feature branch.
-- Rename the `klod/` member dir to `clyde/`; bin name `klod` → `clyde`; crate name and `default-members`.
-- Update XDG path constants (`klod` → `clyde`) in `session/src/paths.rs` and `clyde/src/cli.rs`.
+- Rename the `klod/` member dir to `clyde/`; bin name `klod` to `clyde`; crate name and `default-members`.
+- Update XDG path constants (`klod` to `clyde`) in `session/src/paths.rs` and `clyde/src/cli.rs`.
 - Update workspace metadata, README, clippy/rustfmt configs, install.sh.
 - `otto ci` green on the rename alone before absorbing anything.
 
 #### Phase 1: Subtree-merge the four repos
 **Model:** sonnet
-- `git subtree add` each repo into its member dir preserving history: `claude-pricing`→`pricing/`, `claude-report`→`report/`, `claude-cost-usage`→`cost/`, `claude-permit`→`permit/`.
+- `git subtree add --prefix=<dir> <repo> main` for each (all four default to `main`): `claude-pricing` to `pricing/`, `claude-report` to `report/`, `claude-cost-usage` to `cost/`, `claude-permit` to `permit/`.
 - Add the four to `[workspace] members`.
-- Do not expect a clean build yet; this phase is purely the history import + tree placement.
+- Import-only; no clean build expected yet. Verify `git log -- <dir>` shows imported history.
 
-#### Phase 2: Convert absorbed crates bin → library
+#### Phase 2: Convert absorbed crates to libraries (two-type clap shape)
 **Model:** opus
-- For `report`, `cost`, `permit`: split `main.rs` into `lib.rs` exposing `<Tool>Cli` + `run()`; reduce `main.rs` to a compat `[[bin]]` calling `run()`.
-- Rewire `pricing` from git dep to `path` dep in `cost` and `report`; keep `features = ["fetch"]`.
-- Reconcile shared dependencies into `[workspace.dependencies]`; align edition to the workspace.
-- Reconcile lints: the workspace denies `dead_code` and `unused_variables`; absorbed code that trips these must be fixed (not blanket-`allow`d) to stay green.
-- Subtree already places ancillary assets (`templates/`, `statusline.d/`, `assets/`, `settings/`, `build.rs`) under each crate dir; verify they resolve relative to the crate root and fix any include path that assumed the old repo root.
-- `otto ci` green: all compat bins build and behave as before.
+- For `report`, `cost`, `permit`: introduce the `*Args` (`Args`) inner and `*Cli` (`Parser`) outer wrapper; move exit-code/output/special-case ownership into `run()` per the Output and exit ownership section. `cost` needs a new `lib.rs` (it has none today). Reduce each `main.rs` to the compat `[[bin]]`.
+- Preserve `permit`'s `{}`-on-failure hook contract inside `permit::run`.
+- Rewire `pricing` from git dep to `path` dep in `cost` and `report`; keep `features = ["fetch"]`; pass `app_name = "clyde"`.
+- Reconcile diverging deps into `[workspace.dependencies]`: `rusqlite` (sessions 0.40.1 vs permit 0.39.0), `clap` (ccu 4.5.60 vs others 4.6.x), `serde_json` (1.0.150 vs 1.0.149). Treat as behavior-affecting, not clerical; re-run tests after each bump.
+- Reconcile lints: workspace denies `dead_code` and `unused_variables`; fix offenders rather than blanket-allow.
+- Asset paths: `include_dir!("$CARGO_MANIFEST_DIR/...")` resolves correctly post-subtree (verified for the ccu statusline); scope the asset audit to any cwd-relative runtime path only.
+- `otto ci` green: all three compat bins build and behave as before.
 
 #### Phase 3: Wire the clyde umbrella
 **Model:** opus
-- Add top-level `Cmd` arms wrapping `report::ReportCli`, `cost::CostCli`, `permit::PermitCli`; dispatch each.
-- Keep `clyde sessions …` exactly as today.
-- Centralize logger/verbosity selection over the merged command tree (mirror `sb`'s logger inspection).
-- Tests: `clyde <tool> --help` parity with the shim `<tool> --help`.
+- Add top-level `Cmd` arms nesting `report::ReportArgs`, `cost::CostArgs`, `permit::PermitArgs`; dispatch each to `run(args, globals)`.
+- Keep `clyde sessions ...` exactly as today.
+- clyde owns common globals; centralize logger/verbosity over the merged tree (mirror sb's logger inspection).
+- Tests: `clyde <tool> --help` and behavior parity with the shim `<tool>`.
 
 #### Phase 4: bootstrap + doctor
 **Model:** opus
-- `clyde bootstrap`: migrate XDG dirs and configs; install/repoint statusline (`clyde cost`), permit hook (`clyde permit log`), and the enrich systemd user timer (`clyde sessions enrich`); idempotent.
-- `clyde doctor`: report binary location, data/config/cache paths, statusline presence + target, hook presence + target, timer presence + ExecStart + last-run.
+- `clyde bootstrap`: data/config/cache migration (incl. permit events DB, pricing override merge) first; then rewrite statusline, permit hook (global + local), and systemd unit (ExecStart + EnvironmentFile + file rename + daemon-reload). Back up every file before write; idempotent; repoint-existing-only unless `--install-timer`; `--skip-systemd`; `--force`.
+- Rewrite the tools' own installers (`cost statusline`, `permit install`) to emit the clyde form for fresh installs.
+- `clyde doctor`: binary location; resolved data/config/cache paths; statusline target; hook target (global + local); timer unit name + ExecStart + last-run; permit events DB presence + row count. Non-zero exit while any old target or legacy-only state remains.
 
 #### Phase 5: Config relocation
 **Model:** sonnet
-- Default config reads to `~/.config/clyde/{permit,report,cost}.yml`, with read-fallback to legacy paths until `bootstrap` migrates.
+- Config readers default to `~/.config/clyde/{permit,cost}.yml` with read-fallback to legacy paths until `bootstrap` migrates. (No `report.yml`.)
 - Update each crate's config loader + docs.
 
 #### Phase 6: Tests, CI, docs
 **Model:** sonnet
-- Consolidate per-crate tests; ensure `otto ci` covers the whole workspace (incl. `whitespace -r`).
-- Rewrite top-level README around `clyde` and its subcommands; per-crate READMEs trimmed to crate scope.
-- Verify shims, then ship via `bump` (single flat `v*` tag on `main`).
+- Consolidate per-crate tests; `otto ci` covers the whole workspace (incl. `whitespace -r`).
+- Rewrite top-level README around `clyde`; per-crate READMEs trimmed.
+- Verify shims and integrations live; ship via `bump -m` (single flat `v*` tag on `main`).
 
 #### Phase 7: Archive old repos
 **Model:** sonnet
-- After clyde ships and integrations verified: archive `claude-report`, `claude-cost-usage`, `claude-permit`, `claude-pricing` on GitHub (read-only), each README pointing at `clyde`. Nothing deleted; tags preserved.
+- After clyde ships and integrations verified: archive `claude-report`, `claude-cost-usage`, `claude-permit`, `claude-pricing` on GitHub (read-only), READMEs pointing at clyde. Nothing deleted; tags preserved.
 
 ## Alternatives Considered
 
 ### Alternative 1: Keep separate binaries in one workspace (the git-tools pattern)
 - **Description:** Move all tools into the `clyde` workspace but keep them as independent binaries sharing a `common` lib; no umbrella binary.
 - **Pros:** Least refactoring; each tool keeps its exact CLI.
-- **Cons:** No single entry point; the "merge" is cosmetic; still N binaries to install and reason about.
-- **Why not chosen:** Defeats the goal of one `clyde` command; `sb` demonstrates the umbrella is worth the refactor.
+- **Cons:** No single entry point; the merge is cosmetic; still N binaries.
+- **Why not chosen:** Defeats the goal of one `clyde` command; `sb` shows the umbrella is worth the refactor.
 
 ### Alternative 2: Monolithic modules inside the clyde bin
 - **Description:** Copy each tool's source as plain modules in the `clyde` binary crate; no library boundaries.
-- **Pros:** Fastest to wire; no inter-crate API to design.
-- **Cons:** Loses isolation, independent testability, and clean compile units; one giant bin crate.
-- **Why not chosen:** Violates the isolation the `sb` pattern provides; worst long-term maintainability.
+- **Pros:** Fastest to wire; no inter-crate API.
+- **Cons:** Loses isolation, independent testability, clean compile units; one giant bin crate.
+- **Why not chosen:** Violates the isolation the sb pattern provides; worst long-term maintainability.
 
 ### Alternative 3: Keep claude-pricing external
-- **Description:** Absorb the three CLIs but leave `claude-pricing` as a pinned git dependency.
+- **Description:** Absorb the three CLIs but leave `claude-pricing` a pinned git dependency.
 - **Pros:** Zero churn on pricing.
-- **Cons:** One odd external git pin in an otherwise self-contained workspace; non-atomic, network-dependent builds; pin must be bumped manually.
-- **Why not chosen:** Its only two consumers are being absorbed, so there is no external consumer to serve; absorbing makes builds atomic and offline.
+- **Cons:** One odd external git pin in an otherwise self-contained workspace; non-atomic, network-dependent builds; manual pin bumps.
+- **Why not chosen:** Its only two consumers are being absorbed; absorbing makes builds atomic and offline.
 
 ## Technical Considerations
 
 ### Dependencies
-- Internal: `clyde` bin depends on `session`, `sessions`, `report`, `cost`, `permit` (and transitively `pricing`).
-- External: union of the four tools' deps, hoisted into `[workspace.dependencies]`; `claude_pricing`'s `fetch` feature pulls `ureq`/`tempfile`.
+- Internal: `clyde` bin depends on `session`, `sessions`, `report`, `cost`, `permit` (transitively `pricing`).
+- External: union of the four tools' deps, hoisted into `[workspace.dependencies]`; version divergence reconciled in Phase 2; `claude_pricing`'s `fetch` feature pulls `ureq`/`tempfile`.
 
 ### Performance
-- Single binary linking all libs is larger but cold-start and runtime are unaffected; dispatch is a match. Build time rises with the merged dep graph; mitigated by the workspace's relocated `target/` (intel SSD) and `bump`-time release builds only.
+- One binary linking all libs is larger but cold-start and runtime are unaffected; dispatch is a match. Build time rises with the merged dep graph; mitigated by the relocated `target/` (intel SSD) and release builds only at `bump` time.
 
 ### Security
-- The permit hook and the enrich timer's env-file API key are sensitive. `bootstrap` must preserve existing file permissions on the timer/env-file and must not log key material. `doctor` reports presence, never contents.
+- The permit hook and the enrich timer's env-file API key are sensitive. `bootstrap` preserves file permissions on the timer/env-file, never logs key material, and backs up before rewrite. `doctor` reports presence, never contents.
 
 ### Testing Strategy
-- Per-crate unit tests carried over unchanged.
-- New parity tests: `clyde <tool> --help` vs. shim `<tool> --help`; argument round-trips for each wrapped CLI.
-- `bootstrap`/`doctor` tested against a temp `$HOME` (XDG overrides) with fake statusline/hook/timer fixtures; assert idempotency.
+- Per-crate unit tests carried over.
+- Parity tests: `clyde <tool>` vs. shim `<tool>` for help, output, and exit code; argument round-trips; explicit test that `permit log` prints `{}` and exits 0 on induced failure.
+- `bootstrap`/`doctor` tested against a temp `$HOME` (XDG overrides) with fake statusline/hook/timer/events-DB fixtures; assert idempotency and the events-DB move.
 - Full `otto ci` green at the end of Phases 0, 2, 3, and 6.
 
 ### Rollout Plan
-- Land on a branch; `otto ci` green; `bump` a single flat `v*` tag on `main` (gates checked per git rules).
-- Install `clyde`; run `clyde bootstrap`; verify with `clyde doctor` and `sdv`-style live checks (statusline renders, a permission event logs, timer fires).
-- Keep shims installed until `doctor` confirms all integrations point at `clyde`; archive old repos last.
+- Land on a branch; `otto ci` green; `bump -m` then push branch then tag (single flat `v*` tag on `main`, gates checked per git rules).
+- Install `clyde`; run `clyde bootstrap`; verify with `clyde doctor` and live checks (statusline renders, a permission event logs to the migrated DB, timer fires under the new unit name).
+- Keep shims installed until `doctor` confirms all integrations point at clyde; archive old repos last.
 
 ## Risks and Mitigations
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| Statusline/hook silently break after rename | Med | High | Compat shims keep old names working; `bootstrap` repoints; `doctor` verifies targets. |
-| Enrich timer keeps calling `klod`, enrichment silently stops | Med | Med | `bootstrap` regenerates `ExecStart`; `doctor` reports timer target + last-run. |
-| Subtree merge mangles history or paths | Low | Med | Use `git subtree add` per repo; verify `git log -- <dir>` after each; Phase 1 is import-only. |
-| Dependency-version conflicts when hoisting to workspace | Med | Med | Reconcile in Phase 2 behind a green `otto ci`; pin shared versions in `[workspace.dependencies]`. |
-| Data-dir migration loses the sessions catalog | Low | High | `bootstrap` moves (not deletes) `klod`→`clyde` dir; falls back to fresh only when absent; back up before move. |
-| Config path change breaks a tool's load | Med | Med | Read-fallback to legacy paths until migrated; `doctor` shows resolved config path. |
+| clap derive/global collision panics or fails to compile | Med | High | Two-type shape (Args inner + Parser outer); clyde owns common globals; covered by build + parity tests. |
+| permit events DB orphaned by migration gap | Med | High | Data Model row added; `bootstrap` moves it; `doctor` checks presence + row count; parity test on the move. |
+| Partial bootstrap strands an integration | Med | High | Backups + ordered writes + idempotent re-run; `doctor` fails hard while any old target/legacy state remains; no `klod` shim so a missed timer repoint fails loud. |
+| Behavior drift in a shim (exit code/output) | Med | High | Behavior-exact contract; `run()` owns exit/output; parity tests per tool. |
+| Dependency hoist changes behavior | Med | Med | Reconcile versions explicitly in Phase 2; re-run tests after each bump. |
+| Subtree merge mangles history/paths | Low | Med | `git subtree add` per repo; verify `git log -- <dir>`; Phase 1 import-only. |
+| Sessions data-dir migration loses catalog | Low | High | Move (not delete); fall back to fresh only when absent; back up before move. |
 
 ## Resolved Decisions
 
-Resolved by a three-lens review panel (pragmatist / conventions-purist / ops-risk), deferring to the `second-brain`/`sb` precedent where applicable.
+Resolved across a three-lens panel (pragmatist / conventions-purist / ops-risk) and the `/architect` + `/staff-engineer` reviews, deferring to the `sb` precedent where applicable.
 
-- **No `klod` compat shim** (unanimous; matches `sb`'s zero-shim umbrella). The three tool shims (`cr`/`ccu`/`claude-permit`) remain as a transition bridge for muscle memory + live integrations, but `klod` gets none: its only machine consumer is the enrich timer, which `bootstrap` repoints and `doctor` verifies. A `klod` shim would re-entrench the retired name on PATH.
-- **`bootstrap` manages the systemd timer directly** (unanimous; matches `sb`'s `register_systemd_units`). Idempotent; **repoints an existing unit only** (no creation on fresh machines without `--install-timer`); `--skip-systemd` opt-out; units write-if-missing by default and write-always under `--force`; preserve env-file permissions; never log key material; back up the unit before rewrite; `doctor` reads back `ExecStart` + last-run as verification.
+- **No `klod` compat shim** (unanimous; matches sb's zero-shim umbrella). The three tool shims remain as a transition bridge; `klod`'s only machine consumer is the enrich timer, which `bootstrap` repoints and `doctor` verifies. A `klod` shim would re-entrench the retired name and could mask a missed bootstrap.
+- **`bootstrap` manages the systemd timer directly** (unanimous; matches sb's `register_systemd_units`). Idempotent; repoint-existing-only without `--install-timer`; `--skip-systemd`; write-if-missing default, write-always under `--force`; preserve env-file permissions; never log key material; back up before rewrite; `doctor` verifies.
+- **Behavior-exact, name = clyde** compatibility contract (see Compatibility Contract).
+- **Unify config/data/cache under one clyde home with migration** (see Data Model), including the permit events DB and a single merged `pricing.json` under `app_name = "clyde"`.
+- **Version: minor bump via `bump -m`** at release. Signals the structural consolidation and re-bootstrap without a hardcoded number or a 1.0 the workspace has not earned. Per the no-version-in-docs convention the number is not fixed here.
 
 ## Open Questions
 
-- [ ] Post-merge version number. Panel split: continue normally vs. a deliberate **minor** bump to signal the consolidation; no one favors a `1.0.0`. Per the no-version-in-docs convention, the number is not fixed here — recommendation is `bump -m` (minor) at release; a plain `bump` (patch) is acceptable. Awaiting Scott's pick.
+None blocking. All design-review findings are folded into v2.
+
+## Review (v2)
+
+`/architect` (Gemini) and `/staff-engineer` (Codex) both reviewed v1 against all six repos and converged: the umbrella architecture and the sb choice are sound; every gap was in absorption mechanics. Folded in:
+
+- clap one-type composition was unworkable -> two-type Args/Parser shape (both reviewers, top finding).
+- permit events DB was missing from migration -> added as a move with a doctor check (architect, highest-consequence).
+- uniform `run()` could change behavior -> per-tool output/exit ownership, behavior-exact contract (staff-engineer).
+- fresh-install paths also write old names -> rewired the tools' own installers, not just bootstrap (architect, generalized).
+- pricing `app_name` override namespace -> unified under clyde with migration.
+- config/data paths were wrong/invented -> Data Model rewritten against verified source; `report.yml` removed.
+- sb precedent overstated -> corrected (Args composition, wrappers in sb/src/cli/*, no shims in sb).
+- `include_dir!`/`$CARGO_MANIFEST_DIR` resolves post-subtree -> Phase 2 asset audit softened to cwd-relative paths only.
+- dependency divergence is behavioral -> explicit versions and re-test in Phase 2.
 
 ## References
 
-- `second-brain` (`sb`) umbrella pattern: `~/repos/scottidler/second-brain` (`sb/src/cli.rs`, `default-members = ["sb"]`).
-- `git-tools` (independent-binaries counter-pattern): `~/repos/scottidler/git-tools`.
-- klod XDG paths: `session/src/paths.rs`, `klod/src/cli.rs`.
+- sb umbrella pattern: `~/repos/scottidler/second-brain` (`sb/src/cli.rs`, `sb/src/cli/*`, `default-members = ["sb"]`; members derive `Args`).
+- git-tools counter-pattern: `~/repos/scottidler/git-tools`.
+- Verified source: `claude-permit/src/{main.rs,cmd/install.rs,db/store.rs}`, `claude-cost-usage/src/{main.rs,config.rs,cache.rs,statusline.rs}`, `claude-report/src/{main.rs,lib.rs,config.rs}`, `claude-pricing/src/{fetch.rs,feed.rs}`, `klod` `session/src/paths.rs`.
+- Live unit: `~/.config/systemd/user/klod-enrich.service`.
 - Memory: enrich scheduling (desk systemd user timer, daily 03:00, env-file key).
