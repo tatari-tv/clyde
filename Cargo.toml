@@ -1,5 +1,5 @@
 [workspace]
-members = ["clyde", "session", "sessions"]
+members = ["clyde", "session", "sessions", "report", "cost", "permit", "pricing"]
 default-members = ["clyde"]
 resolver = "3"
 

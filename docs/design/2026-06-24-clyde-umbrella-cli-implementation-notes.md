@@ -31,3 +31,29 @@ Running record of how the implementation diverges from or interprets
 
 ### Open questions
 - None.
+
+## Phase 1: Subtree-merge the four repos
+
+### Design decisions
+- Subtree-added from the local clones (`/home/saidler/repos/tatari-tv/<repo>` `main`) rather
+  than the GitHub remotes; the local checkouts were clean and on `main`, and a local fetch is
+  faster and offline. Full history (no `--squash`), so each merge commit carries the original
+  lineage as its second parent (verified: `git log <add-commit>^2` reaches the pre-merge HEAD;
+  total workspace history grew to 222 commits).
+- Added all four (`report`, `cost`, `permit`, `pricing`) to `[workspace] members` in this phase
+  per the design. This leaves the workspace intentionally non-building (git-pinned pricing dep,
+  unreconciled dep versions, two `[[bin]]` packages with no lib) until Phase 2 — consistent with
+  the design's "import-only; no clean build expected yet" and the PR-B grouping (Phases 1-3 land
+  as one green unit).
+
+### Deviations
+- None.
+
+### Tradeoffs
+- Left the imported nested `Cargo.lock`, `.otto.yml`, `install.sh`, `clippy.toml`, and
+  `rustfmt.toml` files in place for now. They are redundant under a single workspace but removing
+  them is Phase 2 (deps/lints reconciliation) and Phase 6 (CI/docs) work; deleting them in the
+  import commit would muddy the "import-only" boundary.
+
+### Open questions
+- None.
