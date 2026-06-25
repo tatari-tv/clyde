@@ -119,6 +119,11 @@ pub fn run(args: &BootstrapArgs) -> Result<()> {
     let outcome = bootstrap(&paths, args)?;
     if !args.skip_systemd && outcome.systemd_changed {
         daemon_reload();
+        // daemon-reload re-reads units but does not start them; the renamed timer is enabled but
+        // inactive until next boot otherwise. Arm it now (only if the timer unit actually exists).
+        if paths.clyde_timer().exists() {
+            start_enrich_timer();
+        }
     }
     info!("bootstrap: completed steps: {}", outcome.completed.join(", "));
     println!("clyde bootstrap: completed {} step(s):", outcome.completed.len());
@@ -712,6 +717,9 @@ fn install_clyde_timer(paths: &Paths) -> Result<bool> {
     Ok(true)
 }
 
+/// The enrich timer unit, as named by `repoint_systemd` and the `Paths::clyde_timer` helper.
+const CLYDE_ENRICH_TIMER: &str = "clyde-enrich.timer";
+
 /// Best-effort `systemctl --user daemon-reload`. Warns on failure; never aborts bootstrap. Lives
 /// outside the hermetic core so tests never shell out.
 fn daemon_reload() {
@@ -722,6 +730,21 @@ fn daemon_reload() {
         Ok(status) if status.success() => info!("systemctl --user daemon-reload ok"),
         Ok(status) => warn!("systemctl --user daemon-reload exited {status}"),
         Err(e) => warn!("systemctl --user daemon-reload failed to spawn: {e}"),
+    }
+}
+
+/// Best-effort `systemctl --user start clyde-enrich.timer`. After the unit rename + daemon-reload
+/// the (still enabled) timer is not active in the running session — reload re-reads units, it does
+/// not start them — so the daily enrich would not arm until the next boot. Start it now. Warns on
+/// failure; never aborts bootstrap. Lives outside the hermetic core so tests never shell out.
+fn start_enrich_timer() {
+    match std::process::Command::new("systemctl")
+        .args(["--user", "start", CLYDE_ENRICH_TIMER])
+        .status()
+    {
+        Ok(status) if status.success() => info!("systemctl --user start {CLYDE_ENRICH_TIMER} ok"),
+        Ok(status) => warn!("systemctl --user start {CLYDE_ENRICH_TIMER} exited {status}"),
+        Err(e) => warn!("systemctl --user start {CLYDE_ENRICH_TIMER} failed to spawn: {e}"),
     }
 }
 
