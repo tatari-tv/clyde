@@ -37,43 +37,44 @@ impl Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Catalog and search Claude Code sessions.
+    /// Catalog, search, and resume sessions.
     Sessions {
         #[command(subcommand)]
         command: SessionsCommand,
     },
-    /// Scan Claude Code session JSONL files and emit a per-host JSON report (was `cr`).
+    /// Per-host JSON usage report (was `cr`).
     Report(report::ReportArgs),
-    /// Track Claude Code session costs and usage; install the statusline (was `ccu`).
+    /// Cost and usage tracking; statusline (was `ccu`).
     Cost(cost::CostArgs),
-    /// Manage Claude Code permission hygiene; the PreToolUse hook entry (was `claude-permit`).
+    /// Permission-hygiene hook and audit (was `claude-permit`).
     Permit(permit::PermitArgs),
-    /// Migrate config/data/cache under one clyde home and repoint the live integrations.
+    /// Migrate config/data/cache into one clyde home.
     Bootstrap(crate::bootstrap::BootstrapArgs),
-    /// Health-check the migration and integrations; non-zero exit while any legacy target remains.
+    /// Health-check the migration and integrations.
     Doctor,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum SessionsCommand {
-    /// Full-text search over sessions, ranked (high-signal fields first).
+    /// Full-text search over sessions, ranked.
     Search(SearchArgs),
-    /// List sessions filtered by repo / date / tag / model.
+    /// List sessions by repo / date / tag / model.
     Ls(LsArgs),
-    /// Print the `claude --resume <uuid>` line for a session (by id or unique prefix).
+    /// Print the resume line for a session.
     Open(OpenArgs),
-    /// Set tags on a session (space-separated; replaces existing tags).
+    /// Set tags on a session (replaces existing).
     Tag(TagArgs),
-    /// Reindex the catalog from ~/.claude/projects (incremental, mtime-skip).
+    /// Reindex the catalog (incremental).
     Reindex(ReindexArgs),
-    /// Stage durable copies of dormant transcripts before the 30-day TTL reaps them.
+    /// Stage durable copies of dormant transcripts.
     Stage(StageArgs),
-    /// Enrich dormant sessions: fill tags + summary via a Haiku pass (work-scoped only).
+    /// Enrich dormant sessions with tags + summary.
     Enrich(EnrichArgs),
-    /// Report enrichment health: counts and the last successful enrichment.
+    /// Report enrichment health.
     Doctor,
-    /// Serve the session catalog over MCP (stdio). Intended to be spawned by an MCP host
-    /// (e.g. Claude Code), not run by hand: it speaks JSON-RPC on stdin/stdout.
+    /// Serve the session catalog over MCP (stdio).
+    ///
+    /// Spawned by an MCP host (e.g. Claude Code), not run by hand: speaks JSON-RPC on stdin/stdout.
     Serve(ServeArgs),
 }
 
@@ -145,7 +146,7 @@ pub struct ReindexArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct StageArgs {
-    /// Treat a session as dormant once it has been idle this long (e.g. 7d, 24h). Default 7d.
+    /// Treat a session as dormant once idle this long (e.g. 7d, 24h).
     #[arg(long, default_value = "7d")]
     pub dormant_after: String,
     /// Stage every non-archived session regardless of dormancy.
@@ -155,20 +156,18 @@ pub struct StageArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct EnrichArgs {
-    /// Enrich exactly one session by id or unique prefix (manual; bypasses dormancy + eligibility,
-    /// and overrides manual-tag preservation).
+    /// Enrich one session by id or prefix (manual; bypasses gating).
     pub id: Option<String>,
-    /// Re-enrich every eligible session (vocabulary refresh; overwrites manual tags).
+    /// Re-enrich every eligible session (overwrites manual tags).
     #[arg(long)]
     pub all: bool,
-    /// Treat a session as dormant once it has been idle this long (e.g. 7d, 24h). Mirrors `stage`.
+    /// Treat a session as dormant once idle this long (e.g. 7d, 24h).
     #[arg(long, default_value = "7d")]
     pub dormant_after: String,
-    /// Preview the gate's decisions (scope, would-send, redaction count, payload size) without
-    /// sending anything off-machine.
+    /// Preview the gate's decisions without sending anything off-machine.
     #[arg(long)]
     pub dry_run: bool,
-    /// Dry-run only: write each redacted payload under this directory for the operator to inspect.
+    /// Dry-run only: write each redacted payload here for inspection.
     #[arg(long)]
     pub show_payload: Option<PathBuf>,
     /// Per-session attempt cap before a repeatedly-failing session stops being retried.
