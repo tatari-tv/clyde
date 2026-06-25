@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo "usage: session-tokens [DATE]"
+    echo "  DATE  date to summarize in YYYY-MM-DD format (default: yesterday)"
+    exit 1
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+fi
+
+DATE="${1:-$(date -d yesterday '+%Y-%m-%d')}"
+
+while IFS= read -r -d '' file; do
+    jq -r --arg date "$DATE" '
+        select(
+            .type == "assistant"
+            and .message.usage != null
+            and (.timestamp // "" | startswith($date))
+        )
+        | [
+            .sessionId,
+            (.message.model // "unknown"),
+            (.message.usage.input_tokens // 0),
+            (.message.usage.output_tokens // 0),
+            (.message.usage.cache_creation_input_tokens // 0),
+            (.message.usage.cache_read_input_tokens // 0)
+          ]
+        | @tsv
+    ' "$file" 2>/dev/null || true
+done < <(find ~/.claude/projects -name '*.jsonl' -not -empty -print0) \
+  | awk -F'\t' -v date="$DATE" '
+      {
+        key = $1 SUBSEP $2
+        in_tok[key]  += $3
+        out_tok[key] += $4
+        cache_w[key] += $5
+        cache_r[key] += $6
+      }
+      END {
+        if (length(in_tok) == 0) {
+          print "No sessions found for " date
+          exit
+        }
+        printf "%-52s %-30s %10s %10s %12s %12s\n",
+          "SESSION", "MODEL", "INPUT", "OUTPUT", "CACHE_WRITE", "CACHE_READ"
+        printf "%-52s %-30s %10s %10s %12s %12s\n",
+          "-------", "-----", "-----", "------", "-----------", "----------"
+        for (key in in_tok) {
+          split(key, p, SUBSEP)
+          printf "%-52s %-30s %10d %10d %12d %12d\n",
+            p[1], p[2], in_tok[key], out_tok[key], cache_w[key], cache_r[key]
+        }
+      }
+    '

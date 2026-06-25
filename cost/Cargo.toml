@@ -1,0 +1,29 @@
+[package]
+name = "ccu"
+version = "0.5.3"
+edition = "2024"
+authors = ["Scott Idler <scott.a.idler@gmail.com>"]
+build = "build.rs"
+description = "Fast CLI tool for tracking Claude Code session costs from JSONL logs"
+
+[dependencies]
+chrono = "0.4.44"
+claude-pricing = { git = "https://github.com/tatari-tv/claude-pricing", tag = "v2.0.0", version = "2.0.0", features = ["fetch"] }
+comfy-table = "7.1"
+clap = { version = "4.5.60", features = ["derive", "env"] }
+dirs = "6.0.0"
+env_logger = "0.11.9"
+eyre = "0.6.12"
+log = "0.4.29"
+rasciichart = "0.2.17"
+rayon = "1.11.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+serde_yaml = "0.9.34"
+sparklines = "0.3.0"
+include_dir = "0.7.4"
+
+[build-dependencies]
+
+[dev-dependencies]
+tempfile = "3.27.0"
