@@ -111,6 +111,7 @@ pub fn run(args: ReportArgs, globals: Globals) -> eyre::Result<i32>;
 ```
 
 - `clyde` owns the single set of **common** globals (`--log-level`, verbosity) at the top level and passes them down as `Globals`. Nested `*Args` structs do not redeclare common globals (that is what removes the collision). Tool-unique globals (for example ccu's `--offline`) stay on the tool's `*Args` and remain reachable as `clyde cost --offline`.
+- `Globals` is a small shared struct (log level, verbosity) defined in the clyde-common surface; each outer `*Cli` exposes a `globals()` accessor that reconstructs it from the wrapper's fields. This accessor is the real integration seam between the two types and must be implemented as code in Phase 2, with a parity test that passes a common global through a shim (for example `ccu --log-level debug`) to prove the reconstruction round-trips.
 - `clyde` nests the `Args` inner: `Cmd::Report(report::ReportArgs)`, and dispatches `report::run(args, globals)`.
 - The `cr` shim parses the `Parser` outer (`ReportCli::parse()`), reconstructs `Globals`, and calls the same `report::run`. Same code path, same behavior.
 
@@ -185,7 +186,7 @@ No schema changes. Stores and configs keep their current shapes; locations move 
 |---------|--------|-------|-----------|
 | sessions data | `$XDG_DATA_HOME/klod/` | `$XDG_DATA_HOME/clyde/` | move dir if present, else fresh. (`session/src/paths.rs`) |
 | klod config/cache | `$XDG_{CONFIG,CACHE}_HOME/klod/` | `.../clyde/` | move. |
-| permit events DB | `~/.local/share/claude-permit/events.db` | `~/.local/share/clyde/events.db` | **move** (not copy, not fresh); `doctor` checks presence + row count. (`claude-permit/src/db/store.rs`) |
+| permit events DB | `~/.local/share/claude-permit/events.db` (WAL mode) | `~/.local/share/clyde/events.db` | **move** (not copy, not fresh): `PRAGMA wal_checkpoint(TRUNCATE)` first, then move `events.db` plus any `-wal`/`-shm` sidecars together; `doctor` checks presence + row count. (`claude-permit/src/db/store.rs` is WAL: `PRAGMA journal_mode=WAL`) |
 | permit config | `~/.config/claude-permit/` | `~/.config/clyde/permit.yml` | move; read-fallback to old until migrated. |
 | cost config | `~/.config/ccu/ccu.yml` | `~/.config/clyde/cost.yml` | move; read-fallback. (`claude-cost-usage/src/config.rs`) |
 | cost day cache | `dirs::cache_dir()/ccu` | `dirs::cache_dir()/clyde/cost` | **not migrated**; disposable, rebuilds at new path on next run (one cold statusline render after bootstrap). (`claude-cost-usage/src/cache.rs`) |
@@ -223,7 +224,7 @@ pub fn run(args: ReportArgs, globals: Globals) -> eyre::Result<i32>;
 
 #### Phase 2: Convert absorbed crates to libraries (two-type clap shape)
 **Model:** opus
-- For `report`, `cost`, `permit`: introduce the `*Args` (`Args`) inner and `*Cli` (`Parser`) outer wrapper; move exit-code/output/special-case ownership into `run()` per the Output and exit ownership section. `cost` needs a new `lib.rs` (it has none today). Reduce each `main.rs` to the compat `[[bin]]`.
+- For `report`, `cost`, `permit`: introduce the `*Args` (`Args`) inner and `*Cli` (`Parser`) outer wrapper; define `Globals` and each `*Cli::globals()` accessor as real code (the two-type seam); move exit-code/output/special-case ownership into `run()` per the Output and exit ownership section. `cost` needs a new `lib.rs` (it has none today). Reduce each `main.rs` to the compat `[[bin]]`.
 - Preserve `permit`'s `{}`-on-failure hook contract inside `permit::run`.
 - Rewire `pricing` from git dep to `path` dep in `cost` and `report`; keep `features = ["fetch"]`; pass `app_name = "clyde"`.
 - Reconcile diverging deps into `[workspace.dependencies]`: `rusqlite` (sessions 0.40.1 vs permit 0.39.0), `clap` (ccu 4.5.60 vs others 4.6.x), `serde_json` (1.0.150 vs 1.0.149). Treat as behavior-affecting, not clerical; re-run tests after each bump.
@@ -240,7 +241,7 @@ pub fn run(args: ReportArgs, globals: Globals) -> eyre::Result<i32>;
 
 #### Phase 4: bootstrap + doctor
 **Model:** opus
-- `clyde bootstrap`: data/config/cache migration (incl. permit events DB, pricing override merge) first; then rewrite statusline, permit hook (global + local), and systemd unit (ExecStart + EnvironmentFile + file rename + daemon-reload). Back up every file before write; idempotent; repoint-existing-only unless `--install-timer`; `--skip-systemd`; `--force`.
+- `clyde bootstrap`: data/config migration (incl. WAL-safe permit events-DB move with sidecars, pricing override merge) first, caches left to rebuild; then rewrite statusline, permit hook (global + local), and systemd unit (ExecStart + EnvironmentFile + file rename + daemon-reload). Back up every file before write; idempotent; repoint-existing-only unless `--install-timer`; `--skip-systemd`; `--force` only re-writes existing destination config.
 - Rewrite the tools' own installers (`cost statusline`, `permit install`) to emit the clyde form for fresh installs.
 - `clyde doctor`: binary location; resolved data/config/cache paths; statusline target; hook target (global + local); timer unit name + ExecStart + last-run; permit events DB presence + row count. Non-zero exit while any old target or legacy-only state remains.
 
@@ -293,14 +294,26 @@ pub fn run(args: ReportArgs, globals: Globals) -> eyre::Result<i32>;
 
 ### Testing Strategy
 - Per-crate unit tests carried over.
-- Parity tests: `clyde <tool>` vs. shim `<tool>` for help, output, and exit code; argument round-trips; explicit test that `permit log` prints `{}` and exits 0 on induced failure.
-- `bootstrap`/`doctor` tested against a temp `$HOME` (XDG overrides) with fake statusline/hook/timer/events-DB fixtures; assert idempotency and the events-DB move.
+- Parity tests: `clyde <tool>` vs. shim `<tool>` for help, output, and exit code; argument round-trips; a common global passed through a shim (`ccu --log-level debug`) to prove `globals()` round-trips; explicit test that `permit log` prints `{}` and exits 0 on induced failure.
+- `bootstrap`/`doctor` tested against a temp `$HOME` (XDG overrides) with fake statusline/hook/timer/events-DB fixtures; assert idempotency, and that the events-DB move checkpoints WAL and preserves row count (sidecars handled).
 - Full `otto ci` green at the end of Phases 0, 2, 3, and 6.
 
 ### Rollout Plan
-- Land on a branch; `otto ci` green; `bump -m` then push branch then tag (single flat `v*` tag on `main`, gates checked per git rules).
-- Install `clyde`; run `clyde bootstrap`; verify with `clyde doctor` and live checks (statusline renders, a permission event logs to the migrated DB, timer fires under the new unit name).
-- Keep shims installed until `doctor` confirms all integrations point at clyde; archive old repos last.
+
+Staged delivery (both reviewers; do not land as one mega-PR):
+
+- **PR-A = Phase 0** (pure rename): the only change touching the live XDG path constant and the enrich timer's binary name. Ship alone, `otto ci` green on the rename alone, `bump -m`, then bootstrap + `doctor`-verify the timer repoint in isolation before any absorption churn.
+- **PR-B = Phases 1-3** (subtree import + lib conversion + umbrella wiring): the merged tree's first green build as a unit. Phase 1 is history-rewriting and import-only; reviewers approve on that basis. (Split Phase 1 into its own sub-PR if the import diff is too noisy to review bundled.)
+- **PR-C = Phases 4-5** (bootstrap/doctor + config relocation): the risky live-machine logic (WAL-safe events-DB move, global+local settings.json rewrite, systemd rename+daemon-reload), independently testable against a temp `$HOME`.
+- **Phase 7** (archive old repos) is post-ship ops, not a PR.
+
+Why staged: Phase 0 alone gives an unambiguous green-CI signal and isolates the only change that can break the live timer; a rename regression and a dep-hoist regression (Phase 2) are never the same bisect; the WAL-safe events-DB move gets its own reviewable PR rather than burial in a mega-diff.
+
+Audit checkpoints (verify-against-code, not paper):
+- **Implementation Audit after Phase 3 builds green** (`/architect` Mode 2): confirm `run()` preserved each tool's exit/output contract byte-for-behavior (notably permit's `{}`-on-failure and report's exit-code-2 jq path).
+- **Bootstrap verify pass before first live run** (`/staff-engineer`): WAL sidecar handling, settings.json rewrite (global + local), systemd rename+reload, against a temp `$HOME`.
+
+Each PR: branch -> PR -> merge; `bump -m` and the single flat `v*` tag happen OFF main per git rules. Keep shims installed until `doctor` confirms all integrations point at clyde; archive old repos last.
 
 ## Risks and Mitigations
 
@@ -323,6 +336,7 @@ Resolved across a three-lens panel (pragmatist / conventions-purist / ops-risk) 
 - **Behavior-exact, name = clyde** compatibility contract (see Compatibility Contract).
 - **Unify config/data/cache under one clyde home with migration** (see Data Model), including the permit events DB and a single merged `pricing.json` under `app_name = "clyde"`.
 - **Version: minor bump via `bump -m`** at release. Signals the structural consolidation and re-bootstrap without a hardcoded number or a 1.0 the workspace has not earned. Per the no-version-in-docs convention the number is not fixed here.
+- **Staged delivery, not one PR** (both reviewers). PR-A = Phase 0 (rename) ships and is `doctor`-verified in isolation; PR-B = Phases 1-3 (import + lib + umbrella, first green merged build); PR-C = Phases 4-5 (bootstrap/doctor/config). Phase 7 archive is post-ship ops. No pre-code re-review; instead an Implementation Audit after Phase 3 builds green and a bootstrap verify pass before the first live run.
 
 ## Open Questions
 
