@@ -7,10 +7,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "Installing clyde umbrella + compat shims..."
-cargo install --path clyde --bin clyde
-cargo install --path report --bin cr
-cargo install --path cost --bin ccu
-cargo install --path permit --bin claude-permit
+# --force so the shims overwrite the pre-merge standalone tools (claude-report's cr,
+# claude-cost-usage's ccu, claude-permit) that are already on PATH during migration.
+cargo install --force --path clyde --bin clyde
+cargo install --force --path report --bin cr
+cargo install --force --path cost --bin ccu
+cargo install --force --path permit --bin claude-permit
 
 echo
 echo "Installed: clyde, cr, ccu, claude-permit"
