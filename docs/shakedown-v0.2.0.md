@@ -15,7 +15,7 @@ data (sessions catalog, permit events DB, cost/usage history).
 | Commands passed | 14 |
 | Commands failed | 0 |
 | Commands skipped | mutating (sessions tag/reindex/stage/enrich, cost statusline/pricing install, permit log/clean/install/apply, bootstrap) — discovered, not run |
-| Shim parity checks | 1 (ccu ≡ clyde cost) |
+| Shim/old-tool parity | full old-vs-new diff across cost/report/permit — behavior-exact (see Parity section) |
 | Hook-contract checks | 2 (claude-permit log, clyde permit log) |
 | Edge cases | 2 |
 
@@ -79,12 +79,56 @@ cr v0.2.0    ccu v0.2.0    claude-permit v0.2.0
 
 ## Failures & bugs
 
-None. Two initial readings were **measurement artifacts**, not clyde defects, and were re-verified:
+**One real migration gap (infra, not runtime): the pricing feed did not re-home.** See
+"Pricing migration" below. It does not affect the running CLI (embedded baseline + cache fall
+back), but it blocks cleanly archiving `claude-pricing`.
+
+No runtime CLI defects. Two initial readings were **measurement artifacts**, not clyde defects,
+and were re-verified:
 - A `jq` parse error came from passing a non-existent `--json` flag to `sessions ls` (JSON by
   default) together with `2>&1`, which fed the clap error text into `jq`. The default output is
   valid JSON.
 - An apparent `EXIT: 0` on the unknown-subcommand case was `head`'s exit through the pipe; clyde's
   real exit is `2`.
+
+## Parity vs the pre-merge standalone tools
+
+Rigorous old-vs-new diff: the pre-merge binaries were rebuilt from their still-present repos
+(`cr` v0.2.1, `ccu` v0.5.3, `claude-permit` v0.1.20) and their output compared, command by
+command, against BOTH the `clyde <tool>` form and the compat shim.
+
+| tool | commands compared | verdict |
+|---|---|---|
+| cost / ccu | today, yesterday, weekly, monthly, daily (+`--total`, +`--json`) | behavior-exact |
+| report / cr | collect (real sessions), merge (identical "not implemented", exit 2), render (LLM, nondeterministic in both) | behavior-exact (collect byte-exact sans `generated` timestamp) |
+| permit / claude-permit | audit, suggest, report, check (table/json/markdown), `log` `{}`-on-failure | behavior-exact |
+
+**No regressions.** Every diff reduced to: (a) the intended DB-path consolidation
+(`~/.local/share/claude-permit/events.db` -> `~/.local/share/clyde/events.db` — proven by pointing
+the old binary's `XDG_DATA_HOME` at the clyde DB, after which it too PASSed `check` with exit 0),
+(b) pre-existing nondeterminism identical in the old binaries (SQLite tie-break ordering in
+`suggest`, LLM-driven `render`), or (c) live-session data drift. Help/version cosmetics
+(name=clyde, added `--db`/`-l`) are allowed by the Compatibility Contract.
+
+Operational note: a genuinely-old standalone `claude-permit` (not the shim) now reads an empty DB
+at the old path; the installed shims and `clyde permit` correctly target the consolidated DB, so
+the live hook path is intact.
+
+## Pricing migration
+
+- **Data + library: migrated and working.** `clyde cost pricing --show` renders the full current
+  table; the live feed fetches OK (`HTTP 200`, `schema_version: 2`, `data_version: 2026-06-10`,
+  `min_library_version: 2.0.0`); embedded baseline + on-disk cache provide offline fallback.
+- **Feed PUBLISHING did NOT re-home — gap.** `DEFAULT_FEED_URL` is still
+  `https://tatari-tv.github.io/claude-pricing/pricing.json` (the OLD repo's GitHub Pages), kept
+  fresh by `claude-pricing`'s own `refresh-pricing.yml` + `pages.yml`. In clyde those workflows are
+  stranded under `pricing/.github/workflows/` (a subdirectory GitHub Actions never runs), and clyde
+  has **no root `.github/workflows/`** at all (no Actions CI/release/feed-refresh on the clyde repo;
+  `otto ci` + `install.sh` cover local CI/install). The design doc did not address re-homing.
+- **Consequence:** archiving `claude-pricing` would FREEZE the live feed (clyde keeps working via
+  cache+embedded, but prices stop updating). Re-home first: move/adapt `refresh-pricing.yml` +
+  `pages.yml` to clyde's root, enable Pages on `tatari-tv/clyde`, repoint `DEFAULT_FEED_URL` to
+  `https://tatari-tv.github.io/clyde/pricing.json`, verify, THEN archive `claude-pricing`.
 
 ## Release validation
 
