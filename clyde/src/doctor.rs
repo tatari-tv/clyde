@@ -53,23 +53,28 @@ pub struct Report {
     pub hook_global: Target,
     pub hook_local: Target,
     pub timer: Target,
+    /// The active enrich unit name (clyde-enrich.service / klod-enrich.service), if any.
+    pub timer_unit: Option<String>,
+    /// The active enrich unit's `ExecStart=` line, if readable.
+    pub timer_execstart: Option<String>,
     pub events_db_at_clyde: bool,
     pub events_db_at_legacy: bool,
     pub events_db_rows: Option<i64>,
-    /// Config that still lives only at a legacy path (ccu/cr/claude-permit), by label.
-    pub legacy_only_config: Vec<String>,
+    /// Any tool state still living at a legacy path (klod data/config dirs, ccu/cr/claude-permit
+    /// config, cr/ccu pricing override), by label.
+    pub legacy_state: Vec<String>,
 }
 
 impl Report {
     /// Healthy iff no integration is legacy, no events DB is stranded at the legacy path, and no
-    /// config lives only at a legacy path.
+    /// tool state lives at a legacy path.
     pub fn healthy(&self) -> bool {
         !self.statusline.is_legacy()
             && !self.hook_global.is_legacy()
             && !self.hook_local.is_legacy()
             && !self.timer.is_legacy()
             && !self.events_db_at_legacy
-            && self.legacy_only_config.is_empty()
+            && self.legacy_state.is_empty()
     }
 }
 
@@ -78,7 +83,7 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
     let statusline = statusline_target(paths);
     let hook_global = hook_target(&paths.home.join(".claude").join("settings.json"));
     let hook_local = hook_target(&paths.home.join(".claude").join("settings.local.json"));
-    let timer = timer_target(paths);
+    let (timer, timer_unit, timer_execstart) = timer_state(paths);
 
     let clyde_db = paths.clyde_events_db();
     let legacy_db = paths.xdg_data.join("claude-permit").join("events.db");
@@ -86,23 +91,43 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
     let events_db_at_legacy = legacy_db.exists();
     let events_db_rows = if events_db_at_clyde { count_events(&clyde_db).ok() } else { None };
 
-    let mut legacy_only_config = Vec::new();
+    let mut legacy_state = Vec::new();
+    // Per-tool config still living only at a legacy path.
     check_legacy_only(
         "cost config (ccu/ccu.yml)",
         &paths.xdg_config.join("ccu").join("ccu.yml"),
         &paths.xdg_config.join("clyde").join("cost.yml"),
-        &mut legacy_only_config,
+        &mut legacy_state,
     );
+    if permit_legacy_config_present(paths) && !paths.xdg_config.join("clyde").join("permit.yml").exists() {
+        legacy_state.push("permit config (claude-permit/)".to_string());
+    }
+    let clyde_pricing = paths.xdg_config.join("clyde").join("pricing.json");
+    if (paths.xdg_config.join("cr").join("pricing.json").exists()
+        || paths.xdg_config.join("ccu").join("pricing.json").exists())
+        && !clyde_pricing.exists()
+    {
+        legacy_state.push("pricing override (cr/ccu)".to_string());
+    }
+    // Legacy klod data/config dirs should be gone (merged into clyde) after bootstrap.
+    if paths.xdg_data.join("klod").exists() {
+        legacy_state.push("klod data dir".to_string());
+    }
+    if paths.xdg_config.join("klod").exists() {
+        legacy_state.push("klod config dir".to_string());
+    }
 
     Ok(Report {
         statusline,
         hook_global,
         hook_local,
         timer,
+        timer_unit,
+        timer_execstart,
         events_db_at_clyde,
         events_db_at_legacy,
         events_db_rows,
-        legacy_only_config,
+        legacy_state,
     })
 }
 
@@ -113,15 +138,32 @@ fn check_legacy_only(label: &str, legacy: &Path, clyde: &Path, out: &mut Vec<Str
     }
 }
 
+/// True if the legacy `~/.config/claude-permit/` dir holds a `config.yml` or any `*.yml`.
+fn permit_legacy_config_present(paths: &Paths) -> bool {
+    let dir = paths.xdg_config.join("claude-permit");
+    if dir.join("config.yml").exists() {
+        return true;
+    }
+    std::fs::read_dir(&dir)
+        .ok()
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yml"))
+        })
+        .unwrap_or(false)
+}
+
 fn statusline_target(paths: &Paths) -> Target {
     let path = paths.home.join(".claude").join("statusline.sh");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Target::Absent;
     };
-    if text.contains("clyde cost") {
-        Target::Clyde
-    } else if text.contains("ccu today") || text.contains("ccu weekly") || text.contains("ccu monthly") {
+    // Check the legacy form FIRST: a mixed file (both `ccu` and `clyde cost`) means migration is
+    // incomplete and must read as legacy, not healthy.
+    if text.contains("ccu today") || text.contains("ccu weekly") || text.contains("ccu monthly") {
         Target::Legacy("ccu")
+    } else if text.contains("clyde cost") {
+        Target::Clyde
     } else {
         Target::Absent
     }
@@ -131,33 +173,56 @@ fn hook_target(path: &Path) -> Target {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Target::Absent;
     };
-    if text.contains("clyde permit log") {
-        Target::Clyde
-    } else if text.contains("claude-permit log") {
+    // Legacy form first: a settings file with both commands is incomplete, not healthy.
+    if text.contains("claude-permit log") {
         Target::Legacy("claude-permit")
+    } else if text.contains("clyde permit log") {
+        Target::Clyde
     } else {
         Target::Absent
     }
 }
 
-fn timer_target(paths: &Paths) -> Target {
-    let clyde = paths
-        .xdg_config
-        .join("systemd")
-        .join("user")
-        .join("clyde-enrich.service");
-    let legacy = paths
-        .xdg_config
-        .join("systemd")
-        .join("user")
-        .join("klod-enrich.service");
-    if legacy.exists() {
+/// Inspect the enrich systemd units by CONTENT, not mere existence. Returns the health target, the
+/// active unit name, and its `ExecStart=` line. Legacy iff any `klod-enrich.{service,timer}` file
+/// or the `timers.target.wants/klod-enrich.timer` enable symlink remains, OR the active
+/// `clyde-enrich.service`'s ExecStart still invokes `klod` (a half-rewritten unit).
+fn timer_state(paths: &Paths) -> (Target, Option<String>, Option<String>) {
+    let dir = paths.xdg_config.join("systemd").join("user");
+    let legacy_svc = dir.join("klod-enrich.service");
+    let legacy_tmr = dir.join("klod-enrich.timer");
+    let legacy_link = dir.join("timers.target.wants").join("klod-enrich.timer");
+    let clyde_svc = dir.join("clyde-enrich.service");
+    let clyde_tmr = dir.join("clyde-enrich.timer");
+
+    let legacy_present = legacy_svc.exists() || legacy_tmr.exists() || std::fs::symlink_metadata(&legacy_link).is_ok();
+
+    let (unit_name, execstart) = if clyde_svc.exists() {
+        (Some("clyde-enrich.service".to_string()), execstart_of(&clyde_svc))
+    } else if legacy_svc.exists() {
+        (Some("klod-enrich.service".to_string()), execstart_of(&legacy_svc))
+    } else {
+        (None, None)
+    };
+
+    let execstart_legacy = execstart.as_deref().is_some_and(|e| e.contains("klod"));
+    let target = if legacy_present || execstart_legacy {
         Target::Legacy("klod")
-    } else if clyde.exists() {
+    } else if clyde_svc.exists() || clyde_tmr.exists() {
         Target::Clyde
     } else {
         Target::Absent
-    }
+    };
+    (target, unit_name, execstart)
+}
+
+/// The trimmed `ExecStart=` line of a unit file, if present.
+fn execstart_of(unit: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(unit).ok()?;
+    text.lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("ExecStart="))
+        .map(str::to_string)
 }
 
 fn count_events(db: &Path) -> Result<i64> {
@@ -179,6 +244,12 @@ fn print_report(paths: &Paths, report: &Report) {
     println!("  hook (global): {}", report.hook_global.label());
     println!("  hook (local):  {}", report.hook_local.label());
     println!("  enrich timer:  {}", report.timer.label());
+    if let Some(unit) = &report.timer_unit {
+        println!("    unit:        {unit}");
+    }
+    if let Some(exec) = &report.timer_execstart {
+        println!("    {exec}");
+    }
     match (report.events_db_at_clyde, report.events_db_rows) {
         (true, Some(n)) => println!("  events DB:     {} ({} rows)", "clyde".green(), n),
         (true, None) => println!("  events DB:     {} (row count unavailable)", "clyde".green()),
@@ -187,8 +258,8 @@ fn print_report(paths: &Paths, report: &Report) {
         }
         (false, _) => println!("  events DB:     {}", "absent".dimmed()),
     }
-    for cfg in &report.legacy_only_config {
-        println!("  {} {}", "legacy-only config:".red(), cfg);
+    for item in &report.legacy_state {
+        println!("  {} {}", "legacy state:".red(), item);
     }
     if report.healthy() {
         println!("{}", "✓ all integrations resolve to clyde".green());

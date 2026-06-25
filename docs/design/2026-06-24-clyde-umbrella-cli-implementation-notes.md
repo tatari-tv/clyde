@@ -251,3 +251,41 @@ Running record of how the implementation diverges from or interprets
   with READMEs pointing at clyde) is post-ship GitHub ops, not a code change — to be done by the
   operator after clyde ships and `doctor` confirms the live integrations are repointed. Nothing is
   deleted; tags are preserved.
+
+## Post-implementation verification: /architect + /staff-engineer audit + fixes
+
+The design's two audit checkpoints were run against the merged tree (`/architect` Implementation
+Audit via Gemini, `/staff-engineer` bootstrap verify pass via Codex). Both converged: the runtime
+tools and core migration mechanics (two-type clap shape, behavior-exact `run()` incl. permit's
+`{}`-on-failure and cr's exit-2 paths, the WAL-checkpoint events-DB move, hook rewrite hitting
+global+local, config clyde-first fallback, installer rewrites) were verified correct. The risky
+bootstrap/doctor live-machine logic had real gaps, all now fixed in `clyde/src/bootstrap.rs`,
+`clyde/src/doctor.rs`, and `permit/src/cmd/install.rs` (tests added per fix; `otto ci` green):
+
+- **`migrate_dir` could orphan klod data** — it skipped when the clyde dir already existed (a
+  pre-bootstrap `clyde permit log` creates `clyde/events.db`, creating that dir), stranding
+  `klod/sessions.db`. Now merges non-colliding top-level entries into the destination, never
+  clobbers, removes the legacy dir only when emptied.
+- **`doctor`'s non-zero gate was incomplete** — only checked cost config. Now flags legacy `klod`
+  data/config dirs, `claude-permit` config, and cr/ccu pricing overrides too.
+- **`doctor` misclassified mixed integrations** — a statusline/hook holding BOTH the old and new
+  forms read as healthy because the clyde-form check ran first. Now the legacy form is checked
+  first, so an incomplete migration reads as legacy.
+- **`doctor` ignored systemd unit content** — a `clyde-enrich.service` whose `ExecStart` still
+  invoked `klod` read as healthy. Now inspects content, reports unit name + `ExecStart`, and flags
+  legacy on any residual klod unit/enable-symlink or a klod ExecStart.
+- **The enrich `.timer` was unhandled (would silently kill the daily sweep).** The live integration
+  is a `klod-enrich.timer` (`OnCalendar` 03:00, `WantedBy=timers.target`, enabled via a
+  `timers.target.wants/klod-enrich.timer` symlink) plus a oneshot `klod-enrich.service`. The
+  original bootstrap renamed only the `.service`; the timer (and its enable symlink) would have
+  been orphaned. bootstrap now renames both units, repoints the enable symlink, and
+  `--install-timer` creates service+timer+symlink. This is a gap the design under-specified
+  (it named only the `.service`).
+- **statusline repoint stripped the 0755 exec bit** (atomic-write landed 0644) — now the original
+  mode is captured and re-applied.
+- **Partial-failure reporting** — bootstrap used `?`, so a mid-sequence failure reported an error,
+  not which steps completed. It now records completed steps and the first failing step, and
+  `run()` prints progress then the failure (non-zero exit); re-runs remain safe.
+- **Defensive/minor** — WAL move now warns on a row-count change across the move; destination
+  units are backed up before overwrite; `permit::insert_hook` returns an error instead of
+  panicking on a hand-malformed settings file.

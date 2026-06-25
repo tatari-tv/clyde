@@ -186,6 +186,128 @@ fn full_bootstrap_is_idempotent() {
 }
 
 #[test]
+fn migrate_dir_merges_into_existing_dest_without_clobbering() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    // A pre-bootstrap `clyde permit log` created the clyde data dir with events.db.
+    let clyde = paths.xdg_data.join("clyde");
+    fs::create_dir_all(&clyde).unwrap();
+    fs::write(clyde.join("events.db"), b"events").unwrap();
+    // The legacy klod data dir still holds sessions.db.
+    let legacy = paths.xdg_data.join("klod");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(legacy.join("sessions.db"), b"sessions").unwrap();
+
+    assert!(migrate_dir(&legacy, &clyde).unwrap());
+    assert!(clyde.join("sessions.db").exists(), "sessions.db must merge into clyde");
+    assert!(clyde.join("events.db").exists(), "existing events.db must survive");
+    assert!(!legacy.join("sessions.db").exists(), "sessions.db must leave legacy");
+    assert!(!legacy.exists(), "emptied legacy dir is removed");
+}
+
+#[test]
+fn migrate_dir_leaves_colliding_entry_in_place() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde = paths.xdg_data.join("clyde");
+    fs::create_dir_all(&clyde).unwrap();
+    fs::write(clyde.join("sessions.db"), b"clyde-wins").unwrap();
+    let legacy = paths.xdg_data.join("klod");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(legacy.join("sessions.db"), b"legacy-loses").unwrap();
+
+    // No new entries to move (only a collision) -> returns false, dest untouched, legacy kept.
+    assert!(!migrate_dir(&legacy, &clyde).unwrap());
+    assert_eq!(fs::read(clyde.join("sessions.db")).unwrap(), b"clyde-wins");
+    assert!(
+        legacy.join("sessions.db").exists(),
+        "colliding legacy copy is left in place"
+    );
+}
+
+#[test]
+fn systemd_repoints_service_timer_and_enable_symlink() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let sysd = paths.systemd_dir();
+    fs::create_dir_all(sysd.join("timers.target.wants")).unwrap();
+    fs::write(
+        paths.legacy_unit(),
+        "[Unit]\nDescription=klod session enrichment sweep\nDocumentation=https://github.com/tatari-tv/klod\n[Service]\nType=oneshot\nEnvironmentFile=%h/.config/klod/enrich.env\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
+    )
+    .unwrap();
+    fs::write(
+        paths.legacy_timer(),
+        "[Unit]\nDescription=Daily klod session enrichment sweep\nDocumentation=https://github.com/tatari-tv/klod\n[Timer]\nOnCalendar=*-*-* 03:00:00\n[Install]\nWantedBy=timers.target\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(paths.legacy_timer(), paths.legacy_wants_link()).unwrap();
+
+    assert!(repoint_systemd(&paths, false).unwrap());
+
+    // Both clyde units exist with rewritten content; both legacy units gone.
+    assert!(paths.clyde_unit().exists());
+    assert!(paths.clyde_timer().exists());
+    assert!(!paths.legacy_unit().exists());
+    assert!(!paths.legacy_timer().exists());
+    let tmr = fs::read_to_string(paths.clyde_timer()).unwrap();
+    assert!(!tmr.contains("klod"), "timer body must be fully rewritten");
+    assert!(tmr.contains("tatari-tv/clyde"));
+    // Enable symlink repointed to the clyde timer; old link gone.
+    assert!(fs::symlink_metadata(paths.clyde_wants_link()).is_ok());
+    assert!(fs::symlink_metadata(paths.legacy_wants_link()).is_err());
+    assert_eq!(fs::read_link(paths.clyde_wants_link()).unwrap(), paths.clyde_timer());
+    // Backups left for both units.
+    assert!(backup_path(&paths.legacy_unit()).exists());
+    assert!(backup_path(&paths.legacy_timer()).exists());
+}
+
+#[test]
+fn install_timer_creates_service_timer_and_symlink() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    // No legacy units; --install-timer must create the full set.
+    assert!(repoint_systemd(&paths, true).unwrap());
+    assert!(paths.clyde_unit().exists());
+    assert!(paths.clyde_timer().exists());
+    assert_eq!(fs::read_link(paths.clyde_wants_link()).unwrap(), paths.clyde_timer());
+}
+
+#[test]
+fn bootstrap_reports_completed_steps_on_partial_failure() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    // Step 1 (sessions data dir) succeeds: legacy klod data dir, clean clyde dest.
+    fs::create_dir_all(paths.xdg_data.join("klod")).unwrap();
+    fs::write(paths.xdg_data.join("klod").join("sessions.db"), b"x").unwrap();
+    // Step 2 (config dir) fails: legacy klod config dir exists, but the clyde config dest is a
+    // regular FILE, so the merge branch's create_dir_all errors.
+    fs::create_dir_all(paths.xdg_config.join("klod")).unwrap();
+    fs::write(paths.xdg_config.join("klod").join("permit.yml"), b"x").unwrap();
+    fs::create_dir_all(&paths.xdg_config).unwrap();
+    fs::write(paths.xdg_config.join("clyde"), b"not a dir").unwrap();
+
+    let out = bootstrap(&paths, &BootstrapArgs::default()).unwrap();
+    assert_eq!(out.completed, vec!["sessions data dir klod -> clyde".to_string()]);
+    let failed = out.failed.expect("a step should have failed");
+    assert_eq!(failed.0, "config dir klod -> clyde");
+}
+
+#[test]
+fn statusline_repoint_preserves_exec_bit() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let sl = paths.statusline();
+    fs::create_dir_all(sl.parent().unwrap()).unwrap();
+    fs::write(&sl, "#!/usr/bin/env bash\nccu today --total\n").unwrap();
+    fs::set_permissions(&sl, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(repoint_statusline(&paths).unwrap());
+    let mode = fs::metadata(&sl).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o755, "exec bit must survive the repoint");
+}
+
+#[test]
 fn pricing_overrides_merge_with_ccu_winning() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());

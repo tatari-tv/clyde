@@ -43,7 +43,7 @@ pub fn run_install(settings_path: &Path, yes: bool) -> Result<bool> {
     }
 
     // Insert the hook
-    insert_hook(&mut root);
+    insert_hook(&mut root)?;
 
     // Write back
     let output = serde_json::to_string_pretty(&root).context("Failed to serialize settings")?;
@@ -79,8 +79,10 @@ fn has_permit_hook(root: &Map<String, Value>) -> bool {
     })
 }
 
-/// Insert the claude-permit PreToolUse hook entry, preserving existing hooks.
-fn insert_hook(root: &mut Map<String, Value>) {
+/// Insert the claude-permit PreToolUse hook entry, preserving existing hooks. Returns an error
+/// (rather than panicking) when the settings file is hand-malformed — e.g. `hooks` is not an
+/// object or `hooks.PreToolUse` is not an array.
+fn insert_hook(root: &mut Map<String, Value>) -> Result<()> {
     // Fresh installs emit the clyde umbrella form. `clyde bootstrap` repoints any existing
     // `claude-permit log` invocation to this same form.
     let hook_entry = json!({
@@ -97,15 +99,16 @@ fn insert_hook(root: &mut Map<String, Value>) {
         .entry("hooks")
         .or_insert_with(|| json!({}))
         .as_object_mut()
-        .expect("hooks must be an object");
+        .ok_or_else(|| eyre::eyre!("settings `hooks` is not a JSON object"))?;
 
     let pre = hooks
         .entry("PreToolUse")
         .or_insert_with(|| json!([]))
         .as_array_mut()
-        .expect("PreToolUse must be an array");
+        .ok_or_else(|| eyre::eyre!("settings `hooks.PreToolUse` is not a JSON array"))?;
 
     pre.push(hook_entry);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -216,6 +219,15 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("clyde permit log"));
+    }
+
+    #[test]
+    fn install_errors_on_malformed_hooks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        // `hooks` as a string (not an object) is malformed; we must error, not panic.
+        std::fs::write(&path, r#"{"hooks": "not-an-object"}"#).unwrap();
+        assert!(run_install(&path, true).is_err());
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //! no-ops over already-migrated state.
 
 use std::fs;
+use std::os::unix::fs as unixfs;
 use std::path::{Path, PathBuf};
 
 use clap::Args;
@@ -76,6 +77,21 @@ impl Paths {
     fn clyde_unit(&self) -> PathBuf {
         self.systemd_dir().join("clyde-enrich.service")
     }
+    fn legacy_timer(&self) -> PathBuf {
+        self.systemd_dir().join("klod-enrich.timer")
+    }
+    fn clyde_timer(&self) -> PathBuf {
+        self.systemd_dir().join("clyde-enrich.timer")
+    }
+    fn wants_dir(&self) -> PathBuf {
+        self.systemd_dir().join("timers.target.wants")
+    }
+    fn legacy_wants_link(&self) -> PathBuf {
+        self.wants_dir().join("klod-enrich.timer")
+    }
+    fn clyde_wants_link(&self) -> PathBuf {
+        self.wants_dir().join("clyde-enrich.timer")
+    }
     pub fn clyde_events_db(&self) -> PathBuf {
         self.xdg_data.join("clyde").join("events.db")
     }
@@ -102,18 +118,27 @@ pub fn run(args: &BootstrapArgs) -> Result<()> {
     for step in &outcome.completed {
         println!("  ✓ {step}");
     }
-    if outcome.completed.is_empty() {
+    if outcome.completed.is_empty() && outcome.failed.is_none() {
         println!("  (nothing to migrate — already on clyde or no legacy state found)");
     }
     println!("Backups (if any) left at <path>.clyde.bak. Run `clyde doctor` to verify.");
+    // A mid-sequence failure reports exactly which steps completed (above), then surfaces the
+    // failing step and exits non-zero. Re-running is safe (completed steps are no-ops).
+    if let Some((step, err)) = outcome.failed {
+        eprintln!("  ✗ failed at: {step}");
+        return Err(eyre::eyre!("bootstrap failed at step '{step}': {err}"));
+    }
     Ok(())
 }
 
-/// What a bootstrap run did, for reporting and to drive the post-run daemon-reload.
+/// What a bootstrap run did, for reporting and to drive the post-run daemon-reload. On a partial
+/// failure, `completed` lists the steps that succeeded and `failed` names the first failing step
+/// plus its error string — so `run()` can report exactly how far it got.
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub completed: Vec<String>,
     pub systemd_changed: bool,
+    pub failed: Option<(String, String)>,
 }
 
 /// The hermetic migration core: every step operates on `paths` and never shells out. Steps are
@@ -122,52 +147,87 @@ pub struct Outcome {
 pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
     let mut out = Outcome::default();
 
-    // 1. Data/config migration (so a repointed integration finds its state).
-    if migrate_dir(&paths.xdg_data.join("klod"), &paths.xdg_data.join("clyde"))? {
-        out.completed.push("sessions data dir klod -> clyde".into());
-    }
-    if migrate_dir(&paths.xdg_config.join("klod"), &paths.xdg_config.join("clyde"))? {
-        out.completed.push("config dir klod -> clyde".into());
-    }
-    if migrate_events_db(paths)? {
-        out.completed.push("permit events DB (WAL-safe move)".into());
-    }
-    let permit_cfg_moved = migrate_file(
-        &paths.xdg_config.join("claude-permit").join("config.yml"),
-        &paths.xdg_config.join("clyde").join("permit.yml"),
-        args.force,
-    )? || migrate_legacy_permit_config(paths, args.force)?;
-    if permit_cfg_moved {
-        out.completed.push("permit config -> clyde/permit.yml".into());
-    }
-    if migrate_file(
-        &paths.xdg_config.join("ccu").join("ccu.yml"),
-        &paths.xdg_config.join("clyde").join("cost.yml"),
-        args.force,
-    )? {
-        out.completed.push("cost config -> clyde/cost.yml".into());
-    }
-    if merge_pricing_overrides(paths, args.force)? {
-        out.completed
-            .push("pricing overrides merged -> clyde/pricing.json".into());
+    // Run a step: record its label on success, no-op on Ok(false), and on the FIRST error record
+    // the failing step + error and stop (returning the partial Outcome so the caller can report
+    // exactly which steps completed). Backups left by completed steps stay in place.
+    macro_rules! step {
+        ($label:expr, $body:expr) => {
+            match $body {
+                Ok(true) => out.completed.push($label.to_string()),
+                Ok(false) => {}
+                Err(e) => {
+                    out.failed = Some(($label.to_string(), format!("{e:?}")));
+                    return Ok(out);
+                }
+            }
+        };
     }
 
+    // 1. Data/config migration (so a repointed integration finds its state).
+    step!(
+        "sessions data dir klod -> clyde",
+        migrate_dir(&paths.xdg_data.join("klod"), &paths.xdg_data.join("clyde"))
+    );
+    step!(
+        "config dir klod -> clyde",
+        migrate_dir(&paths.xdg_config.join("klod"), &paths.xdg_config.join("clyde"))
+    );
+    step!("permit events DB (WAL-safe move)", migrate_events_db(paths));
+    step!(
+        "permit config -> clyde/permit.yml",
+        migrate_permit_config(paths, args.force)
+    );
+    step!(
+        "cost config -> clyde/cost.yml",
+        migrate_file(
+            &paths.xdg_config.join("ccu").join("ccu.yml"),
+            &paths.xdg_config.join("clyde").join("cost.yml"),
+            args.force,
+        )
+    );
+    step!(
+        "pricing overrides merged -> clyde/pricing.json",
+        merge_pricing_overrides(paths, args.force)
+    );
+
     // 2. Integration repointing (always applies — it must be correct).
-    if repoint_statusline(paths)? {
-        out.completed.push("statusline ccu -> clyde cost".into());
-    }
-    if repoint_hook(&paths.settings_global())? {
-        out.completed.push("permit hook (global settings.json)".into());
-    }
-    if repoint_hook(&paths.settings_local())? {
-        out.completed.push("permit hook (local settings.local.json)".into());
-    }
-    if !args.skip_systemd && repoint_systemd(paths, args.install_timer)? {
-        out.completed.push("enrich systemd unit klod -> clyde".into());
-        out.systemd_changed = true;
+    step!("statusline ccu -> clyde cost", repoint_statusline(paths));
+    step!(
+        "permit hook (global settings.json)",
+        repoint_hook(&paths.settings_global())
+    );
+    step!(
+        "permit hook (local settings.local.json)",
+        repoint_hook(&paths.settings_local())
+    );
+    if !args.skip_systemd {
+        match repoint_systemd(paths, args.install_timer) {
+            Ok(true) => {
+                out.completed.push("enrich systemd unit klod -> clyde".into());
+                out.systemd_changed = true;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                out.failed = Some(("enrich systemd unit klod -> clyde".into(), format!("{e:?}")));
+                return Ok(out);
+            }
+        }
     }
 
     Ok(out)
+}
+
+/// Migrate the permit config: the canonical `claude-permit/config.yml` first, else the
+/// single-`*.yml`-in-the-dir fallback. One `Result<bool>` so the step runner can drive it.
+fn migrate_permit_config(paths: &Paths, force: bool) -> Result<bool> {
+    if migrate_file(
+        &paths.xdg_config.join("claude-permit").join("config.yml"),
+        &paths.xdg_config.join("clyde").join("permit.yml"),
+        force,
+    )? {
+        return Ok(true);
+    }
+    migrate_legacy_permit_config(paths, force)
 }
 
 /// Append `.clyde.bak` to a path's full filename (so `settings.json` -> `settings.json.clyde.bak`).
@@ -199,28 +259,63 @@ fn write_atomic(target: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// Move a directory `legacy -> dest` if `legacy` exists and `dest` does not. If `dest` already
-/// exists we leave both alone (don't clobber a populated clyde dir); returns whether a move
-/// happened.
+/// Migrate a directory `legacy -> dest`. If `dest` does not exist, rename the whole dir. If `dest`
+/// already exists (e.g. a pre-bootstrap `clyde permit log` created `clyde/events.db`, creating the
+/// clyde data dir), MERGE: move each top-level entry from `legacy` into `dest` that does not
+/// collide with an existing dest entry (never clobber — leave the legacy copy and warn), then
+/// remove `legacy` only if it ends up empty. Returns whether anything moved. This prevents
+/// stranding `klod/sessions.db` under the legacy root while runtime reads the clyde path.
 fn migrate_dir(legacy: &Path, dest: &Path) -> Result<bool> {
     debug!("migrate_dir: {} -> {}", legacy.display(), dest.display());
     if !legacy.exists() {
         return Ok(false);
     }
-    if dest.exists() {
+    if !dest.exists() {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::rename(legacy, dest)
+            .with_context(|| format!("failed to move {} -> {}", legacy.display(), dest.display()))?;
+        info!("migrated dir {} -> {}", legacy.display(), dest.display());
+        return Ok(true);
+    }
+    // Destination already populated: merge non-colliding entries.
+    fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+    let mut moved_any = false;
+    let mut collisions = 0usize;
+    for entry in fs::read_dir(legacy).with_context(|| format!("failed to read {}", legacy.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", legacy.display()))?;
+        let target = dest.join(entry.file_name());
+        if target.exists() {
+            warn!(
+                "migrate_dir: {} already exists; leaving legacy copy {} in place",
+                target.display(),
+                entry.path().display()
+            );
+            collisions += 1;
+            continue;
+        }
+        fs::rename(entry.path(), &target)
+            .with_context(|| format!("failed to merge {} -> {}", entry.path().display(), target.display()))?;
+        moved_any = true;
+    }
+    if collisions == 0
+        && let Err(e) = fs::remove_dir(legacy)
+    {
         warn!(
-            "migrate_dir: both {} and {} exist; leaving legacy in place (manual merge)",
-            legacy.display(),
-            dest.display()
+            "migrate_dir: could not remove emptied legacy dir {}: {e}",
+            legacy.display()
         );
-        return Ok(false);
     }
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    if moved_any {
+        info!(
+            "merged dir {} -> {} ({} collision(s) left in place)",
+            legacy.display(),
+            dest.display(),
+            collisions
+        );
     }
-    fs::rename(legacy, dest).with_context(|| format!("failed to move {} -> {}", legacy.display(), dest.display()))?;
-    info!("migrated dir {} -> {}", legacy.display(), dest.display());
-    Ok(true)
+    Ok(moved_any)
 }
 
 /// Move a single config file `legacy -> dest`. `force` governs overwriting an existing dest.
@@ -280,13 +375,18 @@ fn migrate_events_db(paths: &Paths) -> Result<bool> {
         warn!("migrate_events_db: clyde events DB already exists; leaving legacy in place");
         return Ok(false);
     }
-    // Checkpoint and close in an inner scope so the connection is dropped before the move.
-    {
+    // Checkpoint and close in an inner scope so the connection is dropped before the move. Capture
+    // the row count post-checkpoint (best-effort: a degenerate DB may lack the `events` table) so
+    // we can verify preservation after the move.
+    let pre_count: Option<i64> = {
         let conn = rusqlite::Connection::open(&legacy)
             .with_context(|| format!("failed to open events DB {}", legacy.display()))?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .context("failed to checkpoint events DB WAL")?;
-    }
+        conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+            .ok()
+    };
+    debug!("migrate_events_db: pre-move row count = {pre_count:?}");
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     }
@@ -297,6 +397,16 @@ fn migrate_events_db(paths: &Paths) -> Result<bool> {
         if ls.exists() {
             fs::rename(&ls, &ds)
                 .with_context(|| format!("failed to move sidecar {} -> {}", ls.display(), ds.display()))?;
+        }
+    }
+    // Defensive: warn (do not abort — it is already moved) if the row count changed.
+    if let Some(pre) = pre_count {
+        match rusqlite::Connection::open_with_flags(&dest, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .and_then(|c| c.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0)))
+        {
+            Ok(post) if post != pre => warn!("migrate_events_db: row count changed {pre} -> {post} across the move"),
+            Ok(post) => debug!("migrate_events_db: row count preserved ({post})"),
+            Err(e) => warn!("migrate_events_db: post-move row-count check failed: {e}"),
         }
     }
     info!("migrated events DB {} -> {}", legacy.display(), dest.display());
@@ -363,8 +473,14 @@ fn repoint_statusline(paths: &Paths) -> Result<bool> {
     if rewritten == text {
         return Ok(false);
     }
+    // write_atomic renames a fresh temp over the target, which would land 0644 and drop the 0755
+    // exec bit Claude Code needs to run the statusline. Capture and re-apply the original mode.
+    let perms = fs::metadata(&path).map(|m| m.permissions()).ok();
     backup(&path)?;
     write_atomic(&path, &rewritten)?;
+    if let Some(perms) = perms {
+        fs::set_permissions(&path, perms).with_context(|| format!("failed to restore perms on {}", path.display()))?;
+    }
     info!("repointed statusline {} (ccu -> clyde cost)", path.display());
     Ok(true)
 }
@@ -435,32 +551,96 @@ fn rewrite_hook_commands(root: &mut Value) -> bool {
 /// existing unit only, unless `install_timer` is set (then it creates the clyde unit from a
 /// template). Returns whether the unit changed.
 fn repoint_systemd(paths: &Paths, install_timer: bool) -> Result<bool> {
-    let legacy = paths.legacy_unit();
-    let clyde = paths.clyde_unit();
-    if !legacy.exists() {
-        if install_timer && !clyde.exists() {
+    let legacy_svc = paths.legacy_unit();
+    let legacy_tmr = paths.legacy_timer();
+    let has_legacy =
+        legacy_svc.exists() || legacy_tmr.exists() || fs::symlink_metadata(paths.legacy_wants_link()).is_ok();
+    if !has_legacy {
+        if install_timer && !paths.clyde_unit().exists() {
             return install_clyde_timer(paths);
         }
         return Ok(false);
     }
-    let text = fs::read_to_string(&legacy).with_context(|| format!("failed to read {}", legacy.display()))?;
-    backup(&legacy)?;
-    let rewritten = rewrite_unit(&text);
-    write_atomic(&clyde, &rewritten)?;
-    // Move the env file (API key) preserving permissions; never log its contents.
-    move_env_file(paths)?;
-    if legacy != clyde {
-        fs::remove_file(&legacy).with_context(|| format!("failed to remove old unit {}", legacy.display()))?;
+
+    let mut changed = false;
+
+    // The oneshot service: rewrite klod -> clyde, move the API-key env file (perms preserved,
+    // contents never logged), back up an existing clyde dest before overwrite, remove the old unit.
+    if legacy_svc.exists() {
+        let text =
+            fs::read_to_string(&legacy_svc).with_context(|| format!("failed to read {}", legacy_svc.display()))?;
+        backup(&legacy_svc)?;
+        let clyde_svc = paths.clyde_unit();
+        if clyde_svc.exists() {
+            backup(&clyde_svc)?;
+        }
+        write_atomic(&clyde_svc, &rewrite_unit(&text))?;
+        move_env_file(paths)?;
+        if legacy_svc != clyde_svc {
+            fs::remove_file(&legacy_svc)
+                .with_context(|| format!("failed to remove old unit {}", legacy_svc.display()))?;
+        }
+        changed = true;
     }
-    info!("repointed enrich unit -> {}", clyde.display());
-    Ok(true)
+
+    // The .timer is the actual scheduler (klod-enrich.timer, WantedBy=timers.target, enabled via a
+    // symlink in timers.target.wants/). It must be renamed too, and its enable symlink repointed,
+    // or the daily enrich sweep silently stops firing after the service is renamed.
+    if legacy_tmr.exists() {
+        let text =
+            fs::read_to_string(&legacy_tmr).with_context(|| format!("failed to read {}", legacy_tmr.display()))?;
+        backup(&legacy_tmr)?;
+        let clyde_tmr = paths.clyde_timer();
+        if clyde_tmr.exists() {
+            backup(&clyde_tmr)?;
+        }
+        write_atomic(&clyde_tmr, &rewrite_unit(&text))?;
+        repoint_wants_symlink(paths)?;
+        if legacy_tmr != clyde_tmr {
+            fs::remove_file(&legacy_tmr)
+                .with_context(|| format!("failed to remove old timer {}", legacy_tmr.display()))?;
+        }
+        changed = true;
+    } else {
+        // Service present without an adjacent timer file but the enable symlink still points at the
+        // legacy timer name: repoint it so the unit set is consistent.
+        repoint_wants_symlink(paths)?;
+    }
+
+    if changed {
+        info!("repointed enrich units klod -> clyde");
+    }
+    Ok(changed)
 }
 
-/// Pure transform of the unit file: `klod` binary/EnvironmentFile -> `clyde`.
+/// Repoint the `timers.target.wants/klod-enrich.timer` enable symlink to the clyde timer. No-op if
+/// the legacy enable link is absent. Creates the clyde link (absolute target, matching the live
+/// link style) and removes the legacy one.
+fn repoint_wants_symlink(paths: &Paths) -> Result<()> {
+    let legacy_link = paths.legacy_wants_link();
+    if fs::symlink_metadata(&legacy_link).is_err() {
+        return Ok(());
+    }
+    let clyde_link = paths.clyde_wants_link();
+    fs::create_dir_all(paths.wants_dir())
+        .with_context(|| format!("failed to create {}", paths.wants_dir().display()))?;
+    if fs::symlink_metadata(&clyde_link).is_ok() {
+        fs::remove_file(&clyde_link)
+            .with_context(|| format!("failed to replace enable symlink {}", clyde_link.display()))?;
+    }
+    unixfs::symlink(paths.clyde_timer(), &clyde_link)
+        .with_context(|| format!("failed to create enable symlink {}", clyde_link.display()))?;
+    fs::remove_file(&legacy_link)
+        .with_context(|| format!("failed to remove old enable symlink {}", legacy_link.display()))?;
+    info!("repointed enrich timer enable symlink -> clyde-enrich.timer");
+    Ok(())
+}
+
+/// Pure transform of a unit file (service or timer): every `klod` -> `clyde`. The enrich units
+/// reference `klod` only in clyde-appropriate places (ExecStart binary, EnvironmentFile path,
+/// Description, the `tatari-tv/klod` Documentation URL), so a blanket replace is correct here.
 fn rewrite_unit(text: &str) -> String {
-    text.replace("/.cargo/bin/klod ", "/.cargo/bin/clyde ")
-        .replace(".config/klod/enrich.env", ".config/clyde/enrich.env")
-        .replace("%h/.config/klod/", "%h/.config/clyde/")
+    text.replace("klod", "clyde")
 }
 
 /// Move `~/.config/klod/enrich.env` -> `~/.config/clyde/enrich.env`, preserving permissions.
@@ -482,17 +662,41 @@ fn move_env_file(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-/// Create a fresh clyde enrich timer unit (only under `--install-timer` when no legacy exists).
+/// Create a fresh clyde enrich service + timer + enable symlink (only under `--install-timer`
+/// when no legacy unit exists). The timer is the scheduler; without it (and its enable symlink)
+/// the oneshot service would never fire.
 fn install_clyde_timer(paths: &Paths) -> Result<bool> {
-    let unit = paths.clyde_unit();
-    let body = "[Unit]\n\
-        Description=clyde session enrichment\n\n\
+    let svc = paths.clyde_unit();
+    let svc_body = "[Unit]\n\
+        Description=clyde session enrichment sweep (work-scoped, dormant)\n\
+        After=network-online.target\n\
+        Wants=network-online.target\n\n\
         [Service]\n\
         Type=oneshot\n\
         EnvironmentFile=%h/.config/clyde/enrich.env\n\
-        ExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n";
-    write_atomic(&unit, body)?;
-    info!("installed clyde enrich unit {}", unit.display());
+        ExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n\
+        Nice=10\n";
+    write_atomic(&svc, svc_body)?;
+
+    let tmr = paths.clyde_timer();
+    let tmr_body = "[Unit]\n\
+        Description=Daily clyde session enrichment sweep\n\n\
+        [Timer]\n\
+        OnCalendar=*-*-* 03:00:00\n\
+        Persistent=true\n\
+        RandomizedDelaySec=300\n\n\
+        [Install]\n\
+        WantedBy=timers.target\n";
+    write_atomic(&tmr, tmr_body)?;
+
+    let link = paths.clyde_wants_link();
+    fs::create_dir_all(paths.wants_dir())
+        .with_context(|| format!("failed to create {}", paths.wants_dir().display()))?;
+    if fs::symlink_metadata(&link).is_ok() {
+        fs::remove_file(&link).with_context(|| format!("failed to replace enable symlink {}", link.display()))?;
+    }
+    unixfs::symlink(&tmr, &link).with_context(|| format!("failed to create enable symlink {}", link.display()))?;
+    info!("installed clyde enrich service + timer + enable symlink");
     Ok(true)
 }
 
