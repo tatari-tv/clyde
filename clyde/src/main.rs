@@ -6,7 +6,9 @@
 //! `clyde` is the thin clap shim and composition root: it parses args, calls the `session` /
 //! `sessions` libraries, and is the only crate that prints. All logic lives in the libs.
 
+mod bootstrap;
 mod cli;
+mod doctor;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -41,13 +43,16 @@ fn main() -> Result<()> {
     // clyde must NOT install a logger for those arms — env_logger can only be initialized once
     // per process. Only the clyde-native `sessions` subtree sets up clyde's logger here.
     let level = cli.log_level.clone().unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string());
-    match &cli.command {
-        Command::Report(_) | Command::Cost(_) | Command::Permit(_) => {}
+    if matches!(cli.command, Command::Report(_) | Command::Cost(_) | Command::Permit(_)) {
+        // Absorbed tools install their own logger; clyde must not (one init per process).
+    } else if is_serve(&cli) {
         // Serve mode keeps stdout reserved for JSON-RPC frames: rmcp/tokio emit via `tracing`, so
         // route logging through a file-target tracing subscriber (which also bridges `log`)
-        // instead of env_logger. Every other sessions subcommand logs through env_logger.
-        Command::Sessions { .. } if is_serve(&cli) => setup_serve_tracing(&level, &log_path)?,
-        Command::Sessions { .. } => setup_logging(&level, &log_path)?,
+        // instead of env_logger.
+        setup_serve_tracing(&level, &log_path)?;
+    } else {
+        // Every clyde-native arm (sessions non-serve, bootstrap, doctor) uses env_logger.
+        setup_logging(&level, &log_path)?;
     }
     run(cli)
 }
@@ -99,6 +104,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Report(args) => dispatch_tool(report::run(args, globals)),
         Command::Cost(args) => dispatch_tool(cost::run(args, globals)),
         Command::Permit(args) => dispatch_tool(permit::run(args, globals)),
+        // clyde-native migration/health commands.
+        Command::Bootstrap(args) => bootstrap::run(&args),
+        Command::Doctor => std::process::exit(doctor::run()?),
         // Serve owns its own catalog handle (inside the async server) and needs a Tokio runtime,
         // so it is handled before opening the synchronous `Db` the other arms share.
         Command::Sessions {

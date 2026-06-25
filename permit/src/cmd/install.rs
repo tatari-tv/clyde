@@ -73,18 +73,22 @@ fn has_permit_hook(root: &Map<String, Value>) -> bool {
     };
     entries.iter().any(|entry| {
         let s = serde_json::to_string(entry).unwrap_or_default();
-        s.contains("claude-permit")
+        // Recognize both the legacy standalone form and the new umbrella form so re-install is
+        // idempotent across the clyde migration.
+        s.contains("claude-permit") || s.contains("clyde permit")
     })
 }
 
 /// Insert the claude-permit PreToolUse hook entry, preserving existing hooks.
 fn insert_hook(root: &mut Map<String, Value>) {
+    // Fresh installs emit the clyde umbrella form. `clyde bootstrap` repoints any existing
+    // `claude-permit log` invocation to this same form.
     let hook_entry = json!({
         "matcher": "",
         "hooks": [
             {
                 "type": "command",
-                "command": "claude-permit log"
+                "command": "clyde permit log"
             }
         ]
     });
@@ -119,7 +123,7 @@ mod tests {
         assert!(installed);
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("claude-permit log"));
+        assert!(content.contains("clyde permit log"));
         assert!(content.contains("PreToolUse"));
     }
 
@@ -148,7 +152,7 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         // Both hooks present
         assert!(content.contains("echo hello"));
-        assert!(content.contains("claude-permit log"));
+        assert!(content.contains("clyde permit log"));
     }
 
     #[test]
@@ -211,7 +215,7 @@ mod tests {
         assert!(path.exists());
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("claude-permit log"));
+        assert!(content.contains("clyde permit log"));
     }
 
     #[test]

@@ -38,11 +38,21 @@ impl EventStore {
         Ok(Self { conn })
     }
 
-    /// Default database path: ~/.local/share/claude-permit/events.db
+    /// Default events DB path: `~/.local/share/clyde/events.db`, with read-fallback to the legacy
+    /// `~/.local/share/claude-permit/events.db` until `clyde bootstrap` moves it. A fresh machine
+    /// (neither present) defaults to the clyde location.
     pub fn default_path() -> Result<PathBuf> {
         let data_dir =
             crate::config::xdg_data_dir().ok_or_else(|| eyre::eyre!("Could not determine local data directory"))?;
-        Ok(data_dir.join("claude-permit").join("events.db"))
+        let clyde = data_dir.join("clyde").join("events.db");
+        if clyde.exists() {
+            return Ok(clyde);
+        }
+        let legacy = data_dir.join("claude-permit").join("events.db");
+        if legacy.exists() {
+            return Ok(legacy);
+        }
+        Ok(clyde)
     }
 
     /// Insert a new event.

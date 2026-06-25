@@ -48,6 +48,10 @@ pub enum Command {
     Cost(cost::CostArgs),
     /// Manage Claude Code permission hygiene; the PreToolUse hook entry (was `claude-permit`).
     Permit(permit::PermitArgs),
+    /// Migrate config/data/cache under one clyde home and repoint the live integrations.
+    Bootstrap(crate::bootstrap::BootstrapArgs),
+    /// Health-check the migration and integrations; non-zero exit while any legacy target remains.
+    Doctor,
 }
 
 #[derive(Subcommand, Debug)]

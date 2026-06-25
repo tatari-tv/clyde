@@ -163,6 +163,7 @@ mod tests {
     fn test_embedded_content_is_executable_script() {
         let content = find_entry("scottidler").unwrap();
         assert!(content.starts_with("#!/usr/bin/env bash"));
-        assert!(content.contains("ccu"));
+        // Fresh installs invoke the clyde umbrella form, not the bare `ccu` shim.
+        assert!(content.contains("clyde cost"));
     }
 }

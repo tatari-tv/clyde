@@ -152,3 +152,47 @@ Running record of how the implementation diverges from or interprets
   `--help`/`--version` render under the old names, `clyde report|cost|permit --help` render under
   `clyde <tool>`, the permit `{}`-on-failure hook contract holds (garbage stdin → `{}`, exit 0),
   and the `ccu --log-level debug` globals round-trip is covered by a unit test.
+
+## Phase 4: bootstrap + doctor
+
+### Design decisions
+- All bootstrap/doctor logic operates on an injected `bootstrap::Paths { home, xdg_data,
+  xdg_config, xdg_cache }` (with `Paths::from_env()` for the real run). The whole surface is
+  tested against temp `$HOME`s with zero env mutation and no touching of the real machine.
+- The systemd `daemon-reload` (the only step that shells out) lives in `bootstrap::run()`, OUTSIDE
+  the hermetic `bootstrap()` core, gated on `!skip_systemd && outcome.systemd_changed`. Tests call
+  the core (and `repoint_systemd` directly) and never shell out.
+- WAL-safe events-DB move (`migrate_events_db`): open the legacy DB, `PRAGMA
+  wal_checkpoint(TRUNCATE)`, drop the connection, then `fs::rename` `events.db` plus any
+  `-wal`/`-shm` sidecars. A parity test asserts row count is preserved and the legacy path is gone.
+- Hook rewrite walks `hooks.PreToolUse[].hooks[].command` as `serde_json::Value` and replaces only
+  the exact `claude-permit log` string with `clyde permit log`, reserializing pretty — preserving
+  all other fields, matchers, and order. Applied to both global and local settings.
+- doctor exits non-zero when any integration is legacy, the events DB is stranded at the legacy
+  path, or any config exists only at a legacy path. `Absent` integrations are healthy. doctor is
+  read-only.
+- `permit::EventStore::default_path()` now prefers `~/.local/share/clyde/events.db` with
+  read-fallback to the legacy path (Phase-4 surgical pass), so the shim finds its DB before and
+  after bootstrap.
+
+### Deviations
+- The tools' own installers were repointed in a surgical pass (not inside bootstrap): permit's
+  `cmd/install.rs` writes `clyde permit log` (detection recognizes both forms for idempotency); the
+  `cost` statusline templates invoke `clyde cost`. Their unit tests were updated. Doing this outside
+  bootstrap keeps bootstrap focused on migrating existing state.
+- doctor's systemctl `last-run` field was intentionally not wired (it would shell out and isn't
+  needed for the pass/fail gate).
+
+### Tradeoffs
+- `clyde`'s top-level `--db` global (`global = true`, for sessions) also appears in
+  `clyde bootstrap --help`. Cosmetic; left as-is.
+- bootstrap is one ~500-line module + tests, under the 1500-line bloat limit. If it grows it should
+  decompose into `bootstrap/{migrate,repoint}`.
+
+### Open questions
+- The design's "bootstrap verify pass before first live run" (`/staff-engineer`) is an external
+  review step not run here, and bootstrap has NOT been run against the real machine — that is the
+  operator's finalization step. All logic is covered by temp-`$HOME` unit tests (events-DB WAL move
+  + row-count parity, global+local hook rewrite, statusline rewrite, systemd unit rename + env-file
+  move with permission preservation, full-bootstrap idempotency, pricing-override merge, doctor
+  healthy/unhealthy gates).
