@@ -172,7 +172,8 @@ The three live integrations:
 `bootstrap` is idempotent and fails safe:
 
 - Each file it rewrites (settings.json, statusline snippet, systemd unit, env file) is backed up first to `<path>.clyde.bak` before modification.
-- Write order: migrate data/config/cache first (so a repointed integration finds its state), then rewrite integration references.
+- Write order: migrate data and config first (so a repointed integration finds its state), then rewrite integration references. Caches are not migrated (disposable; they rebuild at the clyde path).
+- `--force` governs only re-writing config that already exists at the destination on a re-run. Integration repointing always applies (it must be correct), and cache rebuild needs no flag.
 - If any step fails after an earlier step succeeded, `bootstrap` reports exactly which steps completed and leaves the backups in place; re-running is safe (already-migrated steps are no-ops).
 - `doctor` fails hard (non-zero) while any integration still resolves to an old binary name or any tool's state still lives only at a legacy path.
 
@@ -187,9 +188,9 @@ No schema changes. Stores and configs keep their current shapes; locations move 
 | permit events DB | `~/.local/share/claude-permit/events.db` | `~/.local/share/clyde/events.db` | **move** (not copy, not fresh); `doctor` checks presence + row count. (`claude-permit/src/db/store.rs`) |
 | permit config | `~/.config/claude-permit/` | `~/.config/clyde/permit.yml` | move; read-fallback to old until migrated. |
 | cost config | `~/.config/ccu/ccu.yml` | `~/.config/clyde/cost.yml` | move; read-fallback. (`claude-cost-usage/src/config.rs`) |
-| cost day cache | `dirs::cache_dir()/ccu` | `dirs::cache_dir()/clyde/cost` | move; cold cache self-heals if skipped. (`claude-cost-usage/src/cache.rs`) |
+| cost day cache | `dirs::cache_dir()/ccu` | `dirs::cache_dir()/clyde/cost` | **not migrated**; disposable, rebuilds at new path on next run (one cold statusline render after bootstrap). (`claude-cost-usage/src/cache.rs`) |
 | pricing override | `~/.config/ccu/pricing.json`, `~/.config/cr/pricing.json` (disjoint) | `~/.config/clyde/pricing.json` (single) | merge old overrides; `cost`/`report` pass `app_name = "clyde"`. (`claude-pricing/src/fetch.rs`) |
-| pricing cache | `dirs::cache_dir()/claude-pricing` | `dirs::cache_dir()/clyde/pricing` | move; self-heals if skipped. (`claude-pricing/src/feed.rs`) |
+| pricing cache | `dirs::cache_dir()/claude-pricing` | `dirs::cache_dir()/clyde/pricing` | **not migrated**; disposable, refetches at new path on next run. (`claude-pricing/src/feed.rs`) |
 
 Note: `claude-report` has no YAML config file (its config is CLI-derived; output goes to XDG data). There is no `report.yml`. (`claude-report/src/config.rs`)
 
