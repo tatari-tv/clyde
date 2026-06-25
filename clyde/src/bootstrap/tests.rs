@@ -118,6 +118,28 @@ fn statusline_rewrite_repoints_ccu_invocations_only() {
 }
 
 #[test]
+fn skip_statusline_leaves_statusline_untouched() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let sl = paths.statusline();
+    fs::create_dir_all(sl.parent().unwrap()).unwrap();
+    let original = "#!/usr/bin/env bash\nT=$(ccu today --total)\n";
+    fs::write(&sl, original).unwrap();
+
+    let args = BootstrapArgs {
+        skip_statusline: true,
+        ..Default::default()
+    };
+    let out = bootstrap(&paths, &args).unwrap();
+
+    // The statusline is byte-for-byte unchanged and the step is not reported as completed.
+    assert_eq!(fs::read_to_string(&sl).unwrap(), original);
+    let bak = PathBuf::from(format!("{}.clyde.bak", sl.display()));
+    assert!(!bak.exists(), "no backup written");
+    assert!(!out.completed.iter().any(|s| s.contains("statusline")));
+}
+
+#[test]
 fn systemd_unit_rewrite_moves_env_file_with_perms() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());

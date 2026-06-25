@@ -28,6 +28,12 @@ pub struct BootstrapArgs {
     #[arg(long)]
     pub skip_systemd: bool,
 
+    /// Skip the statusline repoint (ccu -> clyde cost). Use when `~/.claude/statusline.sh` is
+    /// managed elsewhere (e.g. a dotfiles symlink): the permanent `ccu` shim keeps an existing
+    /// ccu-based statusline working, so leaving it untouched is safe.
+    #[arg(long)]
+    pub skip_statusline: bool,
+
     /// Create the enrich timer unit even if no legacy unit exists (default: repoint existing only).
     #[arg(long)]
     pub install_timer: bool,
@@ -105,8 +111,8 @@ impl Paths {
 /// migration core stays hermetic for tests.
 pub fn run(args: &BootstrapArgs) -> Result<()> {
     debug!(
-        "bootstrap::run: force={} skip_systemd={} install_timer={}",
-        args.force, args.skip_systemd, args.install_timer
+        "bootstrap::run: force={} skip_systemd={} skip_statusline={} install_timer={}",
+        args.force, args.skip_systemd, args.skip_statusline, args.install_timer
     );
     let paths = Paths::from_env()?;
     let outcome = bootstrap(&paths, args)?;
@@ -191,7 +197,11 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
     );
 
     // 2. Integration repointing (always applies — it must be correct).
-    step!("statusline ccu -> clyde cost", repoint_statusline(paths));
+    // The statusline repoint is skippable: a user-managed statusline (e.g. a dotfiles symlink)
+    // keeps working via the permanent `ccu` shim, and rewriting it would replace the symlink.
+    if !args.skip_statusline {
+        step!("statusline ccu -> clyde cost", repoint_statusline(paths));
+    }
     step!(
         "permit hook (global settings.json)",
         repoint_hook(&paths.settings_global())
