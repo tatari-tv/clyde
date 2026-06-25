@@ -1,0 +1,13 @@
+{
+  "aliases": {
+    "opus": "claude-opus-4-8",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5"
+  },
+  "family_rules": [
+    { "prefix": "claude-3-7-sonnet", "canonical": "claude-sonnet-3-7" },
+    { "prefix": "claude-3-5-haiku", "canonical": "claude-haiku-3-5" },
+    { "prefix": "claude-3-opus", "canonical": "claude-opus-3" },
+    { "prefix": "claude-3-haiku", "canonical": "claude-haiku-3" }
+  ]
+}
