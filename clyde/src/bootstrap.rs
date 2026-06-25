@@ -29,8 +29,9 @@ pub struct BootstrapArgs {
     pub skip_systemd: bool,
 
     /// Skip the statusline repoint (ccu -> clyde cost). Use when `~/.claude/statusline.sh` is
-    /// managed elsewhere (e.g. a dotfiles symlink): the permanent `ccu` shim keeps an existing
-    /// ccu-based statusline working, so leaving it untouched is safe.
+    /// managed elsewhere (e.g. a dotfiles symlink) and you will repoint it yourself. An existing
+    /// ccu-based statusline keeps working via the `ccu` compat shim for now, but the shims are
+    /// transitional — repoint it to `clyde cost` so it survives their eventual removal.
     #[arg(long)]
     pub skip_statusline: bool,
 
@@ -198,7 +199,8 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
 
     // 2. Integration repointing (always applies — it must be correct).
     // The statusline repoint is skippable: a user-managed statusline (e.g. a dotfiles symlink)
-    // keeps working via the permanent `ccu` shim, and rewriting it would replace the symlink.
+    // is repointed by its owner, and rewriting it here would replace the symlink. It keeps
+    // working via the transitional `ccu` shim until then.
     if !args.skip_statusline {
         step!("statusline ccu -> clyde cost", repoint_statusline(paths));
     }
