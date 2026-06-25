@@ -71,13 +71,20 @@ impl Config {
             return Self::load_from_file(path).context(format!("Failed to load config from {}", path.display()));
         }
 
+        // Prefer the unified clyde location (`clyde/permit.yml`) and fall back to the legacy
+        // `claude-permit/claude-permit.yml` until `clyde bootstrap` migrates it.
         if let Some(config_dir) = xdg_config_dir() {
-            let primary = config_dir.join("claude-permit").join("claude-permit.yml");
-            if primary.exists() {
-                match Self::load_from_file(&primary) {
-                    Ok(config) => return Ok(config),
-                    Err(e) => {
-                        log::warn!("Failed to load config from {}: {e}", primary.display());
+            let candidates = [
+                config_dir.join("clyde").join("permit.yml"),
+                config_dir.join("claude-permit").join("claude-permit.yml"),
+            ];
+            for candidate in candidates {
+                if candidate.exists() {
+                    match Self::load_from_file(&candidate) {
+                        Ok(config) => return Ok(config),
+                        Err(e) => {
+                            log::warn!("Failed to load config from {}: {e}", candidate.display());
+                        }
                     }
                 }
             }
@@ -135,7 +142,37 @@ pub fn xdg_data_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // Serialize env-var-touching tests to prevent parallel races.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn load_prefers_clyde_then_falls_back_to_legacy() {
+        let guard = ENV_LOCK.lock().expect("lock");
+        let prior = std::env::var("XDG_CONFIG_HOME").ok();
+        let dir = TempDir::new().expect("temp");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+
+        // Only legacy claude-permit/claude-permit.yml present -> falls back to it.
+        let legacy = dir.path().join("claude-permit").join("claude-permit.yml");
+        std::fs::create_dir_all(legacy.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&legacy, "suggest-threshold: 7\n").expect("write");
+        assert_eq!(Config::load(None).expect("load").suggest_threshold, 7);
+
+        // clyde/permit.yml present -> preferred.
+        let clyde = dir.path().join("clyde").join("permit.yml");
+        std::fs::create_dir_all(clyde.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&clyde, "suggest-threshold: 11\n").expect("write");
+        assert_eq!(Config::load(None).expect("load").suggest_threshold, 11);
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        drop(guard);
+    }
 
     #[test]
     fn default_config() {

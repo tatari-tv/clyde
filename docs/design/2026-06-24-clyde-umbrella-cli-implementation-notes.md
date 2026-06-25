@@ -196,3 +196,28 @@ Running record of how the implementation diverges from or interprets
   + row-count parity, global+local hook rewrite, statusline rewrite, systemd unit rename + env-file
   move with permission preservation, full-bootstrap idempotency, pricing-override merge, doctor
   healthy/unhealthy gates).
+
+## Phase 5: Config relocation
+
+### Design decisions
+- `cost::config::Config::load` now resolves XDG config in clyde-first order: try
+  `~/.config/clyde/cost.yml`, then fall back to the legacy `~/.config/ccu/ccu.yml` until
+  `clyde bootstrap` migrates it. An explicit `--config <path>` still wins over both.
+- `permit::config::Config::load` likewise tries `~/.config/clyde/permit.yml`, then the legacy
+  `~/.config/claude-permit/claude-permit.yml`, then its existing `./claude-permit.yml` CWD
+  fallback. (Note the legacy filename is `claude-permit.yml`, not `config.yml`; bootstrap's
+  `migrate_legacy_permit_config` matches the legacy `*.yml` and moves it to `clyde/permit.yml`,
+  which is why that fallback exists in bootstrap.)
+- No `report.yml`: `claude-report` has no YAML config file (its config is CLI-derived; output goes
+  to XDG data), so there is nothing to relocate for report — matches the design's Data Model note.
+
+### Deviations
+- None.
+
+### Tradeoffs
+- Added env-guarded resolution tests (`XDG_CONFIG_HOME` override behind a `static ENV_LOCK`) to
+  both crates proving clyde-first / legacy-fallback. These mutate env, so they are serialized per
+  the repo's platform-path test convention.
+
+### Open questions
+- None.

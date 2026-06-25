@@ -50,14 +50,21 @@ impl Config {
             return Ok((config, Some(path.clone())));
         }
 
-        // XDG config dir, resolved identically on every platform (see xdg_config_dir).
+        // XDG config dir, resolved identically on every platform (see xdg_config_dir). Prefer the
+        // unified clyde location (`clyde/cost.yml`) and fall back to the legacy `ccu/ccu.yml` until
+        // `clyde bootstrap` migrates it.
         if let Some(config_dir) = xdg_config_dir() {
-            let primary_config = config_dir.join("ccu").join("ccu.yml");
-            if primary_config.exists() {
-                match Self::load_from_file(&primary_config) {
-                    Ok(config) => return Ok((config, Some(primary_config))),
-                    Err(e) => {
-                        log::warn!("Failed to load config from {}: {}", primary_config.display(), e);
+            let candidates = [
+                config_dir.join("clyde").join("cost.yml"),
+                config_dir.join("ccu").join("ccu.yml"),
+            ];
+            for candidate in candidates {
+                if candidate.exists() {
+                    match Self::load_from_file(&candidate) {
+                        Ok(config) => return Ok((config, Some(candidate))),
+                        Err(e) => {
+                            log::warn!("Failed to load config from {}: {}", candidate.display(), e);
+                        }
                     }
                 }
             }
@@ -79,6 +86,39 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serialize env-var-touching tests to prevent parallel races.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn load_prefers_clyde_then_falls_back_to_ccu() {
+        let guard = ENV_LOCK.lock().expect("lock");
+        let prior = std::env::var("XDG_CONFIG_HOME").ok();
+        let dir = tempfile::TempDir::new().expect("temp");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+
+        // Only legacy ccu/ccu.yml present -> falls back to it.
+        let ccu = dir.path().join("ccu").join("ccu.yml");
+        std::fs::create_dir_all(ccu.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&ccu, "log_level: warn\n").expect("write");
+        let path = Config::load(None).expect("load").1;
+        assert_eq!(path.as_deref(), Some(ccu.as_path()));
+
+        // clyde/cost.yml present -> preferred over the legacy ccu file.
+        let clyde = dir.path().join("clyde").join("cost.yml");
+        std::fs::create_dir_all(clyde.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&clyde, "log_level: debug\n").expect("write");
+        let (cfg, path) = Config::load(None).expect("load");
+        assert_eq!(path.as_deref(), Some(clyde.as_path()));
+        assert_eq!(cfg.log_level.as_deref(), Some("debug"));
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        drop(guard);
+    }
 
     #[test]
     fn test_config_deserialize_with_log_level() {
