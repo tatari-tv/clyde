@@ -1,6 +1,6 @@
 //! Work/personal scope classification — the load-bearing control for Phase 2 enrichment.
 //!
-//! Phase 2 is the first klod phase to send session content off-machine, to the **work** Anthropic
+//! Phase 2 is the first clyde phase to send session content off-machine, to the **work** Anthropic
 //! account. The routing invariant is absolute: *no `personal`-scoped session content is ever sent
 //! to the work account*. This module is the sole source of that classification, derived purely
 //! from the session's stored `cwd` (a pure function of metadata, unit-testable, run before any

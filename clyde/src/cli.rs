@@ -1,4 +1,4 @@
-//! Clap definitions for `klod`. Parsing only; validation/dispatch lives in `main.rs`.
+//! Clap definitions for `clyde`. Parsing only; validation/dispatch lives in `main.rs`.
 
 use std::path::PathBuf;
 
@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "klod",
+    name = "clyde",
     about = "Catalog, search, and resume Claude Code sessions",
     version = env!("GIT_DESCRIBE"),
     arg_required_else_help = true,
@@ -16,7 +16,7 @@ pub struct Cli {
     #[arg(short = 'l', long, global = true, default_value = "info")]
     pub log_level: String,
 
-    /// Override the sessions.db path (default: $XDG_DATA_HOME/klod/sessions.db).
+    /// Override the sessions.db path (default: $XDG_DATA_HOME/clyde/sessions.db).
     #[arg(long, global = true)]
     pub db: Option<PathBuf>,
 

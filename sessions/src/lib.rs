@@ -3,11 +3,11 @@
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
-//! `sessions` is klod's navigational layer: it indexes parsed [`session::ParsedSession`] records
+//! `sessions` is clyde's navigational layer: it indexes parsed [`session::ParsedSession`] records
 //! into a local SQLite store (`sessions.db`) with dual FTS5 tables, and answers the "find /
 //! resume my session" queries — `search`, `ls`, `open`, `tag`, `reindex`.
 //!
-//! Lib-only and returns typed data; only the `klod` binary prints.
+//! Lib-only and returns typed data; only the `clyde` binary prints.
 
 pub mod db;
 pub mod enrich;

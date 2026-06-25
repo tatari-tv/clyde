@@ -3,13 +3,13 @@
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
-//! `session` is klod's shared core: it locates Claude Code session transcripts under
+//! `session` is clyde's shared core: it locates Claude Code session transcripts under
 //! `~/.claude/projects`, parses the JSONL into a typed [`model::ParsedSession`], and owns
-//! klod's path resolution ([`paths`]). It is the integration seam every klod subcommand
+//! clyde's path resolution ([`paths`]). It is the integration seam every clyde subcommand
 //! (`sessions` now; `report`/`cost`/`permit` later) builds on.
 //!
 //! Per the workspace invariant, this crate is lib-only and returns typed data; it never
-//! prints. Only the `klod` binary prints.
+//! prints. Only the `clyde` binary prints.
 
 pub mod model;
 pub mod parse;

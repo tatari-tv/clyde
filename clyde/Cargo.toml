@@ -1,5 +1,5 @@
 [package]
-name = "klod"
+name = "clyde"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,7 +7,7 @@ description = "Catalog, search, and resume Claude Code sessions"
 build = "build.rs"
 
 [[bin]]
-name = "klod"
+name = "clyde"
 path = "src/main.rs"
 
 [lints]

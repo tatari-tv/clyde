@@ -224,6 +224,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "clyde"
+version = "0.1.2"
+dependencies = [
+ "chrono",
+ "clap",
+ "colored",
+ "env_logger",
+ "eyre",
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
+ "session",
+ "sessions",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1029,26 +1049,6 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "klod"
-version = "0.1.2"
-dependencies = [
- "chrono",
- "clap",
- "colored",
- "env_logger",
- "eyre",
- "libc",
- "log",
- "serde",
- "serde_json",
- "session",
- "sessions",
- "tempfile",
- "tokio",
- "tracing-subscriber",
 ]
 
 [[package]]

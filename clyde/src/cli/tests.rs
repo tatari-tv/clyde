@@ -5,7 +5,7 @@ use clap::Parser;
 
 #[test]
 fn search_takes_space_separated_terms() {
-    let cli = Cli::try_parse_from(["klod", "sessions", "search", "terraform", "marquee"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "sessions", "search", "terraform", "marquee"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Search(args),
@@ -19,7 +19,7 @@ fn search_takes_space_separated_terms() {
 
 #[test]
 fn tag_takes_space_separated_tags_not_comma() {
-    let cli = Cli::try_parse_from(["klod", "sessions", "tag", "abc123", "terraform", "s3"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "sessions", "tag", "abc123", "terraform", "s3"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Tag(args),
@@ -34,7 +34,7 @@ fn tag_takes_space_separated_tags_not_comma() {
 #[test]
 fn ls_accepts_metadata_filters() {
     let cli = Cli::try_parse_from([
-        "klod", "sessions", "ls", "--repo", "loopr", "--since", "7d", "--model", "opus",
+        "clyde", "sessions", "ls", "--repo", "loopr", "--since", "7d", "--model", "opus",
     ])
     .unwrap();
     match cli.command {

@@ -1,4 +1,4 @@
-//! stdout-cleanliness smoke test for `klod sessions serve`.
+//! stdout-cleanliness smoke test for `clyde sessions serve`.
 //!
 //! The classic stdio-MCP footgun is a stray `println!` / log line corrupting the JSON-RPC
 //! framing. This test spawns the real binary, drives the `initialize` handshake, and asserts
@@ -18,7 +18,7 @@ fn serve_stdout_carries_only_jsonrpc_frames() {
     let projects = tempfile::tempdir().expect("temp projects dir");
     let db_path = data_home.path().join("sessions.db");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_klod"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_clyde"))
         // Hermetic: own data root (logs + default paths) and an empty projects dir; --no-reindex
         // so the handshake doesn't depend on scanning a real catalog.
         .env("XDG_DATA_HOME", data_home.path())
@@ -31,7 +31,7 @@ fn serve_stdout_carries_only_jsonrpc_frames() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn klod sessions serve");
+        .expect("spawn clyde sessions serve");
 
     let mut stdin = child.stdin.take().expect("child stdin");
     let stdout = child.stdout.take().expect("child stdout");

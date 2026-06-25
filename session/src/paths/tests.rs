@@ -46,15 +46,15 @@ fn xdg_config_dir_honors_env_and_falls_back() {
 }
 
 #[test]
-fn data_root_and_db_path_sit_under_klod_namespace() {
+fn data_root_and_db_path_sit_under_clyde_namespace() {
     let guard = ENV_LOCK.lock().unwrap();
     let prior = std::env::var("XDG_DATA_HOME").ok();
 
     let dir = TempDir::new().unwrap();
     unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
-    assert_eq!(data_root(), dir.path().join("klod"));
-    assert_eq!(sessions_db_path(), dir.path().join("klod").join("sessions.db"));
-    assert_eq!(staged_dir(), dir.path().join("klod").join("staged"));
+    assert_eq!(data_root(), dir.path().join("clyde"));
+    assert_eq!(sessions_db_path(), dir.path().join("clyde").join("sessions.db"));
+    assert_eq!(staged_dir(), dir.path().join("clyde").join("staged"));
 
     match prior {
         Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },

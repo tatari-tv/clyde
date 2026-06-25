@@ -1,4 +1,4 @@
-//! Durable transcript staging (Phase 1.5): copy a session's live transcripts into a klod-owned
+//! Durable transcript staging (Phase 1.5): copy a session's live transcripts into a clyde-owned
 //! location to beat Claude's 30-day TTL, decoupled from any knowledge-layer distillation.
 //!
 //! This reads only local files and writes only local files — no LLM, no vault, no work/personal

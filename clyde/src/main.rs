@@ -3,7 +3,7 @@
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
-//! `klod` is the thin clap shim and composition root: it parses args, calls the `session` /
+//! `clyde` is the thin clap shim and composition root: it parses args, calls the `session` /
 //! `sessions` libraries, and is the only crate that prints. All logic lives in the libs.
 
 mod cli;
@@ -29,7 +29,7 @@ const TITLE_DISPLAY_WIDTH: usize = 80;
 
 fn main() -> Result<()> {
     reset_sigpipe();
-    let log_path = session::paths::data_root().join("logs").join("klod.log");
+    let log_path = session::paths::data_root().join("logs").join("clyde.log");
     let after_help = format!("Logs are written to: {}", log_path.display());
     let cli = Cli::from_arg_matches(&Cli::command().after_help(after_help).get_matches())?;
     // Serve mode keeps stdout reserved for JSON-RPC frames: rmcp/tokio emit via `tracing`, so
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     run(cli)
 }
 
-/// True when the parsed command is `klod sessions serve` — the one arm that owns stdout for the
+/// True when the parsed command is `clyde sessions serve` — the one arm that owns stdout for the
 /// MCP protocol and therefore needs the file-target tracing subscriber.
 fn is_serve(cli: &Cli) -> bool {
     matches!(
@@ -55,8 +55,8 @@ fn is_serve(cli: &Cli) -> bool {
 }
 
 /// Restore the default `SIGPIPE` disposition. Rust ignores SIGPIPE by default, which turns a
-/// closed stdout (e.g. `klod sessions search x | head`) into an EPIPE that `println!` unwraps
-/// into a panic. Resetting to `SIG_DFL` makes klod die quietly on a broken pipe like any Unix
+/// closed stdout (e.g. `clyde sessions search x | head`) into an EPIPE that `println!` unwraps
+/// into a panic. Resetting to `SIG_DFL` makes clyde die quietly on a broken pipe like any Unix
 /// filter. Done before any output is produced.
 #[cfg(unix)]
 fn reset_sigpipe() {
@@ -97,7 +97,7 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-/// Bring up the MCP server on stdio. `klod`'s `main`/`run` are synchronous, so the runtime is
+/// Bring up the MCP server on stdio. `clyde`'s `main`/`run` are synchronous, so the runtime is
 /// built explicitly here and the only async work is the serve path; no other subcommand changes.
 fn cmd_serve(db_path: &std::path::Path, args: ServeArgs) -> Result<()> {
     let projects_dir = args
@@ -500,7 +500,7 @@ fn setup_logging(level: &str, log_path: &PathBuf) -> Result<()> {
 /// Serve-mode logging: a file-target `tracing` subscriber, NOT env_logger. rmcp and tokio emit
 /// via `tracing` (not `log`), and stdout is reserved for JSON-RPC framing, so their output must
 /// land in the log file. `tracing_subscriber::fmt().init()` also installs the `tracing-log`
-/// bridge, so klod's own `log::*` records (e.g. reindex warnings) are captured by the same
+/// bridge, so clyde's own `log::*` records (e.g. reindex warnings) are captured by the same
 /// subscriber. Mutually exclusive with [`setup_logging`]: installing both would race for the
 /// global `log` logger slot and panic.
 fn setup_serve_tracing(level: &str, log_path: &PathBuf) -> Result<()> {

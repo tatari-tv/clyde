@@ -1,6 +1,6 @@
 [workspace]
-members = ["klod", "session", "sessions"]
-default-members = ["klod"]
+members = ["clyde", "session", "sessions"]
+default-members = ["clyde"]
 resolver = "3"
 
 [workspace.package]
