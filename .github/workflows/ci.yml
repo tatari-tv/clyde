@@ -1,0 +1,21 @@
+name: ci
+
+# Repo CI for the clyde workspace: delegates to the org-standard reusable, which runs
+# `otto ci` (whitespace + clippy + fmt + test) on a prepared Rust toolchain. clyde has
+# no private git deps - every workspace member is an in-workspace path crate - so no
+# fetch token is wired. Push-only on every branch (PR checks still surface via the
+# branch push), which avoids the double run a separate pull_request trigger would add.
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: rust-ci
+    uses: tatari-tv/github-actions/.github/workflows/rust-ci.yml@v5
