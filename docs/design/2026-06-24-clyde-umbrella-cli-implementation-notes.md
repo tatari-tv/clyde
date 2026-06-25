@@ -221,3 +221,33 @@ Running record of how the implementation diverges from or interprets
 
 ### Open questions
 - None.
+
+## Phase 6: Tests, CI, docs
+
+### Design decisions
+- `otto ci` already runs over the whole workspace (root `.otto.yml`: `cargo {check,clippy,fmt,test}
+  --workspace`, plus `whitespace -r` and the `*/src/` `_varname` grep), so no CI change was needed
+  to "cover the whole workspace" — the per-crate tests are consolidated simply by being workspace
+  members.
+- Removed the redundant subtree-imported scaffolding: nested `Cargo.lock` (x4), `.otto.yml` (x4),
+  and `install.sh` (x3). Under one workspace these are dead — cargo uses the root `Cargo.lock`, the
+  root `.otto.yml` is the workspace CI, and a single root `install.sh` now installs `clyde` plus the
+  three shims (`cargo install --path <crate> --bin <name>`).
+- Rewrote the top-level README around the umbrella (workspace map, command surface, shims, install
+  + bootstrap + doctor flow, unified XDG data layout) and trimmed each per-crate README to a short
+  stub pointing at `clyde` with its subcommand/shim mapping and library API.
+
+### Deviations
+- Left the nested `clippy.toml` / `rustfmt.toml` files in the absorbed crates in place. Removing
+  them would force a tree-wide reformat (each crate was formatted to its own `rustfmt.toml`), which
+  is churn and risk outside the consolidation's intent; CI is green with them present. Unifying
+  formatting config is a separate mechanical pass if ever wanted.
+
+### Tradeoffs
+- None beyond the clippy/rustfmt note above.
+
+### Open questions
+- Phase 7 (archive `claude-report`/`claude-cost-usage`/`claude-permit`/`claude-pricing` on GitHub
+  with READMEs pointing at clyde) is post-ship GitHub ops, not a code change — to be done by the
+  operator after clyde ships and `doctor` confirms the live integrations are repointed. Nothing is
+  deleted; tags are preserved.

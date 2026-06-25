@@ -1,80 +1,95 @@
 # clyde
 
-Catalog, search, and resume Claude Code sessions.
+One CLI for your Claude Code tooling.
 
-`clyde` is a Cargo workspace in the `claude-*` family. Claude Code stores each session as a
-JSONL transcript at `~/.claude/projects/<slugified-cwd>/<session-id>.jsonl`, addressable only by
-a slug and a UUID. `clyde` builds a thin, local, searchable index over those transcripts so a
-session can be found by name, content, topic, repo, model, or date — and resumed.
+`clyde` is a Cargo workspace that absorbs four formerly-separate tools into a single binary that
+dispatches subcommands over focused library crates (the `second-brain`/`sb` umbrella pattern). It
+catalogs and searches Claude Code sessions, reports on them, tracks cost/usage, and manages
+permission hygiene.
 
 ## Workspace
 
 ```
-clyde/        thin clap shim — the only binary, the only crate that prints
-session/     shared core — locate ~/.claude/projects, parse JSONL into a typed model, path resolution
-sessions/    navigational layer — sessions.db (SQLite + dual FTS5), search / ls / open / tag / reindex
+clyde/      thin umbrella bin — top-level CLI, dispatch, bootstrap, doctor (the only entry binary)
+common/     the clyde-common surface — Globals passed from clyde down to each tool's run()
+session/    shared core — locate ~/.claude/projects, parse JSONL, path resolution
+sessions/   navigational layer — sessions.db (SQLite + dual FTS5): search / ls / open / tag / reindex
+report/     was claude-report     — JSON/markdown session reporting (lib + compat bin `cr`)
+cost/       was claude-cost-usage  — cost/usage + statusline installer (lib + compat bin `ccu`)
+permit/     was claude-permit      — permission hygiene + PreToolUse hook (lib + compat bin `claude-permit`)
+pricing/    was claude-pricing     — pricing data, JSONL parsing, cost math (lib `claude_pricing`, no bin)
 ```
 
-`session` is the integration seam; `cr` (claude-report), `ccu` (cost), and `claude-permit`
-migrate in later as sibling lib crates over the same core (separate design doc).
-
-## Usage
+## Command surface
 
 ```
-clyde sessions search terraform marquee      # full-text, ranked (title/tags first, then body)
-clyde sessions ls --repo loopr --since 7d    # metadata filters: repo / date / tag / model
-clyde sessions open <id-or-prefix>           # prints the `claude --resume <uuid>` line
-clyde sessions tag <id> terraform s3         # set search tags (space-separated)
-clyde sessions reindex                       # incremental, mtime-skip
-clyde sessions stage --dormant-after 7d      # durably copy dormant transcripts before the TTL reaps them
-clyde sessions serve                          # MCP server (stdio) — spawned by a host, not run by hand
+clyde sessions <search|ls|open|tag|reindex|stage|enrich|doctor|serve>   # catalog + MCP server
+clyde report   <collect|render>                                          # was `cr`
+clyde cost     <today|yesterday|daily|weekly|monthly|session|statusline|pricing>   # was `ccu`
+clyde permit   <log|audit|suggest|report|clean|check|install|apply>      # was `claude-permit`
+clyde bootstrap                                                          # migrate + repoint integrations
+clyde doctor                                                             # health-check the migration
 ```
 
-Search / ls / open lazily reindex first (incremental, cheap) so the catalog is fresh; pass
-`--no-reindex` to skip. Output is human-readable on a terminal and JSON when piped.
+`clyde` owns one common global, `--log-level`, and passes it down to each tool.
+
+## Compat shims
+
+The old binary names survive as behavior-exact compat shims during the transition: `cr`, `ccu`,
+and `claude-permit` each parse their tool's `Parser` wrapper and call its `run()` in-process, so
+they behave identically to the pre-merge tools and don't depend on `clyde` being on PATH. There is
+no `klod` shim — `clyde bootstrap` repoints the one machine consumer (the enrich timer).
+
+## Install
+
+```
+./install.sh        # installs clyde + the three shims (cr, ccu, claude-permit)
+clyde bootstrap     # migrate config/data under one clyde home; repoint statusline/hook/timer
+clyde doctor        # verify every integration now resolves to clyde
+```
+
+`bootstrap` is idempotent and fail-safe: it migrates data/config first (including a WAL-safe move
+of the permit events DB and a merge of the ccu/cr pricing overrides), then repoints the live
+integrations (ccu statusline, permit hook in global + local `settings.json`, and the enrich
+systemd user timer). Every file is backed up to `<path>.clyde.bak` before it is rewritten.
+`doctor` exits non-zero while any integration still resolves to an old binary name or any tool's
+state still lives only at a legacy path.
+
+## Data layout (XDG)
+
+Everything lives under one clyde home:
+
+```
+$XDG_DATA_HOME/clyde/sessions.db     # the session index (rebuildable: delete + reindex)
+$XDG_DATA_HOME/clyde/events.db       # permit events (moved from claude-permit, WAL-safe)
+$XDG_DATA_HOME/clyde/staged/         # durable transcript copies (TTL insurance, via `stage`)
+$XDG_CONFIG_HOME/clyde/permit.yml    # permit config (was claude-permit/)
+$XDG_CONFIG_HOME/clyde/cost.yml      # cost config (was ccu/ccu.yml)
+$XDG_CONFIG_HOME/clyde/pricing.json  # merged pricing override (was ccu/ + cr/)
+```
+
+Config readers prefer the clyde location and fall back to the legacy path until `bootstrap`
+migrates, so a tool invoked before bootstrap still finds its existing state. Raw transcripts are
+never copied here; they stay Claude-owned and are referenced.
 
 ## MCP server
 
 `clyde sessions serve` exposes the catalog's read paths to a Claude agent over the Model Context
-Protocol (stdio, JSON-RPC), so an agent can find past sessions conversationally instead of
-shelling out to the CLI. It is **spawned by the MCP host** (e.g. Claude Code), not run by hand;
-stdout is reserved for protocol frames (logs go to `clyde.log`). It does at most one incremental
-reindex at startup (`--no-reindex` to skip); queries never reindex and never mutate.
-
-Tools (read-only, metadata only — no transcript content in v1):
-
-```
-sessions_search   ranked full-text search (title/tags/summary first, then body)
-sessions_ls       filtered listing by repo / since / tag / model
-session_open      resolve an id or unique prefix → resumeable | staged | unavailable
-```
-
-Register it with Claude Code (`-s user` for all projects, or `-s project` to scope to one repo):
+Protocol (stdio, JSON-RPC). It is spawned by the MCP host, not run by hand; stdout is reserved for
+protocol frames. Register it:
 
 ```
 claude mcp add clyde -s user -- clyde sessions serve
 ```
 
-## Data layout (XDG)
-
-```
-$XDG_DATA_HOME/clyde/sessions.db    # the index (rebuildable from JSONL: delete + reindex)
-$XDG_DATA_HOME/clyde/staged/        # durable transcript copies (TTL insurance, via `stage`)
-$XDG_DATA_HOME/clyde/logs/clyde.log
-```
-
-Raw transcripts are never copied here; they stay Claude-owned and are referenced. A session whose
-transcript Claude has reaped (30-day TTL) is flagged `archived`.
-
 ## Design
 
-`docs/design/2026-06-21-session-knowledge-catalog.md` (and its implementation notes).
-The MCP serve layer is `docs/design/2026-06-22-clyde-sessions-mcp.md`.
-The knowledge layer (distilling dormant sessions into oracle-served knowledge atoms) is a
-deferred, downstream concern living in second-brain — clyde produces, second-brain consumes.
+`docs/design/2026-06-24-clyde-umbrella-cli.md` (and its implementation notes). The session catalog
+and MCP layers predate the umbrella: `docs/design/2026-06-21-session-knowledge-catalog.md` and
+`docs/design/2026-06-22-klod-sessions-mcp.md`.
 
 ## CI
 
 ```
-otto ci      # lint + bloat + check (clippy -D warnings, fmt) + test
+otto ci      # lint + bloat + check (clippy -D warnings, fmt) + test, across the whole workspace
 ```
