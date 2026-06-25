@@ -3,6 +3,22 @@
 use super::*;
 
 #[test]
+fn ccu_log_level_round_trips_through_globals() {
+    // The two-type seam: a common global parsed on the standalone `ccu` wrapper must reconstruct
+    // into common::Globals via globals(), so the shim and `clyde cost` drive run() identically.
+    use clap::Parser;
+    let cli = crate::cli::CostCli::parse_from(["ccu", "--log-level", "debug", "today"]);
+    assert_eq!(cli.globals().log_level.as_deref(), Some("debug"));
+}
+
+#[test]
+fn ccu_without_log_level_yields_none() {
+    use clap::Parser;
+    let cli = crate::cli::CostCli::parse_from(["ccu", "today"]);
+    assert_eq!(cli.globals().log_level, None);
+}
+
+#[test]
 fn test_subtract_months_same_year() {
     let date = NaiveDate::from_ymd_opt(2026, 6, 1).expect("valid date");
     let result = subtract_months(date, 3);

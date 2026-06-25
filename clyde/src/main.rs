@@ -19,6 +19,11 @@ use log::{LevelFilter, warn};
 use cli::{
     Cli, Command, EnrichArgs, LsArgs, OpenArgs, ReindexArgs, SearchArgs, ServeArgs, SessionsCommand, StageArgs, TagArgs,
 };
+
+/// Default log level for the clyde-native `sessions` subtree when `--log-level` is unset. The
+/// absorbed tools keep their own defaults (via `Globals::log_level == None`), so this applies
+/// only to the sessions arm.
+const DEFAULT_LOG_LEVEL: &str = "info";
 use sessions::{
     AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit,
     ServeOpts, SessionRecord, StageStats,
@@ -32,13 +37,17 @@ fn main() -> Result<()> {
     let log_path = session::paths::data_root().join("logs").join("clyde.log");
     let after_help = format!("Logs are written to: {}", log_path.display());
     let cli = Cli::from_arg_matches(&Cli::command().after_help(after_help).get_matches())?;
-    // Serve mode keeps stdout reserved for JSON-RPC frames: rmcp/tokio emit via `tracing`, so
-    // route logging through a file-target tracing subscriber (which also bridges `log`) instead
-    // of env_logger. Every other subcommand logs through env_logger as before.
-    if is_serve(&cli) {
-        setup_serve_tracing(&cli.log_level, &log_path)?;
-    } else {
-        setup_logging(&cli.log_level, &log_path)?;
+    // The absorbed tools (report/cost/permit) own their own logging, output, and exit code, so
+    // clyde must NOT install a logger for those arms — env_logger can only be initialized once
+    // per process. Only the clyde-native `sessions` subtree sets up clyde's logger here.
+    let level = cli.log_level.clone().unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string());
+    match &cli.command {
+        Command::Report(_) | Command::Cost(_) | Command::Permit(_) => {}
+        // Serve mode keeps stdout reserved for JSON-RPC frames: rmcp/tokio emit via `tracing`, so
+        // route logging through a file-target tracing subscriber (which also bridges `log`)
+        // instead of env_logger. Every other sessions subcommand logs through env_logger.
+        Command::Sessions { .. } if is_serve(&cli) => setup_serve_tracing(&level, &log_path)?,
+        Command::Sessions { .. } => setup_logging(&level, &log_path)?,
     }
     run(cli)
 }
@@ -70,10 +79,26 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
+/// Map an absorbed tool's `run() -> Result<i32>` onto a process exit code, mirroring each shim's
+/// `main`: a propagated error prints its debug chain to stderr and exits 1.
+fn dispatch_tool(result: Result<i32>) -> ! {
+    let code = result.unwrap_or_else(|e| {
+        eprintln!("{e:?}");
+        1
+    });
+    std::process::exit(code);
+}
+
 fn run(cli: Cli) -> Result<()> {
+    let globals = cli.globals();
     let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
 
     match cli.command {
+        // Absorbed tools own their exit code and final printing; map it to process::exit, exactly
+        // as their standalone shims do.
+        Command::Report(args) => dispatch_tool(report::run(args, globals)),
+        Command::Cost(args) => dispatch_tool(cost::run(args, globals)),
+        Command::Permit(args) => dispatch_tool(permit::run(args, globals)),
         // Serve owns its own catalog handle (inside the async server) and needs a Tokio runtime,
         // so it is handled before opening the synchronous `Db` the other arms share.
         Command::Sessions {

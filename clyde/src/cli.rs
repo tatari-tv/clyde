@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(
     name = "clyde",
     about = "Catalog, search, and resume Claude Code sessions",
@@ -12,9 +12,11 @@ use clap::{Parser, Subcommand};
     arg_required_else_help = true,
 )]
 pub struct Cli {
-    /// Log level (error, warn, info, debug, trace).
-    #[arg(short = 'l', long, global = true, default_value = "info")]
-    pub log_level: String,
+    /// Log level (error, warn, info, debug, trace). The single common global; clyde passes it
+    /// down to each absorbed tool. When unset, the `sessions` subtree defaults to `info` and the
+    /// absorbed tools fall back to their own prior defaults.
+    #[arg(short = 'l', long, global = true)]
+    pub log_level: Option<String>,
 
     /// Override the sessions.db path (default: $XDG_DATA_HOME/clyde/sessions.db).
     #[arg(long, global = true)]
@@ -24,13 +26,28 @@ pub struct Cli {
     pub command: Command,
 }
 
-#[derive(Subcommand, Debug)]
+impl Cli {
+    /// The common globals clyde passes down to each absorbed tool's `run(args, globals)`.
+    pub fn globals(&self) -> common::Globals {
+        common::Globals {
+            log_level: self.log_level.clone(),
+        }
+    }
+}
+
+#[derive(Subcommand)]
 pub enum Command {
     /// Catalog and search Claude Code sessions.
     Sessions {
         #[command(subcommand)]
         command: SessionsCommand,
     },
+    /// Scan Claude Code session JSONL files and emit a per-host JSON report (was `cr`).
+    Report(report::ReportArgs),
+    /// Track Claude Code session costs and usage; install the statusline (was `ccu`).
+    Cost(cost::CostArgs),
+    /// Manage Claude Code permission hygiene; the PreToolUse hook entry (was `claude-permit`).
+    Permit(permit::PermitArgs),
 }
 
 #[derive(Subcommand, Debug)]

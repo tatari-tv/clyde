@@ -116,3 +116,39 @@ Running record of how the implementation diverges from or interprets
 ### Open questions
 - None blocking. (Process note: of the two delegated forks, both happened to convert `cost`;
   `permit` was converted directly. No correctness impact — the merged workspace is green.)
+
+## Phase 3: Wire the clyde umbrella
+
+### Design decisions
+- clyde's top-level `--log-level` changed from `String` (default "info") to `Option<String>`
+  (mirrors sb). Unset = `None` flows to `Globals`, so the absorbed tools keep their own prior
+  defaults (parity-preserving: `clyde cost` with no level behaves like `ccu` with no level).
+  The clyde-native `sessions` subtree defaults to `info` at the logging-setup site
+  (`DEFAULT_LOG_LEVEL`), preserving its prior behavior.
+- Logging is set up per-arm in `main()`: the `Report`/`Cost`/`Permit` arms install NO clyde
+  logger (each tool's `run()` installs its own — env_logger can only init once per process); the
+  `sessions` arm keeps the existing env_logger / serve-tracing split. Exactly one logger init per
+  invocation.
+- The absorbed-tool arms call `dispatch_tool(tool::run(args, globals))` which maps `Result<i32>`
+  to `process::exit`, exactly mirroring each standalone shim's `main`. The `sessions` arms keep
+  returning `Result<()>` to `main` as before.
+
+### Deviations
+- Dropped the `Debug` derive from clyde's `Cli` and `Command` types. The new `Cost`/`Permit`
+  variant payloads (`CostArgs`/`PermitArgs`) don't derive `Debug` (their `Command` enums never
+  did — ccu used `std::mem::discriminant`), so keeping `Debug` on clyde's `Command` would have
+  cascaded `Debug` derives across both tool crates. Nothing in clyde relies on `Cli`/`Command`
+  being `Debug`. Minimal, lower-risk than the cascade.
+
+### Tradeoffs
+- Considered keeping clyde's `--log-level` as `String` default "info" (less churn) vs.
+  `Option<String>` (parity with the tools' own defaults). Chose `Option` for behavior parity and
+  to mirror sb's umbrella, defaulting to "info" only for the sessions subtree at the use site.
+
+### Open questions
+- The design lists an "Implementation Audit after Phase 3 builds green" (`/architect` Mode 2)
+  to confirm each tool's exit/output contract is byte-preserved. That is an external review step;
+  it has not been run as part of this automated execution. Smoke checks done here: `cr`/`ccu`
+  `--help`/`--version` render under the old names, `clyde report|cost|permit --help` render under
+  `clyde <tool>`, the permit `{}`-on-failure hook contract holds (garbage stdin → `{}`, exit 0),
+  and the `ccu --log-level debug` globals round-trip is covered by a unit test.
