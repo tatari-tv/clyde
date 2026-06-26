@@ -1,10 +1,14 @@
 name: ci
 
-# Repo CI for the clyde workspace: delegates to the org-standard reusable, which runs
-# `otto ci` (whitespace + clippy + fmt + test) on a prepared Rust toolchain. clyde has
-# no private git deps - every workspace member is an in-workspace path crate - so no
-# fetch token is wired. Push-only on every branch (PR checks still surface via the
-# branch push), which avoids the double run a separate pull_request trigger would add.
+# Rust CI for the clyde workspace. Runs `otto ci` (whitespace + clippy + fmt + test)
+# INSIDE the org builder-base image, which ships otto + whitespace + sccache + the
+# Rust toolchain - so GitHub CI == local `otto ci`.
+#
+# Why not the rust-ci reusable: it runs on a bare runner with only `setup-otto`, so it
+# has no `whitespace` binary and a standard otto ci lint task fails ("whitespace:
+# command not found"). The builder-base image is the org's answer to that (see
+# marquee's ci.yml). clyde has no private git deps - every workspace member is an
+# in-workspace path crate - so no private-dep token is wired.
 
 on:
   push:
@@ -14,8 +18,72 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  RUST_IMG_TAG: "1.96"
+  CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
-    name: rust-ci
-    uses: tatari-tv/github-actions/.github/workflows/rust-ci.yml@v5
+  # Mint an ECR token so the container job can pull the builder-base image.
+  # NOTE: do NOT add-mask the token - masked values are dropped from job outputs,
+  # which would leave the container credential empty.
+  ecr-auth:
+    name: ECR Auth
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.ecr.outputs.token }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        with:
+          role-to-assume: ${{ secrets.CI_AWS_IAM_ROLE }}
+          aws-region: us-east-1
+      - name: Get ECR auth token
+        id: ecr
+        shell: bash
+        run: echo "token=$(aws ecr get-login-password --region us-east-1)" >> "$GITHUB_OUTPUT"
+
+  build-and-test:
+    name: Build and Test
+    needs: ecr-auth
+    runs-on: ubuntu-latest
+    container:
+      image: 878256633362.dkr.ecr.us-east-1.amazonaws.com/base/rust:1.96-builder-base
+      credentials:
+        username: AWS
+        password: ${{ needs.ecr-auth.outputs.token }}
+    env:
+      # Override the image's SCCACHE_DIR=/sccache so actions/cache can persist it.
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+    steps:
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends git
+      - uses: actions/checkout@v6
+      # The image runs as a different uid than the checkout.
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # The builder-base image ships cargo/rustc but not clippy/rustfmt, which
+      # `otto check` needs. rustup is present, so add them.
+      - name: Add clippy + rustfmt
+        run: rustup component add clippy rustfmt
+      - name: Cache sccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.sccache
+          key: sccache-${{ env.RUST_IMG_TAG }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            sccache-${{ env.RUST_IMG_TAG }}-
+      - name: Cache cargo registry and git
+        uses: actions/cache@v5
+        with:
+          path: |
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+          key: cargo-${{ env.RUST_IMG_TAG }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ env.RUST_IMG_TAG }}-
+      - name: CI (otto)
+        run: otto ci
+      - name: Show sccache stats
+        run: sccache --show-stats
