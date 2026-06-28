@@ -29,7 +29,7 @@ pub fn run_install(settings_path: &Path, yes: bool) -> Result<bool> {
     // Check if hook already exists
     if has_permit_hook(&root) {
         println!(
-            "{} claude-permit hook already installed in {}",
+            "{} permit hook already installed in {}",
             "OK".green().bold(),
             settings_path.display()
         );
@@ -37,7 +37,10 @@ pub fn run_install(settings_path: &Path, yes: bool) -> Result<bool> {
     }
 
     if !yes {
-        println!("Would add claude-permit PreToolUse hook to {}", settings_path.display());
+        println!(
+            "Would add clyde permit log PreToolUse hook to {}",
+            settings_path.display()
+        );
         println!("Pass --yes to apply.");
         return Ok(false);
     }
@@ -50,7 +53,7 @@ pub fn run_install(settings_path: &Path, yes: bool) -> Result<bool> {
     std::fs::write(settings_path, format!("{output}\n")).context("Failed to write settings file")?;
 
     println!(
-        "{} Installed claude-permit hook in {}",
+        "{} Installed clyde permit log hook in {}",
         "OK".green().bold(),
         settings_path.display()
     );

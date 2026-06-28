@@ -45,7 +45,7 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     };
 
     if let ResolvedCommand::Merge(_) = config.command {
-        eprintln!("cr: merge is not implemented in this release");
+        eprintln!("merge is not implemented in this release");
         return Ok(2);
     }
 
@@ -53,13 +53,13 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
         && which::which("jq").is_err()
     {
         eprintln!(
-            "cr collect: jq is required to query the JSON report output but was not found on PATH.\n\
+            "jq is required to query the JSON report output but was not found on PATH.\n\
              Install: brew install jq  (macOS) | apt install jq  (Debian/Ubuntu) | dnf install jq  (Fedora)"
         );
         return Ok(2);
     }
 
-    let result = run_with_config(&config).context("cr failed")?;
+    let result = run_with_config(&config).context("report failed")?;
     println!(
         "wrote {} sessions to {}",
         result.sessions_emitted,
@@ -102,7 +102,7 @@ pub(crate) fn run_with_pricing(config: &Config, pricing: &Pricing) -> Result<Run
         ResolvedCommand::Collect(cfg) => run_collect(cfg, pricing),
         ResolvedCommand::Render(cfg) => render::run(cfg),
         ResolvedCommand::Merge(_) => {
-            bail!("`cr merge` is not implemented in this release");
+            bail!("`report merge` is not implemented in this release");
         }
     }
 }
