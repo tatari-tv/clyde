@@ -48,6 +48,21 @@ pub enum MatchSource {
     Body,
 }
 
+/// Result ordering for `search`. Default is relevance (BM25).
+///
+/// No clap derive — the `sessions` crate stays clap-free (shell/core split). The CLI defines its
+/// own `ValueEnum` and maps it into this domain enum via `From`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortBy {
+    /// BM25 score primary, recency (modified DESC) as tiebreak. High-signal hits remain tiered
+    /// above body hits.
+    #[default]
+    Relevance,
+    /// modified DESC primary, BM25 score as tiebreak. Tiering is dissolved: the merged set is
+    /// ordered globally by recency.
+    Recency,
+}
+
 /// A ranked search result.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "kebab-case")]

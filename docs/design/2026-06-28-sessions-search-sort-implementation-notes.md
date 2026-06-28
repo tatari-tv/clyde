@@ -19,3 +19,28 @@
 ### Open questions
 
 - None.
+
+## Phase 2: Sort plumbing + ordering logic
+
+### Design decisions
+
+- Added the domain enum `SortBy { Relevance (default), Recency }` to `sessions/src/model.rs` with no clap derive, keeping the `sessions` crate clap-free per the shell/core split; exported it from `sessions/src/lib.rs` alongside the other model types.
+- Threaded `sort: SortBy` as the trailing param through `Db::search` and `search_table` (`sessions/src/db.rs`); added `sort` to the `Db::search` entry `debug!`.
+- The per-table `ORDER BY` is selected in `search_table` from a fixed `match sort {}` of two compile-time string literals (`"score, s.modified DESC, s.id DESC"` / `"s.modified DESC, score, s.id DESC"`), interpolated into the SQL via `{order_by}` - no user input ever reaches the SQL string; query/flags/limit still bind via `params![]`. `fts_table` stays a hardcoded identifier.
+- Recency global re-sort (`Db::search`): after the unchanged high-signal-then-body dedup merge, a `match sort {}` re-sorts the merged `Vec<SearchHit>` by `(record.modified DESC, score ASC via f64::total_cmp, record.session_id DESC)` then truncates; relevance keeps the tiered concatenation (no global re-sort) then truncates. `f64::total_cmp` gives a NaN-safe total order on the BM25 score.
+- Wired both production callers to the relevance default: `cmd_search` in `clyde/src/main.rs` passes `sessions::SortBy::Relevance` (the CLI flag is Phase 3), and the `sessions_search` MCP tool in `sessions/src/mcp.rs` passes `crate::model::SortBy::Relevance` explicitly (MCP stays relevance-only by decision; tool schema unchanged).
+- Updated the `// Bound each table query…` comment in `Db::search` to record the recency LIMIT-soundness rationale: each table's per-table `ORDER BY s.modified DESC` makes it contribute its most-recent `limit`, so the union is a superset of the true global most-recent `limit`, and the post-merge re-sort + truncate cannot drop a row that belongs in the final window.
+- Updated in-crate test call sites (`sessions/src/db/tests.rs`, `sessions/src/index/tests.rs`) mechanically to pass `SortBy::Relevance`; `search_ranks_high_signal_above_body` still passes under the relevance default.
+
+### Deviations
+
+- None. Phase 2 implements the spec as written; behavioral tie-break / recency-order / limit-soundness tests and the CLI `--sort` flag are deferred to Phase 3 per the plan.
+
+### Tradeoffs
+
+- Comparator written as an inline `hits.sort_by(...)` closure rather than extracting a named helper - the three-key comparator is small, single-use, and reads clearly at the one call site; a free function would add indirection without reuse.
+- Branched the merge post-processing on `sort` with an empty `Relevance` arm (a no-op) rather than an `if let SortBy::Recency` - the explicit `match` documents that relevance deliberately keeps the tiered order and will fail to compile if a future variant is added unmapped.
+
+### Open questions
+
+- None.

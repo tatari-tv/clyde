@@ -76,7 +76,7 @@ fn update_preserves_tags_but_refreshes_parse_fields() {
     assert_eq!(rec.title.as_deref(), Some("Refined title"), "parse field refreshed");
     // Preserved tag is still searchable as a high-signal field after the re-upsert.
     assert!(
-        db.search("terraform", None, false)
+        db.search("terraform", None, false, SortBy::Relevance)
             .unwrap()
             .iter()
             .any(|h| h.matched == MatchSource::HighSignal)
@@ -94,7 +94,7 @@ fn search_ranks_high_signal_above_body() {
     b.body = "we discussed the Marquee deployment at length".into();
     db.upsert_session(&b, "desk").unwrap();
 
-    let hits = db.search("Marquee", None, false).unwrap();
+    let hits = db.search("Marquee", None, false, SortBy::Relevance).unwrap();
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].record.session_id, UUID_A, "title match ranks first");
     assert_eq!(hits[0].matched, MatchSource::HighSignal);
@@ -107,7 +107,7 @@ fn search_finds_body_only_terms() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
     // "us-east-1" appears only in the body, never the title.
-    let hits = db.search("us-east-1", None, false).unwrap();
+    let hits = db.search("us-east-1", None, false, SortBy::Relevance).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].matched, MatchSource::Body);
 }
@@ -117,8 +117,8 @@ fn search_is_injection_safe_and_empty_query_returns_nothing() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
     // FTS operators in user input must not blow up; quoting neutralizes them.
-    assert!(db.search("\" OR 1=1 --", None, false).is_ok());
-    assert!(db.search("   ", None, false).unwrap().is_empty());
+    assert!(db.search("\" OR 1=1 --", None, false, SortBy::Relevance).is_ok());
+    assert!(db.search("   ", None, false, SortBy::Relevance).unwrap().is_empty());
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn set_tags_updates_and_is_searchable() {
     assert_eq!(rec.tags, vec!["terraform".to_string(), "s3".to_string()]);
 
     // Tag is a high-signal field, so a tag term ranks as HighSignal.
-    let hits = db.search("terraform", None, false).unwrap();
+    let hits = db.search("terraform", None, false, SortBy::Relevance).unwrap();
     assert!(hits.iter().any(|h| h.matched == MatchSource::HighSignal));
 
     // And the ls tag filter finds it.

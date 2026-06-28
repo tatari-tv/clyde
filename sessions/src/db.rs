@@ -17,7 +17,7 @@ use log::{debug, trace, warn};
 use rusqlite::{Connection, OptionalExtension, params};
 use session::ParsedSession;
 
-use crate::model::{EnrichSummary, Filters, MatchSource, SearchHit, SessionRecord};
+use crate::model::{EnrichSummary, Filters, MatchSource, SearchHit, SessionRecord, SortBy};
 
 /// Bumped whenever the schema changes; drives `PRAGMA user_version` migrations.
 /// v2 added `staged_path` (Phase 1.5 transcript staging).
@@ -560,8 +560,14 @@ impl Db {
 
     /// Full-text search. Ranks high-signal (title/tags/summary) matches first, then appends
     /// body-only matches not already surfaced. `limit` caps the combined result.
-    pub fn search(&self, query: &str, limit: Option<usize>, include_archived: bool) -> Result<Vec<SearchHit>> {
-        debug!("Db::search: query={:?} limit={:?}", query, limit);
+    pub fn search(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+        include_archived: bool,
+        sort: SortBy,
+    ) -> Result<Vec<SearchHit>> {
+        debug!("Db::search: query={:?} limit={:?} sort={:?}", query, limit, sort);
         let Some(fts) = fts_query(query) else {
             return Ok(Vec::new());
         };
@@ -569,13 +575,50 @@ impl Db {
 
         // Bound each table query with the combined `limit` so the intermediate result set never
         // grows past what the final `truncate` keeps — neither table can contribute more than
-        // `limit` rows to the merge, so the SQL `LIMIT` is sound and caps query work/memory.
-        let high = self.search_table("sessions_fts", &fts, include_archived, MatchSource::HighSignal, limit)?;
+        // `limit` rows to the merge, so the SQL `LIMIT` is sound and caps query work/memory. In
+        // recency mode this LIMIT is sound only because each table's per-table `ORDER BY
+        // s.modified DESC` makes it contribute its most-recent `limit` rows: the union of each
+        // table's most-recent-`limit` is therefore a superset of the true global most-recent
+        // `limit`, so the post-merge global re-sort + `truncate(limit)` below cannot drop a row
+        // that belongs in the final window.
+        let high = self.search_table(
+            "sessions_fts",
+            &fts,
+            include_archived,
+            MatchSource::HighSignal,
+            limit,
+            sort,
+        )?;
         let mut seen: std::collections::HashSet<String> = high.iter().map(|h| h.record.session_id.clone()).collect();
         let mut hits = high;
-        for hit in self.search_table("sessions_body_fts", &fts, include_archived, MatchSource::Body, limit)? {
+        for hit in self.search_table(
+            "sessions_body_fts",
+            &fts,
+            include_archived,
+            MatchSource::Body,
+            limit,
+            sort,
+        )? {
             if seen.insert(hit.record.session_id.clone()) {
                 hits.push(hit);
+            }
+        }
+        match sort {
+            // Relevance keeps the tiered concatenation (high-signal hits first, then deduped body
+            // hits), each table already ordered by `score, modified DESC, id DESC` in SQL — no
+            // global re-sort.
+            SortBy::Relevance => {}
+            // Recency dissolves the tiering: re-sort the merged, deduped hits globally by
+            // (modified DESC, score ASC, session_id DESC). `f64::total_cmp` gives a total order on
+            // the score (NaN-safe). `session_id` is the stable tertiary key matching the SQL clause.
+            SortBy::Recency => {
+                hits.sort_by(|a, b| {
+                    b.record
+                        .modified
+                        .cmp(&a.record.modified)
+                        .then_with(|| a.score.total_cmp(&b.score))
+                        .then_with(|| b.record.session_id.cmp(&a.record.session_id))
+                });
             }
         }
         hits.truncate(limit);
@@ -589,14 +632,20 @@ impl Db {
         include_archived: bool,
         matched: MatchSource,
         limit: usize,
+        sort: SortBy,
     ) -> Result<Vec<SearchHit>> {
         // `fts_table` is a hardcoded identifier (never user input), so interpolating it is safe;
-        // the user query is bound via params.
+        // the user query is bound via params. The `ORDER BY` clause is chosen from a fixed `match`
+        // of two compile-time string literals — no user input ever reaches the SQL string.
+        let order_by = match sort {
+            SortBy::Relevance => "score, s.modified DESC, s.id DESC",
+            SortBy::Recency => "s.modified DESC, score, s.id DESC",
+        };
         let sql = format!(
             "SELECT {COLS}, bm25({fts_table}) AS score FROM {fts_table} \
              JOIN sessions s ON s.id = {fts_table}.rowid \
              WHERE {fts_table} MATCH ?1 AND (?2 = 1 OR s.archived = 0) \
-             ORDER BY score LIMIT ?3"
+             ORDER BY {order_by} LIMIT ?3"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let hits = stmt

@@ -34,8 +34,18 @@ fn reindex_ingests_then_skips_unchanged() {
     assert_eq!(db.count().unwrap(), 1);
 
     // Search reaches the indexed record by title and by body-only term.
-    assert_eq!(db.search("terraform", None, false).unwrap().len(), 1);
-    assert_eq!(db.search("us-east-1", None, false).unwrap().len(), 1);
+    assert_eq!(
+        db.search("terraform", None, false, crate::SortBy::Relevance)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        db.search("us-east-1", None, false, crate::SortBy::Relevance)
+            .unwrap()
+            .len(),
+        1
+    );
 
     let rec = db.get(UUID_A).unwrap().unwrap();
     assert_eq!(rec.title.as_deref(), Some("Terraform Marquee bucket"));

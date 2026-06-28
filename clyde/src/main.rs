@@ -151,7 +151,7 @@ fn cmd_serve(db_path: &std::path::Path, args: ServeArgs) -> Result<()> {
 fn cmd_search(db: &Db, args: SearchArgs) -> Result<()> {
     lazy_reindex(db, args.no_reindex);
     let query = args.query.join(" ");
-    let hits = db.search(&query, args.limit, args.include_archived)?;
+    let hits = db.search(&query, args.limit, args.include_archived, sessions::SortBy::Relevance)?;
     print_hits(&hits);
     Ok(())
 }
