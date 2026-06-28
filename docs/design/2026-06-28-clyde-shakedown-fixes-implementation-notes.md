@@ -173,3 +173,45 @@
 ### Open questions
 
 - None.
+
+## Phase 8: `bootstrap --dry-run`
+
+### Design decisions
+
+- `BootstrapArgs.dry_run: bool` (`--dry-run`) — `clyde/src/bootstrap.rs:BootstrapArgs` — added with a `///` doc-comment that explicitly records the carve-out: `bootstrap` is DEFAULT-destructive (no opt-in gate), so it is the documented exception to the "no `--dry-run` on opt-in destructive flags" rule.
+- Gate wraps `run()`, not just `bootstrap()` — `clyde/src/bootstrap.rs:run` — the two `systemctl` shell-outs (`daemon_reload()`, `start_enrich_timer()`) live in the OUTER `run()`, outside the hermetic `bootstrap()` core. The `if !args.dry_run && ...` guard around them is the load-bearing fix the design review flagged: a gate threaded only into `bootstrap()` would let those two writes escape.
+- Threaded `dry_run` through `bootstrap()` into every `migrate_*`/`repoint_*` — each function keeps its existing no-op/would-act decision logic (so the reported plan is faithful to a live run) but returns `Ok(true)` BEFORE performing the fs/DB/symlink mutation when `dry_run` is set. The `step!` macro records the same label set, so the dry-run plan and the live run's `completed` list are identical by construction.
+- `migrate_events_db(paths, dry_run)` — the critical one — returns `Ok(true)` from existence checks alone and NEVER opens the DB under dry_run. The live path runs `PRAGMA wal_checkpoint(TRUNCATE)` (a WRITE to the user's events DB) before the gated rename; dry-run must not open it in any writing mode, so the early return sits above the `Connection::open` + checkpoint.
+- `migrate_dir(legacy, dest, dry_run)` — both mutation branches gated: the whole-dir rename branch returns `Ok(true)` before `create_dir_all`/`rename`; the merge-into-existing branch does a read-only directory scan to compute whether any non-colliding entry WOULD move, returning that bool without creating the dest or renaming.
+- `repoint_systemd(paths, install_timer, dry_run)` — short-circuits under dry_run at the top: if legacy units are present it returns `Ok(true)` (a live run would rewrite service+timer, move the env file, repoint the enable symlink, remove the legacy units); the `--install-timer` no-legacy branch returns `Ok(true)` before `install_clyde_timer`. Because of this short-circuit, `move_env_file`, `repoint_wants_symlink`, and `install_clyde_timer` are unreachable under dry_run and need no `dry_run` param — the gating stays centralized in the one function, which is easier to verify exhaustively.
+- Dry-run output in `run()` prints an ordered `• would: <step>` list plus the two `• would: systemctl ...` lines (only when the systemd step would change), then a "no files were moved..." footer; a `Ok(false)` plan prints the "nothing to migrate" line. A planning failure surfaces as `✗ would fail at: <step>` and a non-zero exit, mirroring the live failure report.
+
+### Mutation sites gated (full inventory)
+
+- `migrate_dir` (sessions data dir + config dir) — both rename and merge branches.
+- `migrate_events_db` — WAL checkpoint AND rename (DB never opened under dry_run).
+- `migrate_permit_config` → `migrate_file` / `migrate_legacy_permit_config`.
+- `migrate_file` (cost config) — rename + backup.
+- `merge_pricing_overrides` — create_dir_all + backup + atomic write.
+- `repoint_statusline` — backup + atomic write + perms restore.
+- `repoint_hook` ×2 (global + local settings) — backup + atomic write.
+- `repoint_systemd` incl. `move_env_file`, `repoint_wants_symlink` (symlink + create_dir_all), `install_clyde_timer` — all under the single dry_run short-circuit.
+- `daemon_reload()` and `start_enrich_timer()` (the two `systemctl` shell-outs) — gated in `run()`, never invoked under dry_run.
+
+### How the zero-write test verifies it
+
+`dry_run_performs_zero_mutations_and_lists_planned_steps` (`clyde/src/bootstrap/tests.rs`) seeds a temp `$HOME`/XDG fixture exercising EVERY gated site (data + config dirs, events DB with a `-wal` sidecar, permit/cost config, cr pricing, statusline, global+local hooks, systemd service+timer+enable-symlink+env-file). It takes a recursive `snapshot()` (path, kind file/dir/symlink, len, mtime — via `symlink_metadata`, never following links) BEFORE and AFTER a `bootstrap(&paths, dry_run=true)`, and asserts `before == after` — proving no path was created, moved, removed, or even touched. It separately asserts: the legacy events DB row count is unchanged (the load-bearing checkpoint guard — a `wal_checkpoint(TRUNCATE)` would have rewritten the file), no clyde DB/unit/timer/enable-symlink was produced, no `.clyde.bak` backups exist, and the legacy hook/statusline still contain their pre-migration strings. Finally it asserts the returned plan enumerates all ten expected steps. The systemctl shell-outs can't run in CI; the test confirms they are skipped by never observing any systemd-side write and by relying on the `run()` gate (the hermetic core never shells out, and `run()` guards the shell-outs behind `!args.dry_run`).
+
+### Deviations
+
+- None. `move_env_file`/`repoint_wants_symlink`/`install_clyde_timer` did NOT get a `dry_run` parameter despite being in the inventory, because `repoint_systemd`'s dry_run short-circuit makes them unreachable under dry_run — gating them too would be dead code. The mutation they perform is still fully gated (by their unreachability), which the zero-write test confirms.
+
+### Tradeoffs
+
+- Reuse `Outcome.completed` as the dry-run plan vs a separate `Vec<PlannedAction>` — chose reuse. The labels already name each step in human terms and are produced by the identical control flow as a live run, so the plan is provably the live step set. A parallel plan type would risk drift between "what dry-run says" and "what a real run does," which is exactly the false-safe risk the review called out.
+- Centralized short-circuit in `repoint_systemd` vs threading `dry_run` into its three helpers — chose the single short-circuit. It keeps the systemd gating verifiable in one place and avoids dead `dry_run` branches in helpers that can never be reached under dry_run.
+- mtime-inclusive snapshot vs path/len only — chose to include mtime so a same-size in-place rewrite (e.g. an atomic write landing identical bytes) would still register as a mutation. The cost is that any incidental DB-open settling must happen before the baseline snapshot (handled by reading the row count first), which the test documents.
+
+### Open questions
+
+- None.

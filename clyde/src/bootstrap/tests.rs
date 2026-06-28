@@ -45,7 +45,7 @@ fn events_db_move_preserves_rows_and_handles_sidecars() {
         fs::write(&wal, b"").unwrap();
     }
 
-    let moved = migrate_events_db(&paths).unwrap();
+    let moved = migrate_events_db(&paths, false).unwrap();
     assert!(moved);
     let dest = paths.clyde_events_db();
     assert!(dest.exists(), "clyde events DB should exist after move");
@@ -59,7 +59,7 @@ fn events_db_move_is_noop_when_clyde_db_present() {
     let paths = paths_under(dir.path());
     seed_events_db(&paths.legacy_events_db(), 2);
     seed_events_db(&paths.clyde_events_db(), 9);
-    assert!(!migrate_events_db(&paths).unwrap());
+    assert!(!migrate_events_db(&paths, false).unwrap());
     // Existing clyde DB untouched.
     assert_eq!(row_count(&paths.clyde_events_db()), 9);
 }
@@ -84,7 +84,7 @@ fn hook_rewrite_preserves_other_hooks_and_order() {
     )
     .unwrap();
 
-    assert!(repoint_hook(&settings).unwrap());
+    assert!(repoint_hook(&settings, false).unwrap());
     let text = fs::read_to_string(&settings).unwrap();
     assert!(text.contains("clyde permit log"));
     assert!(!text.contains("claude-permit log"));
@@ -93,7 +93,7 @@ fn hook_rewrite_preserves_other_hooks_and_order() {
     // Backup left behind.
     assert!(backup_path(&settings).exists());
     // Idempotent second run.
-    assert!(!repoint_hook(&settings).unwrap());
+    assert!(!repoint_hook(&settings, false).unwrap());
 }
 
 #[test]
@@ -108,13 +108,13 @@ fn statusline_rewrite_repoints_ccu_invocations_only() {
     )
     .unwrap();
 
-    assert!(repoint_statusline(&paths).unwrap());
+    assert!(repoint_statusline(&paths, false).unwrap());
     let text = fs::read_to_string(&sl).unwrap();
     assert!(text.contains("clyde cost today --total"));
     assert!(text.contains("clyde cost weekly --total -w 1"));
     // Comment mentioning ccu is left alone.
     assert!(text.contains("# cost via ccu"));
-    assert!(!repoint_statusline(&paths).unwrap(), "idempotent");
+    assert!(!repoint_statusline(&paths, false).unwrap(), "idempotent");
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn systemd_unit_rewrite_moves_env_file_with_perms() {
     fs::write(&env_legacy, "ANTHROPIC_API_KEY=secret\n").unwrap();
     fs::set_permissions(&env_legacy, fs::Permissions::from_mode(0o600)).unwrap();
 
-    assert!(repoint_systemd(&paths, false).unwrap());
+    assert!(repoint_systemd(&paths, false, false).unwrap());
 
     let clyde_unit = paths.clyde_unit();
     assert!(clyde_unit.exists());
@@ -220,7 +220,7 @@ fn migrate_dir_merges_into_existing_dest_without_clobbering() {
     fs::create_dir_all(&legacy).unwrap();
     fs::write(legacy.join("sessions.db"), b"sessions").unwrap();
 
-    assert!(migrate_dir(&legacy, &clyde).unwrap());
+    assert!(migrate_dir(&legacy, &clyde, false).unwrap());
     assert!(clyde.join("sessions.db").exists(), "sessions.db must merge into clyde");
     assert!(clyde.join("events.db").exists(), "existing events.db must survive");
     assert!(!legacy.join("sessions.db").exists(), "sessions.db must leave legacy");
@@ -239,7 +239,7 @@ fn migrate_dir_leaves_colliding_entry_in_place() {
     fs::write(legacy.join("sessions.db"), b"legacy-loses").unwrap();
 
     // No new entries to move (only a collision) -> returns false, dest untouched, legacy kept.
-    assert!(!migrate_dir(&legacy, &clyde).unwrap());
+    assert!(!migrate_dir(&legacy, &clyde, false).unwrap());
     assert_eq!(fs::read(clyde.join("sessions.db")).unwrap(), b"clyde-wins");
     assert!(
         legacy.join("sessions.db").exists(),
@@ -265,7 +265,7 @@ fn systemd_repoints_service_timer_and_enable_symlink() {
     .unwrap();
     std::os::unix::fs::symlink(paths.legacy_timer(), paths.legacy_wants_link()).unwrap();
 
-    assert!(repoint_systemd(&paths, false).unwrap());
+    assert!(repoint_systemd(&paths, false, false).unwrap());
 
     // Both clyde units exist with rewritten content; both legacy units gone.
     assert!(paths.clyde_unit().exists());
@@ -289,7 +289,7 @@ fn install_timer_creates_service_timer_and_symlink() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     // No legacy units; --install-timer must create the full set.
-    assert!(repoint_systemd(&paths, true).unwrap());
+    assert!(repoint_systemd(&paths, true, false).unwrap());
     assert!(paths.clyde_unit().exists());
     assert!(paths.clyde_timer().exists());
     assert_eq!(fs::read_link(paths.clyde_wants_link()).unwrap(), paths.clyde_timer());
@@ -324,9 +324,195 @@ fn statusline_repoint_preserves_exec_bit() {
     fs::write(&sl, "#!/usr/bin/env bash\nccu today --total\n").unwrap();
     fs::set_permissions(&sl, fs::Permissions::from_mode(0o755)).unwrap();
 
-    assert!(repoint_statusline(&paths).unwrap());
+    assert!(repoint_statusline(&paths, false).unwrap());
     let mode = fs::metadata(&sl).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o755, "exec bit must survive the repoint");
+}
+
+/// Recursively snapshot every path under `root` as (relative path, kind, len, mtime). `kind`
+/// distinguishes file/dir/symlink so a planted/removed symlink is detected. Sorted for a stable,
+/// diffable comparison. Uses `symlink_metadata` so symlinks are recorded as symlinks, never
+/// followed.
+fn snapshot(root: &Path) -> Vec<(String, String, u64, std::time::SystemTime)> {
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<(String, String, u64, std::time::SystemTime)>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path).unwrap();
+            let rel = path.strip_prefix(root).unwrap().display().to_string();
+            let kind = if meta.file_type().is_symlink() {
+                "symlink"
+            } else if meta.is_dir() {
+                "dir"
+            } else {
+                "file"
+            };
+            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            out.push((rel, kind.to_string(), meta.len(), mtime));
+            if meta.is_dir() && !meta.file_type().is_symlink() {
+                walk(&path, root, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
+}
+
+#[test]
+fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+
+    // Seed a representative legacy world touching EVERY gated mutation site:
+    //  - sessions data dir (migrate_dir whole-rename)
+    //  - config dir (migrate_dir)
+    //  - permit events DB with WAL sidecars (migrate_events_db incl. checkpoint)
+    //  - permit config (migrate_permit_config / migrate_file)
+    //  - cost config (migrate_file)
+    //  - pricing overrides (merge_pricing_overrides)
+    //  - statusline (repoint_statusline)
+    //  - global + local settings hooks (repoint_hook x2)
+    //  - systemd service + timer + enable symlink + env file (repoint_systemd, move_env_file,
+    //    repoint_wants_symlink)
+    fs::create_dir_all(paths.xdg_data.join("klod")).unwrap();
+    fs::write(paths.xdg_data.join("klod").join("sessions.db"), b"sessions").unwrap();
+    fs::create_dir_all(paths.xdg_config.join("klod")).unwrap();
+    fs::write(paths.xdg_config.join("klod").join("misc.yml"), b"x").unwrap();
+
+    let legacy_db = paths.legacy_events_db();
+    seed_events_db(&legacy_db, 4);
+    let wal = sidecar(&legacy_db, "-wal");
+    if !wal.exists() {
+        fs::write(&wal, b"").unwrap();
+    }
+
+    let permit_cfg = paths.xdg_config.join("claude-permit").join("config.yml");
+    fs::create_dir_all(permit_cfg.parent().unwrap()).unwrap();
+    fs::write(&permit_cfg, b"permit: config\n").unwrap();
+
+    let cost_cfg = paths.xdg_config.join("ccu").join("ccu.yml");
+    fs::create_dir_all(cost_cfg.parent().unwrap()).unwrap();
+    fs::write(&cost_cfg, b"cost: config\n").unwrap();
+
+    let cr_pricing = paths.xdg_config.join("cr").join("pricing.json");
+    fs::create_dir_all(cr_pricing.parent().unwrap()).unwrap();
+    fs::write(&cr_pricing, r#"{"model-a": 1}"#).unwrap();
+
+    let sl = paths.statusline();
+    fs::create_dir_all(sl.parent().unwrap()).unwrap();
+    fs::write(&sl, "#!/usr/bin/env bash\nccu today --total\n").unwrap();
+
+    let settings = paths.settings_global();
+    fs::write(
+        &settings,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"claude-permit log"}]}]}}"#,
+    )
+    .unwrap();
+    let settings_local = paths.settings_local();
+    fs::write(
+        &settings_local,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"claude-permit log"}]}]}}"#,
+    )
+    .unwrap();
+
+    let sysd = paths.systemd_dir();
+    fs::create_dir_all(sysd.join("timers.target.wants")).unwrap();
+    fs::write(
+        paths.legacy_unit(),
+        "[Service]\nEnvironmentFile=%h/.config/klod/enrich.env\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
+    )
+    .unwrap();
+    fs::write(
+        paths.legacy_timer(),
+        "[Timer]\nOnCalendar=*-*-* 03:00:00\n[Install]\nWantedBy=timers.target\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(paths.legacy_timer(), paths.legacy_wants_link()).unwrap();
+    let env_legacy = paths.xdg_config.join("klod").join("enrich.env");
+    fs::write(&env_legacy, "ANTHROPIC_API_KEY=secret\n").unwrap();
+
+    // Read the row count FIRST: opening the DB (even read) settles/removes an empty WAL sidecar at
+    // connection close, so do it before snapshotting or the snapshot would race that settling and
+    // produce a false "mutation". After this, the tree is stable.
+    let db_rows_before = row_count(&legacy_db);
+
+    // Snapshot the whole tree before the dry run.
+    let before = snapshot(dir.path());
+
+    let args = BootstrapArgs {
+        dry_run: true,
+        ..Default::default()
+    };
+    let out = bootstrap(&paths, &args).unwrap();
+
+    // The plan must enumerate every expected step (these are the `completed` labels, reused as the
+    // dry-run plan). A real run would perform exactly these; dry-run performed none of them.
+    assert!(out.failed.is_none(), "dry-run planning must not fail: {:?}", out.failed);
+    let plan = out.completed.join("\n");
+    for expected in [
+        "sessions data dir klod -> clyde",
+        "config dir klod -> clyde",
+        "permit events DB (WAL-safe move)",
+        "permit config -> clyde/permit.yml",
+        "cost config -> clyde/cost.yml",
+        "pricing overrides merged -> clyde/pricing.json",
+        "statusline ccu -> clyde cost",
+        "permit hook (global settings.json)",
+        "permit hook (local settings.local.json)",
+        "enrich systemd unit klod -> clyde",
+    ] {
+        assert!(
+            plan.contains(expected),
+            "dry-run plan missing step {expected:?}; plan was:\n{plan}"
+        );
+    }
+    // The systemd step changed, so the systemctl shell-outs WOULD have fired in a live run; the
+    // outcome flags that, and `run()` reports them as planned (never-invoked) actions.
+    assert!(
+        out.systemd_changed,
+        "systemd step should be flagged as a planned change"
+    );
+
+    // ZERO filesystem mutation: the tree is byte-for-byte/mtime-for-mtime identical.
+    let after = snapshot(dir.path());
+    assert_eq!(
+        before, after,
+        "dry-run must not create, move, remove, or touch any path"
+    );
+
+    // The events DB was never opened in a writing mode: no clyde DB was created, the legacy DB is
+    // exactly where it was, and (the load-bearing checkpoint guard) its row count is unchanged —
+    // a `PRAGMA wal_checkpoint(TRUNCATE)` would have collapsed/rewritten the file.
+    assert!(
+        !paths.clyde_events_db().exists(),
+        "dry-run must not create the clyde events DB"
+    );
+    assert!(legacy_db.exists(), "legacy events DB must remain in place");
+    assert_eq!(
+        row_count(&legacy_db),
+        db_rows_before,
+        "events DB row count must be untouched"
+    );
+
+    // No clyde-side artifacts of any kind were produced.
+    assert!(!paths.xdg_data.join("clyde").exists(), "no clyde data dir created");
+    assert!(!paths.clyde_unit().exists(), "no clyde systemd unit written");
+    assert!(!paths.clyde_timer().exists(), "no clyde timer written");
+    assert!(
+        fs::symlink_metadata(paths.clyde_wants_link()).is_err(),
+        "no clyde enable symlink created"
+    );
+    // No backups were written (a backup is the first mutation a live step makes).
+    assert!(!backup_path(&settings).exists(), "no backup written in dry-run");
+    assert!(
+        !backup_path(&paths.legacy_unit()).exists(),
+        "no unit backup written in dry-run"
+    );
+    // Legacy hooks/statusline remain in their pre-migration form.
+    assert!(fs::read_to_string(&settings).unwrap().contains("claude-permit log"));
+    assert!(fs::read_to_string(&sl).unwrap().contains("ccu today --total"));
 }
 
 #[test]
@@ -340,7 +526,7 @@ fn pricing_overrides_merge_with_ccu_winning() {
     fs::write(&cr, r#"{"model-a": 1, "shared": "cr"}"#).unwrap();
     fs::write(&ccu, r#"{"model-b": 2, "shared": "ccu"}"#).unwrap();
 
-    assert!(merge_pricing_overrides(&paths, false).unwrap());
+    assert!(merge_pricing_overrides(&paths, false, false).unwrap());
     let dest = paths.xdg_config.join("clyde").join("pricing.json");
     let merged: serde_json::Value = serde_json::from_str(&fs::read_to_string(&dest).unwrap()).unwrap();
     assert_eq!(merged["model-a"], 1);
