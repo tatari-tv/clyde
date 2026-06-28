@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
+const UUID_C: &str = "7c19b25e-0d11-4e4b-a82d-2345678901bc";
 
 fn dt(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
@@ -239,4 +240,68 @@ fn pragmas_are_applied() {
     assert_eq!(fk, 1);
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION);
+}
+
+#[test]
+fn map_record_corrupt_timestamp_sinks() {
+    // A row whose `modified` column contains a garbage/unparseable value must resolve to
+    // `DateTime::<Utc>::MIN_UTC` - the earliest possible instant - so that it sinks to the
+    // bottom of any `modified DESC` sort rather than floating to the top. The fail-closed
+    // fallback in `map_record` replaces the old `unwrap_or_else(Utc::now)` which would cause
+    // corrupt rows to appear as if they were just modified (floating to the top).
+    let db = Db::open_memory().unwrap();
+
+    // Insert two valid sessions.
+    let mut a = parsed(UUID_A, "/tmp/a.jsonl");
+    a.modified = dt("2026-06-20T10:00:00Z");
+    db.upsert_session(&a, "desk").unwrap();
+
+    let mut b = parsed(UUID_B, "/tmp/b.jsonl");
+    b.modified = dt("2026-06-22T10:00:00Z");
+    db.upsert_session(&b, "desk").unwrap();
+
+    // Insert UUID_C with a valid timestamp, then corrupt it via raw SQL to bypass the write path.
+    let mut c = parsed(UUID_C, "/tmp/c.jsonl");
+    c.modified = dt("2026-06-21T10:00:00Z");
+    db.upsert_session(&c, "desk").unwrap();
+    db.conn
+        .execute(
+            "UPDATE sessions SET modified = 'NOT-A-TIMESTAMP' WHERE session_id = ?1",
+            rusqlite::params![UUID_C],
+        )
+        .unwrap();
+
+    // Retrieve all sessions and find the corrupt one.
+    let all = db
+        .list(&Filters {
+            include_archived: true,
+            ..Filters::default()
+        })
+        .unwrap();
+    assert_eq!(all.len(), 3, "all three sessions visible");
+    let corrupt = all
+        .iter()
+        .find(|r| r.session_id == UUID_C)
+        .expect("UUID_C must be present");
+
+    // The fail-closed fallback maps an unparseable timestamp to MIN_UTC, not Utc::now().
+    // This ensures corrupt rows sink rather than float in any subsequent date-ordered sort.
+    assert_eq!(
+        corrupt.modified,
+        DateTime::<Utc>::MIN_UTC,
+        "corrupt modified maps to MIN_UTC sentinel (fail-closed)"
+    );
+
+    // MIN_UTC is strictly less than any real session timestamp, so a sort by modified DESC
+    // would place this row last - not first as Utc::now() would have caused.
+    assert!(
+        corrupt.modified < dt("2026-06-20T10:00:00Z"),
+        "corrupt row's modified is earlier than any valid session - it would sink, not float"
+    );
+
+    // Verify the valid rows retain their original modified values (not affected by the fix).
+    let rec_a = all.iter().find(|r| r.session_id == UUID_A).unwrap();
+    let rec_b = all.iter().find(|r| r.session_id == UUID_B).unwrap();
+    assert_eq!(rec_a.modified, dt("2026-06-20T10:00:00Z"));
+    assert_eq!(rec_b.modified, dt("2026-06-22T10:00:00Z"));
 }

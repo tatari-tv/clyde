@@ -702,7 +702,12 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         model: row.get(10)?,
         n_msgs: row.get(11)?,
         created: created.as_deref().and_then(parse_dt),
-        modified: parse_dt(&modified).unwrap_or_else(Utc::now),
+        // The write path stores `modified` as `to_rfc3339()` of a `DateTime<Utc>` (canonical UTC,
+        // `+00:00`, fixed-width). This means lexicographic `TEXT DESC` is chronologically `DESC` -
+        // the SQL `ORDER BY s.modified DESC` is sound without a cast. Fail-closed: an unparseable
+        // timestamp falls back to the earliest possible instant so the corrupt row sinks under
+        // `modified DESC` ordering rather than floating to the top.
+        modified: parse_dt(&modified).unwrap_or(DateTime::<Utc>::MIN_UTC),
         cost: row.get(14)?,
         host: row.get(15)?,
         archived: row.get::<_, i64>(16)? != 0,
