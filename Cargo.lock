@@ -329,6 +329,14 @@ dependencies = [
 [[package]]
 name = "common"
 version = "0.3.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "eyre",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+]
 
 [[package]]
 name = "cookie"
@@ -2237,6 +2245,7 @@ name = "sessions"
 version = "0.3.0"
 dependencies = [
  "chrono",
+ "common",
  "eyre",
  "gethostname",
  "log",

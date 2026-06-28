@@ -1,5 +1,6 @@
 use crate::cli::CollectArgs;
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use common::DateTz;
 use eyre::{Result, bail};
 use std::path::PathBuf;
 
@@ -52,9 +53,9 @@ const DEFAULT_RENDER_INPUT: &str = "./claude-report.json";
 /// Resolve a parsed `cr`/`clyde report` subcommand into its validated [`ResolvedCommand`].
 /// Split out of the former `TryFrom<Cli>` so `report::run` can own building the [`Config`] from
 /// the nested [`crate::cli::ReportArgs`] plus the common globals.
-pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> {
+pub fn resolve_command(command: crate::cli::Command, tz: DateTz) -> Result<ResolvedCommand> {
     let resolved = match command {
-        crate::cli::Command::Collect(args) => ResolvedCommand::Collect(collect_config_from_args(args)?),
+        crate::cli::Command::Collect(args) => ResolvedCommand::Collect(collect_config_from_args(args, tz)?),
         crate::cli::Command::Render(args) => {
             let pdf = args.pdf;
             let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_INPUT));
@@ -73,13 +74,15 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
     Ok(resolved)
 }
 
-fn collect_config_from_args(args: CollectArgs) -> Result<CollectConfig> {
+fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConfig> {
+    // Shared parser (common::parse_since) so `--since 2d` (a relative span) now works for report,
+    // not just RFC 3339 / YYYY-MM-DD. The bare-date midnight convention follows the configured tz.
     let since = match args.since {
-        Some(s) => parse_datetime(&s)?,
+        Some(s) => common::parse_since(&s, tz)?,
         None => first_of_month_local_midnight(),
     };
     let until = match args.until {
-        Some(s) => parse_datetime(&s)?,
+        Some(s) => common::parse_since(&s, tz)?,
         None => Utc::now(),
     };
     if since > until {
@@ -150,22 +153,6 @@ fn first_of_month_local_midnight() -> DateTime<Utc> {
         .or_else(|| Local.from_local_datetime(&dt).earliest())
         .expect("local midnight on the 1st resolves to a real instant");
     local.with_timezone(&Utc)
-}
-
-fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
-    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return Ok(dt.with_timezone(&Utc));
-    }
-    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        let dt = NaiveDateTime::new(date, NaiveTime::MIN);
-        let local = Local
-            .from_local_datetime(&dt)
-            .single()
-            .or_else(|| Local.from_local_datetime(&dt).earliest())
-            .ok_or_else(|| eyre::eyre!("date {} does not resolve to a local instant", s))?;
-        return Ok(local.with_timezone(&Utc));
-    }
-    bail!("could not parse datetime '{}': expected RFC 3339 or YYYY-MM-DD", s)
 }
 
 #[cfg(test)]

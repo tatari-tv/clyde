@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
+common = { version = "0.3.0", path = "../common" }
 eyre = "0.6.12"
 gethostname = "1.1.0"
 log = "0.4.33"

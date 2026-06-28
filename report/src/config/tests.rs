@@ -3,22 +3,47 @@
 use super::*;
 
 #[test]
-fn parse_datetime_accepts_rfc3339() {
-    let dt = parse_datetime("2026-04-01T12:30:00Z").unwrap();
-    assert_eq!(dt.to_rfc3339(), "2026-04-01T12:30:00+00:00");
+fn collect_accepts_relative_span_since() {
+    // Regression for #4: `report collect --since 2d` used to fail (report's old parse_datetime
+    // accepted only RFC 3339 / YYYY-MM-DD). It now flows through common::parse_since.
+    let args = CollectArgs {
+        since: Some("2d".to_string()),
+        until: None,
+        output: Some(PathBuf::from("/tmp/r.json")),
+        projects_dir: Some(std::env::temp_dir()),
+        no_rollup: false,
+        skip_title: false,
+    };
+    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    assert!(cfg.since < Utc::now());
 }
 
 #[test]
-fn parse_datetime_accepts_date_only() {
-    let dt = parse_datetime("2026-04-01").unwrap();
-    let local = dt.with_timezone(&Local);
-    assert_eq!(local.hour(), 0);
-    assert_eq!(local.minute(), 0);
+fn collect_accepts_rfc3339_and_bare_date_since() {
+    let args = CollectArgs {
+        since: Some("2026-04-01".to_string()),
+        until: Some("2026-04-02T00:00:00Z".to_string()),
+        output: Some(PathBuf::from("/tmp/r.json")),
+        projects_dir: Some(std::env::temp_dir()),
+        no_rollup: false,
+        skip_title: false,
+    };
+    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    assert_eq!(cfg.since.to_rfc3339(), "2026-04-01T00:00:00+00:00");
+    assert_eq!(cfg.until.to_rfc3339(), "2026-04-02T00:00:00+00:00");
 }
 
 #[test]
-fn parse_datetime_rejects_garbage() {
-    assert!(parse_datetime("not a date").is_err());
+fn collect_rejects_garbage_since() {
+    let args = CollectArgs {
+        since: Some("not a date".to_string()),
+        until: None,
+        output: Some(PathBuf::from("/tmp/r.json")),
+        projects_dir: Some(std::env::temp_dir()),
+        no_rollup: false,
+        skip_title: false,
+    };
+    assert!(collect_config_from_args(args, DateTz::Utc).is_err());
 }
 
 #[test]
@@ -78,6 +103,6 @@ fn explicit_output_overrides_timestamped_default() {
         no_rollup: false,
         skip_title: false,
     };
-    let cfg = collect_config_from_args(args).unwrap();
+    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
     assert_eq!(cfg.output, PathBuf::from("/tmp/custom-report.json"));
 }

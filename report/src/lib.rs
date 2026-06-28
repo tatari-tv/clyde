@@ -39,8 +39,11 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     let log_level = globals.log_level.unwrap_or_else(|| "info".to_string());
     setup_logging(&log_level).context("Failed to setup logging")?;
 
+    // The bare-date `--since` midnight convention is configurable via clyde.yml (default UTC),
+    // shared with the sessions tool through `common`. A missing config is not an error.
+    let tz = common::config::load().context("failed to load clyde config")?.date_tz();
     let config = Config {
-        command: config::resolve_command(args.command)?,
+        command: config::resolve_command(args.command, tz)?,
         log_level,
     };
 

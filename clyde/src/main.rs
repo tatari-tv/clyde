@@ -101,6 +101,10 @@ fn dispatch_tool(result: Result<i32>) -> ! {
 fn run(cli: Cli) -> Result<()> {
     let globals = cli.globals();
     let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
+    // The bare-date `--since` convention is configurable via clyde.yml (default UTC). Load once
+    // here and thread the resolved mode into every parse_since call; the parser stays pure.
+    let config = common::config::load().context("failed to load clyde config")?;
+    let tz = config.date_tz();
 
     match cli.command {
         // Absorbed tools own their exit code and final printing; map it to process::exit, exactly
@@ -120,12 +124,12 @@ fn run(cli: Cli) -> Result<()> {
             let db = Db::open_at(&db_path)?;
             match command {
                 SessionsCommand::Search(args) => cmd_search(&db, args),
-                SessionsCommand::Ls(args) => cmd_ls(&db, args),
+                SessionsCommand::Ls(args) => cmd_ls(&db, args, tz),
                 SessionsCommand::Open(args) => cmd_open(&db, args),
                 SessionsCommand::Tag(args) => cmd_tag(&db, args),
                 SessionsCommand::Reindex(args) => cmd_reindex(&db, args),
-                SessionsCommand::Stage(args) => cmd_stage(&db, args),
-                SessionsCommand::Enrich(args) => cmd_enrich(&db, args),
+                SessionsCommand::Stage(args) => cmd_stage(&db, args, tz),
+                SessionsCommand::Enrich(args) => cmd_enrich(&db, args, tz),
                 SessionsCommand::Doctor => cmd_doctor(&db),
                 // Unreachable: the outer arm above peels `Serve` off before the Db is opened.
                 SessionsCommand::Serve(_) => unreachable!("Serve is dispatched before opening Db"),
@@ -156,10 +160,10 @@ fn cmd_search(db: &Db, args: SearchArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_ls(db: &Db, args: LsArgs) -> Result<()> {
+fn cmd_ls(db: &Db, args: LsArgs, tz: common::DateTz) -> Result<()> {
     lazy_reindex(db, args.no_reindex);
     let since = match args.since.as_deref() {
-        Some(s) => Some(sessions::parse_since(s)?),
+        Some(s) => Some(sessions::parse_since(s, tz)?),
         None => None,
     };
     let filters = Filters {
@@ -241,17 +245,21 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_stage(db: &Db, args: StageArgs) -> Result<()> {
+fn cmd_stage(db: &Db, args: StageArgs, tz: common::DateTz) -> Result<()> {
     // Stage off fresh mtimes, so dormancy reflects the latest activity.
     lazy_reindex(db, false);
-    let dormant_before = if args.all { None } else { Some(sessions::parse_since(&args.dormant_after)?) };
+    let dormant_before = if args.all {
+        None
+    } else {
+        Some(sessions::parse_since(&args.dormant_after, tz)?)
+    };
     let staged_root = session::paths::staged_dir();
     let stats = sessions::stage_dormant(db, dormant_before, &staged_root)?;
     print_stage(&stats);
     Ok(())
 }
 
-fn cmd_enrich(db: &Db, args: EnrichArgs) -> Result<()> {
+fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
     // Enrich off fresh mtimes so dormancy and grown-since detection reflect the latest activity.
     lazy_reindex(db, false);
     if args.show_payload.is_some() && !args.dry_run {
@@ -264,7 +272,7 @@ fn cmd_enrich(db: &Db, args: EnrichArgs) -> Result<()> {
     let dormant_before = if args.all || args.id.is_some() {
         None
     } else {
-        Some(sessions::parse_since(&args.dormant_after)?)
+        Some(sessions::parse_since(&args.dormant_after, tz)?)
     };
     // Resolve a manual id/prefix to one concrete session (same fuzzy contract as open/tag).
     let only = match &args.id {

@@ -213,7 +213,7 @@ impl SessionsMcpServer {
         );
         let limit = req.limit.unwrap_or(LS_LIMIT_DEFAULT).min(LS_LIMIT_MAX) as usize;
         let since = match req.since.as_deref() {
-            Some(s) => Some(crate::parse_since(s).map_err(Self::invalid)?),
+            Some(s) => Some(crate::parse_since(s, crate::since::DateTz::Utc).map_err(Self::invalid)?),
             None => None,
         };
         let filters = Filters {

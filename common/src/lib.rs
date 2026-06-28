@@ -8,6 +8,12 @@
 //! `Args`-deriving inner type (nested under clyde) and the `Parser`-deriving outer wrapper
 //! (used by the compat shim).
 
+pub mod config;
+pub mod since;
+
+pub use config::Config;
+pub use since::{DateTz, parse_since};
+
 /// Common globals shared across every clyde subcommand.
 ///
 /// `log_level == None` means "no explicit level was given": the receiving tool falls back to
