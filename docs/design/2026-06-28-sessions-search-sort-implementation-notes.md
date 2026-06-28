@@ -67,3 +67,27 @@
 ### Open questions
 
 - None.
+
+## Finalization: live verification
+
+### Design decisions
+- Verified the built binary against the real `~/.local/share/clyde/sessions.db`:
+  default (relevance) puts the best-BM25 `loopr` match first and the new
+  `s.modified DESC` tiebreak correctly lifts today's session above the
+  equal-score older one; `--sort recency` leads with the genuinely most-recent
+  matches; `--sort RECENCY` parses (case-insensitive); `--sort bogus` is rejected.
+
+### Deviations
+- None.
+
+### Tradeoffs
+- None.
+
+### Open questions
+- Corrected a factual error in the design doc's Problem statement (defect #1):
+  the original investigation wrapped the score in `printf('%.3f', ...)`, which
+  made SQLite sort the alias as TEXT, so `"-3.675"` sorted before `"-6.249"` and
+  the long-prompt session falsely appeared to rank 1st. The real numeric order
+  always ranked it LAST; today's session ranked 3rd, losing a true score tie to
+  an older session on rowid (defect #2 — which is real and is what the recency
+  tiebreak fixes). Lesson: never `ORDER BY` a `printf`-formatted numeric alias.
