@@ -158,8 +158,9 @@ pub struct OpenArgs {
 pub struct TagArgs {
     /// Session id or a unique prefix of it.
     pub id: String,
-    /// Tags to set (space-separated; replaces any existing tags).
-    #[arg(required = true, num_args = 1..)]
+    /// Tags to set (space-separated; replaces any existing tags). Omit to clear all tags and
+    /// reset provenance so a later `enrich` pass can re-tag the session.
+    #[arg(num_args = 0..)]
     pub tags: Vec<String>,
 }
 

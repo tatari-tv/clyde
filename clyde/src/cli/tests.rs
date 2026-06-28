@@ -32,6 +32,40 @@ fn tag_takes_space_separated_tags_not_comma() {
 }
 
 #[test]
+fn tag_with_zero_tags_parses_and_produces_empty_vec() {
+    // `clyde sessions tag <id>` with no tags must parse successfully; the id must not be
+    // consumed as a tag, and the tags vec must be empty (this is the clear-tags case).
+    let cli = Cli::try_parse_from(["clyde", "sessions", "tag", "abc123"]).unwrap();
+    match cli.command {
+        Command::Sessions {
+            command: SessionsCommand::Tag(args),
+        } => {
+            assert_eq!(args.id, "abc123");
+            assert!(
+                args.tags.is_empty(),
+                "expected empty tags vec for clear-tags invocation"
+            );
+        }
+        _ => panic!("expected tag"),
+    }
+}
+
+#[test]
+fn tag_with_two_tags_parses_correctly() {
+    // Verify that two tags parse into the tags vec and the id is correctly separated.
+    let cli = Cli::try_parse_from(["clyde", "sessions", "tag", "deadbeef", "alpha", "beta"]).unwrap();
+    match cli.command {
+        Command::Sessions {
+            command: SessionsCommand::Tag(args),
+        } => {
+            assert_eq!(args.id, "deadbeef");
+            assert_eq!(args.tags, vec!["alpha".to_string(), "beta".to_string()]);
+        }
+        _ => panic!("expected tag"),
+    }
+}
+
+#[test]
 fn umbrella_nests_absorbed_tools_under_clyde() {
     // The absorbed tools parse as clyde subcommands (clyde report|cost|permit ...).
     assert!(matches!(

@@ -71,3 +71,28 @@
 ### Open questions
 
 - None.
+
+## Phase 4: `tags_source` exposure + tag clearing
+
+### Design decisions
+
+- `pub tags_source: Option<String>` added after `tags` in `SessionRecord` - `sessions/src/model.rs:SessionRecord` - placed immediately after `tags` so the struct reflects that provenance is logically bound to the tag set. Serializes as `tags-source` (kebab-case) via the existing `#[serde(rename_all = "kebab-case")]` on the struct.
+- `s.tags_source` appended at the END of `COLS` - `sessions/src/db.rs:COLS` - deliberately last to preserve all existing positional indices (0-17) unchanged; new index 18 is `tags_source`. Added a comment enumerating all 19 columns with their indices so future maintainers can see the full mapping at a glance.
+- Score index bumped from 18 to 19 in `search_table` - `sessions/src/db.rs:search_table` - the SELECT is `{COLS}, bm25(...) AS score`; adding one column to COLS shifts the appended score from index 18 to 19. This is the load-bearing companion fix to the COLS extension.
+- `row.get::<_, Option<String>>(18)?` - `sessions/src/db.rs:map_record` - explicit turbofish forces the `Option<String>` `FromSql` impl, which maps SQL NULL to `None`. Without the turbofish, type inference was ambiguous and rusqlite returned an `Invalid column type Null` error.
+- `set_tags` conditional `tags_source` - `sessions/src/db.rs:set_tags` - non-empty tag slice writes `'manual'`; empty slice (clear) writes `NULL`. SQL `UPDATE ... SET tags_source = ?3` with a `Option<&str>` param lets rusqlite bind NULL directly, keeping the logic in one query rather than two branches.
+- `TagArgs.tags` changed from `required = true, num_args = 1..` to `num_args = 0..` (no `required`) - `clyde/src/cli.rs:TagArgs` - makes the positional variadic optional so `clyde sessions tag <id>` with zero tags parses cleanly. The `id` positional remains a required named argument before the variadic; clap resolves the ambiguity because the required positional consumes exactly one token.
+- `cmd_tag` prints "cleared tags for" when `args.tags.is_empty()` - `clyde/src/main.rs:cmd_tag` - distinct confirmation message so the user can tell a clear from a set without inspecting the session record.
+
+### Deviations
+
+- None.
+
+### Tradeoffs
+
+- Single `UPDATE ... SET tags_source = ?3` with NULL binding vs. two separate UPDATE paths - chose the single-query form with a bound `Option<&str>` param. Fewer code paths, same atomicity, and rusqlite handles NULL binding cleanly with the typed param.
+- Append `tags_source` to COLS end vs. insert near `tags` in the struct's position - chose end-of-COLS for index safety; the struct field order (near `tags`) is cosmetic and does not affect the SQL read path. Documenting the mismatch in the comment block prevents future confusion.
+
+### Open questions
+
+- None.

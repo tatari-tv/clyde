@@ -252,7 +252,11 @@ fn cmd_tag(db: &Db, args: TagArgs) -> Result<()> {
         }
     };
     if db.set_tags(&id, &args.tags)? {
-        println!("{} tagged {} with {}", "✓".green(), short_id(&id), args.tags.join(" "));
+        if args.tags.is_empty() {
+            println!("{} cleared tags for {}", "✓".green(), short_id(&id));
+        } else {
+            println!("{} tagged {} with {}", "✓".green(), short_id(&id), args.tags.join(" "));
+        }
     } else {
         eprintln!("{} session {id} not found", "✗".red());
         std::process::exit(1);

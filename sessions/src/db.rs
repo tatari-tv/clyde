@@ -71,7 +71,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS sessions_body_fts USING fts5(body);
 /// stays in sync with one source of truth.
 const COLS: &str = "s.id, s.session_id, s.cwd, s.project_dir, s.transcript_path, s.title, \
      s.first_prompt, s.summary, s.tags, s.git_branch, s.model, s.n_msgs, s.created, s.modified, \
-     s.cost, s.host, s.archived, s.staged_path";
+     s.cost, s.host, s.archived, s.staged_path, s.tags_source";
 
 /// Outcome of a single [`Db::upsert_session`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,12 +239,18 @@ impl Db {
         Ok(())
     }
 
-    /// Set the tags for a session (space-joined storage), rebuilding the high-signal FTS row, and
-    /// mark them `tags_source = 'manual'` so enrichment preserves them by default — including when
-    /// the session was already enriched. Returns `false` if no such session exists.
+    /// Set the tags for a session (space-joined storage), rebuilding the high-signal FTS row.
+    ///
+    /// When `tags` is non-empty, marks `tags_source = 'manual'` so enrichment preserves them by
+    /// default (including when the session was already enriched). When `tags` is empty (clearing),
+    /// resets `tags_source` to `NULL` so a later `enrich` pass can re-tag the session.
+    ///
+    /// Returns `false` if no such session exists.
     pub fn set_tags(&self, session_id: &str, tags: &[String]) -> Result<bool> {
         debug!("Db::set_tags: session_id={} tags={:?}", session_id, tags);
         let joined = tags.join(" ");
+        // Non-empty -> 'manual'; empty (clear) -> NULL so enrich can re-tag.
+        let tags_source: Option<&str> = if tags.is_empty() { None } else { Some("manual") };
         let row: Option<(i64, Option<String>, Option<String>)> = self
             .conn
             .query_row(
@@ -257,8 +263,8 @@ impl Db {
             return Ok(false);
         };
         self.conn.execute(
-            "UPDATE sessions SET tags = ?2, tags_source = 'manual' WHERE id = ?1",
-            params![id, joined],
+            "UPDATE sessions SET tags = ?2, tags_source = ?3 WHERE id = ?1",
+            params![id, joined, tags_source],
         )?;
         self.rebuild_high_signal_fts(id, title.as_deref(), &joined, summary.as_deref())?;
         Ok(true)
@@ -655,7 +661,8 @@ impl Db {
                 Ok(SearchHit {
                     record: map_record(row)?,
                     matched,
-                    score: row.get(18)?,
+                    // COLS has 19 columns (indices 0..=18); bm25 score is appended at index 19.
+                    score: row.get(19)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -735,6 +742,26 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Re
 }
 
 fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
+    // Column indices correspond to COLS order (0-based):
+    //  0  s.id
+    //  1  s.session_id
+    //  2  s.cwd
+    //  3  s.project_dir
+    //  4  s.transcript_path
+    //  5  s.title
+    //  6  s.first_prompt
+    //  7  s.summary
+    //  8  s.tags
+    //  9  s.git_branch
+    // 10  s.model
+    // 11  s.n_msgs
+    // 12  s.created
+    // 13  s.modified
+    // 14  s.cost
+    // 15  s.host
+    // 16  s.archived
+    // 17  s.staged_path
+    // 18  s.tags_source  <-- appended last so prior indices are stable
     let tags: String = row.get(8)?;
     let created: Option<String> = row.get(12)?;
     let modified: String = row.get(13)?;
@@ -749,6 +776,7 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         first_prompt: row.get(6)?,
         summary: row.get(7)?,
         tags: tags.split_whitespace().map(str::to_string).collect(),
+        tags_source: row.get::<_, Option<String>>(18)?,
         git_branch: row.get(9)?,
         model: row.get(10)?,
         n_msgs: row.get(11)?,
