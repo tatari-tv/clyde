@@ -31,6 +31,9 @@ pub struct SessionsSearchRequest {
     /// Include TTL-reaped (archived) sessions (default false).
     #[schemars(description = "Include TTL-reaped (archived) sessions (default false)")]
     pub include_archived: Option<bool>,
+    /// Result ordering: relevance (BM25, default) or recency (most-recent first).
+    #[schemars(description = "Result ordering: relevance (BM25, default) or recency (most-recent first)")]
+    pub sort: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

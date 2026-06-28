@@ -157,6 +157,15 @@ impl SessionsMcpServer {
     }
 }
 
+/// Parse an optional sort string (from the MCP request) into a `SortBy`, accepting the value
+/// case-insensitively. Absent or unrecognised values default to `Relevance`.
+fn parse_sort_by(s: Option<&str>) -> crate::model::SortBy {
+    match s.map(str::to_ascii_lowercase).as_deref() {
+        Some("recency") => crate::model::SortBy::Recency,
+        _ => crate::model::SortBy::Relevance,
+    }
+}
+
 #[tool_router]
 impl SessionsMcpServer {
     /// Full-text search over the session catalog, ranked (high-signal fields first).
@@ -170,26 +179,20 @@ impl SessionsMcpServer {
     async fn sessions_search(&self, params: Parameters<SessionsSearchRequest>) -> Result<CallToolResult, McpError> {
         let req = params.0;
         debug!(
-            "sessions_search: query={:?} limit={:?} include_archived={:?}",
-            req.query, req.limit, req.include_archived
+            "sessions_search: query={:?} limit={:?} include_archived={:?} sort={:?}",
+            req.query, req.limit, req.include_archived, req.sort
         );
         if req.query.trim().is_empty() {
             return Err(Self::invalid("query is empty"));
         }
         let limit = req.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
         let include_archived = req.include_archived.unwrap_or(false);
+        let sort_by = parse_sort_by(req.sort.as_deref());
 
         let hits = Self::block_in_place_compat(|| -> Result<Vec<SearchHit>, McpError> {
             let db = self.db.lock().map_err(Self::err)?;
-            // MCP is relevance-only by decision (see design doc Open Questions); the tool schema
-            // exposes no sort param, so pass the relevance default explicitly.
-            db.search(
-                &req.query,
-                Some(limit),
-                include_archived,
-                crate::model::SortBy::Relevance,
-            )
-            .map_err(Self::db_err)
+            db.search(&req.query, Some(limit), include_archived, sort_by)
+                .map_err(Self::db_err)
         })?;
 
         debug!("sessions_search: returning {} hits", hits.len());

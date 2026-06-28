@@ -96,3 +96,26 @@
 ### Open questions
 
 - None.
+
+## Phase 5: MCP `sessions_search` sort param
+
+### Design decisions
+
+- `sort: Option<String>` added to `SessionsSearchRequest` - `sessions/src/mcp/tools.rs:SessionsSearchRequest` - plain serde/schemars field with a `#[schemars(description = ...)]` matching the style of every other field in the struct. `Option<String>` keeps the schema wire format simple and backward-compatible (omitting the field is identical to "relevance"). No clap or enum derive - sessions is clap-free; the string-to-enum mapping lives at the call site.
+- `parse_sort_by(s: Option<&str>) -> SortBy` - `sessions/src/mcp.rs:parse_sort_by` - free function (not a method) that converts the optional string to `SortBy`, accepting the value case-insensitively via `str::to_ascii_lowercase`. Absent, empty, and unrecognised values all default to `SortBy::Relevance`. Keeps the conversion logic out of the long `sessions_search` method body and makes it unit-testable in isolation.
+- `to_ascii_lowercase` used instead of `.to_lowercase()` - `sessions/src/mcp.rs:parse_sort_by` - the sort values are ASCII identifiers ("recency", "relevance"); `to_ascii_lowercase` is the correct and cheaper choice for ASCII-only input.
+- Removed the stale "MCP is relevance-only by decision" comment - `sessions/src/mcp.rs:sessions_search` - the comment pre-dated the sort param; replaced with inline assignment of `sort_by` from `parse_sort_by` which is self-documenting.
+- Debug log updated to include `sort` - `sessions/src/mcp.rs:sessions_search` - the entry log now records all four request fields including the new `sort` param, per the function-level debug logging rule.
+
+### Deviations
+
+- None.
+
+### Tradeoffs
+
+- `Option<String>` vs a `#[derive(Deserialize, JsonSchema)]` enum for the sort field - chose `Option<String>` (parsed at the call site) over a typed enum. The design doc explicitly allowed either form; the string approach avoids adding a new public type to the tools module while keeping the schema description accurate. The `parse_sort_by` helper centralises the mapping so the call site stays clean.
+- Free function `parse_sort_by` vs inline match in `sessions_search` - chose a free function so the case-insensitive parsing logic has its own unit tests (two tests exercise it directly) without needing to route through the async MCP dispatch path.
+
+### Open questions
+
+- None.
