@@ -93,7 +93,7 @@ dependency (preserves the shell/core split).
 
 ### Architecture
 
-```
+```text
 clyde/src/cli.rs        SearchArgs.sort: SortOrder (clap ValueEnum, kebab, ignore_case)
         │  From<SortOrder> for sessions::SortBy
         ▼
@@ -363,7 +363,7 @@ against the live `sessions.db` (505 rows) is **byte-identical** for all three
 clauses — bare `ORDER BY score`, `score, s.modified DESC`, and
 `s.modified DESC, score`:
 
-```
+```text
 SCAN sessions_fts VIRTUAL TABLE INDEX 0:M3
 SEARCH s USING INTEGER PRIMARY KEY (rowid=?)
 USE TEMP B-TREE FOR ORDER BY
