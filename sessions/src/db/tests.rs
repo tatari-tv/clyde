@@ -314,8 +314,10 @@ fn map_record_corrupt_timestamp_sinks() {
 fn search_relevance_breaks_ties_by_recency() {
     let db = Db::open_memory().unwrap();
 
-    // Both sessions have "loopr" in their title only (high-signal) — they will tie on BM25.
-    // The title text is identical so the scores are equal; only `modified` differs.
+    // Both sessions have "loopr" in their title only (high-signal). The titles differ only in the
+    // final word ("one"/"two"), so they have identical token counts and field lengths — BM25
+    // scores them equally; the `assert_eq!` on the two scores below confirms the tie is real, so
+    // the ordering under test is genuinely the recency tiebreak and not an incidental score gap.
     let mut older = parsed(UUID_A, "/tmp/a.jsonl");
     older.ai_title = Some("loopr session one".into());
     older.first_prompt = Some("loopr session one".into());
@@ -333,6 +335,11 @@ fn search_relevance_breaks_ties_by_recency() {
 
     let hits = db.search("loopr", None, false, SortBy::Relevance).unwrap();
     assert_eq!(hits.len(), 2);
+    // The two scores must actually be equal, or this isn't testing the tiebreak.
+    assert_eq!(
+        hits[0].score, hits[1].score,
+        "the two sessions must tie on BM25 for the recency tiebreak to be what's under test"
+    );
     // On a BM25 tie, the newer session must rank first (recency tiebreak).
     assert_eq!(
         hits[0].record.session_id, UUID_B,
@@ -393,7 +400,6 @@ fn search_recency_limit_keeps_most_recent() {
 
     // Insert 4 sessions all matching "workspace" (in body only) — we'll use limit=2 so only 2 survive.
     // Sessions D and E are the most recent; A and B are older.
-    // All have the same low-signal body match so BM25 scores are similar.
     let sessions = [
         (UUID_A, "2026-01-01T00:00:00Z"), // oldest
         (UUID_B, "2026-02-01T00:00:00Z"), // old
@@ -405,9 +411,18 @@ fn search_recency_limit_keeps_most_recent() {
         let mut s = parsed(uuid, "/tmp/x.jsonl");
         s.ai_title = Some("unrelated".into());
         s.first_prompt = Some("unrelated".into());
-        // Give each body a slightly different prefix so they don't deduplicate in a weird way,
-        // but all contain the search term "workspace".
-        s.body = format!("session body discusses workspace configuration for {uuid}");
+        // The OLDER rows (A, B) get a high term-frequency body so their BM25 is STRICTLY better
+        // (more negative) than the recent rows (D, E), which mention "workspace" once. This is
+        // what makes the test a real LIMIT-trap guard: if the recency per-table query were
+        // (wrongly) ordered `score, modified DESC, ...`, it would preselect the better-scoring
+        // A/B and drop D/E before the global recency re-sort ever runs — and the assertions below
+        // would fail. With the correct `s.modified DESC, score, s.id DESC` per-table order, each
+        // table contributes its most-recent `limit` rows regardless of score.
+        s.body = if uuid == UUID_A || uuid == UUID_B {
+            "workspace workspace workspace workspace workspace workspace".to_string()
+        } else {
+            format!("a note mentioning workspace once for {uuid}")
+        };
         s.modified = dt(modified);
         db.upsert_session(&s, "desk").unwrap();
     }

@@ -91,3 +91,31 @@
   always ranked it LAST; today's session ranked 3rd, losing a true score tie to
   an older session on rowid (defect #2 — which is real and is what the recency
   tiebreak fixes). Lesson: never `ORDER BY` a `printf`-formatted numeric alias.
+
+## Implementation Audit disposition (post-merge audit, branch)
+
+Cross-model audit (Architect/Gemini, Staff Engineer/Codex). All findings verified
+against committed code before fixing.
+
+- **#1 false-guard test [MUST-FIX, fixed]** — `search_recency_limit_keeps_most_recent`
+  gave all four rows the same body, so BM25 was ~equal and a `score`-first
+  regression would still pass via the `modified` tiebreak. Fixed: the older rows
+  (A, B) now carry a high-term-frequency body so they score strictly better; an
+  erroneous score-first per-table order would now drop the recent D/E and fail
+  the test.
+- **#2 tie-key mismatch [MUST-FIX, fixed]** — SQL per-table tertiary key was
+  `s.id DESC` (integer rowid) but the Rust global comparator used `session_id DESC`
+  (UUID string); different orderings, and the comment claiming they matched was
+  false. Fixed: the Rust comparator now compares `record.id` (the i64 rowid), and
+  the comment + design doc updated. Both layers now agree.
+- **#3 `ls` overclaim [DOC, fixed]** — `MIN_UTC` only corrects the Rust `DateTime`
+  used by the recency global re-sort; `Db::list`/`enrich_candidates`/recency
+  preselection still sort on raw `modified TEXT` in SQL before `map_record`, so a
+  non-canonical value can still float there. Design doc claim corrected; full SQL
+  hardening left out of scope (should-never-happen path, already `warn!`d).
+- **#4 weak tie test [CHEAP-WIN, fixed]** — `search_relevance_breaks_ties_by_recency`
+  now asserts `hits[0].score == hits[1].score` so the tiebreak is genuinely what's
+  under test; misleading "identical title" comment corrected.
+
+### Open questions
+- None — all four audit findings dispositioned.

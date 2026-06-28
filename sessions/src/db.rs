@@ -609,15 +609,17 @@ impl Db {
             // global re-sort.
             SortBy::Relevance => {}
             // Recency dissolves the tiering: re-sort the merged, deduped hits globally by
-            // (modified DESC, score ASC, session_id DESC). `f64::total_cmp` gives a total order on
-            // the score (NaN-safe). `session_id` is the stable tertiary key matching the SQL clause.
+            // (modified DESC, score ASC, id DESC). `f64::total_cmp` gives a total order on the
+            // score (NaN-safe). `id` (the integer rowid) is the stable tertiary key and MUST match
+            // the SQL `s.id DESC` clause so the per-table preselection and this global sort agree
+            // on which rows survive an all-equal (modified, score) overflow within one table.
             SortBy::Recency => {
                 hits.sort_by(|a, b| {
                     b.record
                         .modified
                         .cmp(&a.record.modified)
                         .then_with(|| a.score.total_cmp(&b.score))
-                        .then_with(|| b.record.session_id.cmp(&a.record.session_id))
+                        .then_with(|| b.record.id.cmp(&a.record.id))
                 });
             }
         }

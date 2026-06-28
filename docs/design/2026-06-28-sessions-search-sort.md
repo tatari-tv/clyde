@@ -205,11 +205,14 @@ superset of the true global most-recent-`limit`, so the post-merge global sort +
 implementation and gets a dedicated regression test.
 
 **Global re-sort (recency only).** After dedup, sort the merged `Vec<SearchHit>`
-by `(record.modified DESC, score ASC, record.session_id DESC)`. `modified` is
+by `(record.modified DESC, score ASC, record.id DESC)`. `modified` is
 `DateTime<Utc>` (total `Ord`). `score` is `f64` → compare with `f64::total_cmp`
 (NaN-safe; BM25 won't produce NaN but `total_cmp` is the correct total order).
-`session_id` is the stable tertiary key matching the SQL clause. Then
-`truncate(limit)`.
+`id` (the integer rowid) is the stable tertiary key and MUST be the same column
+as the SQL `s.id DESC` clause — using `session_id` (the UUID) here instead would
+order ties differently from the per-table preselection, so the surfaced set
+could diverge from the global order on an all-equal overflow within one table.
+Then `truncate(limit)`.
 
 **Dedup is unchanged.** High-signal rows are inserted into the `seen` set first,
 so a session matching both tables keeps its `MatchSource::HighSignal` marker even
@@ -231,13 +234,24 @@ soundness depends on it.
 
 The one fail-open hole is `map_record` (`db.rs:705`):
 `modified: parse_dt(&modified).unwrap_or_else(Utc::now)`. A row whose timestamp
-fails to parse silently becomes **now** and floats to the top of any
-recency-ordered view (and of `ls`, a pre-existing latent bug). Change the
-fallback to a sentinel *earliest* time (`DateTime::<Utc>::MIN_UTC`) so corrupt
-rows **sink** instead of float — fail-closed, per the rules' "defaults fail
+fails to parse silently becomes **now** in the Rust-level `DateTime` value.
+Change the fallback to a sentinel *earliest* time (`DateTime::<Utc>::MIN_UTC`) so
+corrupt rows **sink** instead of float in the recency global re-sort (which
+orders on the typed `DateTime`) — fail-closed, per the rules' "defaults fail
 closed". `parse_dt` already `warn!`s the bad value (`db.rs:716`), so the
-diagnostic is preserved; only the ordering position changes. This fix is global
-(it also corrects `ls`), so it lands as its own small step.
+diagnostic is preserved; only the ordering position changes.
+
+**Scope limit (audit finding #3):** this fix corrects only the paths that order
+on the *Rust* `DateTime` value — i.e. the recency global re-sort. It does **not**
+fix the SQL paths that order on the raw `modified TEXT` column *before*
+`map_record` runs: `Db::list` (`ls`, `db.rs:547`), `enrich_candidates`
+(`db.rs:384`), and the recency per-table preselection. A non-canonical value like
+`NOT-A-TIMESTAMP` sorts by ASCII (`'N' > '2'`), so it can still float to the top
+of `ls` and consume a per-table `LIMIT` slot. Hardening those SQL paths is out of
+scope here: the `modified` column is `NOT NULL` and the only writer stores
+`to_rfc3339()`, so a non-canonical value is a should-never-happen path that
+`parse_dt` already logs. The earlier claim that this "also fixes the latent `ls`
+bug" was an overstatement and is corrected here.
 
 ### Implementation Plan
 
@@ -250,9 +264,11 @@ diagnostic is preserved; only the ordering position changes. This fix is global
   invariant (write path is `to_rfc3339()` of a `Utc`, so `TEXT DESC` ==
   chronological `DESC`).
 - Test `map_record_corrupt_timestamp_sinks` (in `db/tests.rs`): a row with a
-  garbage `modified` sorts last under `modified DESC`, not first.
-- This stands alone and also fixes a latent `ls` ordering bug; lands first so the
-  recency feature builds on correct data.
+  garbage `modified` carries `MIN_UTC` at the Rust field level (validated on the
+  typed value, not SQL position — see implementation notes).
+- This stands alone and lands first so the recency feature builds on a correct
+  typed `modified`. (It does NOT fix the SQL `ls` ordering path — see the Scope
+  limit note above and audit finding #3.)
 
 #### Phase 2: Sort plumbing + ordering logic
 **Model:** opus
@@ -263,7 +279,8 @@ diagnostic is preserved; only the ordering position changes. This fix is global
   key (relevance: `score, s.modified DESC, s.id DESC`; recency:
   `s.modified DESC, score, s.id DESC`).
 - In `Db::search`, after dedup: if `Recency`, globally sort merged hits by
-  `(modified DESC, score asc via total_cmp, session_id DESC)`; if `Relevance`,
+  `(modified DESC, score asc via total_cmp, id DESC)` — the `id` (integer rowid)
+  tertiary key matches the SQL `s.id DESC` so both layers agree; if `Relevance`,
   keep tiered concatenation. Then `truncate(limit)` in both arms.
 - **Wire BOTH production callers** (panel finding #1 — `Db::search` has exactly
   two non-test callers):
@@ -403,9 +420,9 @@ code-verified by the main agent before incorporation.
 | # | Finding | Severity | Disposition |
 |---|---------|----------|-------------|
 | 1 | `mcp.rs:184` call site missing from plan | MUST-FIX | Fixed — Phase 2 wires both callers; MCP stays relevance-only (decision above) |
-| 2 | `Utc::now()` fallback floats corrupt rows in recency | MUST-FIX | Fixed — Phase 1 changes fallback to `MIN_UTC` (fail-closed); also fixes latent `ls` bug |
+| 2 | `Utc::now()` fallback floats corrupt rows in recency | MUST-FIX | Fixed — Phase 1 changes fallback to `MIN_UTC` (fail-closed) for the Rust re-sort path. NOTE: does NOT fix the SQL `ls`/preselection TEXT-sort path — claim corrected (see audit finding #3) |
 | 3 | Lexicographic==chronological only for canonical UTC | CHEAP-WIN | Fixed — invariant documented + `sort` added to `Db::search` debug log |
-| 4 | No stable tertiary tiebreak | CHEAP-WIN | Fixed — `s.id`/`session_id DESC` added to both SQL clauses and the Rust comparator |
+| 4 | No stable tertiary tiebreak | CHEAP-WIN | Fixed — `s.id DESC` added to both SQL clauses and the Rust comparator (`record.id`); both layers use the same integer-rowid key (see impl-audit finding #2) |
 | 5 | Recency tiebreak ambiguous for dual-table matches | CHEAP-WIN | Fixed — documented: tie breaks on the deduped hit's score |
 | 6 | FTS5 top-N fast-path loss | DEFER | **Closed** — measured via `EXPLAIN QUERY PLAN`; all three clauses identical, fast-path never active (JOIN + predicate already force temp B-tree) |
 | — | LIMIT-soundness proof | NON-ISSUE | Both reviewers confirmed sound; unchanged |
