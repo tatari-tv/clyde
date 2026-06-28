@@ -34,6 +34,10 @@ use sessions::{
 /// Max width of a title in the human (terminal) listing before it is truncated with an ellipsis.
 const TITLE_DISPLAY_WIDTH: usize = 80;
 
+/// Indent for the second (metadata) line of a stacked session entry, so it reads as subordinate
+/// to the full session ID on the line above.
+const RECORD_INDENT: &str = "    ";
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let log_path = session::paths::data_root().join("logs").join("clyde.log");
@@ -147,7 +151,7 @@ fn cmd_serve(db_path: &std::path::Path, args: ServeArgs) -> Result<()> {
 fn cmd_search(db: &Db, args: SearchArgs) -> Result<()> {
     lazy_reindex(db, args.no_reindex);
     let query = args.query.join(" ");
-    let hits = db.search(&query, args.limit, args.include_archived)?;
+    let hits = db.search(&query, args.limit, args.include_archived, args.sort.into())?;
     print_hits(&hits);
     Ok(())
 }
@@ -371,7 +375,10 @@ fn truncate_title(raw: &str) -> String {
     }
 }
 
-/// One human-readable line: `<short-id>  <date>  <n>  <title>  <repo:branch>[tags] (archived)`.
+/// Two lines per session. First line: the full session ID (never truncated or wrapped, so it can
+/// be copied verbatim into other clyde commands) followed by `<repo:branch>[tags] (archived)`.
+/// Second line, indented: `<date>  <n>  <title>`. Stacking keeps the un-truncatable ID off the
+/// width budget so narrow terminals don't wrap it.
 /// `msgs_width` right-justifies the message count so the title column lines up across rows.
 fn print_record_line(rec: &SessionRecord, msgs_width: usize) {
     let title = display_title(rec);
@@ -389,15 +396,21 @@ fn print_record_line(rec: &SessionRecord, msgs_width: usize) {
         format!(" [{}]", rec.tags.join(" "))
     };
     let archived = if rec.archived { " (archived)".red().to_string() } else { String::new() };
+    // Drop the `:` separator when there's no branch (non-repo cwd or detached HEAD) so the
+    // location reads as a plain `repo` instead of a dangling `repo:`.
+    let location = if branch.is_empty() { repo.to_string() } else { format!("{repo}:{branch}") };
     println!(
-        "{} {} {:>width$} {}  {}{}{}",
-        short_id(&rec.session_id).yellow(),
+        "{}  {}{}{}",
+        rec.session_id.yellow(),
+        location.cyan(),
+        tags.green(),
+        archived,
+    );
+    println!(
+        "{RECORD_INDENT}{} {:>width$} {}",
         date.to_string().dimmed(),
         rec.n_msgs,
         title.as_str().bold(),
-        format!("{repo}:{branch}").cyan(),
-        tags.green(),
-        archived,
         width = msgs_width,
     );
 }

@@ -181,8 +181,15 @@ impl SessionsMcpServer {
 
         let hits = Self::block_in_place_compat(|| -> Result<Vec<SearchHit>, McpError> {
             let db = self.db.lock().map_err(Self::err)?;
-            db.search(&req.query, Some(limit), include_archived)
-                .map_err(Self::db_err)
+            // MCP is relevance-only by decision (see design doc Open Questions); the tool schema
+            // exposes no sort param, so pass the relevance default explicitly.
+            db.search(
+                &req.query,
+                Some(limit),
+                include_archived,
+                crate::model::SortBy::Relevance,
+            )
+            .map_err(Self::db_err)
         })?;
 
         debug!("sessions_search: returning {} hits", hits.len());

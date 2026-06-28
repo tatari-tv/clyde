@@ -24,7 +24,8 @@ pub use index::reindex;
 pub use llm::{AnthropicClient, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment};
 pub use mcp::{ServeOpts, SessionsMcpServer, serve_stdio};
 pub use model::{
-    EnrichDetail, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, StageStats,
+    EnrichDetail, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, SortBy,
+    StageStats,
 };
 pub use since::parse_since;
 pub use stage::stage_dormant;

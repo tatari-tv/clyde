@@ -4,6 +4,29 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+/// Result ordering for `clyde sessions search`. Maps to the domain [`sessions::SortBy`] enum via
+/// `From<SortOrder>`.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
+#[clap(rename_all = "kebab-case")]
+pub enum SortOrder {
+    /// BM25 score primary, recency (modified DESC) as tiebreak. High-signal hits remain tiered
+    /// above body hits.
+    #[default]
+    Relevance,
+    /// modified DESC primary, BM25 score as tiebreak. Tiering is dissolved: the merged set is
+    /// ordered globally by recency.
+    Recency,
+}
+
+impl From<SortOrder> for sessions::SortBy {
+    fn from(s: SortOrder) -> Self {
+        match s {
+            SortOrder::Relevance => sessions::SortBy::Relevance,
+            SortOrder::Recency => sessions::SortBy::Recency,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "clyde",
@@ -92,6 +115,9 @@ pub struct SearchArgs {
     /// Skip the lazy reindex that normally refreshes the catalog before querying.
     #[arg(long)]
     pub no_reindex: bool,
+    /// Result ordering: relevance (BM25, default) or recency (most-recent first).
+    #[arg(long, value_enum, default_value_t = SortOrder::Relevance, ignore_case = true)]
+    pub sort: SortOrder,
 }
 
 #[derive(clap::Args, Debug)]
