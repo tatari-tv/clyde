@@ -44,3 +44,26 @@
 ### Open questions
 
 - None.
+
+## Phase 3: CLI surface, tests, help, CI
+
+### Design decisions
+
+- Added `SortOrder` as a `clap::ValueEnum` in `clyde/src/cli.rs` - the project's first `ValueEnum` - following the conventions exactly: `#[clap(rename_all = "kebab-case")]` and `ignore_case = true` on the arg, with a `#[default]` variant. Placed at the top of the file, before the existing `Cli` struct, so it reads as a type definition before its use site.
+- The `From<SortOrder> for sessions::SortBy` impl lives in `clyde/src/cli.rs` alongside the `SortOrder` type. This keeps the mapping co-located with the type being mapped from, and since `cli.rs` is the module that owns the CLI-facing type, this is the natural home.
+- `cmd_search` in `clyde/src/main.rs` passes `args.sort.into()` - the `into()` call resolves through the `From` impl without any additional import because `SearchArgs.sort` is typed as `SortOrder` and the `From` impl is in scope from the `cli` module. The hardcoded `sessions::SortBy::Relevance` is removed.
+- CLI parse tests in `clyde/src/cli/tests.rs` use `Cli::try_parse_from` and match on the parsed `SearchArgs.sort` field using `matches!` macro, consistent with the existing test style in that file.
+- Three behavioral tests added to `sessions/src/db/tests.rs` using two new UUID constants (`UUID_D`, `UUID_E`).
+
+### Deviations
+
+- None. Phase 3 implements the spec as written.
+
+### Tradeoffs
+
+- `matches!(args.sort, SortOrder::Relevance)` vs `== SortOrder::Relevance` in the CLI parse tests - used `matches!` because `SortOrder` does not derive `PartialEq` (only `ValueEnum`, `Clone`, `Copy`, `Debug`, `Default`) and adding `PartialEq` would not be wrong but is unnecessary; `matches!` works without it and is idiomatic for single-variant pattern checks.
+- Three body-only sessions in `search_recency_limit_keeps_most_recent` use `body = format!("... for {uuid}")` to give each a slightly different body text - not about preventing dedup (which is keyed on `session_id`) but about making the test intent readable; the format string makes clear each session is distinct.
+
+### Open questions
+
+- None.

@@ -6,6 +6,8 @@ use std::path::PathBuf;
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
 const UUID_C: &str = "7c19b25e-0d11-4e4b-a82d-2345678901bc";
+const UUID_D: &str = "6d18a16f-0c00-4d3a-970c-3456789012cd";
+const UUID_E: &str = "5e17915e-0b99-4c29-861b-4567890123de";
 
 fn dt(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
@@ -304,4 +306,128 @@ fn map_record_corrupt_timestamp_sinks() {
     let rec_b = all.iter().find(|r| r.session_id == UUID_B).unwrap();
     assert_eq!(rec_a.modified, dt("2026-06-20T10:00:00Z"));
     assert_eq!(rec_b.modified, dt("2026-06-22T10:00:00Z"));
+}
+
+/// Under `SortBy::Relevance`, when two sessions have equal BM25 scores the newer one (higher
+/// `modified`) must sort first. This tests the recency tiebreak (defect #2 from the design doc).
+#[test]
+fn search_relevance_breaks_ties_by_recency() {
+    let db = Db::open_memory().unwrap();
+
+    // Both sessions have "loopr" in their title only (high-signal) — they will tie on BM25.
+    // The title text is identical so the scores are equal; only `modified` differs.
+    let mut older = parsed(UUID_A, "/tmp/a.jsonl");
+    older.ai_title = Some("loopr session one".into());
+    older.first_prompt = Some("loopr session one".into());
+    older.body = String::new();
+    older.modified = dt("2026-05-01T10:00:00Z"); // older
+
+    let mut newer = parsed(UUID_B, "/tmp/b.jsonl");
+    newer.ai_title = Some("loopr session two".into());
+    newer.first_prompt = Some("loopr session two".into());
+    newer.body = String::new();
+    newer.modified = dt("2026-06-28T10:00:00Z"); // newer
+
+    db.upsert_session(&older, "desk").unwrap();
+    db.upsert_session(&newer, "desk").unwrap();
+
+    let hits = db.search("loopr", None, false, SortBy::Relevance).unwrap();
+    assert_eq!(hits.len(), 2);
+    // On a BM25 tie, the newer session must rank first (recency tiebreak).
+    assert_eq!(
+        hits[0].record.session_id, UUID_B,
+        "newer session ranks first on an equal BM25 score"
+    );
+    assert_eq!(hits[1].record.session_id, UUID_A);
+}
+
+/// Under `SortBy::Recency`, a body-only match that is more recent must outrank an older
+/// high-signal match. This proves the tiering is fully dissolved and the global date order holds.
+#[test]
+fn search_recency_orders_globally_by_modified() {
+    let db = Db::open_memory().unwrap();
+
+    // UUID_A: "loopr" in title (high-signal); old.
+    let mut high_old = parsed(UUID_A, "/tmp/a.jsonl");
+    high_old.ai_title = Some("loopr setup".into());
+    high_old.first_prompt = Some("set up loopr".into());
+    high_old.body = String::new();
+    high_old.modified = dt("2026-05-01T00:00:00Z"); // old
+
+    // UUID_B: "loopr" only in body (body-only); recent.
+    let mut body_recent = parsed(UUID_B, "/tmp/b.jsonl");
+    body_recent.ai_title = Some("unrelated title".into());
+    body_recent.first_prompt = Some("unrelated prompt".into());
+    body_recent.body = "we discussed loopr at length in this session".into();
+    body_recent.modified = dt("2026-06-28T00:00:00Z"); // recent
+
+    db.upsert_session(&high_old, "desk").unwrap();
+    db.upsert_session(&body_recent, "desk").unwrap();
+
+    // Verify that under relevance the high-signal old session ranks first (control).
+    let relevance_hits = db.search("loopr", None, false, SortBy::Relevance).unwrap();
+    assert_eq!(relevance_hits.len(), 2);
+    assert_eq!(
+        relevance_hits[0].record.session_id, UUID_A,
+        "relevance: high-signal ranks first"
+    );
+
+    // Under recency the body-only recent session must rank first (tiering dissolved).
+    let recency_hits = db.search("loopr", None, false, SortBy::Recency).unwrap();
+    assert_eq!(recency_hits.len(), 2);
+    assert_eq!(
+        recency_hits[0].record.session_id, UUID_B,
+        "recency: most-recent match ranks first regardless of which FTS table it came from"
+    );
+    assert_eq!(recency_hits[1].record.session_id, UUID_A);
+}
+
+/// Under `SortBy::Recency`, when more matching sessions exist than `limit`, the sessions with
+/// the highest `modified` timestamps must survive. This is the LIMIT-soundness regression guard:
+/// per-table `ORDER BY s.modified DESC` ensures each table contributes its most-recent rows so a
+/// globally-recent session with a poor BM25 score cannot be silently dropped before the global
+/// re-sort sees it.
+#[test]
+fn search_recency_limit_keeps_most_recent() {
+    let db = Db::open_memory().unwrap();
+
+    // Insert 4 sessions all matching "workspace" (in body only) — we'll use limit=2 so only 2 survive.
+    // Sessions D and E are the most recent; A and B are older.
+    // All have the same low-signal body match so BM25 scores are similar.
+    let sessions = [
+        (UUID_A, "2026-01-01T00:00:00Z"), // oldest
+        (UUID_B, "2026-02-01T00:00:00Z"), // old
+        (UUID_D, "2026-06-01T00:00:00Z"), // recent
+        (UUID_E, "2026-06-28T00:00:00Z"), // most recent
+    ];
+
+    for (uuid, modified) in sessions {
+        let mut s = parsed(uuid, "/tmp/x.jsonl");
+        s.ai_title = Some("unrelated".into());
+        s.first_prompt = Some("unrelated".into());
+        // Give each body a slightly different prefix so they don't deduplicate in a weird way,
+        // but all contain the search term "workspace".
+        s.body = format!("session body discusses workspace configuration for {uuid}");
+        s.modified = dt(modified);
+        db.upsert_session(&s, "desk").unwrap();
+    }
+
+    // With limit=2 under recency, the two most-recent sessions must be returned.
+    let hits = db.search("workspace", Some(2), false, SortBy::Recency).unwrap();
+    assert_eq!(hits.len(), 2, "exactly limit rows returned");
+
+    let ids: Vec<&str> = hits.iter().map(|h| h.record.session_id.as_str()).collect();
+    assert!(
+        ids.contains(&UUID_E),
+        "most-recent session must survive the limit: got {ids:?}"
+    );
+    assert!(
+        ids.contains(&UUID_D),
+        "second-most-recent session must survive the limit: got {ids:?}"
+    );
+    // Confirm the most-recent is first.
+    assert_eq!(hits[0].record.session_id, UUID_E, "most-recent is first under recency");
+    // The older sessions must have been dropped.
+    assert!(!ids.contains(&UUID_A), "oldest session must be dropped");
+    assert!(!ids.contains(&UUID_B), "older session must be dropped");
 }

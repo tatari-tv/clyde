@@ -75,3 +75,48 @@ fn ls_accepts_metadata_filters() {
         _ => panic!("expected ls"),
     }
 }
+
+#[test]
+fn search_sort_defaults_to_relevance() {
+    // When no --sort flag is provided, the sort field must default to SortOrder::Relevance.
+    let cli = Cli::try_parse_from(["clyde", "sessions", "search", "loopr"]).unwrap();
+    match cli.command {
+        Command::Sessions {
+            command: SessionsCommand::Search(args),
+        } => {
+            assert!(
+                matches!(args.sort, SortOrder::Relevance),
+                "expected Relevance default, got {:?}",
+                args.sort
+            );
+        }
+        _ => panic!("expected search"),
+    }
+}
+
+#[test]
+fn search_sort_accepts_recency_case_insensitive() {
+    // Both mixed-case and upper-case values must parse to SortOrder::Recency.
+    for value in ["Recency", "RECENCY", "recency"] {
+        let cli = Cli::try_parse_from(["clyde", "sessions", "search", "--sort", value, "loopr"]).unwrap();
+        match cli.command {
+            Command::Sessions {
+                command: SessionsCommand::Search(args),
+            } => {
+                assert!(
+                    matches!(args.sort, SortOrder::Recency),
+                    "--sort {value} should parse to Recency, got {:?}",
+                    args.sort
+                );
+            }
+            _ => panic!("expected search"),
+        }
+    }
+}
+
+#[test]
+fn search_sort_rejects_unknown_value() {
+    // An unrecognized --sort value must fail to parse (clap error, not a panic).
+    let result = Cli::try_parse_from(["clyde", "sessions", "search", "--sort", "bogus", "loopr"]);
+    assert!(result.is_err(), "--sort bogus should fail to parse");
+}
