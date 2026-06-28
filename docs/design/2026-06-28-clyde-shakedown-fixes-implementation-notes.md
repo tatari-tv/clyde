@@ -119,3 +119,30 @@
 ### Open questions
 
 - None.
+
+## Phase 6: Output-format autodetect + report output abstraction
+
+### Design decisions
+
+- `wants_json(explicit_json: bool) -> bool` - `cost/src/lib.rs:wants_json` - free helper mirroring the `sessions` model (`clyde/src/main.rs` `print_hits`/`print_records`): returns JSON when stdout is not a terminal (`!std::io::stdout().is_terminal()`) OR when `-j/--json` was passed. Centralises the format-selection so each `cost` subcommand calls it identically, and is unit-testable.
+- Applied `wants_json(...)` to every `cost` subcommand that has a JSON representation - `cost/src/lib.rs:dispatch` (today/yesterday/daily/weekly/monthly) - replacing the bare `if json` / `if *json` checks. `session` (no JSON formatter) and `statusline`/`pricing` (inherently human) stay as-is. The `--total` scalar path is untouched: it already emits a bare pipe-friendly number.
+- `enum Output { File(PathBuf), Stdout }` - `report/src/config.rs:Output` - models the collect destination as a first-class enum instead of a sentinel `PathBuf`. `-o <path>` -> `File`, omitted -> `Stdout`. Threaded through `CollectConfig.output`.
+- `Output::title_cache_dir() -> Result<PathBuf>` - `report/src/config.rs` - resolves the directory used to seed the cross-run Haiku title cache: the output file's parent for `File`, the default report dir under XDG data for `Stdout`. This is the financial-hazard fix (see Deviations/Tradeoffs).
+- `report::build_json(...)` split out of `report::write_json(...)` - `report/src/report.rs:build_json` - returns `(String, usize)` (the pretty JSON + session count) with no I/O, so the file path and the stdout path emit byte-identical JSON.
+- `enum OutputDest { File(PathBuf), Stdout }` + `Display` - `report/src/lib.rs:OutputDest` - replaces `RunResult.output_path: PathBuf` so the post-run "wrote N sessions to <dest>" message can say `stdout` for a streamed collect; render maps the `-` sigil to `Stdout`.
+- `resolve_titles_source(&Output)` and `latest_prior_report_in(dir, &Output)` - `report/src/lib.rs` - the title-cache resolver now works off a directory (resolved for both File and Stdout) instead of the old path-only `latest_prior_report`.
+
+### Deviations
+
+- None. Both review-flagged hazards were handled as specified.
+
+### Tradeoffs
+
+- HAZARD 1 (stdout corruption) - moved the `wrote N sessions` message from `println!` (stdout) to `eprintln!` (stderr) in `report::run` rather than suppressing it. Stderr never corrupts the stdout JSON, and the operator still sees the confirmation in both file and stdout modes. The `cr` integration test (`report/tests/collect.rs`) proves stdout is pure JSON and the note lands on stderr.
+- HAZARD 2 (financial / re-billing) - `Output::Stdout` resolves its title-cache source to the default report dir under XDG data (`<xdg-data>/claude-report`), the same dir `collect` would have written to with a file target. So streaming runs still carry titles forward from the newest prior `claude-report-*.json` and do NOT re-bill the paid Anthropic Haiku API. Chosen over the alternative of silently disabling the cache in stdout mode (which the review explicitly forbade) or writing a side-file (which would defeat the point of stdout-only output).
+- `cost` autodetect helper vs inline `is_terminal()` at each call site - chose one `wants_json` helper so the convention can't drift between subcommands and is unit-testable; the cost of one extra function is trivial.
+- Subprocess integration test (`report/tests/collect.rs`) vs in-process stdout capture - the `wrote N`-to-stderr guarantee can only be proven with genuinely separable stdout/stderr streams, which requires spawning the real `cr` binary (`CARGO_BIN_EXE_cr`, available only to integration tests, not lib unit tests).
+
+### Open questions
+
+- None.

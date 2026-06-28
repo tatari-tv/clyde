@@ -86,3 +86,18 @@ fn test_resolve_log_filter_default_not_explicit() {
     let (filter, _) = resolve_log_filter(None, None);
     assert!(!filter.is_empty());
 }
+
+#[test]
+fn test_wants_json_explicit_override_always_true() {
+    // `-j/--json` forces JSON regardless of the TTY state.
+    assert!(wants_json(true));
+}
+
+#[test]
+fn test_wants_json_autodetects_pipe() {
+    // Under the test harness stdout is NOT a terminal (it's captured/piped), so the
+    // autodetect must select JSON even without the explicit `-j` flag. This is the
+    // `cost today | jq` case: piped output gets machine-readable JSON automatically.
+    assert!(!std::io::stdout().is_terminal());
+    assert!(wants_json(false));
+}

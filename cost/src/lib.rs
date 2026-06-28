@@ -14,6 +14,7 @@ use log::{debug, info, warn};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 mod average;
@@ -387,6 +388,19 @@ pub fn run(args: CostArgs, globals: common::Globals) -> Result<i32> {
     Ok(0)
 }
 
+/// Decide whether a cost subcommand should emit JSON. Mirrors the `sessions` model
+/// (`clyde/src/main.rs` `print_hits`/`print_records`): JSON when stdout is not a terminal
+/// (piped, e.g. `cost today | jq`), human text on a TTY. `-j/--json` is an explicit override
+/// that forces JSON even on a TTY. The `--json` flag value is threaded in as `explicit_json`.
+fn wants_json(explicit_json: bool) -> bool {
+    debug!(
+        "wants_json: explicit_json={} stdout_is_terminal={}",
+        explicit_json,
+        std::io::stdout().is_terminal()
+    );
+    explicit_json || !std::io::stdout().is_terminal()
+}
+
 fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
     debug!(
         "dispatch: command={:?}",
@@ -410,7 +424,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
 
             if total {
                 println!("{:.2}", summary.cost);
-            } else if json {
+            } else if wants_json(json) {
                 println!("{}", output::format_today_json(&summary));
             } else {
                 println!("{}", output::format_today_text(&summary));
@@ -433,7 +447,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
 
             if *total {
                 println!("{:.2}", summary.cost);
-            } else if *json {
+            } else if wants_json(*json) {
                 println!("{}", output::format_yesterday_json(&summary));
             } else {
                 println!("{}", output::format_yesterday_text(&summary));
@@ -467,7 +481,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                     None
                 };
 
-                if *json {
+                if wants_json(*json) {
                     println!("{}", output::format_daily_json(&days, avg));
                 } else {
                     if *show_graph {
@@ -537,7 +551,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                     None
                 };
 
-                if *json {
+                if wants_json(*json) {
                     println!("{}", output::format_weekly_json(&week_list, avg));
                 } else {
                     if *show_graph {
@@ -606,7 +620,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                     None
                 };
 
-                if *json {
+                if wants_json(*json) {
                     println!("{}", output::format_monthly_json(&month_list, avg));
                 } else {
                     if *show_graph {

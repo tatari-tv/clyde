@@ -1,7 +1,7 @@
-use crate::RunResult;
 use crate::config::RenderConfig;
 use crate::persona::{self, PersonaBlock};
 use crate::report::{Report, SessionEntry};
+use crate::{OutputDest, RunResult};
 use crate::{summarize, title};
 use eyre::{Context, Result, bail};
 use serde::Serialize;
@@ -70,9 +70,14 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
         fs::write(&output, &markdown).with_context(|| format!("failed to write markdown to {}", output.display()))?;
     }
 
+    let dest = if output.as_os_str() == STDOUT_SIGIL {
+        OutputDest::Stdout
+    } else {
+        OutputDest::File(output)
+    };
     Ok(RunResult {
         sessions_emitted: report.totals.sessions,
-        output_path: output,
+        output: dest,
     })
 }
 

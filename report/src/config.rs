@@ -17,11 +17,39 @@ pub enum ResolvedCommand {
     Merge(MergeConfig),
 }
 
+/// Destination for `report collect`'s JSON. `-o <path>` selects [`Output::File`]; omitting `-o`
+/// selects [`Output::Stdout`], streaming the JSON so `clyde report collect | jq` works (the
+/// unified `sessions`/`cost` autodetect convention). Modeled as an enum (not a bare `PathBuf`)
+/// so the streaming path is a first-class case, not a sentinel path.
+#[derive(Debug, Clone)]
+pub enum Output {
+    File(PathBuf),
+    Stdout,
+}
+
+impl Output {
+    /// Directory used to seed the cross-run Haiku title cache. CRITICAL (review HAZARD 2,
+    /// financial): even when streaming to stdout there must be a real source directory, or the
+    /// paid Anthropic titling re-bills on every run because no prior titles carry forward. For
+    /// [`Output::File`] this is the output file's parent; for [`Output::Stdout`] it is the
+    /// default report dir under XDG data (the dir `collect` would otherwise have written to).
+    pub fn title_cache_dir(&self) -> Result<PathBuf> {
+        match self {
+            Output::File(p) => Ok(p
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))),
+            Output::Stdout => default_collect_dir(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CollectConfig {
     pub since: DateTime<Utc>,
     pub until: DateTime<Utc>,
-    pub output: PathBuf,
+    pub output: Output,
     pub projects_dir: PathBuf,
     pub no_rollup: bool,
     pub skip_title: bool,
@@ -88,9 +116,11 @@ fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConf
     if since > until {
         bail!("--since ({}) is after --until ({})", since, until);
     }
+    // `-o <path>` writes to a file; omitting it streams the JSON to stdout (the unified
+    // autodetect convention shared with `sessions`/`cost`).
     let output = match args.output {
-        Some(p) => p,
-        None => default_collect_output()?,
+        Some(p) => Output::File(p),
+        None => Output::Stdout,
     };
     let projects_dir = args
         .projects_dir
@@ -116,15 +146,13 @@ fn default_projects_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("projects"))
 }
 
-/// Default `cr collect` output: a timestamped file under the XDG data dir, so repeated runs
-/// never clobber a prior report. Mirrors rkvr's `chrono::Local` `%Y-%m-%d-%H%M%S` stamp.
-/// Shape: `<xdg-data>/claude-report/claude-report-YYYY-MM-DD-HHMMSS.json`.
-fn default_collect_output() -> Result<PathBuf> {
-    let dir = xdg_data_dir()
+/// Default `report collect` report directory under the XDG data dir
+/// (`<xdg-data>/claude-report`). Used as the title-cache source for [`Output::Stdout`] so the
+/// paid Haiku titling carries forward across streaming runs instead of re-billing every time.
+fn default_collect_dir() -> Result<PathBuf> {
+    Ok(xdg_data_dir()
         .ok_or_else(|| eyre::eyre!("could not determine XDG data dir (set HOME or XDG_DATA_HOME)"))?
-        .join("claude-report");
-    let stamp = Local::now().format("%Y-%m-%d-%H%M%S");
-    Ok(dir.join(format!("claude-report-{stamp}.json")))
+        .join("claude-report"))
 }
 
 /// XDG data dir, honoring `$XDG_DATA_HOME` and falling back to `$HOME/.local/share`.

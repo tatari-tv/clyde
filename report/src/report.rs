@@ -113,6 +113,28 @@ pub fn load_existing_titles(path: &Path) -> HashMap<String, String> {
     out
 }
 
+/// Build the pretty-printed report JSON and the session count, without performing any I/O.
+/// Shared by the file-output path ([`write_json`]) and the stdout-streaming path so both emit
+/// byte-identical JSON.
+pub fn build_json(
+    summaries: &[SessionSummary],
+    since: DateTime<Utc>,
+    until: DateTime<Utc>,
+    host: &str,
+    pricing: &Pricing,
+) -> Result<(String, usize)> {
+    debug!(
+        "report::build_json: sessions={} since={} until={} host={}",
+        summaries.len(),
+        since,
+        until,
+        host
+    );
+    let report = build_report(summaries, since, until, host, pricing);
+    let json = serde_json::to_string_pretty(&report).context("failed to serialize report to JSON")?;
+    Ok((json, report.totals.sessions))
+}
+
 pub fn write_json(
     path: &Path,
     summaries: &[SessionSummary],
@@ -130,8 +152,7 @@ pub fn write_json(
         host
     );
 
-    let report = build_report(summaries, since, until, host, pricing);
-    let json = serde_json::to_string_pretty(&report).context("failed to serialize report to JSON")?;
+    let (json, count) = build_json(summaries, since, until, host, pricing)?;
 
     let dir = path
         .parent()
@@ -150,7 +171,7 @@ pub fn write_json(
     tmp.persist(path)
         .with_context(|| format!("failed to atomically rename temp file to {}", path.display()))?;
 
-    Ok(report.totals.sessions)
+    Ok(count)
 }
 
 fn build_report(

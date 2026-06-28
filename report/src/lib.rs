@@ -13,7 +13,7 @@ pub mod session;
 pub mod summarize;
 pub mod title;
 
-use crate::config::CollectConfig;
+use crate::config::{CollectConfig, Output};
 use claude_pricing::{ParseResult, Pricing, parse_jsonl_file};
 use eyre::{Context, Result, bail};
 use log::LevelFilter;
@@ -28,7 +28,25 @@ pub use config::{Config, ResolvedCommand};
 #[derive(Debug)]
 pub struct RunResult {
     pub sessions_emitted: usize,
-    pub output_path: PathBuf,
+    /// Where the output went. For a streamed collect (`-o` omitted) this is
+    /// [`OutputDest::Stdout`]; otherwise the concrete file path.
+    pub output: OutputDest,
+}
+
+/// Human-facing description of where a run's output landed, for the post-run "wrote N" message.
+#[derive(Debug, Clone)]
+pub enum OutputDest {
+    File(PathBuf),
+    Stdout,
+}
+
+impl std::fmt::Display for OutputDest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OutputDest::File(p) => write!(f, "{}", p.display()),
+            OutputDest::Stdout => write!(f, "stdout"),
+        }
+    }
 }
 
 /// Behavior-exact entry point for both the `cr` shim and `clyde report`. Owns logging setup,
@@ -63,11 +81,10 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     }
 
     let result = run_with_config(&config).context("report failed")?;
-    println!(
-        "wrote {} sessions to {}",
-        result.sessions_emitted,
-        result.output_path.display()
-    );
+    // HAZARD 1 (review-flagged): this MUST go to stderr, not stdout. When collect streams its
+    // JSON to stdout (`-o` omitted), a `println!` here would interleave on stdout and corrupt
+    // the JSON stream that `... | jq` consumes.
+    eprintln!("wrote {} sessions to {}", result.sessions_emitted, result.output);
     Ok(0)
 }
 
@@ -125,14 +142,14 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
         })
         .collect();
 
-    // Titles are cached across runs in the report file. With the timestamped default output
-    // (Phase 0) the exact output never pre-exists, so seed from the newest prior report in the
-    // same directory; otherwise every run would re-bill Haiku (or lose titles when no API key).
-    let titles_source = if cfg.output.exists() {
-        Some(cfg.output.clone())
-    } else {
-        latest_prior_report(&cfg.output)
-    };
+    // Titles are cached across runs in the prior report file. HAZARD 2 (review-flagged,
+    // financial): the title cache MUST still be seeded when streaming to stdout (no `-o`), or
+    // every run re-bills the paid Haiku titling because no prior titles carry forward. So we
+    // always resolve a title-cache *source* directory (`Output::title_cache_dir`): for a file
+    // target it is the output's parent; for stdout it is the default report dir under XDG data.
+    // We seed from the newest prior `claude-report-*.json` in that directory (or the file
+    // itself, if it already exists).
+    let titles_source = resolve_titles_source(&cfg.output)?;
     let existing_titles = titles_source
         .as_deref()
         .map(report::load_existing_titles)
@@ -154,12 +171,43 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     }
 
     let host = gethostname::gethostname().to_string_lossy().into_owned();
-    let count = report::write_json(&cfg.output, &summaries, cfg.since, cfg.until, &host, pricing)?;
+    let (count, dest) = match &cfg.output {
+        Output::File(path) => {
+            let count = report::write_json(path, &summaries, cfg.since, cfg.until, &host, pricing)?;
+            (count, OutputDest::File(path.clone()))
+        }
+        Output::Stdout => {
+            let (json, count) = report::build_json(&summaries, cfg.since, cfg.until, &host, pricing)?;
+            // Stream the JSON to stdout (and only the JSON — the "wrote N" note is on stderr).
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            out.write_all(json.as_bytes())
+                .context("failed to write report JSON to stdout")?;
+            out.write_all(b"\n")
+                .context("failed to write trailing newline to stdout")?;
+            (count, OutputDest::Stdout)
+        }
+    };
 
     Ok(RunResult {
         sessions_emitted: count,
-        output_path: cfg.output.clone(),
+        output: dest,
     })
+}
+
+/// Resolve the prior report to seed the cross-run title cache from. HAZARD 2: this is resolved
+/// in BOTH file and stdout modes so the paid Haiku titling carries forward and does not re-bill
+/// the Anthropic API on every run. For a file target that already exists, that file is the
+/// source; otherwise (including all stdout runs) we scan the title-cache directory for the
+/// newest prior `claude-report-*.json`.
+fn resolve_titles_source(output: &Output) -> Result<Option<PathBuf>> {
+    if let Output::File(path) = output
+        && path.exists()
+    {
+        return Ok(Some(path.clone()));
+    }
+    let dir = output.title_cache_dir()?;
+    Ok(latest_prior_report_in(&dir, output))
 }
 
 fn title_untitled_sessions(summaries: &mut [session::SessionSummary]) {
@@ -218,12 +266,15 @@ fn title_untitled_sessions(summaries: &mut [session::SessionSummary]) {
     }
 }
 
-/// Find the most recent prior `claude-report-*.json` in `output`'s directory, excluding
-/// `output` itself. The `%Y-%m-%d-%H%M%S` stamp is lexically ordered, so the greatest
-/// filename is the newest report — used to carry cached titles forward across timestamped runs.
-fn latest_prior_report(output: &std::path::Path) -> Option<PathBuf> {
-    let dir = output.parent()?;
-    let current = output.file_name();
+/// Find the most recent prior `claude-report-*.json` in `dir`, excluding the current output
+/// file (if `output` is a concrete file in that dir). The `%Y-%m-%d-%H%M%S` stamp is lexically
+/// ordered, so the greatest filename is the newest report — used to carry cached titles forward
+/// across runs (including stdout runs, which scan the default report dir).
+fn latest_prior_report_in(dir: &std::path::Path, output: &Output) -> Option<PathBuf> {
+    let current = match output {
+        Output::File(p) => p.file_name(),
+        Output::Stdout => None,
+    };
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())

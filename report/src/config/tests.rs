@@ -62,29 +62,15 @@ use std::sync::Mutex;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn default_collect_output_is_timestamped_under_xdg_data() {
+fn default_collect_dir_is_under_xdg_data() {
     let guard = ENV_LOCK.lock().unwrap();
     let prior = std::env::var("XDG_DATA_HOME").ok();
 
     let dir = tempfile::TempDir::new().unwrap();
     unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
 
-    let out = default_collect_output().unwrap();
-    assert_eq!(out.parent().unwrap(), dir.path().join("claude-report"));
-
-    let name = out.file_name().unwrap().to_str().unwrap();
-    assert!(name.starts_with("claude-report-"), "name was {name}");
-    assert!(name.ends_with(".json"), "name was {name}");
-    // claude-report-YYYY-MM-DD-HHMMSS.json
-    let stamp = name
-        .strip_prefix("claude-report-")
-        .and_then(|s| s.strip_suffix(".json"))
-        .unwrap();
-    assert_eq!(stamp.len(), "YYYY-MM-DD-HHMMSS".len(), "stamp was {stamp}");
-    assert!(
-        stamp.chars().all(|c| c.is_ascii_digit() || c == '-'),
-        "stamp was {stamp}"
-    );
+    let out = default_collect_dir().unwrap();
+    assert_eq!(out, dir.path().join("claude-report"));
 
     match prior {
         Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
@@ -94,7 +80,7 @@ fn default_collect_output_is_timestamped_under_xdg_data() {
 }
 
 #[test]
-fn explicit_output_overrides_timestamped_default() {
+fn explicit_output_selects_file_target() {
     let args = CollectArgs {
         since: None,
         until: None,
@@ -104,5 +90,43 @@ fn explicit_output_overrides_timestamped_default() {
         skip_title: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
-    assert_eq!(cfg.output, PathBuf::from("/tmp/custom-report.json"));
+    match cfg.output {
+        Output::File(p) => assert_eq!(p, PathBuf::from("/tmp/custom-report.json")),
+        Output::Stdout => panic!("expected File output, got Stdout"),
+    }
+}
+
+#[test]
+fn omitting_output_selects_stdout() {
+    // Phase 6: no `-o` means stream JSON to stdout (the unified autodetect convention).
+    let args = CollectArgs {
+        since: None,
+        until: None,
+        output: None,
+        projects_dir: Some(std::env::temp_dir()),
+        no_rollup: false,
+        skip_title: false,
+    };
+    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    assert!(matches!(cfg.output, Output::Stdout));
+}
+
+#[test]
+fn stdout_title_cache_dir_is_default_report_dir() {
+    // HAZARD 2: stdout mode must still point at a real title-cache directory so the paid Haiku
+    // titling carries forward instead of re-billing every run.
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior = std::env::var("XDG_DATA_HOME").ok();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
+
+    let cache_dir = Output::Stdout.title_cache_dir().unwrap();
+    assert_eq!(cache_dir, dir.path().join("claude-report"));
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+    drop(guard);
 }
