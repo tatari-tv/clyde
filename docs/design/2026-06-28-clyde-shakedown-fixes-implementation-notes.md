@@ -146,3 +146,30 @@
 ### Open questions
 
 - None.
+
+## Phase 7: Implement `report merge`
+
+### Design decisions
+
+- New `report/src/merge.rs` module - `report/src/merge.rs` - merge operates over the deserialized `Report` schema (the exact struct `report::write_json` serializes), NOT `SessionSummary`. Each input is read with `serde_json::from_str::<Report>`, so it shares the schema and kebab-case behavior already defined on `Report`. Wired into the dispatch at `report::run_with_pricing` (`ResolvedCommand::Merge(cfg) => merge::run(cfg)`); the old `eprintln!("merge is not implemented")` early-return in `report::run` and the `bail!` in `run_with_pricing` were both removed.
+- Keep-both via re-keying to `"<host>/<session_id>"` - `merge::merge_reports` - sessions are a `BTreeMap<String, SessionEntry>` keyed by raw session id, so two hosts with the same id collide. The host prefix comes from each input report's own `host` field (the same value `collect` records), making the key authoritative. Chosen over adding a per-entry `host` field because it requires NO change to the `SessionEntry` schema (zero risk to collect/render round-trips) while still guaranteeing same-id-different-host survival. A dedicated test seeds two reports sharing one id and asserts both `desk/<id>` and `laptop/<id>` survive.
+- Totals recomputed by re-summing the merged session set - `merge::recompute_totals` - iterates the merged `SessionEntry` values, summing per-model token counts and per-model/session `spend-usd`, deduping `untracked-models` into a `BTreeSet`. It does NOT blind-sum each input's `totals` (which double-counts any overlapping session). Spend is taken from the entries' own priced `spend-usd` fields rather than re-pricing, because each input was priced at collect time; merge has no `Pricing` and should trust the recorded figures.
+- Schema-version assertion - `merge::assert_uniform_schema` - returns an eyre error naming BOTH versions (`... ({first} vs {other}) ...`) on any mismatch, before any merge work. Returns the common `u32` on success.
+- Window widening - `merge::merge_reports` - `since` folds to the min and `until` to the max across inputs via `Option<DateTime<Utc>>` accumulators set on the first iteration.
+- Multi-host marker - `merge::multi_host_marker` - distinct hosts (a `BTreeSet`) joined with `+` (`desk+laptop`). A single distinct host (1-input identity, or several same-host reports) keeps its bare name, so identity merges preserve the original `host`.
+- Output convention reuse - `merge::write_output` + `MergeConfig.output: Output` + `MergeArgs -o/--output` - merge honors the Phase 6 `Output` enum: `-o <file>` writes atomically (temp-in-target-dir + rename, mirroring `report::write_json`'s durability), omitting `-o` streams the JSON to stdout so `report merge a.json b.json | jq` works. The "wrote N sessions to <dest>" note stays on stderr via the existing `report::run` path (which now drives merge through `run_with_config`), keeping a stdout JSON stream clean. `MergeConfig` gained an `output: Output` field; `resolve_command` maps `args.output` to `File`/`Stdout` exactly as `collect` does.
+- `generated` timestamp - `merge::merge_reports` - set to `Utc::now()` at merge time (the merge is itself a fresh artifact); per-input `generated` values are intentionally dropped.
+
+### Deviations
+
+- The doc lists "0 inputs -> error" / "1 input -> identity" as edge cases; the CLI also allows `MergeArgs.inputs` to be an empty `Vec` (clap does not enforce `1..`). The 0-input error is therefore enforced at runtime in `read_reports` (typed eyre error "no input files given; nothing to merge"), not by clap, so both the CLI and any direct `merge::run` caller get the same guard. Not a deviation from intent - it closes the path clap leaves open.
+
+### Tradeoffs
+
+- Re-key to `host/session_id` vs add a per-entry `host` field - chose re-keying. Both satisfy keep-both; re-keying touches zero existing schema (no `SessionEntry` change, no migration of collect/render), and the prefixed key is self-describing in `jq`. The per-entry-field alternative would have rippled into `render` and the `Report` round-trip tests for no functional gain.
+- Trust recorded `spend-usd` vs re-price the merged set - chose to trust the recorded per-model/session spend. Merge has no `Pricing` instance and re-pricing would require one plus the raw token-to-usage mapping; the inputs were already priced at collect time, so re-summing their figures is both correct and avoids a pricing dependency in the merge path.
+- eyre (not a `thiserror` enum) for merge errors - the whole `report` crate is an eyre-based CLI (per repo Rust conventions, CLIs use eyre); introducing a `thiserror` enum only for merge would diverge from every sibling module. The schema-version-mismatch and zero-input errors carry their distinguishing data (both versions; the "no input" reason) in the message and propagate to the clyde exit path, which is the consumer - no downstream code string-matches them.
+
+### Open questions
+
+- None.

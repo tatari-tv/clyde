@@ -4,6 +4,7 @@
 
 pub mod cli;
 pub mod config;
+pub mod merge;
 pub mod persona;
 pub mod render;
 pub mod repo;
@@ -15,7 +16,7 @@ pub mod title;
 
 use crate::config::{CollectConfig, Output};
 use claude_pricing::{ParseResult, Pricing, parse_jsonl_file};
-use eyre::{Context, Result, bail};
+use eyre::{Context, Result};
 use log::LevelFilter;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -64,11 +65,6 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
         command: config::resolve_command(args.command, tz)?,
         log_level,
     };
-
-    if let ResolvedCommand::Merge(_) = config.command {
-        eprintln!("merge is not implemented in this release");
-        return Ok(2);
-    }
 
     if let ResolvedCommand::Collect(_) = config.command
         && which::which("jq").is_err()
@@ -121,9 +117,7 @@ pub(crate) fn run_with_pricing(config: &Config, pricing: &Pricing) -> Result<Run
     match &config.command {
         ResolvedCommand::Collect(cfg) => run_collect(cfg, pricing),
         ResolvedCommand::Render(cfg) => render::run(cfg),
-        ResolvedCommand::Merge(_) => {
-            bail!("`report merge` is not implemented in this release");
-        }
+        ResolvedCommand::Merge(cfg) => merge::run(cfg),
     }
 }
 

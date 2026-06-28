@@ -71,6 +71,10 @@ pub struct RenderConfig {
 #[derive(Debug, Clone)]
 pub struct MergeConfig {
     pub inputs: Vec<PathBuf>,
+    /// Where the merged report's JSON goes. `-o <path>` selects [`Output::File`]; omitting `-o`
+    /// streams it to stdout — the same convention `collect` uses, so `report merge a.json b.json
+    /// | jq` works.
+    pub output: Output,
 }
 
 /// Default *input* path for `cr render` when `-i` is omitted. Collect no longer writes here
@@ -97,7 +101,18 @@ pub fn resolve_command(command: crate::cli::Command, tz: DateTz) -> Result<Resol
                 pdf_engine: args.pdf_engine,
             })
         }
-        crate::cli::Command::Merge(args) => ResolvedCommand::Merge(MergeConfig { inputs: args.inputs }),
+        crate::cli::Command::Merge(args) => {
+            // `-o <path>` writes to a file; omitting it streams to stdout (the unified
+            // autodetect convention shared with `collect`/`sessions`/`cost`).
+            let output = match args.output {
+                Some(p) => Output::File(p),
+                None => Output::Stdout,
+            };
+            ResolvedCommand::Merge(MergeConfig {
+                inputs: args.inputs,
+                output,
+            })
+        }
     };
     Ok(resolved)
 }

@@ -137,6 +137,11 @@ pub struct MergeArgs {
     /// Two or more collected JSON report files to merge. Each must share the same
     /// schema version. Providing a single file is accepted (identity operation).
     pub inputs: Vec<PathBuf>,
+
+    /// Write the merged JSON report to this path. When omitted, the merged report is
+    /// streamed to stdout so `report merge a.json b.json | jq` works.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
 }
 
 struct ToolStatus {
