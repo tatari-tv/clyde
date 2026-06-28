@@ -50,3 +50,24 @@
 ### Open questions
 
 - None.
+
+## Phase 3: Clean error rendering boundary
+
+### Design decisions
+
+- `dispatch_tool(result, debug)` — `clyde/src/main.rs:dispatch_tool` — added a `debug: bool` parameter so the shared absorbed-tool dispatch path (`clyde report/cost/permit`) can pick its error rendering. Default (info or quieter) prints `{e:#}` — the full eyre **cause chain** with NO `Location:`/backtrace; `--log-level debug`/`trace` prints `{e:?}` (Debug, with the Location capture) for diagnosis. This resolves #5: `clyde report collect --since notadate` no longer leaks `common/src/since.rs:NN` to the user at the default level.
+- `{e:#}` chosen as the default, NOT plain `{e}` — per the review correction in the doc's #5 resolution. Plain Display (`{e}`) shows only the top error and hides the causal chain, which would degrade normal-failure UX; the alternate-Display `{e:#}` keeps the chain while dropping the Location capture.
+- `is_debug_level(level: &str) -> bool` — `clyde/src/main.rs:is_debug_level` — small helper that parses the resolved level via `LevelFilter` and returns true only for `Debug`/`Trace`. Case-insensitive (delegates to `LevelFilter::from_str`); unparseable levels fall back to the clean (non-debug) form. `run()` computes `debug` once from `cli.log_level` (defaulting to `DEFAULT_LOG_LEVEL`, the same source `main` uses for logger setup) and threads it into the three `dispatch_tool` call sites.
+
+### Deviations
+
+- The doc's Phase 3 prose (line 247) reads "change `cr.rs:13` and `clyde/src/main.rs:95` to print `{e}` ... Verify both the shim and `clyde report` paths." This was superseded by the CORRECTED #5 resolution (doc lines 141-154) and the task scope: (i) the shims (`cr.rs`, `ccu.rs`, claude-permit bin) are retired in Phase 10 and got NO error-rendering changes — they still print `{e:?}` and compile as-is; (ii) the default form is `{e:#}` (chain), not plain `{e}`. Scope is the clyde `dispatch_tool` path only.
+
+### Tradeoffs
+
+- Recompute `debug` inside `run()` from `cli.log_level` vs. threading the `level` String already computed in `main()` — chose to recompute in `run()` so `run` stays self-contained and the change is local to the dispatch path. `is_debug_level` re-parses one short string; cost is negligible and it keeps `main`'s signature untouched.
+- `debug: bool` parameter vs. passing the full resolved `LevelFilter`/level string into `dispatch_tool` — chose the bool: the dispatch path only needs the binary "clean chain vs. Debug+Location" decision, so a bool is the narrowest honest contract.
+
+### Open questions
+
+- None.

@@ -26,3 +26,21 @@ fn truncate_title_is_char_boundary_safe() {
     let out = truncate_title(&s);
     assert!(out.chars().count() <= TITLE_DISPLAY_WIDTH);
 }
+
+#[test]
+fn is_debug_level_selects_debug_form_only_for_debug_and_trace() {
+    // debug/trace -> Debug rendering (with Location), case-insensitively.
+    assert!(is_debug_level("debug"));
+    assert!(is_debug_level("trace"));
+    assert!(is_debug_level("DEBUG"));
+    assert!(is_debug_level("Trace"));
+
+    // Default and quieter levels -> clean cause-chain rendering.
+    assert!(!is_debug_level("info"));
+    assert!(!is_debug_level("warn"));
+    assert!(!is_debug_level("error"));
+    assert!(!is_debug_level(DEFAULT_LOG_LEVEL));
+
+    // Unparseable levels fall back to the non-debug (clean) form.
+    assert!(!is_debug_level("nonsense"));
+}

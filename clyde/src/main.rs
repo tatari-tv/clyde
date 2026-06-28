@@ -88,18 +88,43 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
-/// Map an absorbed tool's `run() -> Result<i32>` onto a process exit code, mirroring each shim's
-/// `main`: a propagated error prints its debug chain to stderr and exits 1.
-fn dispatch_tool(result: Result<i32>) -> ! {
+/// Map an absorbed tool's `run() -> Result<i32>` onto a process exit code: a propagated error is
+/// rendered to stderr and the process exits 1.
+///
+/// `debug` selects the rendering. At the default (info or lower verbosity) we print `{e:#}` — the
+/// full eyre **cause chain** with NO `Location:`/backtrace — so a normal failure reads as a clean,
+/// chained message instead of leaking an internal `report/src/config.rs:NNN` source location. Only
+/// when `--log-level debug` (or trace) is set do we print `{e:?}` (Debug, with the location capture)
+/// for diagnosis. Plain `{e}` is deliberately avoided: Display alone hides the causal chain and
+/// would degrade the normal-failure UX.
+fn dispatch_tool(result: Result<i32>, debug: bool) -> ! {
     let code = result.unwrap_or_else(|e| {
-        eprintln!("{e:?}");
+        if debug {
+            eprintln!("{e:?}");
+        } else {
+            eprintln!("{e:#}");
+        }
         1
     });
     std::process::exit(code);
 }
 
+/// True when the resolved log level is `debug` or `trace` — the verbosity at which the absorbed
+/// tools' errors should render their full Debug form (with eyre's `Location:` capture) instead of
+/// the clean cause chain. Unparseable levels are treated as non-debug.
+fn is_debug_level(level: &str) -> bool {
+    matches!(
+        level.parse::<LevelFilter>(),
+        Ok(LevelFilter::Debug | LevelFilter::Trace)
+    )
+}
+
 fn run(cli: Cli) -> Result<()> {
     let globals = cli.globals();
+    // Resolve the same level `main` used for logger setup, so the absorbed-tool error rendering
+    // matches the verbosity the user asked for (clean cause chain by default, Debug+Location under
+    // --log-level debug/trace).
+    let debug = is_debug_level(cli.log_level.as_deref().unwrap_or(DEFAULT_LOG_LEVEL));
     let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
     // The bare-date `--since` convention is configurable via clyde.yml (default UTC). Load once
     // here and thread the resolved mode into every parse_since call; the parser stays pure.
@@ -109,9 +134,9 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         // Absorbed tools own their exit code and final printing; map it to process::exit, exactly
         // as their standalone shims do.
-        Command::Report(args) => dispatch_tool(report::run(args, globals)),
-        Command::Cost(args) => dispatch_tool(cost::run(args, globals)),
-        Command::Permit(args) => dispatch_tool(permit::run(args, globals)),
+        Command::Report(args) => dispatch_tool(report::run(args, globals), debug),
+        Command::Cost(args) => dispatch_tool(cost::run(args, globals), debug),
+        Command::Permit(args) => dispatch_tool(permit::run(args, globals), debug),
         // clyde-native migration/health commands.
         Command::Bootstrap(args) => bootstrap::run(&args),
         Command::Doctor => std::process::exit(doctor::run()?),
