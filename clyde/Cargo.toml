@@ -29,8 +29,8 @@ report = { path = "../report" }
 rusqlite = { workspace = true, features = ["bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-session = { version = "0.3.0", path = "../session" }
-sessions = { version = "0.3.0", path = "../sessions" }
+session = { version = "0.4.0", path = "../session" }
+sessions = { version = "0.4.0", path = "../sessions" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
