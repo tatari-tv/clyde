@@ -69,11 +69,14 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     if let ResolvedCommand::Collect(_) = config.command
         && which::which("jq").is_err()
     {
+        // Advisory, NON-FATAL: collect produces its JSON regardless — `jq` is never used
+        // internally, only by the user to query the output. Don't refuse to run (that broke
+        // `collect` on any host/CI without jq). The note goes to stderr so it can't corrupt the
+        // JSON streamed to stdout.
         eprintln!(
-            "jq is required to query the JSON report output but was not found on PATH.\n\
-             Install: brew install jq  (macOS) | apt install jq  (Debian/Ubuntu) | dnf install jq  (Fedora)"
+            "note: jq not found on PATH; the JSON report is still produced. Install jq to query it \
+             (brew install jq | apt install jq | dnf install jq)."
         );
-        return Ok(2);
     }
 
     let result = run_with_config(&config).context("report failed")?;
