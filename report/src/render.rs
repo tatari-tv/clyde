@@ -28,7 +28,7 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
         && (ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
     {
         bail!(
-            "input file ends in .yml/.yaml; cr v0.1.2+ emits and reads JSON. Re-run cr collect to regenerate as .json."
+            "input file ends in .yml/.yaml; report collect emits JSON. Re-run report collect to regenerate as .json."
         );
     }
 

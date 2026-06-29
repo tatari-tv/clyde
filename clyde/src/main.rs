@@ -126,10 +126,6 @@ fn run(cli: Cli) -> Result<()> {
     // --log-level debug/trace).
     let debug = is_debug_level(cli.log_level.as_deref().unwrap_or(DEFAULT_LOG_LEVEL));
     let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
-    // The bare-date `--since` convention is configurable via clyde.yml (default UTC). Load once
-    // here and thread the resolved mode into every parse_since call; the parser stays pure.
-    let config = common::config::load().context("failed to load clyde config")?;
-    let tz = config.date_tz();
 
     match cli.command {
         // Absorbed tools own their exit code and final printing; map it to process::exit, exactly
@@ -149,18 +145,40 @@ fn run(cli: Cli) -> Result<()> {
             let db = Db::open_at(&db_path)?;
             match command {
                 SessionsCommand::Search(args) => cmd_search(&db, args),
-                SessionsCommand::Ls(args) => cmd_ls(&db, args, tz),
+                // The bare-date `--since` convention is configurable via clyde.yml (default UTC).
+                // Config is loaded lazily here, inside the commands that actually consume a tz, so
+                // that a malformed clyde.yml never breaks commands that don't read dates
+                // (search, open, tag, reindex, doctor, bootstrap, serve).
+                SessionsCommand::Ls(args) => {
+                    let tz = load_date_tz()?;
+                    cmd_ls(&db, args, tz)
+                }
                 SessionsCommand::Open(args) => cmd_open(&db, args),
                 SessionsCommand::Tag(args) => cmd_tag(&db, args),
                 SessionsCommand::Reindex(args) => cmd_reindex(&db, args),
-                SessionsCommand::Stage(args) => cmd_stage(&db, args, tz),
-                SessionsCommand::Enrich(args) => cmd_enrich(&db, args, tz),
+                SessionsCommand::Stage(args) => {
+                    let tz = load_date_tz()?;
+                    cmd_stage(&db, args, tz)
+                }
+                SessionsCommand::Enrich(args) => {
+                    let tz = load_date_tz()?;
+                    cmd_enrich(&db, args, tz)
+                }
                 SessionsCommand::Doctor => cmd_doctor(&db),
                 // Unreachable: the outer arm above peels `Serve` off before the Db is opened.
                 SessionsCommand::Serve(_) => unreachable!("Serve is dispatched before opening Db"),
             }
         }
     }
+}
+
+/// Load `clyde.yml` and resolve the date-tz setting. Called lazily, only inside the subcommands
+/// that parse a `--since`/`--dormant-after` date string (ls, stage, enrich). Commands that do not
+/// consume date strings (search, open, tag, reindex, doctor, bootstrap, serve) never call this, so
+/// a malformed `clyde.yml` does not break them.
+fn load_date_tz() -> Result<common::DateTz> {
+    let config = common::config::load().context("failed to load clyde config")?;
+    Ok(config.date_tz())
 }
 
 /// Bring up the MCP server on stdio. `clyde`'s `main`/`run` are synchronous, so the runtime is

@@ -82,9 +82,11 @@ fn check_hook_registered(settings_path: &Path, settings_local_path: &Path) -> Ch
     let paths = [settings_path, settings_local_path];
     // Accept either the legacy standalone form (`claude-permit log`) or the current umbrella
     // form (`clyde permit log`), mirroring the idempotency check in install.rs:has_permit_hook.
+    // Match the actual hook command form (with the `log` subcommand) to avoid false positives
+    // from unrelated mentions of the binary names elsewhere in the settings file.
     let found_in = paths.iter().filter(|p| p.exists()).find(|p| {
         std::fs::read_to_string(p)
-            .map(|content| content.contains("claude-permit") || content.contains("clyde permit"))
+            .map(|content| content.contains("claude-permit log") || content.contains("clyde permit log"))
             .unwrap_or(false)
     });
 

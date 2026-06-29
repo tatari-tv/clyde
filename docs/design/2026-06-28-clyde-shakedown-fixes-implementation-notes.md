@@ -215,3 +215,28 @@
 ### Open questions
 
 - None.
+
+## Implementation Audit fixes
+
+### Design decisions
+
+- Lazy config load via `load_date_tz()` helper - `clyde/src/main.rs:load_date_tz` - extracted the `common::config::load()` + `.date_tz()` pair into a one-purpose free function called only from within the three `SessionsCommand` arms that parse date strings (`Ls`, `Stage`, `Enrich`). The unconditional `load()` call that formerly preceded the `match cli.command` was removed. All other arms (`search`, `open`, `tag`, `reindex`, `doctor`, `bootstrap`, `serve`, and all absorbed tools) now never touch `clyde.yml`, so a malformed config file cannot break them.
+- `CollectArgs.output` doc-comment replaced - `report/src/cli.rs:CollectArgs.output` - old text said "default timestamped file under $XDG_DATA_HOME/claude-report/"; new text says "With -o, writes that file; without -o, streams JSON to stdout so `report collect | jq` works." Phase 6 changed the behavior; the doc-comment is now accurate.
+- `Command::Collect` variant doc-comment updated - `report/src/cli.rs:Command::Collect` - removed the "writes a timestamped JSON file" claim; replaced with the two-path description (file with `-o`, stdout without).
+- `MergeArgs.output` doc-comment added - `report/src/cli.rs:MergeArgs.output` - field had no doc-comment before; added one with the same file-or-stdout semantics as `CollectArgs.output` for consistency.
+- Stale `cr` error message fixed - `report/src/render.rs:run` - replaced "cr v0.1.2+ emits and reads JSON. Re-run cr collect" with "report collect emits JSON. Re-run report collect" so the user-facing error refers to the current UX surface, not the retired shim.
+- Stale `cr render` doc-comment fixed - `report/src/config.rs:DEFAULT_RENDER_INPUT` - changed "Default *input* path for `cr render`" to "Default *input* path for `report render`".
+- Hook match tightened to `log` suffix - `permit/src/cmd/check.rs:check_hook_registered` - changed `content.contains("claude-permit")` to `content.contains("claude-permit log")` and `content.contains("clyde permit")` to `content.contains("clyde permit log")`. The old substring match would have accepted a bare mention of either binary name anywhere in the settings file; the new form matches only the actual hook invocation pattern.
+
+### Deviations
+
+- None. All four fixes were applied exactly as specified.
+
+### Tradeoffs
+
+- `load_date_tz()` free function vs inlining the two-liner at each call site - chose the helper so the three call sites read identically and the `.context(...)` message is in one place. No behavior difference; the helper adds zero external state.
+- Match `log` suffix vs a regex or more specific anchor - chose the plain `contains("claude-permit log")` / `contains("clyde permit log")` string match. A regex would be overkill for what is a fixed token; the existing tests cover both forms and the false-positive risk (a settings comment mentioning the binary name without the subcommand) is negligible compared to the pre-fix risk (any mention anywhere passing).
+
+### Open questions
+
+- None.

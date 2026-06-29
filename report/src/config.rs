@@ -77,7 +77,7 @@ pub struct MergeConfig {
     pub output: Output,
 }
 
-/// Default *input* path for `cr render` when `-i` is omitted. Collect no longer writes here
+/// Default *input* path for `report render` when `-i` is omitted. Collect no longer writes here
 /// by default (see `default_collect_output`); render's default input is intentionally left
 /// as the legacy CWD path and is out of Phase 0 scope.
 const DEFAULT_RENDER_INPUT: &str = "./claude-report.json";

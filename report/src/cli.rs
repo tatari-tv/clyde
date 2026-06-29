@@ -48,8 +48,9 @@ pub enum Command {
     /// Scan session JSONL files and emit a per-host JSON usage report.
     ///
     /// Reads `~/.claude/projects/` (or `--projects-dir`), filters sessions by the
-    /// `--since`/`--until` window, optionally titles untitled sessions via Haiku, and
-    /// writes a timestamped JSON file under the XDG data dir.
+    /// `--since`/`--until` window, and optionally titles untitled sessions via Haiku.
+    /// With `-o <path>`, writes the JSON report to that file; without `-o`, streams
+    /// the JSON to stdout so `report collect | jq` works.
     Collect(CollectArgs),
     /// Render a collected JSON report into Markdown (or PDF via `--pdf`).
     ///
@@ -77,8 +78,8 @@ pub struct CollectArgs {
     #[arg(long)]
     pub until: Option<String>,
 
-    /// Write the JSON report to this path instead of the default timestamped file
-    /// under `$XDG_DATA_HOME/claude-report/`.
+    /// Write the JSON report to this path. When omitted, streams JSON to stdout so
+    /// `report collect | jq` works.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
@@ -138,8 +139,8 @@ pub struct MergeArgs {
     /// schema version. Providing a single file is accepted (identity operation).
     pub inputs: Vec<PathBuf>,
 
-    /// Write the merged JSON report to this path. When omitted, the merged report is
-    /// streamed to stdout so `report merge a.json b.json | jq` works.
+    /// Write the merged JSON report to this path. With `-o <path>`, writes that file;
+    /// without `-o`, streams JSON to stdout so `report merge a.json b.json | jq` works.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 }
