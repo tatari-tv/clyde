@@ -317,12 +317,17 @@ pub async fn serve_stdio(db_path: &Path, projects_dir: &Path, opts: ServeOpts) -
     let service = server.serve((tokio::io::stdin(), tokio::io::stdout())).await?;
     info!("serve_stdio: MCP server started, waiting for client requests");
 
-    // #12 (investigated Phase 9): rmcp 1.7.0's stdio transport resolves `waiting()` on stdin EOF
-    // through the supported path — its `AsyncRwTransport::receive()` returns `None` on a 0-byte
-    // `read_until` (EOF), and the service event loop maps that to `QuitReason::Closed` and stops.
-    // So no select-on-EOF or upgrade is needed; this returns once stdin closes (or the client
-    // disconnects / cancels). We capture the QuitReason instead of discarding it so the shutdown
-    // reason (Closed-on-EOF vs Cancelled vs a transport error) is visible in the log.
+    // #12 (investigated Phase 9): rmcp 1.7.0's stdio transport RESOLVES `waiting()` on EOF at the
+    // protocol layer — `AsyncRwTransport::receive()` returns `None` on a 0-byte `read_until`, which
+    // the service loop maps to `QuitReason::Closed`. The `serve_exits_on_stdin_eof` test proves
+    // this over an in-memory duplex.
+    //
+    // LIMITATION (accepted, not verified): the production substrate here is `tokio::io::stdin()`, a
+    // blocking, uncancellable reader thread — it is NOT proven that a real terminal/pipe stdin EOF
+    // propagates as promptly as the duplex (the original shakedown probe hung ~8s before its
+    // timeout). We do NOT add a select-on-EOF watcher because MCP hosts terminate the child process
+    // on shutdown, so a lingering blocked read is harmless in practice. We capture the QuitReason
+    // (vs discarding it) so the shutdown reason is visible in the log if this ever needs revisiting.
     let quit_reason = service.waiting().await?;
     info!("serve_stdio: client disconnected, shutting down (reason={quit_reason:?})");
     Ok(())
