@@ -1,8 +1,60 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use std::cell::Cell;
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
+
+/// Counting [`Systemd`] fake: records how many times each shell-out WOULD have been invoked,
+/// without ever spawning `systemctl` (which CI cannot run). Lets a test PROVE the outer `run()`
+/// gate is honored — zero calls under dry-run/skip-systemd, the real calls otherwise.
+#[derive(Default)]
+struct CountingSystemd {
+    daemon_reloads: Cell<usize>,
+    timer_starts: Cell<usize>,
+}
+
+impl Systemd for CountingSystemd {
+    fn daemon_reload(&self) {
+        self.daemon_reloads.set(self.daemon_reloads.get() + 1);
+    }
+    fn start_enrich_timer(&self) {
+        self.timer_starts.set(self.timer_starts.get() + 1);
+    }
+}
+
+/// Seed a representative legacy world that touches every gated mutation site, INCLUDING the systemd
+/// service+timer+enable-symlink, so a bootstrap over it sets `systemd_changed` (the precondition
+/// for the outer `run()` systemctl gate). Returns nothing; mutates the temp tree under `paths`.
+fn seed_full_legacy_world(paths: &Paths) {
+    fs::create_dir_all(paths.xdg_data.join("klod")).unwrap();
+    fs::write(paths.xdg_data.join("klod").join("sessions.db"), b"sessions").unwrap();
+
+    let settings = paths.settings_global();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(
+        &settings,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"claude-permit log"}]}]}}"#,
+    )
+    .unwrap();
+
+    let sysd = paths.systemd_dir();
+    fs::create_dir_all(sysd.join("timers.target.wants")).unwrap();
+    fs::write(
+        paths.legacy_unit(),
+        "[Service]\nEnvironmentFile=%h/.config/klod/enrich.env\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
+    )
+    .unwrap();
+    fs::write(
+        paths.legacy_timer(),
+        "[Timer]\nOnCalendar=*-*-* 03:00:00\n[Install]\nWantedBy=timers.target\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(paths.legacy_timer(), paths.legacy_wants_link()).unwrap();
+    let env_legacy = paths.xdg_config.join("klod").join("enrich.env");
+    fs::create_dir_all(env_legacy.parent().unwrap()).unwrap();
+    fs::write(&env_legacy, "ANTHROPIC_API_KEY=secret\n").unwrap();
+}
 
 /// Build a `Paths` rooted under `root`, so no test touches the real machine. The caller holds the
 /// owning `TempDir` (under a used name) for the test's lifetime.
@@ -513,6 +565,73 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
     // Legacy hooks/statusline remain in their pre-migration form.
     assert!(fs::read_to_string(&settings).unwrap().contains("claude-permit log"));
     assert!(fs::read_to_string(&sl).unwrap().contains("ccu today --total"));
+}
+
+#[test]
+fn run_dry_run_does_not_shell_out_to_systemctl() {
+    // Exercise the OUTER run() over a temp fixture in dry-run with a counting Systemd fake. The
+    // migration must mutate nothing AND the two systemctl shell-outs must NOT be taken — proving
+    // the `!args.dry_run && ...` gate in run() is honored, not merely inspected.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    seed_full_legacy_world(&paths);
+
+    let before = snapshot(dir.path());
+    let systemd = CountingSystemd::default();
+    let args = BootstrapArgs {
+        dry_run: true,
+        ..Default::default()
+    };
+    run_paths(&paths, &args, &systemd).unwrap();
+
+    // The gate held: zero systemctl shell-outs despite legacy systemd units being present (a live
+    // run WOULD have fired both).
+    assert_eq!(systemd.daemon_reloads.get(), 0, "dry-run must not daemon-reload");
+    assert_eq!(systemd.timer_starts.get(), 0, "dry-run must not start the timer");
+
+    // And zero filesystem mutation, end to end through run() (not just the core).
+    let after = snapshot(dir.path());
+    assert_eq!(before, after, "dry-run through run() must not touch any path");
+    assert!(!paths.clyde_unit().exists(), "no clyde unit written under dry-run");
+}
+
+#[test]
+fn run_live_shells_out_to_systemctl_when_systemd_changed() {
+    // The positive counterpart: a real (non-dry) run over the temp fixture migrates the systemd
+    // units (setting systemd_changed) and therefore TAKES both systemctl shell-outs via the seam.
+    // The CountingSystemd fake stands in for `systemctl`, so nothing is actually spawned; the file
+    // mutations all land inside the temp tree.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    seed_full_legacy_world(&paths);
+
+    let systemd = CountingSystemd::default();
+    let args = BootstrapArgs::default();
+    run_paths(&paths, &args, &systemd).unwrap();
+
+    // The clyde timer unit now exists, so the gate's inner `clyde_timer().exists()` branch holds:
+    // both shell-outs fire exactly once.
+    assert!(paths.clyde_timer().exists(), "live run writes the clyde timer unit");
+    assert_eq!(systemd.daemon_reloads.get(), 1, "live run daemon-reloads once");
+    assert_eq!(systemd.timer_starts.get(), 1, "live run starts the timer once");
+}
+
+#[test]
+fn run_skip_systemd_does_not_shell_out() {
+    // --skip-systemd must also gate out the shell-outs, even on a live run.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    seed_full_legacy_world(&paths);
+
+    let systemd = CountingSystemd::default();
+    let args = BootstrapArgs {
+        skip_systemd: true,
+        ..Default::default()
+    };
+    run_paths(&paths, &args, &systemd).unwrap();
+
+    assert_eq!(systemd.daemon_reloads.get(), 0, "--skip-systemd must not daemon-reload");
+    assert_eq!(systemd.timer_starts.get(), 0, "--skip-systemd must not start the timer");
 }
 
 #[test]

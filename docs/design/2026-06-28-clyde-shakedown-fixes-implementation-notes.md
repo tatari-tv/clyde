@@ -240,3 +240,28 @@
 ### Open questions
 
 - None.
+
+## Implementation Audit fixes — deferred items (#5/#6/#7)
+
+The three items left DEFERRED in the implementation-audit pass, now all resolved in a single follow-up commit. No items remain deferred.
+
+### Design decisions
+
+- #5 — True single-input passthrough — `report/src/merge.rs:merge_reports` — added a `reports.len() == 1` short-circuit (via `<[Report; 1]>::try_from`, which moves the lone element out with no index/unwrap and falls through with the original Vec on any other length) that returns the sole input UNCHANGED: original bare session keys (not re-keyed to `<host>/<id>`), original `generated` timestamp (not a fresh `Utc::now`), original `host`/`since`/`until`/`totals`. A 1-input merge now round-trips byte-for-byte. Re-keying, re-summing, and the fresh `generated`/multi-host marker only run for >= 2 inputs, which is the only case where keep-both collision handling is meaningful.
+- #6 — Typed merge error — `report/src/merge.rs:MergeError` — introduced a `thiserror` enum (`NoInputs`, `SchemaMismatch { expected, found }`, `Read { path, source }`, `Parse { path, source }`) so consumers and tests match on the variant instead of parsing a `Display` string. `read_reports`/`merge_reports`/`assert_uniform_schema` now return `Result<_, MergeError>`; the CLI boundary `merge::run` keeps its `eyre::Result` and lifts `MergeError` via `?` (eyre's `From<E: std::error::Error>`), so the rest of the eyre-based crate is untouched. The `SchemaMismatch` `#[error]` message still names BOTH versions. `thiserror` was added to `report/Cargo.toml` via `cargo add -p report thiserror` (picked up the workspace-pinned 2.0.18).
+- #7 — Outer-`run()` gate test — `clyde/src/bootstrap.rs:Systemd` / `run_paths` — extracted the two `systemctl --user` shell-outs behind a small `Systemd` port trait (`daemon_reload`, `start_enrich_timer`) with a real `SystemctlCli` impl. `run()` delegates to `run_with` (env paths) which delegates to `run_paths(paths, args, systemd)`. Tests drive `run_paths` over a temp-`$HOME` `Paths` with a `CountingSystemd` fake to PROVE the outer gate `!dry_run && !skip_systemd && systemd_changed`: `run_dry_run_does_not_shell_out_to_systemctl` (zero calls + zero fs mutation through `run()`), `run_live_shells_out_to_systemctl_when_systemd_changed` (exactly one call each, fixture migrated), and `run_skip_systemd_does_not_shell_out` (gated out on a live run). The existing hermetic core test (`dry_run_performs_zero_mutations_and_lists_planned_steps`) is kept.
+
+### Deviations
+
+- #7 used a `Systemd` port trait + `run_paths(paths, ...)` seam (per the repo's generics-not-dyn DI convention) rather than the alternative "record would-daemon-reload in the returned plan" sketch from the task. The trait seam proves the gate by counting actual would-be invocations through the real `run()` codepath, which is a stronger guarantee than asserting plan strings; `main.rs` is unchanged (`run` keeps its signature).
+
+### Tradeoffs
+
+- #5 `<[Report; 1]>::try_from` vs `reports.len() == 1` + `into_iter().next()` + a fallback — chose `try_from` because it moves the single element out infallibly with no `unwrap`/index and cleanly returns the Vec for the fall-through, satisfying the crate's `deny(clippy::unwrap_used)` without a contrived `unreachable!`.
+- #5 byte-identical test assertion via `serde_json::to_string_pretty` comparison vs adding `#[derive(Clone)]` to `Report`/`Totals`/`SessionEntry` — chose to capture the scalar fields and the serialized JSON BEFORE the move (no `Clone` on production structs just for a test). The serialized-JSON equality is the load-bearing round-trip assertion; the field-by-field checks document intent.
+- #6 typed enum with `#[source]`-carrying `Read`/`Parse` variants vs the minimal `SchemaMismatch`/`NoInputs` pair the doc named — chose to also type the IO/parse failures so the whole `read_reports` path is a matchable error rather than a mix of typed + eyre strings; the CLI boundary still surfaces them identically through eyre.
+- #7 `Cell<usize>` counters in the fake vs `AtomicUsize`/`RefCell` — `Cell` is sufficient (single-threaded test, `Copy` count) and the lightest form.
+
+### Open questions
+
+- None.

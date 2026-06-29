@@ -16,11 +16,46 @@ use crate::config::{MergeConfig, Output};
 use crate::report::{ModelTokens, Report, SessionEntry, Totals};
 use crate::{OutputDest, RunResult};
 use chrono::{DateTime, Utc};
-use eyre::{Context, Result, bail};
+use eyre::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+/// Typed errors for the merge module. `report` is a workspace library, so per repo convention it
+/// uses `thiserror` with a matchable enum rather than `eyre` strings — consumers (and tests) can
+/// discriminate `SchemaMismatch` from `NoInputs` without parsing a `Display` string. The CLI
+/// boundary (`merge::run`) maps these into the crate's `eyre` flow via `#[from]`.
+#[derive(Debug, Error)]
+pub enum MergeError {
+    /// No input reports were given; there is nothing to merge.
+    #[error("report merge: no input files given; nothing to merge")]
+    NoInputs,
+
+    /// Two input reports disagree on `schema-version`; merging incompatible shapes is refused.
+    /// Both versions are named so the operator can see exactly which inputs clashed.
+    #[error(
+        "report merge: schema-version mismatch: input reports disagree ({expected} vs {found}); refusing to merge incompatible report shapes"
+    )]
+    SchemaMismatch { expected: u32, found: u32 },
+
+    /// Reading an input report from disk failed.
+    #[error("failed to read report at {path}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Parsing an input report's JSON failed.
+    #[error("failed to parse report at {path}")]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+}
 
 /// Read, validate, and merge the configured input reports, then emit the merged report to the
 /// configured destination (`-o <file>` or stdout). Returns the merged session count and where it
@@ -29,6 +64,9 @@ use std::path::{Path, PathBuf};
 pub fn run(cfg: &MergeConfig) -> Result<RunResult> {
     log::debug!("merge::run: inputs={} output={:?}", cfg.inputs.len(), cfg.output);
 
+    // The merge core returns the typed `MergeError`; map it into the crate's eyre flow at this CLI
+    // boundary so the rest of the eyre-based crate is unaffected (`?` lifts it via `eyre::Report`'s
+    // `From<E: std::error::Error>`).
     let reports = read_reports(&cfg.inputs)?;
     let merged = merge_reports(reports)?;
     let count = merged.totals.sessions;
@@ -45,16 +83,21 @@ pub fn run(cfg: &MergeConfig) -> Result<RunResult> {
 
 /// Read and deserialize every input path into a [`Report`]. Zero inputs is a typed error (nothing
 /// to merge); a single input is allowed (the merge is then an identity passthrough).
-fn read_reports(inputs: &[PathBuf]) -> Result<Vec<Report>> {
+fn read_reports(inputs: &[PathBuf]) -> std::result::Result<Vec<Report>, MergeError> {
     log::debug!("merge::read_reports: count={}", inputs.len());
     if inputs.is_empty() {
-        bail!("report merge: no input files given; nothing to merge");
+        return Err(MergeError::NoInputs);
     }
     let mut reports = Vec::with_capacity(inputs.len());
     for path in inputs {
-        let body = fs::read_to_string(path).with_context(|| format!("failed to read report at {}", path.display()))?;
-        let report: Report =
-            serde_json::from_str(&body).with_context(|| format!("failed to parse report at {}", path.display()))?;
+        let body = fs::read_to_string(path).map_err(|source| MergeError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        let report: Report = serde_json::from_str(&body).map_err(|source| MergeError::Parse {
+            path: path.clone(),
+            source,
+        })?;
         reports.push(report);
     }
     Ok(reports)
@@ -63,8 +106,22 @@ fn read_reports(inputs: &[PathBuf]) -> Result<Vec<Report>> {
 /// Combine the deserialized reports into one. Asserts a uniform `schema-version`, re-keys sessions
 /// to `"<host>/<session_id>"` (keep-both), recomputes totals from the merged set, and widens the
 /// `since`/`until` window to the min/max across inputs. `host` becomes a multi-host marker.
-fn merge_reports(reports: Vec<Report>) -> Result<Report> {
+///
+/// **Single-input passthrough.** With exactly one input the merge is a TRUE identity: the input
+/// report is returned UNCHANGED — original (bare, un-re-keyed) session keys, original `generated`
+/// timestamp, original `host`/`since`/`until`/`totals`. So a 1-input merge round-trips byte-for-
+/// byte. Re-keying, re-summing, and a fresh `generated` only make sense when actually combining
+/// two or more reports (the keep-both collision handling exists for that case alone).
+fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError> {
     log::debug!("merge::merge_reports: inputs={}", reports.len());
+
+    // Single-input identity passthrough: hand back the lone input verbatim. `<[_; 1]>::try_into`
+    // moves the single element out without any index/unwrap, and falls through (returning the Vec)
+    // for any other length.
+    let reports = match <[Report; 1]>::try_from(reports) {
+        Ok([only]) => return Ok(only),
+        Err(reports) => reports,
+    };
 
     let schema_version = assert_uniform_schema(&reports)?;
 
@@ -111,15 +168,18 @@ fn merge_reports(reports: Vec<Report>) -> Result<Report> {
 
 /// All inputs must share the same `schema-version`; merging incompatible shapes is a typed error
 /// naming both versions. Returns the common version on success.
-fn assert_uniform_schema(reports: &[Report]) -> Result<u32> {
-    let first = reports[0].schema_version;
+fn assert_uniform_schema(reports: &[Report]) -> std::result::Result<u32, MergeError> {
+    // `first()` avoids an index panic; `merge_reports` only reaches here with >= 2 inputs, but a
+    // missing first element degenerates to "no common version" rather than panicking.
+    let Some(first) = reports.first().map(|r| r.schema_version) else {
+        return Err(MergeError::NoInputs);
+    };
     for report in &reports[1..] {
         if report.schema_version != first {
-            bail!(
-                "report merge: schema-version mismatch: input reports disagree ({} vs {}); refusing to merge incompatible report shapes",
-                first,
-                report.schema_version
-            );
+            return Err(MergeError::SchemaMismatch {
+                expected: first,
+                found: report.schema_version,
+            });
         }
     }
     Ok(first)

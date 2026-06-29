@@ -116,26 +116,64 @@ impl Paths {
     }
 }
 
+/// The systemd shell-out seam. The two post-migration `systemctl --user` calls are the only
+/// mutation sites OUTSIDE the hermetic `bootstrap()` core; routing them through this port lets a
+/// test inject a counting fake and PROVE the outer `run()` gate honors `--dry-run`/`--skip-systemd`
+/// (rather than verifying that gate by inspection only). Production uses [`SystemctlCli`], which
+/// actually shells out; CI can't run `systemctl`, so it never sees the real impl.
+pub trait Systemd {
+    /// `systemctl --user daemon-reload`.
+    fn daemon_reload(&self);
+    /// `systemctl --user start <timer>`.
+    fn start_enrich_timer(&self);
+}
+
+/// Production [`Systemd`]: the real best-effort `systemctl --user` shell-outs. Warns on failure;
+/// never aborts bootstrap.
+pub struct SystemctlCli;
+
+impl Systemd for SystemctlCli {
+    fn daemon_reload(&self) {
+        daemon_reload();
+    }
+    fn start_enrich_timer(&self) {
+        start_enrich_timer();
+    }
+}
+
 /// Entry point for `clyde bootstrap`. Resolves real paths and runs the migration; the systemd
 /// `daemon-reload` (the one step that shells out) is best-effort and lives only here, so the
 /// migration core stays hermetic for tests.
 pub fn run(args: &BootstrapArgs) -> Result<()> {
+    run_with(args, &SystemctlCli)
+}
+
+/// `run` with the [`Systemd`] shell-out seam injected, resolving paths from the environment.
+pub fn run_with<S: Systemd>(args: &BootstrapArgs, systemd: &S) -> Result<()> {
+    let paths = Paths::from_env()?;
+    run_paths(&paths, args, systemd)
+}
+
+/// The body of `run()` over explicit `paths` and an injected [`Systemd`] seam. Tests drive this
+/// against a temp-`$HOME` `Paths` with a counting fake to assert the outer gate
+/// (`!dry_run && !skip_systemd && systemd_changed`) is HONORED — proving a dry-run takes zero
+/// systemctl calls and a live run takes them — rather than verifying that gate by inspection only.
+pub fn run_paths<S: Systemd>(paths: &Paths, args: &BootstrapArgs, systemd: &S) -> Result<()> {
     debug!(
         "bootstrap::run: force={} skip_systemd={} skip_statusline={} install_timer={} dry_run={}",
         args.force, args.skip_systemd, args.skip_statusline, args.install_timer, args.dry_run
     );
-    let paths = Paths::from_env()?;
-    let outcome = bootstrap(&paths, args)?;
+    let outcome = bootstrap(paths, args)?;
     // The two `systemctl` shell-outs are the only mutation sites OUTSIDE `bootstrap()`, so they are
     // gated here in the outer `run()`. Under dry_run they are NEVER invoked — the dry-run report
     // names them as planned steps instead. (See the inventory note in the design doc: a gate
     // threaded only into `bootstrap()` would let these two writes escape.)
     if !args.dry_run && !args.skip_systemd && outcome.systemd_changed {
-        daemon_reload();
+        systemd.daemon_reload();
         // daemon-reload re-reads units but does not start them; the renamed timer is enabled but
         // inactive until next boot otherwise. Arm it now (only if the timer unit actually exists).
         if paths.clyde_timer().exists() {
-            start_enrich_timer();
+            systemd.start_enrich_timer();
         }
     }
 

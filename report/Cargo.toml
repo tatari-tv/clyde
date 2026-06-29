@@ -35,6 +35,7 @@ regex = "1.12.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+thiserror.workspace = true
 ureq = { workspace = true, features = ["json"] }
 wait-timeout = "0.2.1"
 which = { workspace = true }

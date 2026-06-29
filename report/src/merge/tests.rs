@@ -161,17 +161,21 @@ fn schema_version_mismatch_is_typed_error_naming_both() {
     );
     r2.schema_version = 2;
 
+    // Typed error: match on the variant naming both versions, not a Display-string substring.
     let err = merge_reports(vec![r1, r2]).unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(msg.contains("schema-version"), "msg: {msg}");
-    assert!(msg.contains('1') && msg.contains('2'), "must name both versions: {msg}");
+    match err {
+        MergeError::SchemaMismatch { expected, found } => {
+            assert_eq!(expected, 1);
+            assert_eq!(found, 2);
+        }
+        other => panic!("expected SchemaMismatch, got {other:?}"),
+    }
 }
 
 #[test]
 fn zero_inputs_is_error() {
     let err = read_reports(&[]).unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(msg.contains("no input"), "msg: {msg}");
+    assert!(matches!(err, MergeError::NoInputs), "expected NoInputs, got {err:?}");
 }
 
 #[test]
@@ -184,19 +188,44 @@ fn single_input_is_identity_passthrough() {
         "claude-opus-4-7",
         model_tokens(100, Some(1.00)),
     );
-    let original_spend = r.totals.spend_usd;
+    // Capture the input's scalar fields and its serialized form BEFORE the move, so we can assert a
+    // genuine field-by-field + byte-identical round-trip against the original.
+    let original_generated = r.generated;
+    let original_host = r.host.clone();
     let original_since = r.since;
     let original_until = r.until;
+    let original_schema = r.schema_version;
+    let original_spend = r.totals.spend_usd;
+    let original_sessions = r.totals.sessions;
+    let original_json = serde_json::to_string_pretty(&r).unwrap();
 
     let merged = merge_reports(vec![r]).unwrap();
-    // Identity: one session survives (re-keyed), totals/window unchanged, host preserved.
-    assert_eq!(merged.sessions.len(), 1);
-    assert!(merged.sessions.contains_key(&format!("desk/{SID_SHARED}")));
-    assert_eq!(merged.totals.sessions, 1);
-    assert_eq!(merged.totals.spend_usd, original_spend);
+
+    // TRUE identity passthrough: keys are the ORIGINAL bare session ids (NOT re-keyed to
+    // "<host>/<id>"), `generated` is the original timestamp (NOT a fresh Utc::now), and host /
+    // since / until / totals are all the input's own values, unchanged.
+    assert!(
+        merged.sessions.contains_key(SID_SHARED),
+        "session key must stay the bare id, not be re-keyed"
+    );
+    assert!(
+        !merged.sessions.contains_key(&format!("desk/{SID_SHARED}")),
+        "single-input merge must NOT re-key by host"
+    );
+    assert_eq!(merged.generated, original_generated, "generated must be preserved");
+    assert_eq!(merged.host, original_host, "host must be preserved verbatim");
     assert_eq!(merged.since, original_since);
     assert_eq!(merged.until, original_until);
-    assert_eq!(merged.host, "desk", "single host keeps its bare name");
+    assert_eq!(merged.schema_version, original_schema);
+    assert_eq!(merged.totals.sessions, original_sessions);
+    assert_eq!(merged.totals.spend_usd, original_spend);
+
+    // The strongest assertion: the serialized merged report is byte-identical to the input.
+    let merged_json = serde_json::to_string_pretty(&merged).unwrap();
+    assert_eq!(
+        merged_json, original_json,
+        "1-input merge must be a byte-identical round-trip"
+    );
 }
 
 #[test]
