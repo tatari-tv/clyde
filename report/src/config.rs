@@ -85,9 +85,14 @@ const DEFAULT_RENDER_INPUT: &str = "./claude-report.json";
 /// Resolve a parsed `cr`/`clyde report` subcommand into its validated [`ResolvedCommand`].
 /// Split out of the former `TryFrom<Cli>` so `report::run` can own building the [`Config`] from
 /// the nested [`crate::cli::ReportArgs`] plus the common globals.
-pub fn resolve_command(command: crate::cli::Command, tz: DateTz) -> Result<ResolvedCommand> {
+pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> {
     let resolved = match command {
-        crate::cli::Command::Collect(args) => ResolvedCommand::Collect(collect_config_from_args(args, tz)?),
+        crate::cli::Command::Collect(args) => {
+            // Load clyde.yml ONLY here — collect is the sole consumer of the date-tz convention.
+            // Loading lazily means a malformed config can't break `render`/`merge` below.
+            let tz = common::config::load()?.date_tz();
+            ResolvedCommand::Collect(collect_config_from_args(args, tz)?)
+        }
         crate::cli::Command::Render(args) => {
             let pdf = args.pdf;
             let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_INPUT));

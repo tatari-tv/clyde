@@ -265,3 +265,26 @@ The three items left DEFERRED in the implementation-audit pass, now all resolved
 ### Open questions
 
 - None.
+
+## Verification-audit residual fix (report lazy config)
+
+### Design decisions
+- Verification audit caught a SECOND unconditional `common::config::load()` at
+  `report/src/lib.rs:63` (missed by the first lazy-config fix, which only covered
+  `clyde/src/main.rs::run()`). It broke `report render`/`merge` on a malformed
+  `clyde.yml` even though neither uses `date-tz`. Fix: `report::run` no longer
+  loads config; `resolve_command` loads it ONLY in the `Collect` arm (the sole
+  `DateTz` consumer). `collect_config_from_args(args, tz)` keeps its explicit-tz
+  signature so the config tests stay deterministic.
+
+### Deviations
+- None.
+
+### Tradeoffs
+- Load lives in the `Collect` match arm rather than inside
+  `collect_config_from_args` (which the tests call directly with an explicit tz) —
+  keeps tests deterministic while still scoping the load to collect-only.
+
+### Open questions
+- None. Corrects the earlier impl-note overstatement that "all absorbed tools now
+  never touch clyde.yml" — the `report` tool's collect path legitimately does.
