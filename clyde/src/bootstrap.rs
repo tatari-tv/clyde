@@ -38,6 +38,15 @@ pub struct BootstrapArgs {
     /// Create the enrich timer unit even if no legacy unit exists (default: repoint existing only).
     #[arg(long)]
     pub install_timer: bool,
+
+    /// Preview the migration WITHOUT performing any side effect: print the ordered list of actions
+    /// that WOULD be taken (moves, repoints, daemon-reload) and exit having written nothing — no
+    /// files created/moved/removed, no symlinks, the events DB never opened for writing or
+    /// checkpointed, and no `systemctl` shell-outs. Justified despite the "no --dry-run on opt-in
+    /// destructive flags" convention because `bootstrap` is DEFAULT-destructive (no opt-in gate),
+    /// which is the carve-out: a default-destructive op may offer a preview.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// The resolved XDG/home roots bootstrap and doctor operate over. Injected so the whole surface
@@ -107,24 +116,92 @@ impl Paths {
     }
 }
 
+/// The systemd shell-out seam. The two post-migration `systemctl --user` calls are the only
+/// mutation sites OUTSIDE the hermetic `bootstrap()` core; routing them through this port lets a
+/// test inject a counting fake and PROVE the outer `run()` gate honors `--dry-run`/`--skip-systemd`
+/// (rather than verifying that gate by inspection only). Production uses [`SystemctlCli`], which
+/// actually shells out; CI can't run `systemctl`, so it never sees the real impl.
+pub trait Systemd {
+    /// `systemctl --user daemon-reload`.
+    fn daemon_reload(&self);
+    /// `systemctl --user start <timer>`.
+    fn start_enrich_timer(&self);
+}
+
+/// Production [`Systemd`]: the real best-effort `systemctl --user` shell-outs. Warns on failure;
+/// never aborts bootstrap.
+pub struct SystemctlCli;
+
+impl Systemd for SystemctlCli {
+    fn daemon_reload(&self) {
+        daemon_reload();
+    }
+    fn start_enrich_timer(&self) {
+        start_enrich_timer();
+    }
+}
+
 /// Entry point for `clyde bootstrap`. Resolves real paths and runs the migration; the systemd
 /// `daemon-reload` (the one step that shells out) is best-effort and lives only here, so the
 /// migration core stays hermetic for tests.
 pub fn run(args: &BootstrapArgs) -> Result<()> {
-    debug!(
-        "bootstrap::run: force={} skip_systemd={} skip_statusline={} install_timer={}",
-        args.force, args.skip_systemd, args.skip_statusline, args.install_timer
-    );
+    run_with(args, &SystemctlCli)
+}
+
+/// `run` with the [`Systemd`] shell-out seam injected, resolving paths from the environment.
+pub fn run_with<S: Systemd>(args: &BootstrapArgs, systemd: &S) -> Result<()> {
     let paths = Paths::from_env()?;
-    let outcome = bootstrap(&paths, args)?;
-    if !args.skip_systemd && outcome.systemd_changed {
-        daemon_reload();
+    run_paths(&paths, args, systemd)
+}
+
+/// The body of `run()` over explicit `paths` and an injected [`Systemd`] seam. Tests drive this
+/// against a temp-`$HOME` `Paths` with a counting fake to assert the outer gate
+/// (`!dry_run && !skip_systemd && systemd_changed`) is HONORED — proving a dry-run takes zero
+/// systemctl calls and a live run takes them — rather than verifying that gate by inspection only.
+pub fn run_paths<S: Systemd>(paths: &Paths, args: &BootstrapArgs, systemd: &S) -> Result<()> {
+    debug!(
+        "bootstrap::run: force={} skip_systemd={} skip_statusline={} install_timer={} dry_run={}",
+        args.force, args.skip_systemd, args.skip_statusline, args.install_timer, args.dry_run
+    );
+    let outcome = bootstrap(paths, args)?;
+    // The two `systemctl` shell-outs are the only mutation sites OUTSIDE `bootstrap()`, so they are
+    // gated here in the outer `run()`. Under dry_run they are NEVER invoked — the dry-run report
+    // names them as planned steps instead. (See the inventory note in the design doc: a gate
+    // threaded only into `bootstrap()` would let these two writes escape.)
+    if !args.dry_run && !args.skip_systemd && outcome.systemd_changed {
+        systemd.daemon_reload();
         // daemon-reload re-reads units but does not start them; the renamed timer is enabled but
         // inactive until next boot otherwise. Arm it now (only if the timer unit actually exists).
         if paths.clyde_timer().exists() {
-            start_enrich_timer();
+            systemd.start_enrich_timer();
         }
     }
+
+    if args.dry_run {
+        info!("bootstrap --dry-run: planned steps: {}", outcome.completed.join(", "));
+        println!(
+            "clyde bootstrap --dry-run: {} step(s) WOULD be performed (nothing was written):",
+            outcome.completed.len()
+        );
+        for step in &outcome.completed {
+            println!("  • would: {step}");
+        }
+        // Mirror the live run's post-step systemd handling as planned (never-invoked) actions.
+        if !args.skip_systemd && outcome.systemd_changed {
+            println!("  • would: systemctl --user daemon-reload");
+            println!("  • would: systemctl --user start {CLYDE_ENRICH_TIMER} (if timer unit present)");
+        }
+        if outcome.completed.is_empty() && outcome.failed.is_none() {
+            println!("  (nothing to migrate — already on clyde or no legacy state found)");
+        }
+        println!("Dry run: no files were moved, no symlinks created, the events DB was not opened.");
+        if let Some((step, err)) = outcome.failed {
+            eprintln!("  ✗ would fail at: {step}");
+            return Err(eyre::eyre!("bootstrap --dry-run failed planning step '{step}': {err}"));
+        }
+        return Ok(());
+    }
+
     info!("bootstrap: completed steps: {}", outcome.completed.join(", "));
     println!("clyde bootstrap: completed {} step(s):", outcome.completed.len());
     for step in &outcome.completed {
@@ -175,19 +252,25 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
         };
     }
 
+    // Every step takes `dry_run`: under it the step computes its no-op/would-act decision exactly
+    // as a live run (so the reported plan is faithful) but returns BEFORE performing the
+    // fs/DB/symlink mutation. The `step!` macro still records the label for an Ok(true), so the
+    // dry-run plan and the live run report the identical step set.
+    let dry = args.dry_run;
+
     // 1. Data/config migration (so a repointed integration finds its state).
     step!(
         "sessions data dir klod -> clyde",
-        migrate_dir(&paths.xdg_data.join("klod"), &paths.xdg_data.join("clyde"))
+        migrate_dir(&paths.xdg_data.join("klod"), &paths.xdg_data.join("clyde"), dry)
     );
     step!(
         "config dir klod -> clyde",
-        migrate_dir(&paths.xdg_config.join("klod"), &paths.xdg_config.join("clyde"))
+        migrate_dir(&paths.xdg_config.join("klod"), &paths.xdg_config.join("clyde"), dry)
     );
-    step!("permit events DB (WAL-safe move)", migrate_events_db(paths));
+    step!("permit events DB (WAL-safe move)", migrate_events_db(paths, dry));
     step!(
         "permit config -> clyde/permit.yml",
-        migrate_permit_config(paths, args.force)
+        migrate_permit_config(paths, args.force, dry)
     );
     step!(
         "cost config -> clyde/cost.yml",
@@ -195,11 +278,12 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
             &paths.xdg_config.join("ccu").join("ccu.yml"),
             &paths.xdg_config.join("clyde").join("cost.yml"),
             args.force,
+            dry,
         )
     );
     step!(
         "pricing overrides merged -> clyde/pricing.json",
-        merge_pricing_overrides(paths, args.force)
+        merge_pricing_overrides(paths, args.force, dry)
     );
 
     // 2. Integration repointing (always applies — it must be correct).
@@ -207,18 +291,18 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
     // is repointed by its owner, and rewriting it here would replace the symlink. It keeps
     // working via the transitional `ccu` shim until then.
     if !args.skip_statusline {
-        step!("statusline ccu -> clyde cost", repoint_statusline(paths));
+        step!("statusline ccu -> clyde cost", repoint_statusline(paths, dry));
     }
     step!(
         "permit hook (global settings.json)",
-        repoint_hook(&paths.settings_global())
+        repoint_hook(&paths.settings_global(), dry)
     );
     step!(
         "permit hook (local settings.local.json)",
-        repoint_hook(&paths.settings_local())
+        repoint_hook(&paths.settings_local(), dry)
     );
     if !args.skip_systemd {
-        match repoint_systemd(paths, args.install_timer) {
+        match repoint_systemd(paths, args.install_timer, dry) {
             Ok(true) => {
                 out.completed.push("enrich systemd unit klod -> clyde".into());
                 out.systemd_changed = true;
@@ -236,15 +320,16 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
 
 /// Migrate the permit config: the canonical `claude-permit/config.yml` first, else the
 /// single-`*.yml`-in-the-dir fallback. One `Result<bool>` so the step runner can drive it.
-fn migrate_permit_config(paths: &Paths, force: bool) -> Result<bool> {
+fn migrate_permit_config(paths: &Paths, force: bool, dry_run: bool) -> Result<bool> {
     if migrate_file(
         &paths.xdg_config.join("claude-permit").join("config.yml"),
         &paths.xdg_config.join("clyde").join("permit.yml"),
         force,
+        dry_run,
     )? {
         return Ok(true);
     }
-    migrate_legacy_permit_config(paths, force)
+    migrate_legacy_permit_config(paths, force, dry_run)
 }
 
 /// Append `.clyde.bak` to a path's full filename (so `settings.json` -> `settings.json.clyde.bak`).
@@ -282,12 +367,20 @@ fn write_atomic(target: &Path, contents: &str) -> Result<()> {
 /// collide with an existing dest entry (never clobber — leave the legacy copy and warn), then
 /// remove `legacy` only if it ends up empty. Returns whether anything moved. This prevents
 /// stranding `klod/sessions.db` under the legacy root while runtime reads the clyde path.
-fn migrate_dir(legacy: &Path, dest: &Path) -> Result<bool> {
-    debug!("migrate_dir: {} -> {}", legacy.display(), dest.display());
+fn migrate_dir(legacy: &Path, dest: &Path, dry_run: bool) -> Result<bool> {
+    debug!(
+        "migrate_dir: {} -> {} dry_run={dry_run}",
+        legacy.display(),
+        dest.display()
+    );
     if !legacy.exists() {
         return Ok(false);
     }
     if !dest.exists() {
+        if dry_run {
+            // WOULD rename the whole dir. Report without creating the parent or moving anything.
+            return Ok(true);
+        }
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
         }
@@ -296,7 +389,18 @@ fn migrate_dir(legacy: &Path, dest: &Path) -> Result<bool> {
         info!("migrated dir {} -> {}", legacy.display(), dest.display());
         return Ok(true);
     }
-    // Destination already populated: merge non-colliding entries.
+    // Destination already populated: merge non-colliding entries. Under dry_run, just count what
+    // WOULD move (read-only directory scan) and never create the dest or rename anything.
+    if dry_run {
+        let mut would_move = false;
+        for entry in fs::read_dir(legacy).with_context(|| format!("failed to read {}", legacy.display()))? {
+            let entry = entry.with_context(|| format!("failed to read entry in {}", legacy.display()))?;
+            if !dest.join(entry.file_name()).exists() {
+                would_move = true;
+            }
+        }
+        return Ok(would_move);
+    }
     fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
     let mut moved_any = false;
     let mut collisions = 0usize;
@@ -337,7 +441,7 @@ fn migrate_dir(legacy: &Path, dest: &Path) -> Result<bool> {
 
 /// Move a single config file `legacy -> dest`. `force` governs overwriting an existing dest.
 /// Returns whether a move happened.
-fn migrate_file(legacy: &Path, dest: &Path, force: bool) -> Result<bool> {
+fn migrate_file(legacy: &Path, dest: &Path, force: bool, dry_run: bool) -> Result<bool> {
     if !legacy.exists() {
         return Ok(false);
     }
@@ -347,6 +451,10 @@ fn migrate_file(legacy: &Path, dest: &Path, force: bool) -> Result<bool> {
             dest.display()
         );
         return Ok(false);
+    }
+    if dry_run {
+        // WOULD move (and back up an existing dest). Report without touching the filesystem.
+        return Ok(true);
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
@@ -361,7 +469,7 @@ fn migrate_file(legacy: &Path, dest: &Path, force: bool) -> Result<bool> {
 
 /// Fallback for the permit config when the legacy `~/.config/claude-permit/` dir holds a single
 /// `*.yml` under a non-`config.yml` name: move the first yml found to `clyde/permit.yml`.
-fn migrate_legacy_permit_config(paths: &Paths, force: bool) -> Result<bool> {
+fn migrate_legacy_permit_config(paths: &Paths, force: bool, dry_run: bool) -> Result<bool> {
     let legacy_dir = paths.xdg_config.join("claude-permit");
     let dest = paths.xdg_config.join("clyde").join("permit.yml");
     if !legacy_dir.is_dir() || (dest.exists() && !force) {
@@ -374,23 +482,33 @@ fn migrate_legacy_permit_config(paths: &Paths, force: bool) -> Result<bool> {
     }) else {
         return Ok(false);
     };
-    migrate_file(&yml, &dest, force)
+    migrate_file(&yml, &dest, force, dry_run)
 }
 
 /// WAL-safe move of the permit events DB to the clyde home. Checkpoints the WAL (TRUNCATE) and
 /// closes the connection before moving `events.db` plus any `-wal`/`-shm` sidecars together, so
 /// no committed rows are stranded in an un-checkpointed WAL. No-op if the legacy DB is absent or
 /// the clyde DB already exists.
-fn migrate_events_db(paths: &Paths) -> Result<bool> {
+fn migrate_events_db(paths: &Paths, dry_run: bool) -> Result<bool> {
     let legacy = paths.legacy_events_db();
     let dest = paths.clyde_events_db();
-    debug!("migrate_events_db: {} -> {}", legacy.display(), dest.display());
+    debug!(
+        "migrate_events_db: {} -> {} dry_run={dry_run}",
+        legacy.display(),
+        dest.display()
+    );
     if !legacy.exists() {
         return Ok(false);
     }
     if dest.exists() {
         warn!("migrate_events_db: clyde events DB already exists; leaving legacy in place");
         return Ok(false);
+    }
+    if dry_run {
+        // CRITICAL: do NOT open the DB. A real run runs `PRAGMA wal_checkpoint(TRUNCATE)` here — a
+        // WRITE to the user's events DB — before the gated rename. Dry-run must neither checkpoint
+        // nor open the DB in any writing mode; it reports the planned move from existence alone.
+        return Ok(true);
     }
     // Checkpoint and close in an inner scope so the connection is dropped before the move. Capture
     // the row count post-checkpoint (best-effort: a degenerate DB may lack the `events` table) so
@@ -438,7 +556,7 @@ fn sidecar(db: &Path, suffix: &str) -> PathBuf {
 /// Merge the two disjoint pricing overrides (`ccu/pricing.json`, `cr/pricing.json`) into a single
 /// `clyde/pricing.json`. On a key conflict, ccu wins (and the conflict is logged). No-op if dest
 /// exists and `--force` is not set, or if neither source exists.
-fn merge_pricing_overrides(paths: &Paths, force: bool) -> Result<bool> {
+fn merge_pricing_overrides(paths: &Paths, force: bool, dry_run: bool) -> Result<bool> {
     let ccu = paths.xdg_config.join("ccu").join("pricing.json");
     let cr = paths.xdg_config.join("cr").join("pricing.json");
     let dest = paths.xdg_config.join("clyde").join("pricing.json");
@@ -448,6 +566,11 @@ fn merge_pricing_overrides(paths: &Paths, force: bool) -> Result<bool> {
     if dest.exists() && !force {
         debug!("merge_pricing_overrides: dest exists and --force not set; skipping");
         return Ok(false);
+    }
+    if dry_run {
+        // WOULD merge the sources into clyde/pricing.json. Report without reading/writing — the
+        // would-act decision rests on source/dest existence only, no parse needed.
+        return Ok(true);
     }
     let mut merged = serde_json::Map::new();
     // cr first, then ccu (so ccu overrides on conflict).
@@ -480,7 +603,7 @@ fn merge_pricing_overrides(paths: &Paths, force: bool) -> Result<bool> {
 
 /// Rewrite the statusline script's `ccu <today|weekly|monthly>` invocations to `clyde cost ...`.
 /// No-op if the script is absent or already repointed. Backs up before rewriting.
-fn repoint_statusline(paths: &Paths) -> Result<bool> {
+fn repoint_statusline(paths: &Paths, dry_run: bool) -> Result<bool> {
     let path = paths.statusline();
     if !path.exists() {
         return Ok(false);
@@ -489,6 +612,10 @@ fn repoint_statusline(paths: &Paths) -> Result<bool> {
     let rewritten = rewrite_statusline(&text);
     if rewritten == text {
         return Ok(false);
+    }
+    if dry_run {
+        // A rewrite WOULD happen (the read above is read-only). Report without backing up or writing.
+        return Ok(true);
     }
     // write_atomic renames a fresh temp over the target, which would land 0644 and drop the 0755
     // exec bit Claude Code needs to run the statusline. Capture and re-apply the original mode.
@@ -515,7 +642,7 @@ fn rewrite_statusline(text: &str) -> String {
 /// Rewrite the exact `claude-permit log` hook command to `clyde permit log` in a Claude settings
 /// file, preserving every other field, matcher, and ordering. No-op if the file is absent or has
 /// no legacy hook. Backs up before rewriting.
-fn repoint_hook(path: &Path) -> Result<bool> {
+fn repoint_hook(path: &Path, dry_run: bool) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
@@ -524,6 +651,11 @@ fn repoint_hook(path: &Path) -> Result<bool> {
     let changed = rewrite_hook_commands(&mut root);
     if !changed {
         return Ok(false);
+    }
+    if dry_run {
+        // A hook command WOULD be repointed (the read/parse above is read-only; `root` is a local
+        // clone, never written back). Report without backing up or writing.
+        return Ok(true);
     }
     backup(path)?;
     let body = serde_json::to_string_pretty(&root).context("failed to serialize settings")?;
@@ -567,16 +699,26 @@ fn rewrite_hook_commands(root: &mut Value) -> bool {
 /// the unit as `clyde-enrich.service`, and remove the old `klod-enrich.service`. Repoints an
 /// existing unit only, unless `install_timer` is set (then it creates the clyde unit from a
 /// template). Returns whether the unit changed.
-fn repoint_systemd(paths: &Paths, install_timer: bool) -> Result<bool> {
+fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<bool> {
     let legacy_svc = paths.legacy_unit();
     let legacy_tmr = paths.legacy_timer();
     let has_legacy =
         legacy_svc.exists() || legacy_tmr.exists() || fs::symlink_metadata(paths.legacy_wants_link()).is_ok();
     if !has_legacy {
         if install_timer && !paths.clyde_unit().exists() {
+            if dry_run {
+                // WOULD install the clyde service + timer + enable symlink. Report without writing.
+                return Ok(true);
+            }
             return install_clyde_timer(paths);
         }
         return Ok(false);
+    }
+    if dry_run {
+        // Legacy units present: a live run WOULD rewrite the service/timer, move the env file,
+        // repoint the enable symlink, and remove the legacy units. Report without performing any of
+        // it — no reads of unit bodies are needed to know the move would happen.
+        return Ok(true);
     }
 
     let mut changed = false;

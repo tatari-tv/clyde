@@ -1,7 +1,7 @@
-use crate::RunResult;
 use crate::config::RenderConfig;
 use crate::persona::{self, PersonaBlock};
 use crate::report::{Report, SessionEntry};
+use crate::{OutputDest, RunResult};
 use crate::{summarize, title};
 use eyre::{Context, Result, bail};
 use serde::Serialize;
@@ -28,7 +28,7 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
         && (ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
     {
         bail!(
-            "input file ends in .yml/.yaml; cr v0.1.2+ emits and reads JSON. Re-run cr collect to regenerate as .json."
+            "input file ends in .yml/.yaml; report collect emits JSON. Re-run report collect to regenerate as .json."
         );
     }
 
@@ -70,9 +70,14 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
         fs::write(&output, &markdown).with_context(|| format!("failed to write markdown to {}", output.display()))?;
     }
 
+    let dest = if output.as_os_str() == STDOUT_SIGIL {
+        OutputDest::Stdout
+    } else {
+        OutputDest::File(output)
+    };
     Ok(RunResult {
         sessions_emitted: report.totals.sessions,
-        output_path: output,
+        output: dest,
     })
 }
 

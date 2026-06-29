@@ -86,3 +86,70 @@ fn test_resolve_log_filter_default_not_explicit() {
     let (filter, _) = resolve_log_filter(None, None);
     assert!(!filter.is_empty());
 }
+
+#[test]
+fn test_wants_json_explicit_override_always_true() {
+    // `-j/--json` forces JSON regardless of the TTY state.
+    assert!(wants_json(true));
+}
+
+#[test]
+fn test_wants_json_autodetects_pipe() {
+    // Under the test harness stdout is NOT a terminal (it's captured/piped), so the
+    // autodetect must select JSON even without the explicit `-j` flag. This is the
+    // `cost today | jq` case: piped output gets machine-readable JSON automatically.
+    assert!(!std::io::stdout().is_terminal());
+    assert!(wants_json(false));
+}
+
+// --- Phase 9 (#13): `cost session current` resolves the live session ---
+
+fn summary(session_id: &str, last_active: &str) -> SessionSummary {
+    SessionSummary {
+        session_id: session_id.to_string(),
+        cost: 1.0,
+        entries: 1,
+        last_active: DateTime::parse_from_rfc3339(last_active).unwrap().with_timezone(&Utc),
+    }
+}
+
+#[test]
+fn resolve_current_prefers_live_env_session_over_most_active() {
+    // The live session (env) is NOT the most-recently-active-by-content one; the env signal wins.
+    // This is exactly the shakedown mismatch: 049209b7 (live) vs 6e427ce3 (most active by content).
+    let sessions = vec![
+        summary("049209b7-aaaa", "2026-06-20T10:00:00Z"), // live, older content activity
+        summary("6e427ce3-bbbb", "2026-06-28T10:00:00Z"), // most-recently-active by content
+    ];
+    let chosen = resolve_current_session(&sessions, Some("049209b7-aaaa")).unwrap();
+    assert_eq!(chosen.session_id, "049209b7-aaaa");
+}
+
+#[test]
+fn resolve_current_falls_back_when_env_absent() {
+    let sessions = vec![
+        summary("049209b7-aaaa", "2026-06-20T10:00:00Z"),
+        summary("6e427ce3-bbbb", "2026-06-28T10:00:00Z"),
+    ];
+    // No env signal -> most-recently-active wins.
+    let chosen = resolve_current_session(&sessions, None).unwrap();
+    assert_eq!(chosen.session_id, "6e427ce3-bbbb");
+}
+
+#[test]
+fn resolve_current_falls_back_when_env_session_not_in_scan() {
+    let sessions = vec![
+        summary("049209b7-aaaa", "2026-06-20T10:00:00Z"),
+        summary("6e427ce3-bbbb", "2026-06-28T10:00:00Z"),
+    ];
+    // Env names a session older than the 30-day scan window (not present) -> fall back.
+    let chosen = resolve_current_session(&sessions, Some("ffffffff-dead")).unwrap();
+    assert_eq!(chosen.session_id, "6e427ce3-bbbb");
+}
+
+#[test]
+fn resolve_current_none_when_no_sessions() {
+    let sessions: Vec<SessionSummary> = Vec::new();
+    assert!(resolve_current_session(&sessions, Some("049209b7-aaaa")).is_none());
+    assert!(resolve_current_session(&sessions, None).is_none());
+}

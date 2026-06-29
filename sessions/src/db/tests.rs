@@ -446,3 +446,48 @@ fn search_recency_limit_keeps_most_recent() {
     assert!(!ids.contains(&UUID_A), "oldest session must be dropped");
     assert!(!ids.contains(&UUID_B), "older session must be dropped");
 }
+
+#[test]
+fn set_tags_writes_manual_source_and_clear_resets_to_null() {
+    // After set_tags with non-empty tags: tags_source == "manual".
+    // After set_tags with empty tags (clear): tags are empty AND tags_source is NULL.
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    // Set tags -> tags_source becomes 'manual'.
+    db.set_tags(UUID_A, &["terraform".into(), "s3".into()]).unwrap();
+    let rec = db.get(UUID_A).unwrap().unwrap();
+    assert_eq!(rec.tags, vec!["terraform".to_string(), "s3".to_string()]);
+    assert_eq!(
+        rec.tags_source.as_deref(),
+        Some("manual"),
+        "non-empty set_tags must record tags_source = 'manual'"
+    );
+
+    // Clear tags -> tags empty, tags_source NULL so enrich can re-tag.
+    db.set_tags(UUID_A, &[]).unwrap();
+    let rec = db.get(UUID_A).unwrap().unwrap();
+    assert!(rec.tags.is_empty(), "tags must be empty after clear");
+    assert!(
+        rec.tags_source.is_none(),
+        "tags_source must be NULL after clear; got {:?}",
+        rec.tags_source
+    );
+}
+
+#[test]
+fn tags_source_exposed_in_session_record() {
+    // Verify that tags_source is populated into SessionRecord from the DB (regression guard for
+    // the COLS / map_record column-index alignment added in Phase 4).
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    // Before any tagging, tags_source is NULL.
+    let rec = db.get(UUID_A).unwrap().unwrap();
+    assert!(rec.tags_source.is_none(), "fresh session has no tags_source");
+
+    // After manual tagging, tags_source is 'manual'.
+    db.set_tags(UUID_A, &["work".into()]).unwrap();
+    let rec = db.get(UUID_A).unwrap().unwrap();
+    assert_eq!(rec.tags_source.as_deref(), Some("manual"));
+}

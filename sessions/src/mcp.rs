@@ -157,6 +157,15 @@ impl SessionsMcpServer {
     }
 }
 
+/// Parse an optional sort string (from the MCP request) into a `SortBy`, accepting the value
+/// case-insensitively. Absent or unrecognised values default to `Relevance`.
+fn parse_sort_by(s: Option<&str>) -> crate::model::SortBy {
+    match s.map(str::to_ascii_lowercase).as_deref() {
+        Some("recency") => crate::model::SortBy::Recency,
+        _ => crate::model::SortBy::Relevance,
+    }
+}
+
 #[tool_router]
 impl SessionsMcpServer {
     /// Full-text search over the session catalog, ranked (high-signal fields first).
@@ -170,26 +179,20 @@ impl SessionsMcpServer {
     async fn sessions_search(&self, params: Parameters<SessionsSearchRequest>) -> Result<CallToolResult, McpError> {
         let req = params.0;
         debug!(
-            "sessions_search: query={:?} limit={:?} include_archived={:?}",
-            req.query, req.limit, req.include_archived
+            "sessions_search: query={:?} limit={:?} include_archived={:?} sort={:?}",
+            req.query, req.limit, req.include_archived, req.sort
         );
         if req.query.trim().is_empty() {
             return Err(Self::invalid("query is empty"));
         }
         let limit = req.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
         let include_archived = req.include_archived.unwrap_or(false);
+        let sort_by = parse_sort_by(req.sort.as_deref());
 
         let hits = Self::block_in_place_compat(|| -> Result<Vec<SearchHit>, McpError> {
             let db = self.db.lock().map_err(Self::err)?;
-            // MCP is relevance-only by decision (see design doc Open Questions); the tool schema
-            // exposes no sort param, so pass the relevance default explicitly.
-            db.search(
-                &req.query,
-                Some(limit),
-                include_archived,
-                crate::model::SortBy::Relevance,
-            )
-            .map_err(Self::db_err)
+            db.search(&req.query, Some(limit), include_archived, sort_by)
+                .map_err(Self::db_err)
         })?;
 
         debug!("sessions_search: returning {} hits", hits.len());
@@ -213,7 +216,7 @@ impl SessionsMcpServer {
         );
         let limit = req.limit.unwrap_or(LS_LIMIT_DEFAULT).min(LS_LIMIT_MAX) as usize;
         let since = match req.since.as_deref() {
-            Some(s) => Some(crate::parse_since(s).map_err(Self::invalid)?),
+            Some(s) => Some(crate::parse_since(s, crate::since::DateTz::Utc).map_err(Self::invalid)?),
             None => None,
         };
         let filters = Filters {
@@ -313,8 +316,20 @@ pub async fn serve_stdio(db_path: &Path, projects_dir: &Path, opts: ServeOpts) -
     let server = SessionsMcpServer::new(db);
     let service = server.serve((tokio::io::stdin(), tokio::io::stdout())).await?;
     info!("serve_stdio: MCP server started, waiting for client requests");
-    service.waiting().await?;
-    info!("serve_stdio: client disconnected, shutting down");
+
+    // #12 (investigated Phase 9): rmcp 1.7.0's stdio transport RESOLVES `waiting()` on EOF at the
+    // protocol layer — `AsyncRwTransport::receive()` returns `None` on a 0-byte `read_until`, which
+    // the service loop maps to `QuitReason::Closed`. The `serve_exits_on_stdin_eof` test proves
+    // this over an in-memory duplex.
+    //
+    // LIMITATION (accepted, not verified): the production substrate here is `tokio::io::stdin()`, a
+    // blocking, uncancellable reader thread — it is NOT proven that a real terminal/pipe stdin EOF
+    // propagates as promptly as the duplex (the original shakedown probe hung ~8s before its
+    // timeout). We do NOT add a select-on-EOF watcher because MCP hosts terminate the child process
+    // on shutdown, so a lingering blocked read is harmless in practice. We capture the QuitReason
+    // (vs discarding it) so the shutdown reason is visible in the log if this ever needs revisiting.
+    let quit_reason = service.waiting().await?;
+    info!("serve_stdio: client disconnected, shutting down (reason={quit_reason:?})");
     Ok(())
 }
 

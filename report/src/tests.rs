@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
-use crate::config::{CollectConfig, Config, ResolvedCommand};
+use crate::OutputDest;
+use crate::config::{CollectConfig, Config, Output, ResolvedCommand};
 use crate::report::Report;
 use std::fs;
 use std::io::Write;
@@ -26,7 +27,7 @@ fn make_collect_config(projects_dir: &Path, output: &Path) -> Config {
         command: ResolvedCommand::Collect(CollectConfig {
             since: "2026-01-01T00:00:00Z".parse().unwrap(),
             until: "2030-01-01T00:00:00Z".parse().unwrap(),
-            output: output.to_path_buf(),
+            output: Output::File(output.to_path_buf()),
             projects_dir: projects_dir.to_path_buf(),
             no_rollup: false,
             skip_title: true,
@@ -67,7 +68,10 @@ fn end_to_end_collect_writes_json() {
 
     let result = crate::run_with_config(&cfg).unwrap();
     assert_eq!(result.sessions_emitted, 2);
-    assert_eq!(result.output_path, output);
+    match result.output {
+        OutputDest::File(p) => assert_eq!(p, output),
+        OutputDest::Stdout => panic!("expected file output, got stdout"),
+    }
 
     let body = fs::read_to_string(&output).unwrap();
     let report: Report = serde_json::from_str(&body).unwrap();
@@ -100,26 +104,27 @@ fn latest_prior_report_picks_newest_excluding_self() {
         fs::write(dir.join(name), "{}").unwrap();
     }
     // The output we are about to write (does not exist yet).
-    let output = dir.join("claude-report-2026-06-22-000000.json");
-    let prior = crate::latest_prior_report(&output).unwrap();
+    let output = Output::File(dir.join("claude-report-2026-06-22-000000.json"));
+    let prior = crate::latest_prior_report_in(dir, &output).unwrap();
     assert_eq!(prior, dir.join("claude-report-2026-06-21-235959.json"));
 }
 
 #[test]
 fn latest_prior_report_none_when_no_prior() {
     let tmp = TempDir::new().unwrap();
-    let output = tmp.path().join("claude-report-2026-06-22-000000.json");
-    assert!(crate::latest_prior_report(&output).is_none());
+    let output = Output::File(tmp.path().join("claude-report-2026-06-22-000000.json"));
+    assert!(crate::latest_prior_report_in(tmp.path(), &output).is_none());
 }
 
 #[test]
 fn latest_prior_report_excludes_output_itself() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
-    let output = dir.join("claude-report-2026-06-22-000000.json");
-    fs::write(&output, "{}").unwrap();
+    let path = dir.join("claude-report-2026-06-22-000000.json");
+    fs::write(&path, "{}").unwrap();
+    let output = Output::File(path);
     // Only the output file is present; it must be excluded, so no prior.
-    assert!(crate::latest_prior_report(&output).is_none());
+    assert!(crate::latest_prior_report_in(dir, &output).is_none());
 }
 
 #[test]
@@ -182,4 +187,39 @@ fn end_to_end_title_preserved_across_runs() {
     let body = fs::read_to_string(&output).unwrap();
     let report: Report = serde_json::from_str(&body).unwrap();
     assert_eq!(report.sessions[SID_A].title.as_deref(), Some("hand-written title"));
+}
+
+// Serialize env-var-touching tests (XDG_DATA_HOME) so parallel runs can't race.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn stdout_mode_resolves_title_cache_source() {
+    // HAZARD 2 (financial): Stdout mode (no `-o`) must still resolve a title-cache SOURCE so the
+    // paid Haiku titling carries forward and does NOT re-bill the Anthropic API every run. The
+    // source is the newest prior report in the default report dir under XDG data.
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior_xdg = std::env::var("XDG_DATA_HOME").ok();
+
+    let tmp = TempDir::new().unwrap();
+    unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
+
+    let report_dir = tmp.path().join("claude-report");
+    fs::create_dir_all(&report_dir).unwrap();
+    let prior = report_dir.join("claude-report-2026-06-21-235959.json");
+    fs::write(&prior, "{}").unwrap();
+    // An older prior, to confirm the newest is chosen.
+    fs::write(report_dir.join("claude-report-2026-06-20-101010.json"), "{}").unwrap();
+
+    let resolved = crate::resolve_titles_source(&Output::Stdout).unwrap();
+    assert_eq!(
+        resolved,
+        Some(prior),
+        "stdout mode must seed the title cache from the newest prior report in the default dir"
+    );
+
+    match prior_xdg {
+        Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+    drop(guard);
 }

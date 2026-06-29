@@ -262,3 +262,154 @@ async fn dispatch_unknown_tool_is_invalid() {
         .expect_err("unknown tool must error");
     assert!(err.message.contains("unknown tool"), "got: {}", err.message);
 }
+
+// --- Phase 9 (#12): serve exits on stdin EOF ---
+
+/// Closing the transport's read side (the stdin-EOF case) must resolve `waiting()` rather than
+/// hang. We serve the server "directly" over an in-memory duplex (skipping the JSON-RPC
+/// handshake, which `serve_directly_with_ct` is designed for), drop the client write half to
+/// signal EOF on the server's read half, and assert `waiting()` returns `QuitReason::Closed`.
+/// This exercises the exact transport path `serve_stdio` relies on: rmcp's `AsyncRwTransport`
+/// yields `None` on a 0-byte read, and the service loop maps that to `Closed`.
+#[tokio::test]
+async fn serve_exits_on_stdin_eof() {
+    use rmcp::service::{QuitReason, serve_directly};
+    use tokio::io::AsyncWriteExt;
+
+    let db = Db::open_memory().unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    // Paired in-memory streams: the server is wrapped on `server_io`; the test drives `client_io`.
+    let (server_io, client_io) = tokio::io::duplex(4096);
+    let (server_r, server_w) = tokio::io::split(server_io);
+    let (client_r, mut client_w) = tokio::io::split(client_io);
+
+    let service = serve_directly(server, (server_r, server_w), None);
+
+    // Simulate stdin EOF: flush+shutdown the client write half and drop both halves so the
+    // server's read side sees a clean 0-byte read.
+    client_w.shutdown().await.unwrap();
+    drop(client_w);
+    drop(client_r);
+
+    // `waiting()` must resolve promptly with Closed — not hang (the shakedown symptom).
+    let quit = tokio::time::timeout(std::time::Duration::from_secs(5), service.waiting())
+        .await
+        .expect("serve must exit on stdin EOF, not hang")
+        .expect("waiting() should not produce a join error");
+    assert!(
+        matches!(quit, QuitReason::Closed),
+        "EOF on the transport read side must produce QuitReason::Closed, got: {quit:?}"
+    );
+}
+
+// --- Phase 5: MCP `sessions_search` sort param tests ---
+
+/// parse_sort_by: "recency" (and case variants) map to Recency; everything else maps to Relevance.
+#[test]
+fn parse_sort_by_maps_recency_case_insensitively() {
+    use super::parse_sort_by;
+    use crate::model::SortBy;
+
+    assert_eq!(parse_sort_by(Some("recency")), SortBy::Recency);
+    assert_eq!(parse_sort_by(Some("RECENCY")), SortBy::Recency);
+    assert_eq!(parse_sort_by(Some("Recency")), SortBy::Recency);
+}
+
+#[test]
+fn parse_sort_by_defaults_to_relevance() {
+    use super::parse_sort_by;
+    use crate::model::SortBy;
+
+    assert_eq!(parse_sort_by(None), SortBy::Relevance);
+    assert_eq!(parse_sort_by(Some("relevance")), SortBy::Relevance);
+    assert_eq!(parse_sort_by(Some("RELEVANCE")), SortBy::Relevance);
+    // Unknown values also default to Relevance.
+    assert_eq!(parse_sort_by(Some("bogus")), SortBy::Relevance);
+    assert_eq!(parse_sort_by(Some("")), SortBy::Relevance);
+}
+
+/// sessions_search with sort=recency returns the most-recently-modified session first.
+#[tokio::test]
+async fn sessions_search_sort_recency_returns_most_recent_first() {
+    let db = Db::open_memory().unwrap();
+
+    // UUID_A was modified 2026-06-21 (older); UUID_B modified 2026-06-25 (newer).
+    let mut older = parsed(UUID_A, "/tmp/a.jsonl", "marquee", "common needle term");
+    older.modified = dt("2026-06-21T10:00:00Z");
+    let mut newer = parsed(UUID_B, "/tmp/b.jsonl", "loopr", "common needle term");
+    newer.modified = dt("2026-06-25T10:00:00Z");
+
+    db.upsert_session(&older, "desk").unwrap();
+    db.upsert_session(&newer, "desk").unwrap();
+
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("sessions_search", json!({"query": "needle", "sort": "recency"}))
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true));
+    let v = first_content_as_json(&result);
+    assert_eq!(v["count"], 2, "both sessions match 'needle': {v}");
+    // With sort=recency the newer session (UUID_B) must come first.
+    assert_eq!(
+        v["results"][0]["record"]["session-id"], UUID_B,
+        "recency sort must put the most-recent session first: {v}"
+    );
+    assert_eq!(
+        v["results"][1]["record"]["session-id"], UUID_A,
+        "recency sort must put the older session second: {v}"
+    );
+}
+
+/// sessions_search with sort=RECENCY (uppercase) is accepted case-insensitively.
+#[tokio::test]
+async fn sessions_search_sort_recency_case_insensitive() {
+    let db = Db::open_memory().unwrap();
+
+    let mut older = parsed(UUID_A, "/tmp/a.jsonl", "marquee", "shared keyword");
+    older.modified = dt("2026-06-21T10:00:00Z");
+    let mut newer = parsed(UUID_B, "/tmp/b.jsonl", "loopr", "shared keyword");
+    newer.modified = dt("2026-06-25T10:00:00Z");
+
+    db.upsert_session(&older, "desk").unwrap();
+    db.upsert_session(&newer, "desk").unwrap();
+
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("sessions_search", json!({"query": "keyword", "sort": "RECENCY"}))
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true));
+    let v = first_content_as_json(&result);
+    assert_eq!(v["count"], 2, "both sessions match 'keyword': {v}");
+    assert_eq!(
+        v["results"][0]["record"]["session-id"], UUID_B,
+        "uppercase RECENCY must also sort by recency: {v}"
+    );
+}
+
+/// sessions_search with no sort field defaults to relevance (omitted is the same as "relevance").
+/// We can't easily assert BM25 score ordering in a unit test, but we can assert the call
+/// succeeds and returns results — the default is exercised without error.
+#[tokio::test]
+async fn sessions_search_omitted_sort_defaults_to_relevance() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl", "marquee", "the marquee bucket"), "desk")
+        .unwrap();
+    db.upsert_session(&parsed(UUID_B, "/tmp/b.jsonl", "loopr", "unrelated work"), "desk")
+        .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    // No sort field — must succeed and return the matching session.
+    let result = server
+        .dispatch("sessions_search", json!({"query": "bucket"}))
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true));
+    let v = first_content_as_json(&result);
+    assert_eq!(v["count"], 1, "only the marquee session matches 'bucket': {v}");
+    assert_eq!(v["results"][0]["record"]["session-id"], UUID_A);
+}

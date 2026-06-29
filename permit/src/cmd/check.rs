@@ -47,7 +47,7 @@ fn check_database(db_path: &Path) -> CheckResult {
             name: "database".to_string(),
             passed: false,
             message: format!(
-                "Database not found at {}. Run `claude-permit log` once to create it.",
+                "Database not found at {}. Run `clyde permit log` once to create it.",
                 db_path.display()
             ),
         };
@@ -80,9 +80,13 @@ fn check_database(db_path: &Path) -> CheckResult {
 
 fn check_hook_registered(settings_path: &Path, settings_local_path: &Path) -> CheckResult {
     let paths = [settings_path, settings_local_path];
+    // Accept either the legacy standalone form (`claude-permit log`) or the current umbrella
+    // form (`clyde permit log`), mirroring the idempotency check in install.rs:has_permit_hook.
+    // Match the actual hook command form (with the `log` subcommand) to avoid false positives
+    // from unrelated mentions of the binary names elsewhere in the settings file.
     let found_in = paths.iter().filter(|p| p.exists()).find(|p| {
         std::fs::read_to_string(p)
-            .map(|content| content.contains("claude-permit"))
+            .map(|content| content.contains("claude-permit log") || content.contains("clyde permit log"))
             .unwrap_or(false)
     });
 
@@ -90,18 +94,20 @@ fn check_hook_registered(settings_path: &Path, settings_local_path: &Path) -> Ch
         Some(path) => CheckResult {
             name: "hook".to_string(),
             passed: true,
-            message: format!("claude-permit hook found in {}", path.display()),
+            message: format!("clyde permit log hook found in {}", path.display()),
         },
         None => CheckResult {
             name: "hook".to_string(),
             passed: false,
-            message: "No claude-permit hook found. Add a PreToolUse hook to settings.json.".to_string(),
+            message: "No permit hook found. Run `clyde permit install --yes` to add one.".to_string(),
         },
     }
 }
 
 fn check_binary_in_path() -> CheckResult {
-    match which::which("claude-permit") {
+    // Prefer the clyde umbrella binary; fall back to accepting the legacy claude-permit shim so
+    // hosts that haven't run bootstrap yet still pass this check.
+    match which::which("clyde").or_else(|_| which::which("claude-permit")) {
         Ok(path) => CheckResult {
             name: "binary".to_string(),
             passed: true,
@@ -110,7 +116,7 @@ fn check_binary_in_path() -> CheckResult {
         Err(_) => CheckResult {
             name: "binary".to_string(),
             passed: false,
-            message: "claude-permit not found in PATH. Run `cargo install --path .`".to_string(),
+            message: "clyde not found in PATH. Install clyde to get permit log support.".to_string(),
         },
     }
 }
@@ -150,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn check_hook_found() {
+    fn check_hook_found_legacy_form() {
         let dir = TempDir::new().expect("temp");
         let settings = dir.path().join("settings.json");
         let settings_local = dir.path().join("settings.local.json");
@@ -161,5 +167,21 @@ mod tests {
         .expect("write");
         let result = check_hook_registered(&settings, &settings_local);
         assert!(result.passed);
+        assert!(result.message.contains("clyde permit log"));
+    }
+
+    #[test]
+    fn check_hook_found_clyde_form() {
+        let dir = TempDir::new().expect("temp");
+        let settings = dir.path().join("settings.json");
+        let settings_local = dir.path().join("settings.local.json");
+        std::fs::write(
+            &settings,
+            r#"{"hooks":{"PreToolUse":[{"command":"clyde permit log"}]}}"#,
+        )
+        .expect("write");
+        let result = check_hook_registered(&settings, &settings_local);
+        assert!(result.passed);
+        assert!(result.message.contains("clyde permit log"));
     }
 }

@@ -27,5 +27,5 @@ pub use model::{
     EnrichDetail, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit, SessionRecord, SortBy,
     StageStats,
 };
-pub use since::parse_since;
+pub use since::{DateTz, parse_since};
 pub use stage::stage_dormant;
