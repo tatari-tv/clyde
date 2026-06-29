@@ -316,8 +316,15 @@ pub async fn serve_stdio(db_path: &Path, projects_dir: &Path, opts: ServeOpts) -
     let server = SessionsMcpServer::new(db);
     let service = server.serve((tokio::io::stdin(), tokio::io::stdout())).await?;
     info!("serve_stdio: MCP server started, waiting for client requests");
-    service.waiting().await?;
-    info!("serve_stdio: client disconnected, shutting down");
+
+    // #12 (investigated Phase 9): rmcp 1.7.0's stdio transport resolves `waiting()` on stdin EOF
+    // through the supported path — its `AsyncRwTransport::receive()` returns `None` on a 0-byte
+    // `read_until` (EOF), and the service event loop maps that to `QuitReason::Closed` and stops.
+    // So no select-on-EOF or upgrade is needed; this returns once stdin closes (or the client
+    // disconnects / cancels). We capture the QuitReason instead of discarding it so the shutdown
+    // reason (Closed-on-EOF vs Cancelled vs a transport error) is visible in the log.
+    let quit_reason = service.waiting().await?;
+    info!("serve_stdio: client disconnected, shutting down (reason={quit_reason:?})");
     Ok(())
 }
 

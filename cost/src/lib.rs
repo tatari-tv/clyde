@@ -33,6 +33,46 @@ use output::{DaySummary, SessionSummary};
 
 pub use cli::{Command, CostArgs, CostCli};
 
+/// Environment variable Claude Code exports identifying the live session.
+///
+/// Investigated in Phase 9 (#13): Claude Code exports `CLAUDE_CODE_SESSION_ID` into every
+/// session's environment (confirmed live: it matched the actual current session id where the prior
+/// `max_by_key(last_active)` heuristic resolved a *different* session). This is the reliable
+/// live-session signal, so `cost session current` prefers it and only falls back to the
+/// most-recently-active heuristic when it is absent or names a session outside the scan window.
+const LIVE_SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
+
+/// Resolve `cost session current` to the live session.
+///
+/// Order:
+/// 1. If `CLAUDE_CODE_SESSION_ID` (see [`LIVE_SESSION_ENV`]) is set AND a scanned session has that
+///    id, return it — this is the actual session the user is sitting in.
+/// 2. Otherwise fall back to the most-recently-*active-by-content* session (`max_by_key(last_active)`).
+///
+/// The env var is read via the injected `env_session_id` so the resolution is unit-testable without
+/// mutating the process environment. Returns `None` only when there are no sessions at all.
+fn resolve_current_session<'a>(
+    sessions: &'a [SessionSummary],
+    env_session_id: Option<&str>,
+) -> Option<&'a SessionSummary> {
+    debug!(
+        "resolve_current_session: sessions={} env_session_id={:?}",
+        sessions.len(),
+        env_session_id,
+    );
+    if let Some(id) = env_session_id {
+        if let Some(session) = sessions.iter().find(|s| s.session_id == id) {
+            debug!("resolve_current_session: matched live session from {LIVE_SESSION_ENV}");
+            return Some(session);
+        }
+        debug!(
+            "resolve_current_session: {LIVE_SESSION_ENV} set ({id}) but no scanned session matches; \
+             falling back to most-recently-active"
+        );
+    }
+    sessions.iter().max_by_key(|s| s.last_active)
+}
+
 /// Path to ccu's log file. `pub` so the `ccu` compat shim can render the same dynamic
 /// `Logs are written to: ...` after-help line the pre-merge binary showed.
 pub fn log_file_path() -> PathBuf {
@@ -650,8 +690,10 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
             let (_, sessions) = compute_summaries(args, config, pricing, start, today, false)?;
 
             if id == "current" {
-                // Show the most recently active session
-                if let Some(session) = sessions.iter().max_by_key(|s| s.last_active) {
+                // Prefer the live session id Claude Code exports; fall back to the
+                // most-recently-active session when it is absent (see resolve_current_session).
+                let env_session_id = std::env::var(LIVE_SESSION_ENV).ok();
+                if let Some(session) = resolve_current_session(&sessions, env_session_id.as_deref()) {
                     println!(
                         "Session {}: ${:.2} ({} entries)",
                         &session.session_id[..8.min(session.session_id.len())],

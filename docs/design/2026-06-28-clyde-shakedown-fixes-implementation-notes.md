@@ -288,3 +288,77 @@ The three items left DEFERRED in the implementation-audit pass, now all resolved
 ### Open questions
 - None. Corrects the earlier impl-note overstatement that "all absorbed tools now
   never touch clyde.yml" — the `report` tool's collect path legitimately does.
+
+## Phase 9: Investigate-then-fix (gated on evidence)
+
+### Design decisions
+- **Version fact reconciled (#12)** — `grep rmcp sessions/Cargo.toml Cargo.lock`
+  confirms rmcp is pinned `1.7.0` in BOTH the manifest (`= "1.7.0"`) and the
+  lockfile (`version = "1.7.0"`). The shakedown's "runtime 1.8.0" was a misread;
+  there is no version skew. All investigation below is against 1.7.0.
+- **#12 investigation (rmcp stdio EOF behavior)** — Read the pinned 1.7.0 source in
+  the cargo registry (`rmcp-1.7.0/src/transport/async_rw.rs` and `src/service.rs`).
+  Finding: the stdio transport `AsyncRwTransport::receive()` does `read_until(b'\n')`
+  and returns `None` on a 0-byte read (`Ok(0) => return None`, async_rw.rs:128-129).
+  The service event loop selects on `transport.receive()` and, when it yields `None`,
+  logs "input stream terminated" and `break QuitReason::Closed` (service.rs:813-820).
+  `RunningService::waiting()` then resolves `Ok(QuitReason::Closed)`. **Conclusion:
+  rmcp 1.7.0's stdio transport DOES resolve `waiting()` on stdin EOF through the
+  supported path — no select-on-EOF watcher and no upgrade are required.** Context7's
+  MCP tool was not available under any callable name in this environment; investigated
+  the vendored source directly instead, which is authoritative for the pinned version.
+- **#12 fix** — Since the framework already exits on EOF, the change is small and
+  evidence-backed: capture the `QuitReason` that `service.waiting()` returns (the
+  prior code discarded it) and log it, so the shutdown reason (Closed-on-EOF vs
+  Cancelled vs a transport error) is visible in the file log. Added a code comment
+  at the serve site (`sessions/src/mcp.rs::serve_stdio`) documenting the verified
+  EOF->Closed path. Added an integration test (`serve_exits_on_stdin_eof`) that serves
+  the real `SessionsMcpServer` over an in-memory duplex via `rmcp::service::serve_directly`,
+  closes the client write half (the stdin-EOF case), and asserts `waiting()` resolves
+  to `QuitReason::Closed` within a 5s timeout (i.e. does NOT hang — the shakedown symptom).
+- **#13 investigation (live-session signal)** — Inspected the process environment
+  (`env | grep CLAUDE`) and found `CLAUDE_CODE_SESSION_ID` is exported by Claude Code
+  into every session. Its value in this environment was `049209b7-...`, which is
+  EXACTLY the session the shakedown identified as the correct live session (vs the
+  `6e427ce3` the `max_by_key(last_active)` heuristic resolved). This is a reliable,
+  already-present live-session signal — not an invented env var. (Other candidates
+  checked: no per-CWD marker file in `~/.claude`; file-mtime would be a heuristic
+  improvement at best, but the env var is exact, so mtime was not needed.)
+- **#13 fix** — `cost session current` now prefers `CLAUDE_CODE_SESSION_ID`:
+  resolution lives in a testable `resolve_current_session(sessions, env_session_id)`
+  helper (`cost/src/lib.rs`) that (1) returns the scanned session whose id matches the
+  env var when present, else (2) falls back to the prior `max_by_key(last_active)`.
+  The env var is read at the dispatch site and injected into the helper so the logic is
+  unit-testable without mutating the process environment. The `LIVE_SESSION_ENV` const
+  documents the signal. Four unit tests cover: env match wins over most-active, fallback
+  when env absent, fallback when the env-named session is outside the 30-day scan window,
+  and the no-sessions case.
+
+### Deviations
+- None. Both issues received clean evidence-backed fixes (not documented limitations).
+  The doc framed each as "fix only if evidence supports one; otherwise a documented
+  limitation" — for #12 the evidence showed the framework already exits on EOF (so the
+  fix is observability + a regression test rather than a behavior change), and for #13
+  the evidence (an exported env var matching the live session) supported a clean fix.
+
+### Tradeoffs
+- **#12: log-the-reason + regression test vs. select-on-EOF watcher** — chose the
+  smaller change because the source proves the framework already handles EOF; adding a
+  parallel EOF future would be redundant machinery guarding a path rmcp already covers,
+  and would risk double-close races. The regression test locks in the behavior so a
+  future rmcp bump that regresses EOF handling fails CI.
+- **#13: env var vs. file mtime** — chose the env var because it is an exact identity
+  of the live session, where file mtime is only a heuristic (a background reindex,
+  enrichment, or a resumed-but-idle session can touch mtime). Kept `max_by_key(last_active)`
+  as the fallback so behavior is unchanged when the env var is absent (e.g. invoked
+  outside a Claude Code session).
+
+### Open questions
+- **#13 child-session nuance** — this agent's environment also exports
+  `CLAUDE_CODE_CHILD_SESSION=1` alongside `CLAUDE_CODE_SESSION_ID`. For `cost session
+  current` the exported id is still the right "session you are in," so the fix is
+  correct as written. If a future use wants the *parent* (top-level) session id
+  specifically while inside a sub-agent, that would need a separate signal — Claude
+  Code does not appear to export a distinct parent-session id env var today. Flagging
+  for the user in case `cost session current` is ever invoked from within a sub-agent
+  and the parent session is the desired target.

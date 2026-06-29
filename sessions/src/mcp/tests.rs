@@ -263,6 +263,46 @@ async fn dispatch_unknown_tool_is_invalid() {
     assert!(err.message.contains("unknown tool"), "got: {}", err.message);
 }
 
+// --- Phase 9 (#12): serve exits on stdin EOF ---
+
+/// Closing the transport's read side (the stdin-EOF case) must resolve `waiting()` rather than
+/// hang. We serve the server "directly" over an in-memory duplex (skipping the JSON-RPC
+/// handshake, which `serve_directly_with_ct` is designed for), drop the client write half to
+/// signal EOF on the server's read half, and assert `waiting()` returns `QuitReason::Closed`.
+/// This exercises the exact transport path `serve_stdio` relies on: rmcp's `AsyncRwTransport`
+/// yields `None` on a 0-byte read, and the service loop maps that to `Closed`.
+#[tokio::test]
+async fn serve_exits_on_stdin_eof() {
+    use rmcp::service::{QuitReason, serve_directly};
+    use tokio::io::AsyncWriteExt;
+
+    let db = Db::open_memory().unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    // Paired in-memory streams: the server is wrapped on `server_io`; the test drives `client_io`.
+    let (server_io, client_io) = tokio::io::duplex(4096);
+    let (server_r, server_w) = tokio::io::split(server_io);
+    let (client_r, mut client_w) = tokio::io::split(client_io);
+
+    let service = serve_directly(server, (server_r, server_w), None);
+
+    // Simulate stdin EOF: flush+shutdown the client write half and drop both halves so the
+    // server's read side sees a clean 0-byte read.
+    client_w.shutdown().await.unwrap();
+    drop(client_w);
+    drop(client_r);
+
+    // `waiting()` must resolve promptly with Closed — not hang (the shakedown symptom).
+    let quit = tokio::time::timeout(std::time::Duration::from_secs(5), service.waiting())
+        .await
+        .expect("serve must exit on stdin EOF, not hang")
+        .expect("waiting() should not produce a join error");
+    assert!(
+        matches!(quit, QuitReason::Closed),
+        "EOF on the transport read side must produce QuitReason::Closed, got: {quit:?}"
+    );
+}
+
 // --- Phase 5: MCP `sessions_search` sort param tests ---
 
 /// parse_sort_by: "recency" (and case variants) map to Recency; everything else maps to Relevance.
