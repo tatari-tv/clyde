@@ -334,7 +334,11 @@ fn run_resume_action(action: ResumeAction) -> Result<()> {
             std::process::exit(1);
         }
         ResumeAction::MissingDir { dir } => {
-            eprintln!("{} recorded directory no longer exists: {}", "✗".red(), dir.display(),);
+            eprintln!(
+                "{} recorded cwd is not a usable directory: {}",
+                "✗".red(),
+                dir.display(),
+            );
             std::process::exit(1);
         }
         ResumeAction::StagedOnly { staged } => {

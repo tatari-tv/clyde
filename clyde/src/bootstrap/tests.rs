@@ -225,6 +225,75 @@ fn systemd_unit_rewrite_moves_env_file_with_perms() {
 }
 
 #[test]
+fn repoint_rewrites_clyde_unit_with_stale_subcommand_and_no_legacy() {
+    // A user already migrated off klod (no klod-* state) but whose installed clyde unit predates the
+    // `sessions`->`session` rename. `clyde bootstrap` must still rewrite the stale spelling, or the
+    // timer keeps firing `clyde ... sessions enrich`, which now errors.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    fs::write(
+        &clyde_unit,
+        "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n",
+    )
+    .unwrap();
+    // No legacy klod units exist, and install_timer is false: the only thing to do is fix the spelling.
+    assert!(!paths.legacy_unit().exists());
+
+    assert!(
+        repoint_systemd(&paths, false, false).unwrap(),
+        "stale clyde unit should be rewritten"
+    );
+
+    let unit_text = fs::read_to_string(&clyde_unit).unwrap();
+    assert!(unit_text.contains("/.cargo/bin/clyde --log-level info session enrich"));
+    assert!(
+        !unit_text.contains("sessions enrich"),
+        "stale subcommand spelling must be gone"
+    );
+}
+
+#[test]
+fn repoint_is_noop_for_already_correct_clyde_unit() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    fs::write(
+        &clyde_unit,
+        "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n",
+    )
+    .unwrap();
+
+    assert!(
+        !repoint_systemd(&paths, false, false).unwrap(),
+        "a correct unit needs no rewrite"
+    );
+}
+
+#[test]
+fn repoint_dry_run_reports_stale_clyde_unit_without_writing() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    let body = "[Service]\nExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n";
+    fs::write(&clyde_unit, body).unwrap();
+
+    assert!(
+        repoint_systemd(&paths, false, true).unwrap(),
+        "dry-run must report the pending rewrite"
+    );
+    // Dry-run writes nothing.
+    assert_eq!(
+        fs::read_to_string(&clyde_unit).unwrap(),
+        body,
+        "dry-run must not modify the unit"
+    );
+}
+
+#[test]
 fn full_bootstrap_is_idempotent() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());

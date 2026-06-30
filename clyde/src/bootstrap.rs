@@ -705,7 +705,15 @@ fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<
     let has_legacy =
         legacy_svc.exists() || legacy_tmr.exists() || fs::symlink_metadata(paths.legacy_wants_link()).is_ok();
     if !has_legacy {
-        if install_timer && !paths.clyde_unit().exists() {
+        // No klod state to migrate. Two sub-cases still need handling:
+        //   - an already-installed clyde unit may predate the `sessions`->`session` rename and still
+        //     invoke `clyde ... sessions enrich`, which now fails (no `sessions` alias). Rewrite it.
+        //   - no clyde unit yet and an install was requested -> install fresh.
+        let clyde_svc = paths.clyde_unit();
+        if clyde_svc.exists() {
+            return refresh_clyde_unit(&clyde_svc, dry_run);
+        }
+        if install_timer {
             if dry_run {
                 // WOULD install the clyde service + timer + enable symlink. Report without writing.
                 return Ok(true);
@@ -803,6 +811,31 @@ fn repoint_wants_symlink(paths: &Paths) -> Result<()> {
 fn rewrite_unit(text: &str) -> String {
     text.replace("klod", "clyde")
         .replace("sessions enrich", "session enrich")
+}
+
+/// Rewrite an already-clyde-named enrich unit that still uses the pre-rename `sessions enrich`
+/// subcommand spelling. Reached from the no-legacy path of [`repoint_systemd`]: a user who already
+/// migrated off klod (so no `klod-*` state triggers the full repoint) but whose installed unit
+/// predates the `sessions`->`session` rename would otherwise be left with a timer firing
+/// `clyde ... sessions enrich`, which now errors. Returns whether a rewrite happened (or, in
+/// dry-run, would happen). No-op if the unit is already on the new spelling.
+fn refresh_clyde_unit(svc: &Path, dry_run: bool) -> Result<bool> {
+    debug!("refresh_clyde_unit: svc={} dry_run={}", svc.display(), dry_run);
+    let text = fs::read_to_string(svc).with_context(|| format!("failed to read {}", svc.display()))?;
+    if !text.contains("sessions enrich") {
+        return Ok(false);
+    }
+    if dry_run {
+        // WOULD rewrite the stale subcommand spelling in place. Report without writing.
+        return Ok(true);
+    }
+    backup(svc)?;
+    write_atomic(svc, &rewrite_unit(&text))?;
+    info!(
+        "rewrote stale `sessions enrich` -> `session enrich` in {}",
+        svc.display()
+    );
+    Ok(true)
 }
 
 /// Move `~/.config/klod/enrich.env` -> `~/.config/clyde/enrich.env`, preserving permissions.

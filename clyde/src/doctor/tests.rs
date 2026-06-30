@@ -196,6 +196,31 @@ fn clyde_service_with_klod_execstart_is_legacy() {
 }
 
 #[test]
+fn clyde_service_with_stale_sessions_subcommand_is_legacy() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let svc = paths
+        .xdg_config
+        .join("systemd")
+        .join("user")
+        .join("clyde-enrich.service");
+    fs::create_dir_all(svc.parent().unwrap()).unwrap();
+    // Right name and clyde binary, but the pre-rename `sessions enrich` subcommand spelling — the
+    // timer would fire `clyde ... sessions enrich`, which now errors. Must read as unhealthy so
+    // `clyde bootstrap` is prompted.
+    fs::write(
+        &svc,
+        "[Service]\nExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n",
+    )
+    .unwrap();
+
+    let report = diagnose(&paths).unwrap();
+    assert_eq!(report.timer, Target::Legacy("sessions enrich"));
+    assert_eq!(report.timer_unit.as_deref(), Some("clyde-enrich.service"));
+    assert!(!report.healthy());
+}
+
+#[test]
 fn clyde_service_with_clyde_execstart_is_healthy() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());

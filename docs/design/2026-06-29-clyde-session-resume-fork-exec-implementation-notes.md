@@ -77,3 +77,24 @@
 
 ### Open questions
 - None.
+
+## Post-audit fixes (review-panel, Implementation Audit)
+
+The review panel (Architect/Gemini vs. Staff Engineer/Codex) split on Phase 4; the Staff Engineer's
+finding was verified against the code and three fixes landed before PR merge.
+
+### Design decisions
+- `repoint_systemd` now handles the no-legacy-but-stale-spelling case - `clyde/src/bootstrap.rs:repoint_systemd` + new `refresh_clyde_unit` - when there is no `klod-*` state, an already-installed `clyde-enrich.service` whose ExecStart still says `sessions enrich` is rewritten in place via `rewrite_unit` (backup + atomic write). Honors `dry_run` (reports the pending rewrite without writing).
+- `doctor` flags a stale `sessions enrich` ExecStart as unhealthy - `clyde/src/doctor.rs:timer_state` - new `Target::Legacy("sessions enrich")` branch so a clyde-named-but-stale unit no longer reads as healthy; the existing "run `clyde bootstrap`" remediation hint then closes the loop.
+- Reworded the `MissingDir` stderr - `clyde/src/main.rs:run_resume_action` - "recorded cwd is not a usable directory: <path>" so it is accurate whether the path is gone OR exists as a file (the `is_dir()`-collapsed variant from Phase 2 covers both).
+- Tests added: `bootstrap/tests.rs` (stale-clyde-unit rewrite, already-correct no-op, dry-run reports-without-writing); `doctor/tests.rs` (stale `sessions enrich` reads as unhealthy).
+
+### Deviations
+- The Phase 4 note (line 62) claimed the `rewrite_unit` clause already migrated already-clyde units; the audit found that clause was only reachable via the legacy-klod path, so the no-legacy path above is what actually delivers that intent. This supersedes the Phase 4 claim.
+
+### Tradeoffs
+- `refresh_clyde_unit` reuses `rewrite_unit` (which also does `klod -> clyde`) vs. a spelling-only replace - on an already-clyde unit the `klod -> clyde` pass is a no-op, so reusing the one transform keeps a single source of truth for unit rewriting.
+- `Target::Legacy("sessions enrich")` reuses the existing `Legacy(&'static str)` variant vs. a new `Target` variant - the existing variant already renders "<name> (legacy)" and drives `is_legacy()`/`healthy()`, so no new variant or rendering path was needed.
+
+### Open questions
+- None.

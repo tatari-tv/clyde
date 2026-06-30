@@ -186,7 +186,8 @@ fn hook_target(path: &Path) -> Target {
 /// Inspect the enrich systemd units by CONTENT, not mere existence. Returns the health target, the
 /// active unit name, and its `ExecStart=` line. Legacy iff any `klod-enrich.{service,timer}` file
 /// or the `timers.target.wants/klod-enrich.timer` enable symlink remains, OR the active
-/// `clyde-enrich.service`'s ExecStart still invokes `klod` (a half-rewritten unit).
+/// `clyde-enrich.service`'s ExecStart still invokes `klod` (a half-rewritten unit), OR it still uses
+/// the pre-rename `sessions enrich` subcommand spelling (a unit that predates `sessions`->`session`).
 fn timer_state(paths: &Paths) -> (Target, Option<String>, Option<String>) {
     let dir = paths.xdg_config.join("systemd").join("user");
     let legacy_svc = dir.join("klod-enrich.service");
@@ -206,8 +207,14 @@ fn timer_state(paths: &Paths) -> (Target, Option<String>, Option<String>) {
     };
 
     let execstart_legacy = execstart.as_deref().is_some_and(|e| e.contains("klod"));
+    // A clyde-named unit whose ExecStart still invokes the pre-rename `sessions enrich` spelling is
+    // stale: the timer fires `clyde ... sessions enrich`, which now errors (no `sessions` alias).
+    // `clyde bootstrap` rewrites it; flag it here so the broken timer doesn't read as healthy.
+    let execstart_stale_subcmd = execstart.as_deref().is_some_and(|e| e.contains("sessions enrich"));
     let target = if legacy_present || execstart_legacy {
         Target::Legacy("klod")
+    } else if execstart_stale_subcmd {
+        Target::Legacy("sessions enrich")
     } else if clyde_svc.exists() || clyde_tmr.exists() {
         Target::Clyde
     } else {
