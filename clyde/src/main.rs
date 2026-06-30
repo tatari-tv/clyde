@@ -295,11 +295,13 @@ fn plan_resume(rec: &SessionRecord, extra: Vec<String>) -> ResumeAction {
 /// Resolve the id (honoring `--no-reindex`), fetch the record, and compute the [`ResumeAction`].
 /// Does NOT act on the action: `main` drops the `Db` first, then calls [`run_resume_action`].
 fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
+    // `extra` is arbitrary passthrough forwarded verbatim to claude and may contain sensitive
+    // values (tokens, endpoints); log only its length, never the contents.
     log::debug!(
-        "cmd_resume: id={} no_reindex={} extra={:?}",
+        "cmd_resume: id={} no_reindex={} extra_count={}",
         args.id,
         args.no_reindex,
-        args.extra
+        args.extra.len()
     );
     lazy_reindex(db, args.no_reindex);
     let ids = db.resolve_id(&args.id)?;
@@ -359,32 +361,60 @@ fn run_resume_action(action: ResumeAction) -> Result<()> {
     }
 }
 
+/// Resolve the `claude` executable to an absolute path against the CURRENT process's `PATH`, before
+/// any `chdir`. `launch_resume` changes into the session's directory before launching claude;
+/// resolving first means the lookup cannot be influenced by that directory (a planted `./claude` on
+/// a `PATH` carrying a relative entry can't shadow the real binary). Also yields a clear error when
+/// `claude` is not installed, instead of a post-chdir exec failure.
+fn resolve_claude() -> Result<PathBuf> {
+    which::which("claude").map_err(|err| eyre::eyre!("could not find `claude` on PATH: {err}"))
+}
+
 /// Replace the clyde process with `claude --resume <id> [extra...]`, running in `dir` so Claude
 /// resolves the session's `~/.claude/projects/<slug>`. On unix this never returns on success (exec
 /// replaces the image); it returns only if claude could not be launched.
 #[cfg(unix)]
 fn launch_resume(dir: &Path, id: &str, extra: &[String]) -> Result<()> {
     use std::os::unix::process::CommandExt;
-    log::debug!("launch_resume: dir={} id={} extra={:?}", dir.display(), id, extra);
-    let mut cmd = std::process::Command::new("claude");
+    // `extra` may carry sensitive passthrough values; log only its length.
+    log::debug!(
+        "launch_resume: dir={} id={} extra_count={}",
+        dir.display(),
+        id,
+        extra.len()
+    );
+    let claude = resolve_claude()?;
+    let mut cmd = std::process::Command::new(&claude);
     cmd.current_dir(dir).arg("--resume").arg(id).args(extra);
-    // `current_dir(dir).exec()` performs the chdir before execvp, so claude starts in `dir`.
+    // `current_dir(dir).exec()` performs the chdir before execvp; `claude` is already an absolute
+    // path (resolved against the parent's PATH above), so the chdir cannot change which binary runs.
     let err = cmd.exec(); // returns only on failure
-    Err(eyre::eyre!("failed to exec claude in {}: {err}", dir.display()))
+    Err(eyre::eyre!(
+        "failed to exec {} in {}: {err}",
+        claude.display(),
+        dir.display()
+    ))
 }
 
 /// Non-unix: no `exec`. Spawn claude inheriting stdio, wait, and exit with its status code (or a
 /// fixed non-zero when terminated without a code).
 #[cfg(not(unix))]
 fn launch_resume(dir: &Path, id: &str, extra: &[String]) -> Result<()> {
-    log::debug!("launch_resume: dir={} id={} extra={:?}", dir.display(), id, extra);
-    let status = std::process::Command::new("claude")
+    // `extra` may carry sensitive passthrough values; log only its length.
+    log::debug!(
+        "launch_resume: dir={} id={} extra_count={}",
+        dir.display(),
+        id,
+        extra.len()
+    );
+    let claude = resolve_claude()?;
+    let status = std::process::Command::new(&claude)
         .current_dir(dir)
         .arg("--resume")
         .arg(id)
         .args(extra)
         .status()
-        .map_err(|err| eyre::eyre!("failed to launch claude in {}: {err}", dir.display()))?;
+        .map_err(|err| eyre::eyre!("failed to launch {} in {}: {err}", claude.display(), dir.display()))?;
     std::process::exit(status.code().unwrap_or(1));
 }
 

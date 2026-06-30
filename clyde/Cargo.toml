@@ -33,6 +33,7 @@ session = { version = "0.4.0", path = "../session" }
 sessions = { version = "0.4.0", path = "../sessions" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+which.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

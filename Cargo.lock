@@ -279,6 +279,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing-subscriber",
+ "which",
 ]
 
 [[package]]

@@ -78,7 +78,7 @@ never copied here; they stay Claude-owned and are referenced.
 Protocol (stdio, JSON-RPC). It is spawned by the MCP host, not run by hand; stdout is reserved for
 protocol frames. Register it:
 
-```
+```bash
 claude mcp add clyde -s user -- clyde session serve
 ```
 
@@ -89,7 +89,7 @@ no shell function, no `.zshrc` change, no symlink. clyde resolves the session's 
 directory, changes into it, and replaces its own process with `claude --resume <id>` (fork/exec).
 When `claude` exits you are returned to your original shell prompt and directory.
 
-```
+```bash
 clyde session resume 3bc0a20d                  # resume in original directory, default model
 clyde session resume 3bc0a20d -- --model opus  # forward --model opus to claude
 ```
