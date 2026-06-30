@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-/// Result ordering for `clyde sessions search`. Maps to the domain [`sessions::SortBy`] enum via
+/// Result ordering for `clyde session search`. Maps to the domain [`sessions::SortBy`] enum via
 /// `From<SortOrder>`.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
 #[clap(rename_all = "kebab-case")]
@@ -36,7 +36,7 @@ impl From<SortOrder> for sessions::SortBy {
 )]
 pub struct Cli {
     /// Log level (error, warn, info, debug, trace). The single common global; clyde passes it
-    /// down to each absorbed tool. When unset, the `sessions` subtree defaults to `info` and the
+    /// down to each absorbed tool. When unset, the `session` subtree defaults to `info` and the
     /// absorbed tools fall back to their own prior defaults.
     #[arg(short = 'l', long, global = true)]
     pub log_level: Option<String>,
@@ -61,6 +61,7 @@ impl Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Catalog, search, and resume sessions.
+    #[command(name = "session")]
     Sessions {
         #[command(subcommand)]
         command: SessionsCommand,
@@ -91,7 +92,7 @@ pub enum SessionsCommand {
     ///
     /// To forward extra flags to `claude`, separate them with a literal `--`:
     ///
-    ///   clyde sessions resume <id> -- --model opus
+    ///   clyde session resume <id> -- --model opus
     ///
     /// Omitting the `--` will cause a parse error; clyde does not interpret claude's flags.
     Resume(ResumeArgs),
@@ -166,7 +167,7 @@ pub struct ResumeArgs {
     ///
     /// Requires a literal `--` separator before the flags:
     ///
-    ///   clyde sessions resume <id> -- --model opus
+    ///   clyde session resume <id> -- --model opus
     ///
     /// Without `--`, clyde will reject flags it does not recognize. This is intentional:
     /// it prevents claude flags from being silently misinterpreted by clyde's own parser.

@@ -1,4 +1,4 @@
-//! stdout-cleanliness smoke test for `clyde sessions serve`.
+//! stdout-cleanliness smoke test for `clyde session serve`.
 //!
 //! The classic stdio-MCP footgun is a stray `println!` / log line corrupting the JSON-RPC
 //! framing. This test spawns the real binary, drives the `initialize` handshake, and asserts
@@ -24,14 +24,14 @@ fn serve_stdout_carries_only_jsonrpc_frames() {
         .env("XDG_DATA_HOME", data_home.path())
         .arg("--db")
         .arg(&db_path)
-        .args(["sessions", "serve", "--no-reindex"])
+        .args(["session", "serve", "--no-reindex"])
         .arg("--projects-dir")
         .arg(projects.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn clyde sessions serve");
+        .expect("spawn clyde session serve");
 
     let mut stdin = child.stdin.take().expect("child stdin");
     let stdout = child.stdout.take().expect("child stdout");

@@ -207,7 +207,7 @@ fn clyde_service_with_clyde_execstart_is_healthy() {
     fs::create_dir_all(svc.parent().unwrap()).unwrap();
     fs::write(
         &svc,
-        "[Service]\nExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n",
+        "[Service]\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n",
     )
     .unwrap();
 

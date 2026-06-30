@@ -795,11 +795,14 @@ fn repoint_wants_symlink(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-/// Pure transform of a unit file (service or timer): every `klod` -> `clyde`. The enrich units
-/// reference `klod` only in clyde-appropriate places (ExecStart binary, EnvironmentFile path,
-/// Description, the `tatari-tv/klod` Documentation URL), so a blanket replace is correct here.
+/// Pure transform of a unit file (service or timer): every `klod` -> `clyde`, then the old
+/// `sessions enrich` subcommand spelling -> `session enrich`. The enrich units reference `klod`
+/// only in clyde-appropriate places (ExecStart binary, EnvironmentFile path, Description, the
+/// `tatari-tv/klod` Documentation URL), so a blanket replace is correct here. The subcommand
+/// rename is applied after so units that were already `clyde sessions enrich` also get migrated.
 fn rewrite_unit(text: &str) -> String {
     text.replace("klod", "clyde")
+        .replace("sessions enrich", "session enrich")
 }
 
 /// Move `~/.config/klod/enrich.env` -> `~/.config/clyde/enrich.env`, preserving permissions.
@@ -833,7 +836,7 @@ fn install_clyde_timer(paths: &Paths) -> Result<bool> {
         [Service]\n\
         Type=oneshot\n\
         EnvironmentFile=%h/.config/clyde/enrich.env\n\
-        ExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n\
+        ExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n\
         Nice=10\n";
     write_atomic(&svc, svc_body)?;
 

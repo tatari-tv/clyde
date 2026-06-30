@@ -54,3 +54,26 @@
 
 ### Open questions
 - None.
+
+## Phase 4: rename sessions -> session (clean break)
+
+### Design decisions
+- Added `#[command(name = "session")]` to the `Sessions` variant in `clyde/src/cli.rs` (Rust variant name stays `Sessions`; no alias) - the canonical CLI spelling is now `clyde session ...` and `clyde sessions ...` stops working immediately.
+- Updated `rewrite_unit` in `clyde/src/bootstrap.rs` to also replace `sessions enrich` -> `session enrich` after the existing `klod -> clyde` substitution - `clyde/src/bootstrap.rs:rewrite_unit` - this ensures `clyde bootstrap` migrates units that were already on `clyde sessions enrich` (post-klod, pre-rename) in addition to the original `klod sessions enrich` migration path.
+- Updated `install_clyde_timer` template at line 836 to emit `session enrich` for fresh installs - `clyde/src/bootstrap.rs:install_clyde_timer` - new installs and `--install-timer` invocations generate the correct spelling from the start.
+- Updated all `clyde sessions ...` command invocations in README to `clyde session ...` (5 occurrences), including the `claude mcp add ... clyde session serve` line - `README.md`.
+- Updated all `"sessions"` args in `clyde/src/cli/tests.rs` (12 occurrences) to `"session"` so the clap parse-from tests use the new canonical spelling - `clyde/src/cli/tests.rs`.
+- Updated `clyde/tests/serve.rs` (`"sessions", "serve"` -> `"session", "serve"`) - the smoke-test binary invocation must use the renamed subcommand.
+- Updated `clyde/src/bootstrap/tests.rs` assertion to expect `session enrich` in the rewritten unit body.
+- Updated `clyde/src/doctor/tests.rs` healthy-unit fixture to write `session enrich` (the new canonical form that `clyde bootstrap` now generates).
+- Updated doc comments referencing `clyde sessions ...` in `clyde/src/main.rs`, `clyde/src/cli.rs`, `sessions/src/mcp.rs`, `sessions/src/model.rs`, `sessions/src/db.rs`, and `common/src/since.rs`.
+
+### Deviations
+- No CHANGELOG or release-notes file exists in the repository (no `CHANGELOG.md`, `RELEASE_NOTES.md`, or equivalent). The Migration steps from the design doc (re-register the MCP server with `clyde session serve`; re-run `clyde bootstrap` to rewrite the enrich timer's ExecStart) were not added to any file - they are recorded here instead. The orchestrator or release author should include them in the release notes when cutting the next version.
+
+### Tradeoffs
+- Extending `rewrite_unit` with a second `.replace("sessions enrich", "session enrich")` vs. a more targeted regex or line-level rewrite - the blanket string replace is safe here because `sessions enrich` appears only once in a unit file's ExecStart line and cannot appear as a false positive in any other field; matches the existing `klod -> clyde` design in the same function.
+- Updating the doctor test fixture from `sessions enrich` to `session enrich` - the doctor health check only tests for `klod` in ExecStart (not for `sessions` vs `session`), so both forms are "healthy". Updating the fixture to the new canonical form keeps the test representative of what `bootstrap` now generates, which is more useful as documentation.
+
+### Open questions
+- None.

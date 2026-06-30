@@ -5,7 +5,7 @@ use clap::Parser;
 
 #[test]
 fn search_takes_space_separated_terms() {
-    let cli = Cli::try_parse_from(["clyde", "sessions", "search", "terraform", "marquee"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "session", "search", "terraform", "marquee"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Search(args),
@@ -19,7 +19,7 @@ fn search_takes_space_separated_terms() {
 
 #[test]
 fn tag_takes_space_separated_tags_not_comma() {
-    let cli = Cli::try_parse_from(["clyde", "sessions", "tag", "abc123", "terraform", "s3"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "session", "tag", "abc123", "terraform", "s3"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Tag(args),
@@ -35,7 +35,7 @@ fn tag_takes_space_separated_tags_not_comma() {
 fn tag_with_zero_tags_parses_and_produces_empty_vec() {
     // `clyde sessions tag <id>` with no tags must parse successfully; the id must not be
     // consumed as a tag, and the tags vec must be empty (this is the clear-tags case).
-    let cli = Cli::try_parse_from(["clyde", "sessions", "tag", "abc123"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "session", "tag", "abc123"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Tag(args),
@@ -53,7 +53,7 @@ fn tag_with_zero_tags_parses_and_produces_empty_vec() {
 #[test]
 fn tag_with_two_tags_parses_correctly() {
     // Verify that two tags parse into the tags vec and the id is correctly separated.
-    let cli = Cli::try_parse_from(["clyde", "sessions", "tag", "deadbeef", "alpha", "beta"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "session", "tag", "deadbeef", "alpha", "beta"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Tag(args),
@@ -95,7 +95,7 @@ fn clyde_log_level_flows_to_globals() {
 #[test]
 fn ls_accepts_metadata_filters() {
     let cli = Cli::try_parse_from([
-        "clyde", "sessions", "ls", "--repo", "loopr", "--since", "7d", "--model", "opus",
+        "clyde", "session", "ls", "--repo", "loopr", "--since", "7d", "--model", "opus",
     ])
     .unwrap();
     match cli.command {
@@ -113,7 +113,7 @@ fn ls_accepts_metadata_filters() {
 #[test]
 fn search_sort_defaults_to_relevance() {
     // When no --sort flag is provided, the sort field must default to SortOrder::Relevance.
-    let cli = Cli::try_parse_from(["clyde", "sessions", "search", "loopr"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "session", "search", "loopr"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Search(args),
@@ -132,7 +132,7 @@ fn search_sort_defaults_to_relevance() {
 fn search_sort_accepts_recency_case_insensitive() {
     // Both mixed-case and upper-case values must parse to SortOrder::Recency.
     for value in ["Recency", "RECENCY", "recency"] {
-        let cli = Cli::try_parse_from(["clyde", "sessions", "search", "--sort", value, "loopr"]).unwrap();
+        let cli = Cli::try_parse_from(["clyde", "session", "search", "--sort", value, "loopr"]).unwrap();
         match cli.command {
             Command::Sessions {
                 command: SessionsCommand::Search(args),
@@ -151,14 +151,14 @@ fn search_sort_accepts_recency_case_insensitive() {
 #[test]
 fn search_sort_rejects_unknown_value() {
     // An unrecognized --sort value must fail to parse (clap error, not a panic).
-    let result = Cli::try_parse_from(["clyde", "sessions", "search", "--sort", "bogus", "loopr"]);
+    let result = Cli::try_parse_from(["clyde", "session", "search", "--sort", "bogus", "loopr"]);
     assert!(result.is_err(), "--sort bogus should fail to parse");
 }
 
 #[test]
 fn resume_parses_bare_id() {
     // `clyde sessions resume <id>` with no extra args must parse successfully.
-    let cli = Cli::try_parse_from(["clyde", "sessions", "resume", "3bc0a20d"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "session", "resume", "3bc0a20d"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Resume(args),
@@ -174,7 +174,7 @@ fn resume_parses_bare_id() {
 #[test]
 fn resume_extra_lands_after_double_dash() {
     // `clyde sessions resume <id> -- --model opus` must forward `--model opus` into extra.
-    let cli = Cli::try_parse_from(["clyde", "sessions", "resume", "3bc0a20d", "--", "--model", "opus"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "session", "resume", "3bc0a20d", "--", "--model", "opus"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Resume(args),
@@ -189,7 +189,7 @@ fn resume_extra_lands_after_double_dash() {
 #[test]
 fn resume_no_reindex_flag_parses() {
     // `--no-reindex` must be recognized and set the flag.
-    let cli = Cli::try_parse_from(["clyde", "sessions", "resume", "--no-reindex", "3bc0a20d"]).unwrap();
+    let cli = Cli::try_parse_from(["clyde", "session", "resume", "--no-reindex", "3bc0a20d"]).unwrap();
     match cli.command {
         Command::Sessions {
             command: SessionsCommand::Resume(args),

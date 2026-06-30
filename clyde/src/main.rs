@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     run(cli)
 }
 
-/// True when the parsed command is `clyde sessions serve` — the one arm that owns stdout for the
+/// True when the parsed command is `clyde session serve` — the one arm that owns stdout for the
 /// MCP protocol and therefore needs the file-target tracing subscriber.
 fn is_serve(cli: &Cli) -> bool {
     matches!(
@@ -74,7 +74,7 @@ fn is_serve(cli: &Cli) -> bool {
 }
 
 /// Restore the default `SIGPIPE` disposition. Rust ignores SIGPIPE by default, which turns a
-/// closed stdout (e.g. `clyde sessions search x | head`) into an EPIPE that `println!` unwraps
+/// closed stdout (e.g. `clyde session search x | head`) into an EPIPE that `println!` unwraps
 /// into a panic. Resetting to `SIG_DFL` makes clyde die quietly on a broken pipe like any Unix
 /// filter. Done before any output is produced.
 #[cfg(unix)]

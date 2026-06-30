@@ -213,7 +213,7 @@ fn systemd_unit_rewrite_moves_env_file_with_perms() {
     assert!(clyde_unit.exists());
     assert!(!legacy_unit.exists(), "old unit must be removed");
     let unit_text = fs::read_to_string(&clyde_unit).unwrap();
-    assert!(unit_text.contains("/.cargo/bin/clyde --log-level info sessions enrich"));
+    assert!(unit_text.contains("/.cargo/bin/clyde --log-level info session enrich"));
     assert!(unit_text.contains(".config/clyde/enrich.env"));
     assert!(!unit_text.contains("klod"));
 
