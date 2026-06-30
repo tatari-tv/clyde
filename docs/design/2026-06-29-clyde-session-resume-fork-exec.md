@@ -237,6 +237,19 @@ clyde session resume 3bc0a20d -- --model opus  # cd + launch, forwarding --model
   `claude mcp add ... clyde session serve` line.
 - Add the Migration steps (below) to the release notes.
 
+#### Phase 5: events-DB reconciliation in bootstrap (shakedown follow-on)
+**Model:** opus
+- Surfaced by the local shakedown (`docs/shakedown-session-resume.md`, Finding B): when BOTH the
+  clyde events DB and the legacy `claude-permit/events.db` exist, `migrate_events_db` was a no-op,
+  so the legacy DB was stranded forever and `clyde doctor` stayed red with no on-screen cause -- and
+  its own remediation (`clyde bootstrap`) could never clear it.
+- `bootstrap.rs`: when both DBs exist, MERGE the legacy rows into the clyde DB (identical schema;
+  insert with fresh autoincrement ids) and remove the legacy DB (backed up to `.clyde.bak` first).
+  Idempotent: once the legacy DB is gone a re-run is a no-op. Dry-run reports the merge, writes
+  nothing.
+- `doctor.rs`: surface the legacy events DB explicitly when the clyde DB also exists (it already
+  counted toward `healthy() == false`, but the display hid it).
+
 ## Migration (clean break)
 
 After installing the renamed binary, the old spelling is dead. One-time fixes:

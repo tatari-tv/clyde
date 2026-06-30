@@ -80,6 +80,26 @@ fn unhealthy_when_events_db_stranded_at_legacy_path() {
 }
 
 #[test]
+fn unhealthy_when_both_events_dbs_present() {
+    // A clyde events DB does NOT make a co-existing legacy DB healthy: the report must still flag
+    // it (and `clyde bootstrap` now merges it away).
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    seed_clyde_events_db(&paths, 3);
+    let legacy = paths.xdg_data.join("claude-permit").join("events.db");
+    fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    fs::write(&legacy, b"db").unwrap();
+
+    let report = diagnose(&paths).unwrap();
+    assert!(report.events_db_at_clyde);
+    assert!(report.events_db_at_legacy);
+    assert!(
+        !report.healthy(),
+        "co-existing legacy events DB keeps the report unhealthy"
+    );
+}
+
+#[test]
 fn absent_integrations_are_not_unhealthy() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());

@@ -98,3 +98,22 @@ finding was verified against the code and three fixes landed before PR merge.
 
 ### Open questions
 - PRE-EXISTING (out of scope for this work; tracked for a separate ticket): `clyde bootstrap --install-timer` cannot repair a *half-installed* unit set - if `clyde-enrich.service` exists but `clyde-enrich.timer`/its enable symlink is missing, `repoint_systemd`'s no-legacy branch returns after `refresh_clyde_unit` and never reaches `install_clyde_timer`, so the timer is not created. This is not a regression from the post-audit fix: the pre-`2502a11` guard was `if install_timer && !paths.clyde_unit().exists()`, which already skipped timer creation whenever the service existed. A proper fix needs a decision (install only the missing timer + symlink without clobbering an existing service body, since `install_clyde_timer` currently rewrites the whole service from the template). Surfaced by the review-panel re-audit of `2502a11`.
+
+## Phase 5: events-DB reconciliation (shakedown Finding B)
+
+### Design decisions
+- `migrate_events_db` now MERGES instead of no-op'ing when both DBs exist - `clyde/src/bootstrap.rs:migrate_events_db` + new `merge_events_db` - the legacy `claude-permit/events.db` rows are copied into the existing clyde DB and the legacy file is removed, so `doctor` can finally go green. Three cases now: legacy-only -> WAL-safe move (unchanged); both -> merge+remove (new); clyde-only/neither -> no-op.
+- `merge_events_db` checkpoints the legacy WAL (TRUNCATE), then ATTACHes it to the clyde connection and `INSERT … SELECT`s the 7 real columns (omitting `id`, since the two DBs have independent autoincrement sequences) - `clyde/src/bootstrap.rs:merge_events_db`. Verifies the post-merge count equals before+legacy and `warn!`s on mismatch.
+- Legacy DB is backed up to `.clyde.bak` (via the existing `backup` helper) before removal, so the merge is recoverable; sidecars (`-wal`/`-shm`) are removed too. Idempotent: the caller's `legacy.exists()` guard makes a re-run a no-op.
+- `doctor` surfaces the legacy events DB when the clyde DB also exists - `clyde/src/doctor.rs:render` - prints a `legacy state:` line so the `✗` footer is no longer a mystery; `healthy()` already counted `events_db_at_legacy`, so no health-logic change was needed.
+- Updated the test fixture `seed_events_db` to the real claude-permit schema (7 columns) so the column-explicit merge is exercised truthfully; rewrote the former `events_db_move_is_noop_when_clyde_db_present` test into `events_db_merges_legacy_into_clyde_when_both_present` (+ a dry-run test and a doctor both-present test).
+
+### Deviations
+- The Phase 4-era behavior (both-present -> no-op + `warn!`) is replaced. This is intentional: the no-op was the root cause of Finding B. Documented here as superseding that behavior.
+
+### Tradeoffs
+- Merge (preserve the legacy rows) vs. simply removing the legacy DB - the user asked to "convert or remove"; merging preserves the pre-cutover permit audit history at negligible cost (one ATTACH + INSERT…SELECT) and the backup covers the remove. Dedup was NOT attempted: the two DBs are disjoint time ranges (legacy stopped being written at cutover), and the events table has no natural unique key beyond the autoincrement id, so a plain append is correct and a re-run can't double-merge (the legacy file is gone).
+- ATTACH + `INSERT … SELECT` vs. row-by-row copy through Rust - the SQL-side bulk copy is simpler, faster, and keeps the column list in one place; the path is bound as a parameter (no SQL interpolation).
+
+### Open questions
+- None.

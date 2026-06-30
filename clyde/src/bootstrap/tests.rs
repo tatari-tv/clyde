@@ -71,11 +71,21 @@ fn seed_events_db(path: &Path, rows: usize) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
-    conn.execute_batch("CREATE TABLE events (id INTEGER PRIMARY KEY, tool TEXT);")
-        .unwrap();
+    // Match the real claude-permit events schema so the merge path (column-explicit INSERT…SELECT)
+    // is exercised truthfully.
+    conn.execute_batch(
+        "CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL, session_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+            tool_input TEXT NOT NULL, raw_input TEXT, risk_tier TEXT, raw_json TEXT);",
+    )
+    .unwrap();
     for i in 0..rows {
-        conn.execute("INSERT INTO events (tool) VALUES (?1)", [format!("tool{i}")])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO events (timestamp, session_id, tool_name, tool_input) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["2026-06-30T00:00:00Z", "sess", format!("tool{i}"), "{}"],
+        )
+        .unwrap();
     }
     // Leave the connection in WAL mode (sidecars present) at drop, mimicking a live DB.
 }
@@ -106,14 +116,40 @@ fn events_db_move_preserves_rows_and_handles_sidecars() {
 }
 
 #[test]
-fn events_db_move_is_noop_when_clyde_db_present() {
+fn events_db_merges_legacy_into_clyde_when_both_present() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     seed_events_db(&paths.legacy_events_db(), 2);
     seed_events_db(&paths.clyde_events_db(), 9);
+
+    assert!(migrate_events_db(&paths, false).unwrap(), "both present -> merge");
+
+    // Legacy merged in and removed (backed up first); clyde now holds the combined rows.
+    assert!(!paths.legacy_events_db().exists(), "legacy DB removed after merge");
+    assert!(
+        backup_path(&paths.legacy_events_db()).exists(),
+        "legacy DB backed up before removal"
+    );
+    assert_eq!(row_count(&paths.clyde_events_db()), 11, "clyde holds clyde+legacy rows");
+
+    // Idempotent: with the legacy DB gone, a re-run is a no-op and the count is stable.
     assert!(!migrate_events_db(&paths, false).unwrap());
-    // Existing clyde DB untouched.
-    assert_eq!(row_count(&paths.clyde_events_db()), 9);
+    assert_eq!(row_count(&paths.clyde_events_db()), 11);
+}
+
+#[test]
+fn events_db_merge_dry_run_writes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    seed_events_db(&paths.legacy_events_db(), 2);
+    seed_events_db(&paths.clyde_events_db(), 9);
+
+    assert!(
+        migrate_events_db(&paths, true).unwrap(),
+        "dry-run reports the pending merge"
+    );
+    assert!(paths.legacy_events_db().exists(), "dry-run must not remove legacy");
+    assert_eq!(row_count(&paths.clyde_events_db()), 9, "dry-run must not merge rows");
 }
 
 #[test]

@@ -501,8 +501,16 @@ fn migrate_events_db(paths: &Paths, dry_run: bool) -> Result<bool> {
         return Ok(false);
     }
     if dest.exists() {
-        warn!("migrate_events_db: clyde events DB already exists; leaving legacy in place");
-        return Ok(false);
+        // Both DBs present: the legacy DB holds pre-cutover events the clyde DB never saw. A plain
+        // move would clobber the clyde DB; the old no-op stranded the legacy DB forever (and kept
+        // `doctor` permanently red, since its remediation -- this very function -- never cleared it).
+        // Merge the legacy rows in and remove the legacy DB instead.
+        if dry_run {
+            // WOULD merge legacy rows into the clyde DB and remove the legacy DB. Report from
+            // existence alone; do not open either DB (a real run writes to both).
+            return Ok(true);
+        }
+        return merge_events_db(&legacy, &dest);
     }
     if dry_run {
         // CRITICAL: do NOT open the DB. A real run runs `PRAGMA wal_checkpoint(TRUNCATE)` here — a
@@ -545,6 +553,79 @@ fn migrate_events_db(paths: &Paths, dry_run: bool) -> Result<bool> {
         }
     }
     info!("migrated events DB {} -> {}", legacy.display(), dest.display());
+    Ok(true)
+}
+
+/// Merge the legacy permit events DB into the existing clyde events DB (identical schema), then
+/// remove the legacy DB. Used when BOTH exist (see [`migrate_events_db`]): a move would clobber the
+/// clyde DB and a no-op would strand the legacy rows forever. Legacy rows are inserted with fresh
+/// autoincrement ids (the two DBs have independent `id` sequences, so the `id` column is omitted to
+/// avoid PK collisions). The legacy DB is backed up to `<path>.clyde.bak` before removal, so the
+/// merge is recoverable. Idempotent: once the legacy DB is gone, the caller's `legacy.exists()`
+/// guard makes a re-run a no-op.
+fn merge_events_db(legacy: &Path, dest: &Path) -> Result<bool> {
+    debug!("merge_events_db: {} -> {}", legacy.display(), dest.display());
+    // Checkpoint the legacy WAL so every committed row is in the main file before we read it. A
+    // missing/degenerate `events` table yields None -> nothing to merge, but we still remove the
+    // stranded legacy file below.
+    let legacy_count: Option<i64> = {
+        let conn = rusqlite::Connection::open(legacy)
+            .with_context(|| format!("failed to open legacy events DB {}", legacy.display()))?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .context("failed to checkpoint legacy events DB WAL")?;
+        conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+            .ok()
+    };
+    let dest_before: i64 = {
+        let conn = rusqlite::Connection::open(dest)
+            .with_context(|| format!("failed to open clyde events DB {}", dest.display()))?;
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap_or(0);
+        if matches!(legacy_count, Some(n) if n > 0) {
+            // ATTACH the legacy DB and copy every row with a fresh id. Bound parameter, never an
+            // interpolated path.
+            conn.execute("ATTACH DATABASE ?1 AS legacy", [legacy.to_string_lossy()])
+                .context("failed to attach legacy events DB")?;
+            conn.execute_batch(
+                "INSERT INTO events (timestamp, session_id, tool_name, tool_input, raw_input, risk_tier, raw_json)
+                 SELECT timestamp, session_id, tool_name, tool_input, raw_input, risk_tier, raw_json
+                 FROM legacy.events;",
+            )
+            .context("failed to merge legacy events into clyde events DB")?;
+            conn.execute_batch("DETACH DATABASE legacy;")
+                .context("failed to detach legacy events DB")?;
+        }
+        before
+    };
+    if let Some(n) = legacy_count {
+        let dest_after = rusqlite::Connection::open_with_flags(dest, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .and_then(|c| c.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0)))
+            .unwrap_or(dest_before);
+        if dest_after != dest_before + n {
+            warn!(
+                "merge_events_db: expected {} rows after merge, found {dest_after}",
+                dest_before + n
+            );
+        } else {
+            debug!("merge_events_db: merged {n} legacy rows ({dest_before} -> {dest_after})");
+        }
+    }
+    // Back up then remove the legacy DB (+ sidecars): recoverable, but no longer stranded, so a
+    // re-run is a no-op and `doctor` goes green.
+    backup(legacy)?;
+    fs::remove_file(legacy).with_context(|| format!("failed to remove legacy events DB {}", legacy.display()))?;
+    for suffix in ["-wal", "-shm"] {
+        let ls = sidecar(legacy, suffix);
+        if ls.exists() {
+            fs::remove_file(&ls).with_context(|| format!("failed to remove sidecar {}", ls.display()))?;
+        }
+    }
+    info!(
+        "merged legacy events into {} and removed the legacy DB (backup at {})",
+        dest.display(),
+        backup_path(legacy).display()
+    );
     Ok(true)
 }
 

@@ -76,8 +76,8 @@ The reworded `MissingDir` message (post-audit fix) is accurate for a deleted dir
   `✗ <err>` + `exit(1)`, matching its siblings. Re-verified: `✗ could not find \`claude\` on PATH:
   cannot find binary path`, exit 1, no `Location:` line.
 
-### Finding B — `doctor` hides a legacy events DB when the clyde DB also exists (pre-existing)
-- **Severity:** bug / low-medium. **Out of scope** for this PR (predates the resume/rename work).
+### Finding B — `doctor`/`bootstrap` strand a legacy events DB when the clyde DB also exists — FIXED
+- **Severity:** bug / low-medium. **Status: fixed** (Phase 5, `bootstrap` now merges; see below).
 - When BOTH `~/.local/share/clyde/events.db` and the legacy
   `~/.local/share/claude-permit/events.db` exist, `doctor` displays `events DB: clyde (N rows)`
   (the legacy DB is invisible) yet `healthy()` returns false (`events_db_at_legacy == true`),
@@ -90,10 +90,13 @@ The reworded `MissingDir` message (post-audit fix) is accurate for a deleted dir
   prints (`run clyde bootstrap`) can never clear it. Observed directly: after `bootstrap` repaired
   the enrich unit (timer now `clyde`/healthy), `doctor` still exits 1 with the legacy-events-DB the
   only remaining (invisible) cause.
-- The display `match` only surfaces the legacy events DB in the `clyde-DB-absent` arm; the
-  both-present case has no branch. **Fix direction:** add a line when `events_db_at_legacy` is true
-  regardless of the clyde DB's presence, and decide whether `bootstrap` should reconcile a
-  both-present events DB (merge/keep newest) instead of no-op'ing.
+- The display `match` only surfaced the legacy events DB in the `clyde-DB-absent` arm; the
+  both-present case had no branch.
+- **Fix (Phase 5):** `migrate_events_db` now MERGES the legacy rows into the clyde DB and removes
+  the legacy DB (backed up to `.clyde.bak`) when both exist, instead of no-op'ing; `doctor` prints a
+  `legacy state:` line surfacing the legacy DB when the clyde DB also exists. Re-verified live:
+  after `clyde bootstrap`, the legacy `claude-permit/events.db` was merged + removed and
+  `clyde doctor` reports `✓ all integrations resolve to clyde` (exit 0).
 
 ## Notes
 - No mutation of the real catalog or real systemd units was performed. Error-matrix states were

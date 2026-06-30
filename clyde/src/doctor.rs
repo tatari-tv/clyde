@@ -265,6 +265,15 @@ fn print_report(paths: &Paths, report: &Report) {
         }
         (false, _) => println!("  events DB:     {}", "absent".dimmed()),
     }
+    // When the clyde DB exists the line above reads green, but a legacy events DB alongside it still
+    // makes the report unhealthy (`events_db_at_legacy`). Surface it explicitly so the `✗` footer
+    // isn't a mystery — `clyde bootstrap` now merges it in and removes it.
+    if report.events_db_at_clyde && report.events_db_at_legacy {
+        println!(
+            "  {} legacy claude-permit events DB also present (run `clyde bootstrap` to merge)",
+            "legacy state:".red()
+        );
+    }
     for item in &report.legacy_state {
         println!("  {} {}", "legacy state:".red(), item);
     }
