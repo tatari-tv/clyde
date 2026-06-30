@@ -60,6 +60,16 @@ SEPARATOR_RE = re.compile(r"^\|[-: |]+\|$")
 # Any line that does not start with `|` ends the current table.
 NON_TABLE_RE = re.compile(r"^[^|]")
 
+# Date-tiered introductory pricing. Anthropic lists a launching model as
+# two rows naming the same model, e.g.
+#   "Claude Sonnet 5 [through August 31, 2026]"
+#   "Claude Sonnet 5 starting September 1, 2026"
+# We keep only the "Claude <Family> <Version>" head so both collapse to a
+# single id (claude-sonnet-5); the first (introductory) row wins in parse().
+# Names with no numeric version (e.g. "Claude Mythos Preview") never match
+# and are left untouched. Kept in lockstep with bin/update.sh.
+DATE_TIER_RE = re.compile(r"^(Claude [A-Za-z]+ [0-9][0-9.]*)")
+
 
 def to_model_id(name: str) -> str:
     """Canonical id from a cleaned display name.
@@ -71,6 +81,20 @@ def to_model_id(name: str) -> str:
         "Claude Opus 4.6"  ->  "claude-opus-4-6"
     """
     return name.strip().lower().replace(" ", "-").replace(".", "-")
+
+
+def canonical_model_name(name: str) -> str:
+    """Collapse a date-tiered intro/standard label to its base model name.
+
+    Applied only to model-pricing rows, after clean_model_name. See
+    DATE_TIER_RE; kept in lockstep with bin/update.sh.
+
+        "Claude Sonnet 5 [through August 31, 2026]"   -> "Claude Sonnet 5"
+        "Claude Sonnet 5 starting September 1, 2026"  -> "Claude Sonnet 5"
+        "Claude Sonnet 4.6"                           -> "Claude Sonnet 4.6"
+    """
+    m = DATE_TIER_RE.match(name)
+    return m.group(1) if m else name
 
 
 def clean_model_name(raw: str) -> str:
@@ -172,18 +196,22 @@ def parse(stream: Iterable[str]) -> dict[str, dict[str, float]]:
         if in_model and line.lstrip().startswith("|"):
             f = split_pipe_row(line)
             if len(f) >= 8 and clean_model_name(f[2]).startswith("Claude"):
-                model_raw = clean_model_name(f[2])
+                model_raw = canonical_model_name(clean_model_name(f[2]))
                 mid = to_model_id(model_raw)
+                # First row wins: a date-tiered model lists its
+                # introductory rate first and its post-intro rate second.
+                # Both collapse to the same id, and we keep the intro
+                # (currently-in-effect) rate by ignoring the repeat.
                 if mid not in seen:
                     seen.add(mid)
                     ordered_ids.append(mid)
-                rates[mid] = {
-                    "input_per_mtok": extract_number(f[3]),
-                    "output_per_mtok": extract_number(f[7]),
-                    "cache_5m_write_per_mtok": extract_number(f[4]),
-                    "cache_1h_write_per_mtok": extract_number(f[5]),
-                    "cache_read_per_mtok": extract_number(f[6]),
-                }
+                    rates[mid] = {
+                        "input_per_mtok": extract_number(f[3]),
+                        "output_per_mtok": extract_number(f[7]),
+                        "cache_5m_write_per_mtok": extract_number(f[4]),
+                        "cache_1h_write_per_mtok": extract_number(f[5]),
+                        "cache_read_per_mtok": extract_number(f[6]),
+                    }
                 continue
 
         # -- Long-context input row ------------------------------------

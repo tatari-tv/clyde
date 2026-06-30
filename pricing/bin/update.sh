@@ -231,24 +231,33 @@ in_model_table && /^\| *Claude/ {
     n = split($0, fields, "|")
 
     model_raw = clean_model_name(fields[2])
+
+    # Collapse date-tiered intro/standard rows (e.g. "Claude Sonnet 5
+    # [through August 31, 2026]" and "Claude Sonnet 5 starting
+    # September 1, 2026") to the base "Claude <Family> <Version>" so both
+    # map to one id. Kept in lockstep with the DATE_TIER_RE in bin/update.py.
+    if (match(model_raw, /^Claude [A-Za-z]+ [0-9][0-9.]*/)) {
+        model_raw = substr(model_raw, RSTART, RLENGTH)
+    }
+
     id        = to_model_id(model_raw)
 
-    # Track unique ids in insertion order. This is the only place where
-    # a new id is appended; all later writes use these slots.
+    # First row wins. A new id is appended in insertion order and
+    # captures its rates here; the second (post-intro) row for that model hits
+    # the same id and is ignored, so the introductory rate listed first
+    # is the one kept. Field-index conventions are documented in the
+    # header; if the table reorders columns, these are the lines to fix.
     if (!(id in seen)) {
         seen[id]              = 1
         model_count           = model_count + 1
         models[model_count]   = id
-    }
 
-    # Field-index conventions documented in the header. If the table
-    # gains a new column or reorders existing ones, this is the line
-    # that needs to change.
-    input[id]      = extract_number(fields[3])
-    cache_5m[id]   = extract_number(fields[4])
-    cache_1h[id]   = extract_number(fields[5])
-    cache_read[id] = extract_number(fields[6])
-    output[id]     = extract_number(fields[7])
+        input[id]      = extract_number(fields[3])
+        cache_5m[id]   = extract_number(fields[4])
+        cache_1h[id]   = extract_number(fields[5])
+        cache_read[id] = extract_number(fields[6])
+        output[id]     = extract_number(fields[7])
+    }
     next
 }
 
