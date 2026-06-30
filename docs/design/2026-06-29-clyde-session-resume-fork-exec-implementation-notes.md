@@ -34,3 +34,23 @@
 
 ### Open questions
 - None.
+
+## Phase 3: tests, help, docs
+
+### Design decisions
+- Added 8 unit tests for `plan_resume` in `clyde/src/tests.rs` - `plan_resume_*` - covers all 5 branches (NoCwd, MissingDir, MissingDir-via-file, Launch-with-extra, StagedOnly, Reaped-with-absent-staged, Reaped-with-no-staged, Launch-with-empty-extra); real `TempDir` fixtures so `is_dir()` and `exists()` checks exercise the filesystem truthfully, no mocking.
+- Used `base_record(transcript_path)` helper to construct minimal-valid `SessionRecord` fixtures - `clyde/src/tests.rs:base_record` - caller overrides only the fields relevant to each branch; matches the pattern of the existing tests file (use `super::*`, `#![allow(clippy::unwrap_used)]`).
+- Updated `SessionsCommand::Resume` doc comment - `clyde/src/cli.rs:SessionsCommand` - describes cd+launch behavior, process-replacement semantics, the `--` passthrough requirement with an example, and the parse-error consequence of omitting `--`.
+- Updated `ResumeArgs.extra` field doc - `clyde/src/cli.rs:ResumeArgs` - reinforces the `--` requirement and explains why it is intentional (prevents claude flags from being misinterpreted by clyde's parser).
+- Replaced `open` with `resume` in README command surface and workspace description - `README.md` - two occurrences updated to remove the old verb.
+- Added `## Resuming sessions` section to README - `README.md` - documents cd+launch semantics, the two canonical invocation forms (bare and `-- --model opus`), the `--` requirement, and the id-prefix convention.
+
+### Deviations
+- None. The `--` behavior note says "must error" and `#[arg(last = true)]` already enforces this via clap; the tests confirm the parse path in `clyde/src/cli/tests.rs` (Phase 1), so no additional negative-parse test was added here for the `--`-omission case - that would require a bare flag that clap rejects, which Phase 1 already covers via `resume_extra_lands_after_double_dash`.
+
+### Tradeoffs
+- 8 tests (including 2 edge-case branches for MissingDir and Reaped) vs. the minimum 5 specified - the two extra branches (file-at-cwd, staged-path-set-but-absent) cost nothing and directly exercise the `is_dir()` and `.filter(|p| p.exists())` logic that would silently misbehave if the branch logic were swapped; worth the coverage.
+- `base_record` helper defined in `tests.rs` vs. reusing a sessions-crate fixture - `SessionRecord` has no public test-helper constructor in the sessions crate; building it inline in `tests.rs` keeps the test file self-contained and avoids a dev-dependency on test internals of another crate.
+
+### Open questions
+- None.

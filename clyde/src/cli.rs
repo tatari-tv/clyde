@@ -83,7 +83,17 @@ pub enum SessionsCommand {
     Search(SearchArgs),
     /// List sessions by repo / date / tag / model.
     Ls(LsArgs),
-    /// Open (cd + launch) a session in its original directory.
+    /// Resume a session in the directory it originally ran in.
+    ///
+    /// Resolves the session's recorded working directory, changes into it, and replaces the clyde
+    /// process with `claude --resume <id>` (fork/exec). On exit you are returned to your original
+    /// shell prompt and directory.
+    ///
+    /// To forward extra flags to `claude`, separate them with a literal `--`:
+    ///
+    ///   clyde sessions resume <id> -- --model opus
+    ///
+    /// Omitting the `--` will cause a parse error; clyde does not interpret claude's flags.
     Resume(ResumeArgs),
     /// Set tags on a session (replaces existing).
     Tag(TagArgs),
@@ -152,8 +162,14 @@ pub struct ResumeArgs {
     /// Skip the lazy reindex before resolving.
     #[arg(long)]
     pub no_reindex: bool,
-    /// Extra args forwarded verbatim to `claude` after `--resume <id>`, e.g.
-    /// `clyde session resume <id> -- --model opus`.
+    /// Extra flags forwarded verbatim to `claude` after `--resume <id>`.
+    ///
+    /// Requires a literal `--` separator before the flags:
+    ///
+    ///   clyde sessions resume <id> -- --model opus
+    ///
+    /// Without `--`, clyde will reject flags it does not recognize. This is intentional:
+    /// it prevents claude flags from being silently misinterpreted by clyde's own parser.
     #[arg(last = true)]
     pub extra: Vec<String>,
 }
