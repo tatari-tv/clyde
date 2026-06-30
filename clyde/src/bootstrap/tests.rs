@@ -272,6 +272,99 @@ fn events_db_merge_dedups_identical_rows_and_is_crash_idempotent() {
 }
 
 #[test]
+fn events_db_checkpoint_busy_fails_closed_and_leaves_legacy_intact() {
+    // The KEY fail-closed test. A second "holder" connection holds a WRITE lock on the legacy DB so
+    // the TRUNCATE checkpoint cannot complete: SQLite reports this as SQLITE_OK with busy=1 (NOT an
+    // error). `checkpoint_truncate` reads that busy column and returns Err, which must propagate via
+    // `?` BEFORE the legacy DB is moved — leaving everything intact for a retry.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let legacy = paths.legacy_events_db();
+    // Legacy only (no dest) -> the WAL-safe MOVE path, whose checkpoint precedes `fs::rename`.
+    seed_events_db_tagged(&legacy, 4, "legacy");
+
+    // Holder: a live WAL connection that grabs the write lock with BEGIN IMMEDIATE and keeps it,
+    // forcing the migration's TRUNCATE checkpoint to report busy. Held until the end of the test.
+    let holder = rusqlite::Connection::open(&legacy).unwrap();
+    holder.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE; INSERT INTO events (timestamp, session_id, tool_name, tool_input) VALUES ('2026-06-30T02:00:00Z', 'holder', 'held', '{}');").unwrap();
+
+    let result = migrate_events_db(&paths, false);
+    assert!(
+        result.is_err(),
+        "a busy-blocked checkpoint must FAIL CLOSED (Err), not silently succeed; got {result:?}"
+    );
+
+    // Fail-closed: nothing was moved. The legacy DB still exists and the dest was never created.
+    assert!(legacy.exists(), "legacy DB must remain in place for retry");
+    assert!(
+        !paths.clyde_events_db().exists(),
+        "dest must NOT be created/clobbered on a blocked checkpoint"
+    );
+    // The legacy `-wal` (the holder's open WAL) is still alongside the legacy DB, untouched.
+    let wal = sidecar(&legacy, "-wal");
+    assert!(wal.exists(), "legacy -wal must be left intact (not moved/deleted)");
+
+    // Robust cleanup: release the lock and drop the holder so the temp dir tears down cleanly.
+    holder.execute_batch("ROLLBACK;").unwrap();
+    drop(holder);
+}
+
+#[test]
+fn events_db_merge_preserves_straggler_sidecars_with_backup() {
+    // Item 2: in the claim path, the legacy `-wal`/`-shm` are MOVED alongside the staging snapshot
+    // (not deleted) and then alongside the `.clyde.bak` at finalize, so the backup set is a complete,
+    // replayable DB. We force a non-empty legacy `-wal` to exist at claim time via a held writer with
+    // autocheckpoint OFF.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let legacy = paths.legacy_events_db();
+    seed_events_db_tagged(&legacy, 0, "legacy"); // schema only
+    seed_events_db_tagged(&paths.clyde_events_db(), 2, "clyde");
+
+    // A writer that holds the connection so the rows stay in the (uncheckpointed) `-wal`.
+    let writer = rusqlite::Connection::open(&legacy).unwrap();
+    writer
+        .execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+        .unwrap();
+    for i in 0..3 {
+        writer
+            .execute(
+                "INSERT INTO events (timestamp, session_id, tool_name, tool_input) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["2026-06-30T03:00:00Z", "wal", format!("waltool{i}"), "{}"],
+            )
+            .unwrap();
+    }
+    let wal = sidecar(&legacy, "-wal");
+    assert!(
+        wal.exists() && fs::metadata(&wal).unwrap().len() > 0,
+        "rows must be resident in the legacy -wal at claim time"
+    );
+
+    assert!(migrate_events_db(&paths, false).unwrap(), "both present -> merge");
+    drop(writer);
+
+    // The WAL rows were checkpointed and merged (2 clyde + 3 wal = 5).
+    assert_eq!(row_count(&paths.clyde_events_db()), 5, "WAL rows merged into clyde");
+    // The straggler `-wal` was MOVED to the backup, NOT deleted: the legacy `-wal` is gone but the
+    // `.clyde.bak-wal` exists alongside the `.clyde.bak`.
+    let bak = backup_path(&legacy);
+    assert!(bak.exists(), ".clyde.bak backup left after finalize");
+    assert!(!wal.exists(), "legacy -wal must be moved away (not left behind)");
+    assert!(
+        sidecar(&bak, "-wal").exists(),
+        "straggler -wal must travel with the .clyde.bak (preserved, not discarded)"
+    );
+    // Staging is gone (finalized) and its transient sidecars are not left orphaned.
+    let staging = sidecar(&legacy, ".merging");
+    assert!(!staging.exists(), "staging snapshot finalized away");
+    assert!(
+        !sidecar(&staging, "-wal").exists(),
+        "no orphaned staging -wal left behind"
+    );
+}
+
+#[test]
 fn hook_rewrite_preserves_other_hooks_and_order() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());

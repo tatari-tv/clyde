@@ -513,6 +513,28 @@ fn open_events_conn_ro(path: &Path) -> Result<rusqlite::Connection> {
     Ok(conn)
 }
 
+/// Run `PRAGMA wal_checkpoint(TRUNCATE)` and FAIL CLOSED if it could not complete. SQLite reports a
+/// lock-blocked checkpoint as `SQLITE_OK` with `busy=1` (the first column of the returned row), NOT
+/// as an error — so a plain `execute_batch` would silently treat a blocked checkpoint as success and
+/// the caller would then move/delete the `-wal`, stranding committed frames. Reading the `busy`
+/// column and erroring on `busy != 0` lets callers abort BEFORE any rename/delete, leaving the DB
+/// intact for a retry.
+///
+/// The `wal_checkpoint(TRUNCATE)` pragma returns one row of three ints `(busy, log, checkpointed)`;
+/// `busy` is column 0. A non-zero `busy` means the truncate could not complete.
+fn checkpoint_truncate(conn: &rusqlite::Connection, path: &Path) -> Result<()> {
+    let busy: i64 = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |r| r.get::<_, i64>(0))
+        .with_context(|| format!("failed to checkpoint events DB WAL {}", path.display()))?;
+    if busy != 0 {
+        return Err(eyre::eyre!(
+            "events DB WAL checkpoint blocked (busy) on {}; leaving the DB intact for retry",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// WAL-safe move of the permit events DB to the clyde home. Checkpoints the WAL (TRUNCATE) and
 /// closes the connection before moving `events.db` plus any `-wal`/`-shm` sidecars together, so
 /// no committed rows are stranded in an un-checkpointed WAL. No-op if the legacy DB is absent or
@@ -574,8 +596,9 @@ fn migrate_events_db(paths: &Paths, dry_run: bool) -> Result<bool> {
     // we can verify preservation after the move.
     let pre_count: Option<i64> = {
         let conn = open_events_conn(&legacy)?;
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-            .context("failed to checkpoint events DB WAL")?;
+        // FAIL CLOSED: a busy-blocked checkpoint must abort BEFORE the rename below, so the legacy
+        // DB (and its `-wal`) are left untouched for a retry rather than moved with stranded frames.
+        checkpoint_truncate(&conn, &legacy)?;
         conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
             .ok()
     };
@@ -614,10 +637,12 @@ fn migrate_events_db(paths: &Paths, dry_run: bool) -> Result<bool> {
 /// The merge operates on a CLAIMED snapshot to close the concurrent-write window. The live
 /// permit-log hook may be appending to `events.db` while we run, so:
 ///   1. If the staging file (`events.db.merging`) does NOT yet exist, claim the legacy DB
-///      atomically: checkpoint its WAL (so no committed rows are stranded in the `-wal`, which is
-///      bound to the OLD filename), `rename(legacy -> staging)`, and remove the now-empty legacy
-///      `-wal`/`-shm`. A concurrent permit-log invocation that opens after the rename creates a
-///      FRESH `events.db` (merged by the NEXT bootstrap) instead of having its writes lost.
+///      atomically: checkpoint its WAL FAIL-CLOSED (a busy-blocked checkpoint aborts before the
+///      rename, leaving the legacy DB intact for retry), `rename(legacy -> staging)`, and MOVE the
+///      legacy `-wal`/`-shm` alongside the staging file (rather than deleting them) so any straggler
+///      frames written by an already-open permit-log fd in the checkpoint→rename window are
+///      preserved with the snapshot. A concurrent permit-log invocation that opens after the rename
+///      creates a FRESH `events.db` (merged by the NEXT bootstrap) instead of having its writes lost.
 ///   2. If the staging file ALREADY exists, this is crash recovery from an interrupted merge: reuse
 ///      it as-is, do NOT re-checkpoint/rename (the legacy DB was already claimed last time).
 ///
@@ -629,8 +654,9 @@ fn migrate_events_db(paths: &Paths, dry_run: bool) -> Result<bool> {
 /// PRESERVED — the subquery only checks the DESTINATION, never the source.)
 ///
 /// On success the staging file is `rename`d to `<legacy>.clyde.bak`, which BOTH leaves a recoverable
-/// backup AND removes the staging file in one atomic step. Idempotent: once staging+legacy are gone,
-/// the caller's existence guards make a re-run a no-op.
+/// backup AND removes the staging file in one atomic step; any preserved `-wal`/`-shm` sidecars are
+/// moved alongside the `.clyde.bak` so the backup set is a complete, replayable DB. Idempotent: once
+/// staging+legacy are gone, the caller's existence guards make a re-run a no-op.
 fn merge_events_db(legacy: &Path, dest: &Path) -> Result<bool> {
     debug!("merge_events_db: {} -> {}", legacy.display(), dest.display());
     let staging = sidecar(legacy, ".merging");
@@ -638,11 +664,12 @@ fn merge_events_db(legacy: &Path, dest: &Path) -> Result<bool> {
     // Step 1: claim the legacy DB into the staging snapshot (skipped on crash-recovery reuse).
     if !staging.exists() {
         // Checkpoint the legacy WAL so every committed row is in the main file BEFORE the rename —
-        // the `-wal` is bound to the old filename and would be orphaned by the move otherwise.
+        // the `-wal` is bound to the old filename and would be orphaned by the move otherwise. FAIL
+        // CLOSED: a busy-blocked checkpoint must abort BEFORE the rename below, so no staging file is
+        // created and the legacy DB + its `-wal` are left intact for a retry.
         {
             let conn = open_events_conn(legacy)?;
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-                .context("failed to checkpoint legacy events DB WAL")?;
+            checkpoint_truncate(&conn, legacy)?;
         }
         // Atomically claim: a concurrent permit-log that opens after this creates a fresh events.db.
         fs::rename(legacy, &staging).with_context(|| {
@@ -652,11 +679,23 @@ fn merge_events_db(legacy: &Path, dest: &Path) -> Result<bool> {
                 staging.display()
             )
         })?;
-        // The checkpoint emptied the WAL; the sidecars are bound to the old name, so remove them.
+        // The checkpoint completed (verified above), but a permit-log fd opened BEFORE the claim could
+        // have committed frames into the legacy `-wal` in the tiny window between the checkpoint and
+        // the rename. Rather than DELETE the sidecars (which would lose those straggler frames), MOVE
+        // them alongside the staging snapshot so they travel with it and are preserved with the
+        // `.clyde.bak` at finalize. A failed sidecar move is NOT fatal — the merged rows are already
+        // durable — so we `warn!` and continue.
         for suffix in ["-wal", "-shm"] {
             let ls = sidecar(legacy, suffix);
             if ls.exists() {
-                fs::remove_file(&ls).with_context(|| format!("failed to remove sidecar {}", ls.display()))?;
+                let ss = sidecar(&staging, suffix);
+                if let Err(e) = fs::rename(&ls, &ss) {
+                    warn!(
+                        "merge_events_db: failed to move sidecar {} -> {} ({e}); continuing",
+                        ls.display(),
+                        ss.display()
+                    );
+                }
             }
         }
     } else {
@@ -735,6 +774,22 @@ fn merge_events_db(legacy: &Path, dest: &Path) -> Result<bool> {
     let bak = backup_path(legacy);
     fs::rename(&staging, &bak)
         .with_context(|| format!("failed to finalize merge {} -> {}", staging.display(), bak.display()))?;
+    // Move any preserved straggler sidecars alongside the `.clyde.bak` so the backup set is a
+    // complete, replayable DB. As with the claim-time move, a failed sidecar move is NOT fatal (the
+    // merged rows are already durable) — `warn!` and continue.
+    for suffix in ["-wal", "-shm"] {
+        let ss = sidecar(&staging, suffix);
+        if ss.exists() {
+            let bs = sidecar(&bak, suffix);
+            if let Err(e) = fs::rename(&ss, &bs) {
+                warn!(
+                    "merge_events_db: failed to move sidecar {} -> {} ({e}); continuing",
+                    ss.display(),
+                    bs.display()
+                );
+            }
+        }
+    }
     info!(
         "merged legacy events into {} and finalized the staging snapshot (backup at {})",
         dest.display(),
