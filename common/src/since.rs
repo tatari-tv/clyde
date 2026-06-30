@@ -1,6 +1,6 @@
 //! The canonical `--since` / `since` parser, shared across every absorbed tool.
 //!
-//! Both `sessions` (`sessions ls --since`, the `sessions_ls` MCP tool) and `report`
+//! Both `session` (`session ls --since`, the `sessions_ls` MCP tool) and `report`
 //! (`report collect --since`) call [`parse_since`] so a span/date is interpreted identically
 //! everywhere. The parser is a PURE function: it reads no config and no environment. The CLI
 //! layer resolves the [`DateTz`] (from `clyde.yml`) and passes it in; the parser only applies it.

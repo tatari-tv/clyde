@@ -16,6 +16,12 @@ use eyre::{Context, Result};
 use log::{debug, info, warn};
 use serde_json::Value;
 
+/// Per-connection busy timeout for every events-DB connection opened during the merge. The merge
+/// races the live `claude-permit log` / `clyde permit log` hook, so an instant `SQLITE_BUSY` from a
+/// concurrent writer must NOT abort the migration; wait up to this long for the lock instead.
+/// Mirrors `sessions::db::BUSY_TIMEOUT_MS`.
+const EVENTS_BUSY_TIMEOUT_MS: i64 = 5_000;
+
 /// Flags for `clyde bootstrap`.
 #[derive(Args, Debug, Default)]
 pub struct BootstrapArgs {
@@ -485,6 +491,50 @@ fn migrate_legacy_permit_config(paths: &Paths, force: bool, dry_run: bool) -> Re
     migrate_file(&yml, &dest, force, dry_run)
 }
 
+/// Open an events-DB connection and apply the merge-wide `busy_timeout`, so a concurrent writer
+/// (the live permit-log hook) yields a wait rather than an instant `SQLITE_BUSY` that aborts the
+/// migration. Used for EVERY connection opened during the merge (legacy, dest, and the read-only
+/// verification reopen).
+fn open_events_conn(path: &Path) -> Result<rusqlite::Connection> {
+    let conn =
+        rusqlite::Connection::open(path).with_context(|| format!("failed to open events DB {}", path.display()))?;
+    conn.pragma_update(None, "busy_timeout", EVENTS_BUSY_TIMEOUT_MS)
+        .with_context(|| format!("failed to set busy_timeout on events DB {}", path.display()))?;
+    Ok(conn)
+}
+
+/// Open an events-DB connection READ-ONLY with the merge-wide `busy_timeout`, for the post-merge
+/// verification count.
+fn open_events_conn_ro(path: &Path) -> Result<rusqlite::Connection> {
+    let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("failed to open events DB {} read-only", path.display()))?;
+    conn.pragma_update(None, "busy_timeout", EVENTS_BUSY_TIMEOUT_MS)
+        .with_context(|| format!("failed to set busy_timeout on events DB {}", path.display()))?;
+    Ok(conn)
+}
+
+/// Run `PRAGMA wal_checkpoint(TRUNCATE)` and FAIL CLOSED if it could not complete. SQLite reports a
+/// lock-blocked checkpoint as `SQLITE_OK` with `busy=1` (the first column of the returned row), NOT
+/// as an error — so a plain `execute_batch` would silently treat a blocked checkpoint as success and
+/// the caller would then move/delete the `-wal`, stranding committed frames. Reading the `busy`
+/// column and erroring on `busy != 0` lets callers abort BEFORE any rename/delete, leaving the DB
+/// intact for a retry.
+///
+/// The `wal_checkpoint(TRUNCATE)` pragma returns one row of three ints `(busy, log, checkpointed)`;
+/// `busy` is column 0. A non-zero `busy` means the truncate could not complete.
+fn checkpoint_truncate(conn: &rusqlite::Connection, path: &Path) -> Result<()> {
+    let busy: i64 = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |r| r.get::<_, i64>(0))
+        .with_context(|| format!("failed to checkpoint events DB WAL {}", path.display()))?;
+    if busy != 0 {
+        return Err(eyre::eyre!(
+            "events DB WAL checkpoint blocked (busy) on {}; leaving the DB intact for retry",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// WAL-safe move of the permit events DB to the clyde home. Checkpoints the WAL (TRUNCATE) and
 /// closes the connection before moving `events.db` plus any `-wal`/`-shm` sidecars together, so
 /// no committed rows are stranded in an un-checkpointed WAL. No-op if the legacy DB is absent or
@@ -492,17 +542,48 @@ fn migrate_legacy_permit_config(paths: &Paths, force: bool, dry_run: bool) -> Re
 fn migrate_events_db(paths: &Paths, dry_run: bool) -> Result<bool> {
     let legacy = paths.legacy_events_db();
     let dest = paths.clyde_events_db();
+    // A claimed snapshot of the legacy DB mid-merge (see `merge_events_db`): `events.db.merging`.
+    let staging = sidecar(&legacy, ".merging");
     debug!(
         "migrate_events_db: {} -> {} dry_run={dry_run}",
         legacy.display(),
         dest.display()
     );
+    // Crash recovery: an interrupted merge left a claimed staging file. If the dest also exists,
+    // always finish the merge (reusing the staging snapshot) so the claimed rows are not stranded.
+    if staging.exists() && dest.exists() {
+        if dry_run {
+            // WOULD finish the interrupted merge from the staging snapshot. Report from existence
+            // alone; do not open any DB (a real run writes to dest).
+            return Ok(true);
+        }
+        return merge_events_db(&legacy, &dest);
+    }
+    // Pathological: a staging file exists but no dest. The merge claimed the legacy DB but the dest
+    // is gone; we cannot reconstruct it here. Warn and leave the staging file for manual recovery
+    // (it is a complete copy of the legacy DB) rather than crashing the whole bootstrap.
+    if staging.exists() && !dest.exists() {
+        warn!(
+            "migrate_events_db: staging file {} present without a clyde DB at {}; leaving it for manual recovery",
+            staging.display(),
+            dest.display()
+        );
+        return Ok(false);
+    }
     if !legacy.exists() {
         return Ok(false);
     }
     if dest.exists() {
-        warn!("migrate_events_db: clyde events DB already exists; leaving legacy in place");
-        return Ok(false);
+        // Both DBs present: the legacy DB holds pre-cutover events the clyde DB never saw. A plain
+        // move would clobber the clyde DB; the old no-op stranded the legacy DB forever (and kept
+        // `doctor` permanently red, since its remediation -- this very function -- never cleared it).
+        // Merge the legacy rows in and remove the legacy DB instead.
+        if dry_run {
+            // WOULD merge legacy rows into the clyde DB and remove the legacy DB. Report from
+            // existence alone; do not open either DB (a real run writes to both).
+            return Ok(true);
+        }
+        return merge_events_db(&legacy, &dest);
     }
     if dry_run {
         // CRITICAL: do NOT open the DB. A real run runs `PRAGMA wal_checkpoint(TRUNCATE)` here — a
@@ -514,10 +595,10 @@ fn migrate_events_db(paths: &Paths, dry_run: bool) -> Result<bool> {
     // the row count post-checkpoint (best-effort: a degenerate DB may lack the `events` table) so
     // we can verify preservation after the move.
     let pre_count: Option<i64> = {
-        let conn = rusqlite::Connection::open(&legacy)
-            .with_context(|| format!("failed to open events DB {}", legacy.display()))?;
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-            .context("failed to checkpoint events DB WAL")?;
+        let conn = open_events_conn(&legacy)?;
+        // FAIL CLOSED: a busy-blocked checkpoint must abort BEFORE the rename below, so the legacy
+        // DB (and its `-wal`) are left untouched for a retry rather than moved with stranded frames.
+        checkpoint_truncate(&conn, &legacy)?;
         conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
             .ok()
     };
@@ -536,15 +617,194 @@ fn migrate_events_db(paths: &Paths, dry_run: bool) -> Result<bool> {
     }
     // Defensive: warn (do not abort — it is already moved) if the row count changed.
     if let Some(pre) = pre_count {
-        match rusqlite::Connection::open_with_flags(&dest, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .and_then(|c| c.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0)))
-        {
+        match open_events_conn_ro(&dest).and_then(|c| {
+            c.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .context("failed to count rows in moved events DB")
+        }) {
             Ok(post) if post != pre => warn!("migrate_events_db: row count changed {pre} -> {post} across the move"),
             Ok(post) => debug!("migrate_events_db: row count preserved ({post})"),
             Err(e) => warn!("migrate_events_db: post-move row-count check failed: {e}"),
         }
     }
     info!("migrated events DB {} -> {}", legacy.display(), dest.display());
+    Ok(true)
+}
+
+/// Merge the legacy permit events DB into the existing clyde events DB (identical schema). Used when
+/// BOTH exist (see [`migrate_events_db`]): a move would clobber the clyde DB and a no-op would
+/// strand the legacy rows forever.
+///
+/// The merge operates on a CLAIMED snapshot to close the concurrent-write window. The live
+/// permit-log hook may be appending to `events.db` while we run, so:
+///   1. If the staging file (`events.db.merging`) does NOT yet exist, claim the legacy DB
+///      atomically: checkpoint its WAL FAIL-CLOSED (a busy-blocked checkpoint aborts before the
+///      rename, leaving the legacy DB intact for retry), `rename(legacy -> staging)`, and MOVE the
+///      legacy `-wal`/`-shm` alongside the staging file (rather than deleting them) so any straggler
+///      frames written by an already-open permit-log fd in the checkpoint→rename window are
+///      preserved with the snapshot. A concurrent permit-log invocation that opens after the rename
+///      creates a FRESH `events.db` (merged by the NEXT bootstrap) instead of having its writes lost.
+///   2. If the staging file ALREADY exists, this is crash recovery from an interrupted merge: reuse
+///      it as-is, do NOT re-checkpoint/rename (the legacy DB was already claimed last time).
+///
+/// Legacy rows are inserted with fresh autoincrement ids (the two DBs have independent `id`
+/// sequences, so the `id` column is omitted to avoid PK collisions). The INSERT is content-dedup'd
+/// against the clyde DB by a NULL-safe correlated `NOT EXISTS` over all 7 copied columns, so a crash
+/// AFTER the INSERT commits but BEFORE the staging file is renamed away cannot double-insert on the
+/// next run: a retry merges only the not-yet-present remainder. (Within-staging exact duplicates are
+/// PRESERVED — the subquery only checks the DESTINATION, never the source.)
+///
+/// On success the staging file is `rename`d to `<legacy>.clyde.bak`, which BOTH leaves a recoverable
+/// backup AND removes the staging file in one atomic step; any preserved `-wal`/`-shm` sidecars are
+/// moved alongside the `.clyde.bak` so the backup set is a complete, replayable DB. Idempotent: once
+/// staging+legacy are gone, the caller's existence guards make a re-run a no-op.
+fn merge_events_db(legacy: &Path, dest: &Path) -> Result<bool> {
+    debug!("merge_events_db: {} -> {}", legacy.display(), dest.display());
+    let staging = sidecar(legacy, ".merging");
+
+    // Step 1: claim the legacy DB into the staging snapshot (skipped on crash-recovery reuse).
+    if !staging.exists() {
+        // Checkpoint the legacy WAL so every committed row is in the main file BEFORE the rename —
+        // the `-wal` is bound to the old filename and would be orphaned by the move otherwise. FAIL
+        // CLOSED: a busy-blocked checkpoint must abort BEFORE the rename below, so no staging file is
+        // created and the legacy DB + its `-wal` are left intact for a retry.
+        {
+            let conn = open_events_conn(legacy)?;
+            checkpoint_truncate(&conn, legacy)?;
+        }
+        // Atomically claim: a concurrent permit-log that opens after this creates a fresh events.db.
+        fs::rename(legacy, &staging).with_context(|| {
+            format!(
+                "failed to claim legacy events DB {} -> {}",
+                legacy.display(),
+                staging.display()
+            )
+        })?;
+        // The checkpoint completed (verified above), but a permit-log fd opened BEFORE the claim could
+        // have committed frames into the legacy `-wal` in the tiny window between the checkpoint and
+        // the rename. Rather than DELETE the sidecars (which would lose those straggler frames), MOVE
+        // them alongside the staging snapshot so they travel with it and are preserved with the
+        // `.clyde.bak` at finalize. The sidecars are the ONLY place those frames can still live, so a
+        // failed move must FAIL CLOSED: roll the claim all the way back (restore any sidecar already
+        // moved, then the main DB) and return an error, leaving the legacy DB whole for a clean retry
+        // rather than silently stranding frames.
+        let mut moved: Vec<&str> = Vec::new();
+        for suffix in ["-wal", "-shm"] {
+            let ls = sidecar(legacy, suffix);
+            if !ls.exists() {
+                continue;
+            }
+            let ss = sidecar(&staging, suffix);
+            if let Err(e) = fs::rename(&ls, &ss) {
+                // Best-effort rollback so the pre-claim state (legacy DB + its sidecars) is restored.
+                for done in &moved {
+                    let _ = fs::rename(sidecar(&staging, done), sidecar(legacy, done));
+                }
+                let _ = fs::rename(&staging, legacy);
+                return Err(eyre::eyre!(
+                    "failed to claim legacy events DB sidecar {} -> {} ({e}); rolled back the claim, legacy DB left intact for retry",
+                    ls.display(),
+                    ss.display()
+                ));
+            }
+            moved.push(suffix);
+        }
+    } else {
+        debug!(
+            "merge_events_db: reusing existing staging snapshot {} (crash recovery)",
+            staging.display()
+        );
+    }
+
+    // Step 2: count the staged snapshot. A missing/degenerate `events` table yields None -> nothing
+    // to merge, but we still finalize the staging file below.
+    let staging_count: Option<i64> = {
+        let conn = open_events_conn(&staging)?;
+        conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+            .ok()
+    };
+
+    // Step 3: merge staged rows into dest, content-dedup'd against dest.
+    let dest_before: i64 = {
+        let conn = open_events_conn(dest)?;
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap_or(0);
+        if matches!(staging_count, Some(n) if n > 0) {
+            // ATTACH the staged DB and copy every row not already present in dest by full content
+            // match. Bound parameter, never an interpolated path. `IS` is NULL-safe equality, so a
+            // NULL `raw_input`/`risk_tier`/`raw_json` matches a NULL. The NOT EXISTS checks only the
+            // DESTINATION `events` (alias `e`), so within-staging exact duplicates are preserved.
+            conn.execute("ATTACH DATABASE ?1 AS staging", [staging.to_string_lossy()])
+                .context("failed to attach staged events DB")?;
+            conn.execute_batch(
+                "INSERT INTO events (timestamp, session_id, tool_name, tool_input, raw_input, risk_tier, raw_json)
+                 SELECT l.timestamp, l.session_id, l.tool_name, l.tool_input, l.raw_input, l.risk_tier, l.raw_json
+                 FROM staging.events AS l
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM events e
+                   WHERE e.timestamp IS l.timestamp AND e.session_id IS l.session_id
+                     AND e.tool_name IS l.tool_name AND e.tool_input IS l.tool_input
+                     AND e.raw_input IS l.raw_input AND e.risk_tier IS l.risk_tier AND e.raw_json IS l.raw_json
+                 );",
+            )
+            .context("failed to merge staged events into clyde events DB")?;
+            conn.execute_batch("DETACH DATABASE staging;")
+                .context("failed to detach staged events DB")?;
+        }
+        before
+    };
+
+    // Step 4: fail-closed verification. A COUNT that ERRORS (a real failure, not a clean zero) must
+    // NOT let us discard the staging snapshot — keep it for a retry and propagate the Err so the
+    // legacy data is preserved. A clean count that merely differs from the dedup-aware expectation
+    // is only a `warn!` (do not roll back a committed insert).
+    if let Some(n) = staging_count {
+        let dest_after = open_events_conn_ro(dest)
+            .and_then(|c| {
+                c.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                    .context("failed to count rows after merge")
+            })
+            .context("post-merge verification failed; keeping staging snapshot for retry")?;
+        // Dedup means the insert adds AT MOST `n` rows (fewer when some staged rows already match a
+        // clyde row), so the expectation is a range, not an equality.
+        if dest_after < dest_before || dest_after > dest_before + n {
+            warn!(
+                "merge_events_db: expected {}..={} rows after merge, found {dest_after}",
+                dest_before,
+                dest_before + n
+            );
+        } else {
+            debug!("merge_events_db: merged up to {n} staged rows ({dest_before} -> {dest_after}, dedup-aware)");
+        }
+    }
+
+    // Step 5: finalize. Rename the staging snapshot to `<legacy>.clyde.bak` — this leaves the
+    // recoverable backup AND removes the staging file in one atomic step. (Do NOT use `backup()`:
+    // it would name the file `events.db.merging.clyde.bak`.)
+    let bak = backup_path(legacy);
+    fs::rename(&staging, &bak)
+        .with_context(|| format!("failed to finalize merge {} -> {}", staging.display(), bak.display()))?;
+    // Move any preserved straggler sidecars alongside the `.clyde.bak` so the backup set is a
+    // complete, replayable DB. As with the claim-time move, a failed sidecar move is NOT fatal (the
+    // merged rows are already durable) — `warn!` and continue.
+    for suffix in ["-wal", "-shm"] {
+        let ss = sidecar(&staging, suffix);
+        if ss.exists() {
+            let bs = sidecar(&bak, suffix);
+            if let Err(e) = fs::rename(&ss, &bs) {
+                warn!(
+                    "merge_events_db: failed to move sidecar {} -> {} ({e}); continuing",
+                    ss.display(),
+                    bs.display()
+                );
+            }
+        }
+    }
+    info!(
+        "merged legacy events into {} and finalized the staging snapshot (backup at {})",
+        dest.display(),
+        bak.display()
+    );
     Ok(true)
 }
 
@@ -705,7 +965,15 @@ fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<
     let has_legacy =
         legacy_svc.exists() || legacy_tmr.exists() || fs::symlink_metadata(paths.legacy_wants_link()).is_ok();
     if !has_legacy {
-        if install_timer && !paths.clyde_unit().exists() {
+        // No klod state to migrate. Two sub-cases still need handling:
+        //   - an already-installed clyde unit may predate the `sessions`->`session` rename and still
+        //     invoke `clyde ... sessions enrich`, which now fails (no `sessions` alias). Rewrite it.
+        //   - no clyde unit yet and an install was requested -> install fresh.
+        let clyde_svc = paths.clyde_unit();
+        if clyde_svc.exists() {
+            return refresh_clyde_unit(&clyde_svc, dry_run);
+        }
+        if install_timer {
             if dry_run {
                 // WOULD install the clyde service + timer + enable symlink. Report without writing.
                 return Ok(true);
@@ -795,11 +1063,39 @@ fn repoint_wants_symlink(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-/// Pure transform of a unit file (service or timer): every `klod` -> `clyde`. The enrich units
-/// reference `klod` only in clyde-appropriate places (ExecStart binary, EnvironmentFile path,
-/// Description, the `tatari-tv/klod` Documentation URL), so a blanket replace is correct here.
+/// Pure transform of a unit file (service or timer): every `klod` -> `clyde`, then the old
+/// `sessions enrich` subcommand spelling -> `session enrich`. The enrich units reference `klod`
+/// only in clyde-appropriate places (ExecStart binary, EnvironmentFile path, Description, the
+/// `tatari-tv/klod` Documentation URL), so a blanket replace is correct here. The subcommand
+/// rename is applied after so units that were already `clyde sessions enrich` also get migrated.
 fn rewrite_unit(text: &str) -> String {
     text.replace("klod", "clyde")
+        .replace("sessions enrich", "session enrich")
+}
+
+/// Rewrite an already-clyde-named enrich unit that still uses the pre-rename `sessions enrich`
+/// subcommand spelling. Reached from the no-legacy path of [`repoint_systemd`]: a user who already
+/// migrated off klod (so no `klod-*` state triggers the full repoint) but whose installed unit
+/// predates the `sessions`->`session` rename would otherwise be left with a timer firing
+/// `clyde ... sessions enrich`, which now errors. Returns whether a rewrite happened (or, in
+/// dry-run, would happen). No-op if the unit is already on the new spelling.
+fn refresh_clyde_unit(svc: &Path, dry_run: bool) -> Result<bool> {
+    debug!("refresh_clyde_unit: svc={} dry_run={}", svc.display(), dry_run);
+    let text = fs::read_to_string(svc).with_context(|| format!("failed to read {}", svc.display()))?;
+    if !text.contains("sessions enrich") {
+        return Ok(false);
+    }
+    if dry_run {
+        // WOULD rewrite the stale subcommand spelling in place. Report without writing.
+        return Ok(true);
+    }
+    backup(svc)?;
+    write_atomic(svc, &rewrite_unit(&text))?;
+    info!(
+        "rewrote stale `sessions enrich` -> `session enrich` in {}",
+        svc.display()
+    );
+    Ok(true)
 }
 
 /// Move `~/.config/klod/enrich.env` -> `~/.config/clyde/enrich.env`, preserving permissions.
@@ -833,7 +1129,7 @@ fn install_clyde_timer(paths: &Paths) -> Result<bool> {
         [Service]\n\
         Type=oneshot\n\
         EnvironmentFile=%h/.config/clyde/enrich.env\n\
-        ExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n\
+        ExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n\
         Nice=10\n";
     write_atomic(&svc, svc_body)?;
 

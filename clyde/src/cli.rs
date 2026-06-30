@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-/// Result ordering for `clyde sessions search`. Maps to the domain [`sessions::SortBy`] enum via
+/// Result ordering for `clyde session search`. Maps to the domain [`sessions::SortBy`] enum via
 /// `From<SortOrder>`.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
 #[clap(rename_all = "kebab-case")]
@@ -36,7 +36,7 @@ impl From<SortOrder> for sessions::SortBy {
 )]
 pub struct Cli {
     /// Log level (error, warn, info, debug, trace). The single common global; clyde passes it
-    /// down to each absorbed tool. When unset, the `sessions` subtree defaults to `info` and the
+    /// down to each absorbed tool. When unset, the `session` subtree defaults to `info` and the
     /// absorbed tools fall back to their own prior defaults.
     #[arg(short = 'l', long, global = true)]
     pub log_level: Option<String>,
@@ -61,6 +61,7 @@ impl Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Catalog, search, and resume sessions.
+    #[command(name = "session")]
     Sessions {
         #[command(subcommand)]
         command: SessionsCommand,
@@ -83,8 +84,18 @@ pub enum SessionsCommand {
     Search(SearchArgs),
     /// List sessions by repo / date / tag / model.
     Ls(LsArgs),
-    /// Print the resume line for a session.
-    Open(OpenArgs),
+    /// Resume a session in the directory it originally ran in.
+    ///
+    /// Resolves the session's recorded working directory, changes into it, and replaces the clyde
+    /// process with `claude --resume <id>` (fork/exec). On exit you are returned to your original
+    /// shell prompt and directory.
+    ///
+    /// To forward extra flags to `claude`, separate them with a literal `--`:
+    ///
+    ///   clyde session resume <id> -- --model opus
+    ///
+    /// Omitting the `--` will cause a parse error; clyde does not interpret claude's flags.
+    Resume(ResumeArgs),
     /// Set tags on a session (replaces existing).
     Tag(TagArgs),
     /// Reindex the catalog (incremental).
@@ -146,12 +157,22 @@ pub struct LsArgs {
 }
 
 #[derive(clap::Args, Debug)]
-pub struct OpenArgs {
+pub struct ResumeArgs {
     /// Session id or a unique prefix of it.
     pub id: String,
     /// Skip the lazy reindex before resolving.
     #[arg(long)]
     pub no_reindex: bool,
+    /// Extra flags forwarded verbatim to `claude` after `--resume <id>`.
+    ///
+    /// Requires a literal `--` separator before the flags:
+    ///
+    ///   clyde session resume <id> -- --model opus
+    ///
+    /// Without `--`, clyde will reject flags it does not recognize. This is intentional:
+    /// it prevents claude flags from being silently misinterpreted by clyde's own parser.
+    #[arg(last = true)]
+    pub extra: Vec<String>,
 }
 
 #[derive(clap::Args, Debug)]

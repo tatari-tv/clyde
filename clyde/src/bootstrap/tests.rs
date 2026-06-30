@@ -68,14 +68,31 @@ fn paths_under(root: &Path) -> Paths {
 }
 
 fn seed_events_db(path: &Path, rows: usize) {
+    seed_events_db_tagged(path, rows, "sess");
+}
+
+/// Like [`seed_events_db`] but stamps each row's `session_id` with `tag`, so two DBs can be seeded
+/// with content-DISJOINT rows (the merge dedups by full content, so identical content across DBs is
+/// collapsed). `seed_events_db` keeps the default `"sess"` tag for tests that don't care.
+fn seed_events_db_tagged(path: &Path, rows: usize, tag: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
-    conn.execute_batch("CREATE TABLE events (id INTEGER PRIMARY KEY, tool TEXT);")
-        .unwrap();
+    // Match the real claude-permit events schema so the merge path (column-explicit INSERT…SELECT)
+    // is exercised truthfully.
+    conn.execute_batch(
+        "CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL, session_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+            tool_input TEXT NOT NULL, raw_input TEXT, risk_tier TEXT, raw_json TEXT);",
+    )
+    .unwrap();
     for i in 0..rows {
-        conn.execute("INSERT INTO events (tool) VALUES (?1)", [format!("tool{i}")])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO events (timestamp, session_id, tool_name, tool_input) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["2026-06-30T00:00:00Z", tag, format!("tool{i}"), "{}"],
+        )
+        .unwrap();
     }
     // Leave the connection in WAL mode (sidecars present) at drop, mimicking a live DB.
 }
@@ -106,14 +123,245 @@ fn events_db_move_preserves_rows_and_handles_sidecars() {
 }
 
 #[test]
-fn events_db_move_is_noop_when_clyde_db_present() {
+fn events_db_merges_legacy_into_clyde_when_both_present() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    // Content-DISJOINT rows (distinct session_id tags), so the content-dedup merge inserts all of
+    // them — modelling the real disjoint-time-range case.
+    seed_events_db_tagged(&paths.legacy_events_db(), 2, "legacy");
+    seed_events_db_tagged(&paths.clyde_events_db(), 9, "clyde");
+
+    assert!(migrate_events_db(&paths, false).unwrap(), "both present -> merge");
+
+    // Legacy merged in and removed; the staging snapshot was finalized to `<legacy>.clyde.bak`.
+    assert!(!paths.legacy_events_db().exists(), "legacy DB removed after merge");
+    assert!(
+        !sidecar(&paths.legacy_events_db(), ".merging").exists(),
+        "staging file removed after merge"
+    );
+    assert!(
+        backup_path(&paths.legacy_events_db()).exists(),
+        "legacy DB backed up to <path>.clyde.bak via the final rename"
+    );
+    assert_eq!(row_count(&paths.clyde_events_db()), 11, "clyde holds clyde+legacy rows");
+
+    // Idempotent: with the legacy DB gone, a re-run is a no-op and the count is stable.
+    assert!(!migrate_events_db(&paths, false).unwrap());
+    assert_eq!(row_count(&paths.clyde_events_db()), 11);
+}
+
+#[test]
+fn events_db_merge_dry_run_writes_nothing() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     seed_events_db(&paths.legacy_events_db(), 2);
     seed_events_db(&paths.clyde_events_db(), 9);
-    assert!(!migrate_events_db(&paths, false).unwrap());
-    // Existing clyde DB untouched.
-    assert_eq!(row_count(&paths.clyde_events_db()), 9);
+
+    assert!(
+        migrate_events_db(&paths, true).unwrap(),
+        "dry-run reports the pending merge"
+    );
+    assert!(paths.legacy_events_db().exists(), "dry-run must not remove legacy");
+    assert_eq!(row_count(&paths.clyde_events_db()), 9, "dry-run must not merge rows");
+}
+
+#[test]
+fn events_db_merge_moves_uncheckpointed_wal_rows() {
+    // WAL-survival: rows committed but NOT yet checkpointed in the legacy `-wal` must still merge.
+    // We disable autocheckpoint and keep the writing connection alive so the rows live in the WAL
+    // (never folded into the main file) when migrate_events_db runs and does its own checkpoint.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let legacy = paths.legacy_events_db();
+    seed_events_db_tagged(&legacy, 0, "legacy"); // create schema only
+    seed_events_db_tagged(&paths.clyde_events_db(), 3, "clyde");
+
+    // Open a WAL connection with autocheckpoint OFF, insert rows, and HOLD the connection so the
+    // rows stay in the -wal (uncheckpointed) for the duration of the merge.
+    let writer = rusqlite::Connection::open(&legacy).unwrap();
+    writer
+        .execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+        .unwrap();
+    for i in 0..4 {
+        writer
+            .execute(
+                "INSERT INTO events (timestamp, session_id, tool_name, tool_input) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["2026-06-30T01:00:00Z", "wal", format!("waltool{i}"), "{}"],
+            )
+            .unwrap();
+    }
+    let wal = sidecar(&legacy, "-wal");
+    assert!(
+        wal.exists() && fs::metadata(&wal).unwrap().len() > 0,
+        "rows must be in the -wal"
+    );
+
+    assert!(migrate_events_db(&paths, false).unwrap(), "both present -> merge");
+    drop(writer);
+
+    // The 4 WAL-resident legacy rows were checkpointed and merged into clyde (3 + 4 = 7).
+    assert_eq!(
+        row_count(&paths.clyde_events_db()),
+        7,
+        "uncheckpointed WAL rows must survive the merge"
+    );
+    let conn = rusqlite::Connection::open(paths.clyde_events_db()).unwrap();
+    let wal_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events WHERE session_id = 'wal'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(wal_rows, 4, "all WAL-committed rows are present in clyde");
+}
+
+#[test]
+fn events_db_merge_recovers_from_interrupted_staging() {
+    // Crash recovery: an interrupted merge left a `events.db.merging` staging file (no live legacy
+    // DB) alongside an existing dest. migrate_events_db must finish from the staging snapshot,
+    // merge its rows, remove staging, and leave a `.clyde.bak`.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let legacy = paths.legacy_events_db();
+    let staging = sidecar(&legacy, ".merging");
+    // Pre-place the staging snapshot (this is what a claimed-but-not-finalized merge leaves) and an
+    // existing dest. NO live legacy events.db (it was renamed into staging before the crash).
+    seed_events_db_tagged(&staging, 5, "staged");
+    seed_events_db_tagged(&paths.clyde_events_db(), 2, "clyde");
+    assert!(!legacy.exists(), "no live legacy DB in the crash-recovery scenario");
+
+    assert!(
+        migrate_events_db(&paths, false).unwrap(),
+        "staging+dest -> finish the merge"
+    );
+
+    assert!(!staging.exists(), "staging file finalized/removed");
+    assert!(backup_path(&legacy).exists(), ".clyde.bak left after finalize");
+    assert_eq!(
+        row_count(&paths.clyde_events_db()),
+        7,
+        "staged rows merged into clyde (2 + 5)"
+    );
+}
+
+#[test]
+fn events_db_merge_dedups_identical_rows_and_is_crash_idempotent() {
+    // Content-dedup: a legacy row identical to an existing clyde row is NOT double-inserted, and
+    // running the merge twice in a row yields the same dest count (modelling a crash after the
+    // INSERT committed but before the staging rename).
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    // Both seeded with the SAME tag + same per-row content => every legacy row matches a clyde row.
+    seed_events_db_tagged(&paths.legacy_events_db(), 3, "dup");
+    seed_events_db_tagged(&paths.clyde_events_db(), 3, "dup");
+
+    assert!(migrate_events_db(&paths, false).unwrap());
+    assert_eq!(
+        row_count(&paths.clyde_events_db()),
+        3,
+        "identical legacy rows must NOT be double-inserted"
+    );
+
+    // Re-merge from the backup snapshot (simulating a retry over the same content): still 3.
+    // Restore a legacy DB from the backup and run again; the dedup keeps the count stable.
+    let bak = backup_path(&paths.legacy_events_db());
+    fs::copy(&bak, paths.legacy_events_db()).unwrap();
+    assert!(migrate_events_db(&paths, false).unwrap());
+    assert_eq!(
+        row_count(&paths.clyde_events_db()),
+        3,
+        "a second merge of identical content is idempotent"
+    );
+}
+
+#[test]
+fn events_db_checkpoint_busy_fails_closed_and_leaves_legacy_intact() {
+    // The KEY fail-closed test. A second "holder" connection holds a WRITE lock on the legacy DB so
+    // the TRUNCATE checkpoint cannot complete: SQLite reports this as SQLITE_OK with busy=1 (NOT an
+    // error). `checkpoint_truncate` reads that busy column and returns Err, which must propagate via
+    // `?` BEFORE the legacy DB is moved — leaving everything intact for a retry.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let legacy = paths.legacy_events_db();
+    // Legacy only (no dest) -> the WAL-safe MOVE path, whose checkpoint precedes `fs::rename`.
+    seed_events_db_tagged(&legacy, 4, "legacy");
+
+    // Holder: a live WAL connection that grabs the write lock with BEGIN IMMEDIATE and keeps it,
+    // forcing the migration's TRUNCATE checkpoint to report busy. Held until the end of the test.
+    let holder = rusqlite::Connection::open(&legacy).unwrap();
+    holder.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE; INSERT INTO events (timestamp, session_id, tool_name, tool_input) VALUES ('2026-06-30T02:00:00Z', 'holder', 'held', '{}');").unwrap();
+
+    let result = migrate_events_db(&paths, false);
+    assert!(
+        result.is_err(),
+        "a busy-blocked checkpoint must FAIL CLOSED (Err), not silently succeed; got {result:?}"
+    );
+
+    // Fail-closed: nothing was moved. The legacy DB still exists and the dest was never created.
+    assert!(legacy.exists(), "legacy DB must remain in place for retry");
+    assert!(
+        !paths.clyde_events_db().exists(),
+        "dest must NOT be created/clobbered on a blocked checkpoint"
+    );
+    // The legacy `-wal` (the holder's open WAL) is still alongside the legacy DB, untouched.
+    let wal = sidecar(&legacy, "-wal");
+    assert!(wal.exists(), "legacy -wal must be left intact (not moved/deleted)");
+
+    // Robust cleanup: release the lock and drop the holder so the temp dir tears down cleanly.
+    holder.execute_batch("ROLLBACK;").unwrap();
+    drop(holder);
+}
+
+#[test]
+fn events_db_merge_preserves_straggler_sidecars_with_backup() {
+    // Item 2: in the claim path, the legacy `-wal`/`-shm` are MOVED alongside the staging snapshot
+    // (not deleted) and then alongside the `.clyde.bak` at finalize, so the backup set is a complete,
+    // replayable DB. We force a non-empty legacy `-wal` to exist at claim time via a held writer with
+    // autocheckpoint OFF.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let legacy = paths.legacy_events_db();
+    seed_events_db_tagged(&legacy, 0, "legacy"); // schema only
+    seed_events_db_tagged(&paths.clyde_events_db(), 2, "clyde");
+
+    // A writer that holds the connection so the rows stay in the (uncheckpointed) `-wal`.
+    let writer = rusqlite::Connection::open(&legacy).unwrap();
+    writer
+        .execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+        .unwrap();
+    for i in 0..3 {
+        writer
+            .execute(
+                "INSERT INTO events (timestamp, session_id, tool_name, tool_input) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["2026-06-30T03:00:00Z", "wal", format!("waltool{i}"), "{}"],
+            )
+            .unwrap();
+    }
+    let wal = sidecar(&legacy, "-wal");
+    assert!(
+        wal.exists() && fs::metadata(&wal).unwrap().len() > 0,
+        "rows must be resident in the legacy -wal at claim time"
+    );
+
+    assert!(migrate_events_db(&paths, false).unwrap(), "both present -> merge");
+    drop(writer);
+
+    // The WAL rows were checkpointed and merged (2 clyde + 3 wal = 5).
+    assert_eq!(row_count(&paths.clyde_events_db()), 5, "WAL rows merged into clyde");
+    // The straggler `-wal` was MOVED to the backup, NOT deleted: the legacy `-wal` is gone but the
+    // `.clyde.bak-wal` exists alongside the `.clyde.bak`.
+    let bak = backup_path(&legacy);
+    assert!(bak.exists(), ".clyde.bak backup left after finalize");
+    assert!(!wal.exists(), "legacy -wal must be moved away (not left behind)");
+    assert!(
+        sidecar(&bak, "-wal").exists(),
+        "straggler -wal must travel with the .clyde.bak (preserved, not discarded)"
+    );
+    // Staging is gone (finalized) and its transient sidecars are not left orphaned.
+    let staging = sidecar(&legacy, ".merging");
+    assert!(!staging.exists(), "staging snapshot finalized away");
+    assert!(
+        !sidecar(&staging, "-wal").exists(),
+        "no orphaned staging -wal left behind"
+    );
 }
 
 #[test]
@@ -213,7 +461,7 @@ fn systemd_unit_rewrite_moves_env_file_with_perms() {
     assert!(clyde_unit.exists());
     assert!(!legacy_unit.exists(), "old unit must be removed");
     let unit_text = fs::read_to_string(&clyde_unit).unwrap();
-    assert!(unit_text.contains("/.cargo/bin/clyde --log-level info sessions enrich"));
+    assert!(unit_text.contains("/.cargo/bin/clyde --log-level info session enrich"));
     assert!(unit_text.contains(".config/clyde/enrich.env"));
     assert!(!unit_text.contains("klod"));
 
@@ -222,6 +470,75 @@ fn systemd_unit_rewrite_moves_env_file_with_perms() {
     assert!(!env_legacy.exists());
     let mode = fs::metadata(&env_dest).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "env file permissions must be preserved");
+}
+
+#[test]
+fn repoint_rewrites_clyde_unit_with_stale_subcommand_and_no_legacy() {
+    // A user already migrated off klod (no klod-* state) but whose installed clyde unit predates the
+    // `sessions`->`session` rename. `clyde bootstrap` must still rewrite the stale spelling, or the
+    // timer keeps firing `clyde ... sessions enrich`, which now errors.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    fs::write(
+        &clyde_unit,
+        "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n",
+    )
+    .unwrap();
+    // No legacy klod units exist, and install_timer is false: the only thing to do is fix the spelling.
+    assert!(!paths.legacy_unit().exists());
+
+    assert!(
+        repoint_systemd(&paths, false, false).unwrap(),
+        "stale clyde unit should be rewritten"
+    );
+
+    let unit_text = fs::read_to_string(&clyde_unit).unwrap();
+    assert!(unit_text.contains("/.cargo/bin/clyde --log-level info session enrich"));
+    assert!(
+        !unit_text.contains("sessions enrich"),
+        "stale subcommand spelling must be gone"
+    );
+}
+
+#[test]
+fn repoint_is_noop_for_already_correct_clyde_unit() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    fs::write(
+        &clyde_unit,
+        "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n",
+    )
+    .unwrap();
+
+    assert!(
+        !repoint_systemd(&paths, false, false).unwrap(),
+        "a correct unit needs no rewrite"
+    );
+}
+
+#[test]
+fn repoint_dry_run_reports_stale_clyde_unit_without_writing() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    let body = "[Service]\nExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n";
+    fs::write(&clyde_unit, body).unwrap();
+
+    assert!(
+        repoint_systemd(&paths, false, true).unwrap(),
+        "dry-run must report the pending rewrite"
+    );
+    // Dry-run writes nothing.
+    assert_eq!(
+        fs::read_to_string(&clyde_unit).unwrap(),
+        body,
+        "dry-run must not modify the unit"
+    );
 }
 
 #[test]

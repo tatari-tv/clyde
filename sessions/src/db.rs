@@ -417,7 +417,7 @@ impl Db {
         Ok(matches!(source, Some(Some(s)) if s == "manual"))
     }
 
-    /// Roll-up of enrichment state for `clyde sessions doctor`.
+    /// Roll-up of enrichment state for `clyde session doctor`.
     pub fn enrich_summary(&self) -> Result<EnrichSummary> {
         debug!("Db::enrich_summary");
         let count = |sql: &str| -> Result<usize> {

@@ -1,6 +1,6 @@
 //! Read-only MCP server exposing the session catalog over stdio (JSON-RPC).
 //!
-//! `clyde sessions serve` spawns this per MCP-host session. The server wraps the existing `Db`
+//! `clyde session serve` spawns this per MCP-host session. The server wraps the existing `Db`
 //! read paths (`search`, `list`, `resolve_id`) as MCP tools an agent can discover and call; it
 //! is transport, not new query logic. It mirrors the house conventions established by
 //! second-brain's `oracle` (rmcp, stdio, `#[tool_router]`/`#[tool_handler]`,
@@ -90,7 +90,7 @@ impl SessionsMcpServer {
     }
 
     /// Run lock-holding, synchronous rusqlite work with `block_in_place` on a multi-thread runtime
-    /// (production: `clyde sessions serve`), and inline on a current-thread runtime
+    /// (production: `clyde session serve`), and inline on a current-thread runtime
     /// (`#[tokio::test]`, where `block_in_place` panics). Ported from oracle.
     fn block_in_place_compat<F, R>(f: F) -> R
     where
@@ -280,7 +280,7 @@ impl ServerHandler for SessionsMcpServer {
         info!("SessionsMcpServer::get_info: MCP client requested server info");
         let mut info = ServerInfo::default();
         info.instructions = Some(
-            "clyde sessions - read-only navigation over the Claude Code session catalog. \
+            "clyde session - read-only navigation over the Claude Code session catalog. \
              Find and resume past sessions conversationally instead of shelling out to the CLI. \
              v1 exposes metadata only (titles, tags, summaries, repo/branch, dates, paths, counts); \
              transcript content is not returned. Tools: sessions_search (ranked full-text search), \

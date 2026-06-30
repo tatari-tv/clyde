@@ -22,7 +22,7 @@ pub struct SessionRecord {
     /// Phase 2 enrichment; `None` until the enrich pass runs.
     pub summary: Option<String>,
     pub tags: Vec<String>,
-    /// Provenance of the current tag set: `"manual"` (set by the user via `clyde sessions tag`),
+    /// Provenance of the current tag set: `"manual"` (set by the user via `clyde session tag`),
     /// `"enrich"` (written by the enrichment pass), or `None` (never tagged / cleared).
     pub tags_source: Option<String>,
     pub git_branch: Option<String>,
@@ -148,7 +148,7 @@ pub struct EnrichStats {
     pub details: Vec<EnrichDetail>,
 }
 
-/// Roll-up of enrichment state across the whole catalog, for `clyde sessions doctor`.
+/// Roll-up of enrichment state across the whole catalog, for `clyde session doctor`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct EnrichSummary {

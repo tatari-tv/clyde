@@ -11,7 +11,7 @@ mod cli;
 mod doctor;
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
@@ -19,7 +19,8 @@ use eyre::{Context, Result};
 use log::{LevelFilter, warn};
 
 use cli::{
-    Cli, Command, EnrichArgs, LsArgs, OpenArgs, ReindexArgs, SearchArgs, ServeArgs, SessionsCommand, StageArgs, TagArgs,
+    Cli, Command, EnrichArgs, LsArgs, ReindexArgs, ResumeArgs, SearchArgs, ServeArgs, SessionsCommand, StageArgs,
+    TagArgs,
 };
 
 /// Default log level for the clyde-native `sessions` subtree when `--log-level` is unset. The
@@ -61,7 +62,7 @@ fn main() -> Result<()> {
     run(cli)
 }
 
-/// True when the parsed command is `clyde sessions serve` — the one arm that owns stdout for the
+/// True when the parsed command is `clyde session serve` — the one arm that owns stdout for the
 /// MCP protocol and therefore needs the file-target tracing subscriber.
 fn is_serve(cli: &Cli) -> bool {
     matches!(
@@ -73,7 +74,7 @@ fn is_serve(cli: &Cli) -> bool {
 }
 
 /// Restore the default `SIGPIPE` disposition. Rust ignores SIGPIPE by default, which turns a
-/// closed stdout (e.g. `clyde sessions search x | head`) into an EPIPE that `println!` unwraps
+/// closed stdout (e.g. `clyde session search x | head`) into an EPIPE that `println!` unwraps
 /// into a panic. Resetting to `SIG_DFL` makes clyde die quietly on a broken pipe like any Unix
 /// filter. Done before any output is produced.
 #[cfg(unix)]
@@ -141,6 +142,20 @@ fn run(cli: Cli) -> Result<()> {
         Command::Sessions {
             command: SessionsCommand::Serve(args),
         } => cmd_serve(&db_path, args),
+        // Resume computes its action from the catalog, then drops the `Db` BEFORE acting: the
+        // action is executed outside the `Db`'s scope so no SQLite handle is held across the exec
+        // (rusqlite opens with `O_CLOEXEC`, so it would not actually leak, but dropping it first
+        // makes that explicit and keeps the decision a pure, unit-testable function).
+        Command::Sessions {
+            command: SessionsCommand::Resume(args),
+        } => {
+            let action = {
+                let db = Db::open_at(&db_path)?;
+                cmd_resume(&db, args)?
+                // `db` is dropped here, at the end of this block.
+            };
+            run_resume_action(action)
+        }
         Command::Sessions { command } => {
             let db = Db::open_at(&db_path)?;
             match command {
@@ -148,12 +163,11 @@ fn run(cli: Cli) -> Result<()> {
                 // The bare-date `--since` convention is configurable via clyde.yml (default UTC).
                 // Config is loaded lazily here, inside the commands that actually consume a tz, so
                 // that a malformed clyde.yml never breaks commands that don't read dates
-                // (search, open, tag, reindex, doctor, bootstrap, serve).
+                // (search, resume, tag, reindex, doctor, bootstrap, serve).
                 SessionsCommand::Ls(args) => {
                     let tz = load_date_tz()?;
                     cmd_ls(&db, args, tz)
                 }
-                SessionsCommand::Open(args) => cmd_open(&db, args),
                 SessionsCommand::Tag(args) => cmd_tag(&db, args),
                 SessionsCommand::Reindex(args) => cmd_reindex(&db, args),
                 SessionsCommand::Stage(args) => {
@@ -165,8 +179,10 @@ fn run(cli: Cli) -> Result<()> {
                     cmd_enrich(&db, args, tz)
                 }
                 SessionsCommand::Doctor => cmd_doctor(&db),
-                // Unreachable: the outer arm above peels `Serve` off before the Db is opened.
+                // Unreachable: the outer arms above peel `Serve` and `Resume` off before this
+                // shared `Db` block.
                 SessionsCommand::Serve(_) => unreachable!("Serve is dispatched before opening Db"),
+                SessionsCommand::Resume(_) => unreachable!("Resume is dispatched before this Db block"),
             }
         }
     }
@@ -174,8 +190,8 @@ fn run(cli: Cli) -> Result<()> {
 
 /// Load `clyde.yml` and resolve the date-tz setting. Called lazily, only inside the subcommands
 /// that parse a `--since`/`--dormant-after` date string (ls, stage, enrich). Commands that do not
-/// consume date strings (search, open, tag, reindex, doctor, bootstrap, serve) never call this, so
-/// a malformed `clyde.yml` does not break them.
+/// consume date strings (search, resume, tag, reindex, doctor, bootstrap, serve) never call this,
+/// so a malformed `clyde.yml` does not break them.
 fn load_date_tz() -> Result<common::DateTz> {
     let config = common::config::load().context("failed to load clyde config")?;
     Ok(config.date_tz())
@@ -222,38 +238,208 @@ fn cmd_ls(db: &Db, args: LsArgs, tz: common::DateTz) -> Result<()> {
     Ok(())
 }
 
-fn cmd_open(db: &Db, args: OpenArgs) -> Result<()> {
+/// What `resume` should do, computed from a resolved [`SessionRecord`] by [`plan_resume`]. Returned
+/// to `main` (which drops the `Db` and then acts on it) so the decision stays a pure, unit-testable
+/// function and no SQLite handle is held across the exec.
+#[derive(Debug, PartialEq, Eq)]
+enum ResumeAction {
+    /// The live transcript exists: `chdir` into `dir` and exec `claude --resume <id> [extra]`.
+    Launch {
+        dir: PathBuf,
+        id: String,
+        extra: Vec<String>,
+    },
+    /// The record has no recorded cwd, so there is no directory to resume in.
+    NoCwd { id: String },
+    /// The recorded cwd is gone (deleted/moved) or is not a directory.
+    MissingDir { dir: PathBuf },
+    /// Only a durable staged copy exists; `claude --resume` cannot attach to it.
+    StagedOnly { staged: PathBuf },
+    /// Neither the live transcript nor a staged copy exists: fully TTL-reaped.
+    Reaped,
+}
+
+/// Pure decision: maps a resolved record to what `resume` should do. Unit-tested directly (Phase 3).
+///
+/// Branch precedence:
+/// 1. No recorded `cwd` -> `NoCwd` (nothing to resume in place).
+/// 2. `cwd` present but not an existing directory -> `MissingDir`.
+/// 3. Live `transcript_path` exists -> `Launch` (resumable). This mirrors the existence-based
+///    decision in `sessions/src/mcp.rs` (`open_result_for`): prefer the live transcript on disk,
+///    robust to a TTL reap between lookup and use, NOT the possibly-stale `archived` flag.
+/// 4. else a `staged_path` that exists -> `StagedOnly` (durable copy only; not resumable).
+/// 5. else -> `Reaped`.
+fn plan_resume(rec: &SessionRecord, extra: Vec<String>) -> ResumeAction {
+    let Some(cwd) = rec.cwd.as_deref() else {
+        return ResumeAction::NoCwd {
+            id: rec.session_id.clone(),
+        };
+    };
+    let dir = PathBuf::from(cwd);
+    if !dir.is_dir() {
+        return ResumeAction::MissingDir { dir };
+    }
+    if rec.transcript_path.exists() {
+        ResumeAction::Launch {
+            dir,
+            id: rec.session_id.clone(),
+            extra,
+        }
+    } else if let Some(staged) = rec.staged_path.clone().filter(|p| p.exists()) {
+        ResumeAction::StagedOnly { staged }
+    } else {
+        ResumeAction::Reaped
+    }
+}
+
+/// Resolve the id (honoring `--no-reindex`), fetch the record, and compute the [`ResumeAction`].
+/// Does NOT act on the action: `main` drops the `Db` first, then calls [`run_resume_action`].
+fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
+    // `extra` is arbitrary passthrough forwarded verbatim to claude and may contain sensitive
+    // values (tokens, endpoints); log only its length, never the contents.
+    log::debug!(
+        "cmd_resume: id={} no_reindex={} extra_count={}",
+        args.id,
+        args.no_reindex,
+        args.extra.len()
+    );
     lazy_reindex(db, args.no_reindex);
-    let id = match db.resolve_id(&args.id)?.as_slice() {
+    let ids = db.resolve_id(&args.id)?;
+    let id = match ids.as_slice() {
+        [id] => id.clone(),
         [] => {
             eprintln!("{} no session matches {:?}", "✗".red(), args.id);
             std::process::exit(1);
         }
-        [id] => id.clone(),
         many => {
-            eprintln!("{} {} sessions match {:?}:", "→".blue(), many.len(), args.id);
-            for id in many {
-                eprintln!("  {id}");
-            }
+            eprintln!("{} {:?} is ambiguous ({} matches)", "✗".red(), args.id, many.len());
             std::process::exit(1);
         }
     };
-    let Some(rec) = db.get(&id)? else {
-        eprintln!("{} session {id} vanished between resolve and fetch", "✗".red());
-        std::process::exit(1);
-    };
-    if !rec.archived {
-        // Live transcript: the actionable resume line, alone on stdout (copy-pasteable / pipeable).
-        println!("claude --resume {id}");
-    } else if let Some(staged) = &rec.staged_path {
-        // Reaped by the 30-day TTL, but Phase 1.5 staged a durable copy.
-        eprintln!("{} transcript reaped by TTL; staged copy:", "→".blue());
-        println!("{}", staged.display());
-    } else {
-        eprintln!("{} transcript reaped by TTL and no staged copy exists", "✗".red());
-        std::process::exit(1);
+    let rec = db
+        .get(&id)?
+        .ok_or_else(|| eyre::eyre!("session {id} resolved but not found in the catalog"))?;
+    Ok(plan_resume(&rec, args.extra))
+}
+
+/// Execute the planned [`ResumeAction`]. `Launch` replaces this process with `claude` (never returns
+/// on unix success); every other variant prints a specific stderr message and exits non-zero.
+fn run_resume_action(action: ResumeAction) -> Result<()> {
+    match action {
+        // `launch_resume` returns only on failure (exec replaced the image, or the non-unix branch
+        // exited with claude's status). Render that failure as the same `✗` line + non-zero exit as
+        // the other variants, rather than propagating an `Err` that `main` would print with an
+        // eyre `Location:` backtrace.
+        ResumeAction::Launch { dir, id, extra } => {
+            if let Err(e) = launch_resume(&dir, &id, &extra) {
+                eprintln!("{} {e}", "✗".red());
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        ResumeAction::NoCwd { id } => {
+            eprintln!(
+                "{} session {} has no recorded cwd; cannot resume in place",
+                "✗".red(),
+                short_id(&id),
+            );
+            std::process::exit(1);
+        }
+        ResumeAction::MissingDir { dir } => {
+            eprintln!(
+                "{} recorded cwd is not a usable directory: {}",
+                "✗".red(),
+                dir.display(),
+            );
+            std::process::exit(1);
+        }
+        ResumeAction::StagedOnly { staged } => {
+            eprintln!(
+                "{} only a staged copy exists ({}); the live transcript is gone, so `claude --resume` cannot attach",
+                "✗".red(),
+                staged.display(),
+            );
+            std::process::exit(1);
+        }
+        ResumeAction::Reaped => {
+            eprintln!(
+                "{} session transcript is gone (TTL-reaped); nothing to resume",
+                "✗".red(),
+            );
+            std::process::exit(1);
+        }
     }
-    Ok(())
+}
+
+/// Resolve the `claude` executable to an ABSOLUTE path against the CURRENT process's `PATH`, before
+/// any `chdir`. `launch_resume` changes into the session's directory before launching claude;
+/// resolving first means the lookup cannot be influenced by that directory (a planted `./claude` on
+/// a `PATH` carrying a relative entry can't shadow the real binary). Also yields a clear error when
+/// `claude` is not installed, instead of a post-chdir exec failure.
+///
+/// `which` can return a RELATIVE path when the matching `PATH` entry is itself relative; that path
+/// would otherwise be re-resolved against the SESSION directory after `current_dir(dir)`, defeating
+/// the resolve-before-chdir guarantee. So a non-absolute result is `canonicalize()`d here (against
+/// the current cwd, which is still the original directory at this point) to anchor it before the
+/// chdir. The returned `PathBuf` is guaranteed absolute.
+fn resolve_claude() -> Result<PathBuf> {
+    let found = which::which("claude").map_err(|err| eyre::eyre!("could not find `claude` on PATH: {err}"))?;
+    if found.is_absolute() {
+        return Ok(found);
+    }
+    // Relative result (relative PATH entry): anchor it to the current (pre-chdir) directory now, or
+    // a later `current_dir(dir)` would re-resolve it against the session dir.
+    found
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize `claude` path {}", found.display()))
+}
+
+/// Replace the clyde process with `claude --resume <id> [extra...]`, running in `dir` so Claude
+/// resolves the session's `~/.claude/projects/<slug>`. On unix this never returns on success (exec
+/// replaces the image); it returns only if claude could not be launched.
+#[cfg(unix)]
+fn launch_resume(dir: &Path, id: &str, extra: &[String]) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    // `extra` may carry sensitive passthrough values; log only its length.
+    log::debug!(
+        "launch_resume: dir={} id={} extra_count={}",
+        dir.display(),
+        id,
+        extra.len()
+    );
+    let claude = resolve_claude()?;
+    let mut cmd = std::process::Command::new(&claude);
+    cmd.current_dir(dir).arg("--resume").arg(id).args(extra);
+    // `current_dir(dir).exec()` performs the chdir before execvp; `claude` is already an absolute
+    // path (resolved against the parent's PATH above), so the chdir cannot change which binary runs.
+    let err = cmd.exec(); // returns only on failure
+    Err(eyre::eyre!(
+        "failed to exec {} in {}: {err}",
+        claude.display(),
+        dir.display()
+    ))
+}
+
+/// Non-unix: no `exec`. Spawn claude inheriting stdio, wait, and exit with its status code (or a
+/// fixed non-zero when terminated without a code).
+#[cfg(not(unix))]
+fn launch_resume(dir: &Path, id: &str, extra: &[String]) -> Result<()> {
+    // `extra` may carry sensitive passthrough values; log only its length.
+    log::debug!(
+        "launch_resume: dir={} id={} extra_count={}",
+        dir.display(),
+        id,
+        extra.len()
+    );
+    let claude = resolve_claude()?;
+    let status = std::process::Command::new(&claude)
+        .current_dir(dir)
+        .arg("--resume")
+        .arg(id)
+        .args(extra)
+        .status()
+        .map_err(|err| eyre::eyre!("failed to launch {} in {}: {err}", claude.display(), dir.display()))?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 fn cmd_tag(db: &Db, args: TagArgs) -> Result<()> {
@@ -321,7 +507,7 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
     } else {
         Some(sessions::parse_since(&args.dormant_after, tz)?)
     };
-    // Resolve a manual id/prefix to one concrete session (same fuzzy contract as open/tag).
+    // Resolve a manual id/prefix to one concrete session (same fuzzy contract as resume/tag).
     let only = match &args.id {
         Some(needle) => match db.resolve_id(needle)?.as_slice() {
             [id] => Some(id.clone()),
