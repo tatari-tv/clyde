@@ -197,7 +197,7 @@ pub struct ResumeArgs {
 claude's flags. Note this means the `--` is required: `clyde session resume <id> --model opus`
 (no `--`) will NOT work and must error clearly. Invocations:
 
-```
+```bash
 clyde session resume 3bc0a20d                  # cd + launch, default model
 clyde session resume 3bc0a20d -- --model opus  # cd + launch, forwarding --model opus
 ```

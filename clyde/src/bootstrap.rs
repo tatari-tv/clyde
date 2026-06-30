@@ -683,20 +683,30 @@ fn merge_events_db(legacy: &Path, dest: &Path) -> Result<bool> {
         // have committed frames into the legacy `-wal` in the tiny window between the checkpoint and
         // the rename. Rather than DELETE the sidecars (which would lose those straggler frames), MOVE
         // them alongside the staging snapshot so they travel with it and are preserved with the
-        // `.clyde.bak` at finalize. A failed sidecar move is NOT fatal — the merged rows are already
-        // durable — so we `warn!` and continue.
+        // `.clyde.bak` at finalize. The sidecars are the ONLY place those frames can still live, so a
+        // failed move must FAIL CLOSED: roll the claim all the way back (restore any sidecar already
+        // moved, then the main DB) and return an error, leaving the legacy DB whole for a clean retry
+        // rather than silently stranding frames.
+        let mut moved: Vec<&str> = Vec::new();
         for suffix in ["-wal", "-shm"] {
             let ls = sidecar(legacy, suffix);
-            if ls.exists() {
-                let ss = sidecar(&staging, suffix);
-                if let Err(e) = fs::rename(&ls, &ss) {
-                    warn!(
-                        "merge_events_db: failed to move sidecar {} -> {} ({e}); continuing",
-                        ls.display(),
-                        ss.display()
-                    );
-                }
+            if !ls.exists() {
+                continue;
             }
+            let ss = sidecar(&staging, suffix);
+            if let Err(e) = fs::rename(&ls, &ss) {
+                // Best-effort rollback so the pre-claim state (legacy DB + its sidecars) is restored.
+                for done in &moved {
+                    let _ = fs::rename(sidecar(&staging, done), sidecar(legacy, done));
+                }
+                let _ = fs::rename(&staging, legacy);
+                return Err(eyre::eyre!(
+                    "failed to claim legacy events DB sidecar {} -> {} ({e}); rolled back the claim, legacy DB left intact for retry",
+                    ls.display(),
+                    ss.display()
+                ));
+            }
+            moved.push(suffix);
         }
     } else {
         debug!(

@@ -52,7 +52,7 @@ The reworded `MissingDir` message (post-audit fix) is accurate for a deleted dir
 ### Launch boundary (without launching claude)
 - Live session (transcript exists) with `claude` removed from `PATH`:
   `plan_resume → Launch → launch_resume → resolve_claude()` fails with
-  `could not find \`claude\` on PATH: cannot find binary path`, exit 1. This proves the Launch
+  ``could not find `claude` on PATH: cannot find binary path``, exit 1. This proves the Launch
   decision is reached AND validates the post-CodeRabbit `which`-based absolute-path resolution
   (the chdir can no longer influence which binary runs). **PASS**
 
@@ -73,8 +73,8 @@ The reworded `MissingDir` message (post-audit fix) is accurate for a deleted dir
   `launch_resume`, which `main` rendered via eyre's default hook with a `Location: clyde/src/main.rs:…`
   backtrace line — inconsistent with the other five error-matrix cases that print a clean `✗ …`.
 - **Fix:** `run_resume_action`'s `Launch` arm now catches the `launch_resume` error and prints
-  `✗ <err>` + `exit(1)`, matching its siblings. Re-verified: `✗ could not find \`claude\` on PATH:
-  cannot find binary path`, exit 1, no `Location:` line.
+  `✗ <err>` + `exit(1)`, matching its siblings. Re-verified:
+  ``✗ could not find `claude` on PATH: cannot find binary path``, exit 1, no `Location:` line.
 
 ### Finding B — `doctor`/`bootstrap` strand a legacy events DB when the clyde DB also exists — FIXED
 - **Severity:** bug / low-medium. **Status: fixed** (Phase 5, `bootstrap` now merges; see below).
