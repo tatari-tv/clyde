@@ -326,7 +326,17 @@ fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
 /// on unix success); every other variant prints a specific stderr message and exits non-zero.
 fn run_resume_action(action: ResumeAction) -> Result<()> {
     match action {
-        ResumeAction::Launch { dir, id, extra } => launch_resume(&dir, &id, &extra),
+        // `launch_resume` returns only on failure (exec replaced the image, or the non-unix branch
+        // exited with claude's status). Render that failure as the same `✗` line + non-zero exit as
+        // the other variants, rather than propagating an `Err` that `main` would print with an
+        // eyre `Location:` backtrace.
+        ResumeAction::Launch { dir, id, extra } => {
+            if let Err(e) = launch_resume(&dir, &id, &extra) {
+                eprintln!("{} {e}", "✗".red());
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         ResumeAction::NoCwd { id } => {
             eprintln!(
                 "{} session {} has no recorded cwd; cannot resume in place",
