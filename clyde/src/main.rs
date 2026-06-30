@@ -19,7 +19,8 @@ use eyre::{Context, Result};
 use log::{LevelFilter, warn};
 
 use cli::{
-    Cli, Command, EnrichArgs, LsArgs, OpenArgs, ReindexArgs, SearchArgs, ServeArgs, SessionsCommand, StageArgs, TagArgs,
+    Cli, Command, EnrichArgs, LsArgs, ReindexArgs, ResumeArgs, SearchArgs, ServeArgs, SessionsCommand, StageArgs,
+    TagArgs,
 };
 
 /// Default log level for the clyde-native `sessions` subtree when `--log-level` is unset. The
@@ -148,12 +149,12 @@ fn run(cli: Cli) -> Result<()> {
                 // The bare-date `--since` convention is configurable via clyde.yml (default UTC).
                 // Config is loaded lazily here, inside the commands that actually consume a tz, so
                 // that a malformed clyde.yml never breaks commands that don't read dates
-                // (search, open, tag, reindex, doctor, bootstrap, serve).
+                // (search, resume, tag, reindex, doctor, bootstrap, serve).
                 SessionsCommand::Ls(args) => {
                     let tz = load_date_tz()?;
                     cmd_ls(&db, args, tz)
                 }
-                SessionsCommand::Open(args) => cmd_open(&db, args),
+                SessionsCommand::Resume(args) => cmd_resume(&db, args),
                 SessionsCommand::Tag(args) => cmd_tag(&db, args),
                 SessionsCommand::Reindex(args) => cmd_reindex(&db, args),
                 SessionsCommand::Stage(args) => {
@@ -174,8 +175,8 @@ fn run(cli: Cli) -> Result<()> {
 
 /// Load `clyde.yml` and resolve the date-tz setting. Called lazily, only inside the subcommands
 /// that parse a `--since`/`--dormant-after` date string (ls, stage, enrich). Commands that do not
-/// consume date strings (search, open, tag, reindex, doctor, bootstrap, serve) never call this, so
-/// a malformed `clyde.yml` does not break them.
+/// consume date strings (search, resume, tag, reindex, doctor, bootstrap, serve) never call this,
+/// so a malformed `clyde.yml` does not break them.
 fn load_date_tz() -> Result<common::DateTz> {
     let config = common::config::load().context("failed to load clyde config")?;
     Ok(config.date_tz())
@@ -222,38 +223,17 @@ fn cmd_ls(db: &Db, args: LsArgs, tz: common::DateTz) -> Result<()> {
     Ok(())
 }
 
-fn cmd_open(db: &Db, args: OpenArgs) -> Result<()> {
+/// Stub: full implementation lands in Phase 2 (plan_resume + launch_resume).
+/// The id is logged here so the params are used and the signature is already correct for Phase 2.
+fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<()> {
+    log::debug!(
+        "cmd_resume: id={} no_reindex={} extra={:?}",
+        args.id,
+        args.no_reindex,
+        args.extra
+    );
     lazy_reindex(db, args.no_reindex);
-    let id = match db.resolve_id(&args.id)?.as_slice() {
-        [] => {
-            eprintln!("{} no session matches {:?}", "✗".red(), args.id);
-            std::process::exit(1);
-        }
-        [id] => id.clone(),
-        many => {
-            eprintln!("{} {} sessions match {:?}:", "→".blue(), many.len(), args.id);
-            for id in many {
-                eprintln!("  {id}");
-            }
-            std::process::exit(1);
-        }
-    };
-    let Some(rec) = db.get(&id)? else {
-        eprintln!("{} session {id} vanished between resolve and fetch", "✗".red());
-        std::process::exit(1);
-    };
-    if !rec.archived {
-        // Live transcript: the actionable resume line, alone on stdout (copy-pasteable / pipeable).
-        println!("claude --resume {id}");
-    } else if let Some(staged) = &rec.staged_path {
-        // Reaped by the 30-day TTL, but Phase 1.5 staged a durable copy.
-        eprintln!("{} transcript reaped by TTL; staged copy:", "→".blue());
-        println!("{}", staged.display());
-    } else {
-        eprintln!("{} transcript reaped by TTL and no staged copy exists", "✗".red());
-        std::process::exit(1);
-    }
-    Ok(())
+    eyre::bail!("resume not yet implemented (Phase 2)")
 }
 
 fn cmd_tag(db: &Db, args: TagArgs) -> Result<()> {
@@ -321,7 +301,7 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
     } else {
         Some(sessions::parse_since(&args.dormant_after, tz)?)
     };
-    // Resolve a manual id/prefix to one concrete session (same fuzzy contract as open/tag).
+    // Resolve a manual id/prefix to one concrete session (same fuzzy contract as resume/tag).
     let only = match &args.id {
         Some(needle) => match db.resolve_id(needle)?.as_slice() {
             [id] => Some(id.clone()),

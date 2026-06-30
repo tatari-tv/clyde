@@ -154,3 +154,50 @@ fn search_sort_rejects_unknown_value() {
     let result = Cli::try_parse_from(["clyde", "sessions", "search", "--sort", "bogus", "loopr"]);
     assert!(result.is_err(), "--sort bogus should fail to parse");
 }
+
+#[test]
+fn resume_parses_bare_id() {
+    // `clyde sessions resume <id>` with no extra args must parse successfully.
+    let cli = Cli::try_parse_from(["clyde", "sessions", "resume", "3bc0a20d"]).unwrap();
+    match cli.command {
+        Command::Sessions {
+            command: SessionsCommand::Resume(args),
+        } => {
+            assert_eq!(args.id, "3bc0a20d");
+            assert!(!args.no_reindex);
+            assert!(args.extra.is_empty(), "expected empty extra for bare resume");
+        }
+        _ => panic!("expected resume"),
+    }
+}
+
+#[test]
+fn resume_extra_lands_after_double_dash() {
+    // `clyde sessions resume <id> -- --model opus` must forward `--model opus` into extra.
+    let cli = Cli::try_parse_from(["clyde", "sessions", "resume", "3bc0a20d", "--", "--model", "opus"]).unwrap();
+    match cli.command {
+        Command::Sessions {
+            command: SessionsCommand::Resume(args),
+        } => {
+            assert_eq!(args.id, "3bc0a20d");
+            assert_eq!(args.extra, vec!["--model".to_string(), "opus".to_string()]);
+        }
+        _ => panic!("expected resume"),
+    }
+}
+
+#[test]
+fn resume_no_reindex_flag_parses() {
+    // `--no-reindex` must be recognized and set the flag.
+    let cli = Cli::try_parse_from(["clyde", "sessions", "resume", "--no-reindex", "3bc0a20d"]).unwrap();
+    match cli.command {
+        Command::Sessions {
+            command: SessionsCommand::Resume(args),
+        } => {
+            assert_eq!(args.id, "3bc0a20d");
+            assert!(args.no_reindex);
+            assert!(args.extra.is_empty());
+        }
+        _ => panic!("expected resume"),
+    }
+}

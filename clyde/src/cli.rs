@@ -83,8 +83,8 @@ pub enum SessionsCommand {
     Search(SearchArgs),
     /// List sessions by repo / date / tag / model.
     Ls(LsArgs),
-    /// Print the resume line for a session.
-    Open(OpenArgs),
+    /// Open (cd + launch) a session in its original directory.
+    Resume(ResumeArgs),
     /// Set tags on a session (replaces existing).
     Tag(TagArgs),
     /// Reindex the catalog (incremental).
@@ -146,12 +146,16 @@ pub struct LsArgs {
 }
 
 #[derive(clap::Args, Debug)]
-pub struct OpenArgs {
+pub struct ResumeArgs {
     /// Session id or a unique prefix of it.
     pub id: String,
     /// Skip the lazy reindex before resolving.
     #[arg(long)]
     pub no_reindex: bool,
+    /// Extra args forwarded verbatim to `claude` after `--resume <id>`, e.g.
+    /// `clyde session resume <id> -- --model opus`.
+    #[arg(last = true)]
+    pub extra: Vec<String>,
 }
 
 #[derive(clap::Args, Debug)]
