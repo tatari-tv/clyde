@@ -371,13 +371,27 @@ fn run_resume_action(action: ResumeAction) -> Result<()> {
     }
 }
 
-/// Resolve the `claude` executable to an absolute path against the CURRENT process's `PATH`, before
+/// Resolve the `claude` executable to an ABSOLUTE path against the CURRENT process's `PATH`, before
 /// any `chdir`. `launch_resume` changes into the session's directory before launching claude;
 /// resolving first means the lookup cannot be influenced by that directory (a planted `./claude` on
 /// a `PATH` carrying a relative entry can't shadow the real binary). Also yields a clear error when
 /// `claude` is not installed, instead of a post-chdir exec failure.
+///
+/// `which` can return a RELATIVE path when the matching `PATH` entry is itself relative; that path
+/// would otherwise be re-resolved against the SESSION directory after `current_dir(dir)`, defeating
+/// the resolve-before-chdir guarantee. So a non-absolute result is `canonicalize()`d here (against
+/// the current cwd, which is still the original directory at this point) to anchor it before the
+/// chdir. The returned `PathBuf` is guaranteed absolute.
 fn resolve_claude() -> Result<PathBuf> {
-    which::which("claude").map_err(|err| eyre::eyre!("could not find `claude` on PATH: {err}"))
+    let found = which::which("claude").map_err(|err| eyre::eyre!("could not find `claude` on PATH: {err}"))?;
+    if found.is_absolute() {
+        return Ok(found);
+    }
+    // Relative result (relative PATH entry): anchor it to the current (pre-chdir) directory now, or
+    // a later `current_dir(dir)` would re-resolve it against the session dir.
+    found
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize `claude` path {}", found.display()))
 }
 
 /// Replace the clyde process with `claude --resume <id> [extra...]`, running in `dir` so Claude

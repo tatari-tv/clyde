@@ -68,6 +68,13 @@ fn paths_under(root: &Path) -> Paths {
 }
 
 fn seed_events_db(path: &Path, rows: usize) {
+    seed_events_db_tagged(path, rows, "sess");
+}
+
+/// Like [`seed_events_db`] but stamps each row's `session_id` with `tag`, so two DBs can be seeded
+/// with content-DISJOINT rows (the merge dedups by full content, so identical content across DBs is
+/// collapsed). `seed_events_db` keeps the default `"sess"` tag for tests that don't care.
+fn seed_events_db_tagged(path: &Path, rows: usize, tag: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
@@ -83,7 +90,7 @@ fn seed_events_db(path: &Path, rows: usize) {
     for i in 0..rows {
         conn.execute(
             "INSERT INTO events (timestamp, session_id, tool_name, tool_input) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["2026-06-30T00:00:00Z", "sess", format!("tool{i}"), "{}"],
+            rusqlite::params!["2026-06-30T00:00:00Z", tag, format!("tool{i}"), "{}"],
         )
         .unwrap();
     }
@@ -119,16 +126,22 @@ fn events_db_move_preserves_rows_and_handles_sidecars() {
 fn events_db_merges_legacy_into_clyde_when_both_present() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
-    seed_events_db(&paths.legacy_events_db(), 2);
-    seed_events_db(&paths.clyde_events_db(), 9);
+    // Content-DISJOINT rows (distinct session_id tags), so the content-dedup merge inserts all of
+    // them — modelling the real disjoint-time-range case.
+    seed_events_db_tagged(&paths.legacy_events_db(), 2, "legacy");
+    seed_events_db_tagged(&paths.clyde_events_db(), 9, "clyde");
 
     assert!(migrate_events_db(&paths, false).unwrap(), "both present -> merge");
 
-    // Legacy merged in and removed (backed up first); clyde now holds the combined rows.
+    // Legacy merged in and removed; the staging snapshot was finalized to `<legacy>.clyde.bak`.
     assert!(!paths.legacy_events_db().exists(), "legacy DB removed after merge");
     assert!(
+        !sidecar(&paths.legacy_events_db(), ".merging").exists(),
+        "staging file removed after merge"
+    );
+    assert!(
         backup_path(&paths.legacy_events_db()).exists(),
-        "legacy DB backed up before removal"
+        "legacy DB backed up to <path>.clyde.bak via the final rename"
     );
     assert_eq!(row_count(&paths.clyde_events_db()), 11, "clyde holds clyde+legacy rows");
 
@@ -150,6 +163,112 @@ fn events_db_merge_dry_run_writes_nothing() {
     );
     assert!(paths.legacy_events_db().exists(), "dry-run must not remove legacy");
     assert_eq!(row_count(&paths.clyde_events_db()), 9, "dry-run must not merge rows");
+}
+
+#[test]
+fn events_db_merge_moves_uncheckpointed_wal_rows() {
+    // WAL-survival: rows committed but NOT yet checkpointed in the legacy `-wal` must still merge.
+    // We disable autocheckpoint and keep the writing connection alive so the rows live in the WAL
+    // (never folded into the main file) when migrate_events_db runs and does its own checkpoint.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let legacy = paths.legacy_events_db();
+    seed_events_db_tagged(&legacy, 0, "legacy"); // create schema only
+    seed_events_db_tagged(&paths.clyde_events_db(), 3, "clyde");
+
+    // Open a WAL connection with autocheckpoint OFF, insert rows, and HOLD the connection so the
+    // rows stay in the -wal (uncheckpointed) for the duration of the merge.
+    let writer = rusqlite::Connection::open(&legacy).unwrap();
+    writer
+        .execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+        .unwrap();
+    for i in 0..4 {
+        writer
+            .execute(
+                "INSERT INTO events (timestamp, session_id, tool_name, tool_input) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["2026-06-30T01:00:00Z", "wal", format!("waltool{i}"), "{}"],
+            )
+            .unwrap();
+    }
+    let wal = sidecar(&legacy, "-wal");
+    assert!(
+        wal.exists() && fs::metadata(&wal).unwrap().len() > 0,
+        "rows must be in the -wal"
+    );
+
+    assert!(migrate_events_db(&paths, false).unwrap(), "both present -> merge");
+    drop(writer);
+
+    // The 4 WAL-resident legacy rows were checkpointed and merged into clyde (3 + 4 = 7).
+    assert_eq!(
+        row_count(&paths.clyde_events_db()),
+        7,
+        "uncheckpointed WAL rows must survive the merge"
+    );
+    let conn = rusqlite::Connection::open(paths.clyde_events_db()).unwrap();
+    let wal_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events WHERE session_id = 'wal'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(wal_rows, 4, "all WAL-committed rows are present in clyde");
+}
+
+#[test]
+fn events_db_merge_recovers_from_interrupted_staging() {
+    // Crash recovery: an interrupted merge left a `events.db.merging` staging file (no live legacy
+    // DB) alongside an existing dest. migrate_events_db must finish from the staging snapshot,
+    // merge its rows, remove staging, and leave a `.clyde.bak`.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let legacy = paths.legacy_events_db();
+    let staging = sidecar(&legacy, ".merging");
+    // Pre-place the staging snapshot (this is what a claimed-but-not-finalized merge leaves) and an
+    // existing dest. NO live legacy events.db (it was renamed into staging before the crash).
+    seed_events_db_tagged(&staging, 5, "staged");
+    seed_events_db_tagged(&paths.clyde_events_db(), 2, "clyde");
+    assert!(!legacy.exists(), "no live legacy DB in the crash-recovery scenario");
+
+    assert!(
+        migrate_events_db(&paths, false).unwrap(),
+        "staging+dest -> finish the merge"
+    );
+
+    assert!(!staging.exists(), "staging file finalized/removed");
+    assert!(backup_path(&legacy).exists(), ".clyde.bak left after finalize");
+    assert_eq!(
+        row_count(&paths.clyde_events_db()),
+        7,
+        "staged rows merged into clyde (2 + 5)"
+    );
+}
+
+#[test]
+fn events_db_merge_dedups_identical_rows_and_is_crash_idempotent() {
+    // Content-dedup: a legacy row identical to an existing clyde row is NOT double-inserted, and
+    // running the merge twice in a row yields the same dest count (modelling a crash after the
+    // INSERT committed but before the staging rename).
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    // Both seeded with the SAME tag + same per-row content => every legacy row matches a clyde row.
+    seed_events_db_tagged(&paths.legacy_events_db(), 3, "dup");
+    seed_events_db_tagged(&paths.clyde_events_db(), 3, "dup");
+
+    assert!(migrate_events_db(&paths, false).unwrap());
+    assert_eq!(
+        row_count(&paths.clyde_events_db()),
+        3,
+        "identical legacy rows must NOT be double-inserted"
+    );
+
+    // Re-merge from the backup snapshot (simulating a retry over the same content): still 3.
+    // Restore a legacy DB from the backup and run again; the dedup keeps the count stable.
+    let bak = backup_path(&paths.legacy_events_db());
+    fs::copy(&bak, paths.legacy_events_db()).unwrap();
+    assert!(migrate_events_db(&paths, false).unwrap());
+    assert_eq!(
+        row_count(&paths.clyde_events_db()),
+        3,
+        "a second merge of identical content is idempotent"
+    );
 }
 
 #[test]
