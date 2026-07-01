@@ -1,11 +1,20 @@
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
-use std::process::{Command, Stdio};
+use std::io::ErrorKind;
+use std::process::{Child, Command, Stdio};
+use std::thread::sleep;
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
 const PERSONA_BIN: &str = "persona";
 const TIMEOUT: Duration = Duration::from_secs(5);
+// execve of a file that is still open for writing fails with ETXTBSY
+// (ExecutableFileBusy). This happens when the `persona` binary is being
+// (re)installed, and in the test suite when a parallel thread holds a
+// just-written fixture open across its own fork/exec. The busy window is
+// sub-millisecond, so a few short retries clear it.
+const SPAWN_RETRIES: u32 = 5;
+const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -48,16 +57,35 @@ pub fn whoami() -> Option<PersonaBlock> {
     whoami_via(PERSONA_BIN)
 }
 
+/// Spawn `persona whoami --json`, retrying a bounded number of times on
+/// ETXTBSY (see `SPAWN_RETRIES`). Every other spawn error is returned as-is.
+fn spawn_persona(bin: &str) -> std::io::Result<Child> {
+    let mut attempt = 0;
+    loop {
+        match Command::new(bin)
+            .arg("whoami")
+            .arg("--json")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Err(e) if e.kind() == ErrorKind::ExecutableFileBusy && attempt < SPAWN_RETRIES => {
+                attempt += 1;
+                debug!(
+                    "persona::whoami: {} busy (ETXTBSY), retry {}/{}",
+                    bin, attempt, SPAWN_RETRIES
+                );
+                sleep(SPAWN_RETRY_DELAY);
+            }
+            other => return other,
+        }
+    }
+}
+
 pub(crate) fn whoami_via(bin: &str) -> Option<PersonaBlock> {
     debug!("persona::whoami: spawning {} whoami --json", bin);
-    let mut child = match Command::new(bin)
-        .arg("whoami")
-        .arg("--json")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+    let mut child = match spawn_persona(bin) {
         Ok(c) => c,
         Err(e) => {
             warn!("persona::whoami: spawn failed: {}", e);
