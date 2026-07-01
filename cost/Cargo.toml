@@ -10,12 +10,6 @@ description = "Fast CLI tool for tracking Claude Code session costs from JSONL l
 name = "cost"
 path = "src/lib.rs"
 
-# Compat shim: the standalone `ccu` binary parses the Parser-deriving CostCli wrapper and calls
-# cost::run in-process. Behavior-exact with the pre-merge tool; clyde nests CostArgs instead.
-[[bin]]
-name = "ccu"
-path = "src/bin/ccu.rs"
-
 [lints]
 workspace = true
 

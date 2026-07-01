@@ -1,6 +1,6 @@
-//! Integration test for `report collect` stdout streaming (Phase 6, #10b).
+//! Integration test for `clyde report collect` stdout streaming.
 //!
-//! Driven through the real `cr` binary so stdout and stderr are genuine, separable streams —
+//! Driven through the real `clyde` binary so stdout and stderr are genuine, separable streams —
 //! the only way to prove HAZARD 1 (the "wrote N sessions" note must NOT corrupt the JSON on
 //! stdout) end to end.
 
@@ -22,10 +22,11 @@ fn write_jsonl(path: &Path, lines: &[&str]) {
 }
 
 #[test]
-fn stdout_mode_streams_valid_json_and_message_to_stderr() {
+fn report_collect_stdout_streams_valid_json_and_message_to_stderr() {
     // HAZARD 1: when `-o` is omitted, the JSON streams to stdout and the "wrote N sessions"
     // note must land on STDERR, never stdout — otherwise it corrupts the JSON a `| jq` consumes.
     let tmp = TempDir::new().unwrap();
+    let data_home = TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
     let project = projects.join("-home-saidler-repos-foo");
     write_jsonl(
@@ -35,9 +36,12 @@ fn stdout_mode_streams_valid_json_and_message_to_stderr() {
         ],
     );
 
-    let bin = env!("CARGO_BIN_EXE_cr");
+    let bin = env!("CARGO_BIN_EXE_clyde");
     let out = std::process::Command::new(bin)
+        // Hermetic: own data root so logs don't touch the real XDG dir.
+        .env("XDG_DATA_HOME", data_home.path())
         .args([
+            "report",
             "collect",
             "--skip-title",
             "--since",
@@ -48,9 +52,13 @@ fn stdout_mode_streams_valid_json_and_message_to_stderr() {
         ])
         .arg(&projects)
         .output()
-        .expect("cr collect should run");
+        .expect("clyde report collect should run");
 
-    assert!(out.status.success(), "cr collect exited non-zero: {:?}", out.status);
+    assert!(
+        out.status.success(),
+        "clyde report collect exited non-zero: {:?}",
+        out.status
+    );
 
     let stdout = String::from_utf8(out.stdout).unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();

@@ -32,7 +32,7 @@ mod table;
 use config::Config;
 use output::{DaySummary, SessionSummary};
 
-pub use cli::{Command, CostArgs, CostCli};
+pub use cli::{Command, CostArgs};
 
 /// Environment variable Claude Code exports identifying the live session.
 ///
@@ -87,7 +87,7 @@ pub fn log_file_path() -> PathBuf {
 }
 
 fn resolve_log_filter(cli_level: Option<&str>, config_level: Option<&str>) -> (String, bool) {
-    // CLI / CCU_LOG_LEVEL (merged by clap)
+    // CLI --log-level (clyde's common global, merged by clap)
     if let Some(level) = cli_level {
         return (format!("ccu={}", level), true);
     }
@@ -400,7 +400,7 @@ pub fn run(args: CostArgs, globals: common::Globals) -> Result<i32> {
         return Ok(0);
     }
 
-    // Load config once; use its log_level (and the merged --log-level/CCU_LOG_LEVEL global) to
+    // Load config once; use its log_level (and the merged --log-level global) to
     // initialize logging.
     let (config, _) = Config::load(args.config.as_ref()).context("Failed to load configuration")?;
     let (filter, has_explicit_level) = resolve_log_filter(globals.log_level.as_deref(), config.log_level.as_deref());

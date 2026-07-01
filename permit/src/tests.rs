@@ -125,29 +125,6 @@ fn run_contains_dispatch_panic() {
 }
 
 #[test]
-fn permit_cli_after_help_renders_from_log_file_path_not_a_hardcoded_string() {
-    // Phase 8 (D3): PermitCli's after-help must never hardcode a log path; it renders from
-    // log_file_path(), which now points at the unified `clyde/logs/permit.log`.
-    //
-    // Hold ENV_LOCK: the after-help comes from `cli::HELP_TEXT`, a `LazyLock<String>` that captures
-    // `log_file_path()` (which reads XDG_DATA_HOME) on first access. Without the lock this test can
-    // interleave with `log_file_path_resolves_under_unified_clyde_logs_dir` (which temporarily
-    // repoints XDG_DATA_HOME) and bake a stale/temp path into HELP_TEXT for the process. Serializing
-    // here means HELP_TEXT only ever initializes under the natural environment.
-    let guard = ENV_LOCK.lock().expect("env lock");
-    use clap::CommandFactory;
-    let cmd = crate::cli::PermitCli::command();
-    let help = cmd.get_after_help().map(|h| h.to_string()).unwrap_or_default();
-    let expected = format!("Logs are written to: {}", crate::log_file_path().display());
-    assert!(help.contains(&expected), "expected {expected:?} in help: {help}");
-    assert!(
-        !help.contains("claude-permit/logs/claude-permit.log"),
-        "help still names the pre-Phase-8 legacy log path: {help}"
-    );
-    drop(guard);
-}
-
-#[test]
 fn log_file_path_resolves_under_unified_clyde_logs_dir() {
     // Phase 8 (D3): permit's log moves off the legacy `claude-permit/logs/` dir onto the unified
     // `<xdg-data>/clyde/logs/permit.log` location shared with cost and report.

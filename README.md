@@ -14,9 +14,9 @@ clyde/      thin umbrella bin — top-level CLI, dispatch, bootstrap, doctor (th
 common/     the clyde-common surface — Globals passed from clyde down to each tool's run()
 session/    shared core — locate ~/.claude/projects, parse JSONL, path resolution
 sessions/   navigational layer — sessions.db (SQLite + dual FTS5): search / ls / resume / tag / reindex
-report/     was claude-report     — JSON/markdown session reporting (lib + compat bin `cr`)
-cost/       was claude-cost-usage  — cost/usage + statusline installer (lib + compat bin `ccu`)
-permit/     was claude-permit      — permission hygiene + PreToolUse hook (lib + compat bin `claude-permit`)
+report/     was claude-report     — JSON/markdown session reporting (lib)
+cost/       was claude-cost-usage  — cost/usage + statusline installer (lib)
+permit/     was claude-permit      — permission hygiene + PreToolUse hook (lib)
 pricing/    was claude-pricing     — pricing data, JSONL parsing, cost math (lib `claude_pricing`, no bin)
 ```
 
@@ -24,7 +24,7 @@ pricing/    was claude-pricing     — pricing data, JSONL parsing, cost math (l
 
 ```
 clyde session  <search|ls|resume|tag|reindex|stage|enrich|doctor|serve>   # catalog + MCP server
-clyde report   <collect|render>                                          # was `cr`
+clyde report   <collect|render|merge>                                    # was `cr`
 clyde cost     <today|yesterday|daily|weekly|monthly|session|statusline|pricing>   # was `ccu`
 clyde permit   <log|audit|suggest|report|clean|check|install|apply>      # was `claude-permit`
 clyde bootstrap                                                          # migrate + repoint integrations
@@ -33,12 +33,13 @@ clyde doctor                                                             # healt
 
 `clyde` owns one common global, `--log-level`, and passes it down to each tool.
 
-## Compat shims
+## One binary
 
-The old binary names survive as behavior-exact compat shims during the transition: `cr`, `ccu`,
-and `claude-permit` each parse their tool's `Parser` wrapper and call its `run()` in-process, so
-they behave identically to the pre-merge tools and don't depend on `clyde` being on PATH. There is
-no `klod` shim — `clyde bootstrap` repoints the one machine consumer (the enrich timer).
+`clyde` is the only binary. The pre-merge standalone tools (`cr`, `ccu`, `claude-permit`) are gone
+— their functionality lives entirely under `clyde report` / `clyde cost` / `clyde permit`. The
+absorbed crates are libraries; `clyde` is the single entry point. `clyde bootstrap` repoints any
+machine integration that still references an old binary name (statusline, permit hook, enrich
+timer) at `clyde`.
 
 **Log paths are the one deliberate exception to "behavior-exact."** As of the release that ships
 the log-unification work (see `docs/design/2026-07-03-deep-dive-remediations.md`, Decision D3),
@@ -51,7 +52,7 @@ informationally if present. Every `--help` renders the live path, never a hardco
 ## Install
 
 ```
-./install.sh        # installs clyde + the three shims (cr, ccu, claude-permit)
+./install.sh        # installs the clyde binary
 clyde bootstrap     # migrate config/data under one clyde home; repoint statusline/hook/timer
 clyde doctor        # verify every integration now resolves to clyde
 ```

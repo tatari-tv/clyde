@@ -1,11 +1,5 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Subcommand};
 use std::path::PathBuf;
-use std::sync::LazyLock;
-
-/// Renders from [`crate::log_file_path`] so `--help` can never drift from the path the logger
-/// actually writes (Phase 8, D3: log paths declared outside the behavior-exact shim surface).
-static HELP_TEXT: LazyLock<String> =
-    LazyLock::new(|| format!("Logs are written to: {}", crate::log_file_path().display()));
 
 /// The permit command surface, nested under `clyde permit ...`. Derives `Args` (not `Parser`) so
 /// it can be a `Subcommand` payload in the clyde umbrella. permit has no common globals of its
@@ -14,30 +8,6 @@ static HELP_TEXT: LazyLock<String> =
 pub struct PermitArgs {
     #[command(subcommand)]
     pub command: Command,
-}
-
-/// Standalone wrapper for the `claude-permit` compat shim. permit never accepted `--log-level`,
-/// so the wrapper adds no common globals; `globals()` returns the default (log level unset),
-/// which preserves the pre-merge `RUST_LOG`/`env_logger` default behavior exactly. `clyde permit`
-/// still drives the level via clyde's own top-level `--log-level`.
-#[derive(Parser)]
-#[command(
-    name = "claude-permit",
-    about = "Manage Claude Code permission hygiene",
-    version = env!("GIT_DESCRIBE"),
-    after_help = HELP_TEXT.as_str()
-)]
-pub struct PermitCli {
-    #[command(flatten)]
-    pub args: PermitArgs,
-}
-
-impl PermitCli {
-    /// Reconstruct the common globals from the shim wrapper. permit carries none, so this is the
-    /// default (`log_level: None`).
-    pub fn globals(&self) -> common::Globals {
-        common::Globals::default()
-    }
 }
 
 #[derive(Subcommand)]
