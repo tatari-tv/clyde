@@ -42,6 +42,7 @@ fn default_pricing_is_valid() {
         pricing.len()
     );
     assert!(pricing.contains_key("claude-opus-4-6"), "missing opus 4.6");
+    assert!(pricing.contains_key("claude-sonnet-5"), "missing sonnet 5");
     assert!(pricing.contains_key("claude-sonnet-4-6"), "missing sonnet 4.6");
     assert!(pricing.contains_key("claude-haiku-4-5"), "missing haiku 4.5");
     assert!(pricing.contains_key("claude-opus-3"), "missing opus 3");
@@ -71,7 +72,7 @@ fn normalize_without_date() {
 #[test]
 fn normalize_bare_names() {
     assert_eq!(normalize_model_id("opus"), "claude-opus-4-8");
-    assert_eq!(normalize_model_id("sonnet"), "claude-sonnet-4-6");
+    assert_eq!(normalize_model_id("sonnet"), "claude-sonnet-5");
     assert_eq!(normalize_model_id("haiku"), "claude-haiku-4-5");
 }
 

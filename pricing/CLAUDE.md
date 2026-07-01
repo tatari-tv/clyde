@@ -2,6 +2,19 @@
 
 Shared Claude pricing data + JSONL parsing + cost math for Tatari tools (`ccu`, `cr`). `[lib]`-only crate; consumers depend by git **tag**.
 
+## Feed publishing & daily refresh automation (read before hand-editing `pricing.json`)
+
+`data/pricing.json` is a **generated artifact kept current by automation**, not a hand-maintained file. Before editing it by hand, know the pipeline:
+
+- **Runtime feed (what consumers actually read):** `ccu`, `cr`, and clyde's `pricing/` crate fetch the live feed at runtime from `https://tatari-tv.github.io/claude-pricing/pricing.json` (GitHub Pages). A data refresh reaches consumers within ~24h with no crate bump or re-pin. (In-flight: the default URL is being repointed to `https://tatari-tv.github.io/clyde/pricing.json`; see clyde `docs/design/2026-06-29-move-pricing-feed-publishing-to-clyde.md`.)
+- **Daily refresh (`.github/workflows/refresh-pricing.yml`):** cron `17 6 * * *` runs `bin/update`, which scrapes Anthropic's `https://platform.claude.com/docs/en/about-claude/pricing.md`, regenerates `pricing.json`, and opens a `refresh-pricing` PR when data changed.
+- **Publish (`.github/workflows/pages.yml`):** merging a `pricing.json` change to `main` deploys it to GitHub Pages.
+- **These workflows are LIVE only in `tatari-tv/claude-pricing`.** The byte-identical copies vendored into clyde at `pricing/.github/workflows/` are **dormant**; GitHub runs workflows only from the repo root, never from a subdirectory.
+
+### New-model launches are NOT fully hands-off
+
+`bin/update` derives each model key by slugifying the pricing-table **row label**. When Anthropic ships a model with date-tiered introductory pricing (two rows, e.g. `Claude Sonnet 5 through August 31, 2026` and `Claude Sonnet 5 starting September 1, 2026`), the parser emits **broken keys** like `claude-sonnet-5-[through-august-31,-2026]` and `claude-sonnet-5-starting-september-1,-2026` instead of a clean `claude-sonnet-5`, and the `sonnet`/`opus`/`haiku` aliases (human-authored policy in `data/normalization.json`) are **not** auto-repointed. A launch like Sonnet 5 therefore needs a human to: pick the canonical id (`claude-sonnet-5`), choose the correct pricing tier, fold the broken rows into it, and repoint the alias. Until then the daily cron keeps regenerating garbage keys.
+
 ## ⚠️ Versioning rule: crate MAJOR == feed `schema_version` (DO NOT fuck this up)
 
 The crate's **major version is locked to the feed `schema_version`**:
