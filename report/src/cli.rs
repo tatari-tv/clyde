@@ -232,7 +232,7 @@ fn get_tool_validation_help() -> String {
             ver_w = max_ver,
         ));
     }
-    help.push_str("\nLogs: ~/.local/share/claude-report/logs/claude-report.log");
+    help.push_str(&format!("\nLogs: {}", crate::log_file_path().display()));
     help
 }
 

@@ -74,14 +74,16 @@ fn resolve_current_session<'a>(
     sessions.iter().max_by_key(|s| s.last_active)
 }
 
-/// Path to ccu's log file. `pub` so the `ccu` compat shim can render the same dynamic
-/// `Logs are written to: ...` after-help line the pre-merge binary showed.
+/// Path to cost's log file, unified under `<xdg-data>/clyde/logs/cost.log` (Phase 8, D3: log
+/// paths are declared outside the behavior-exact shim surface). `pub` so the `ccu` compat shim
+/// can render the same dynamic `Logs are written to: ...` after-help line the pre-merge binary
+/// showed, now pointed at the unified location.
 pub fn log_file_path() -> PathBuf {
     config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("ccu")
+        .join("clyde")
         .join("logs")
-        .join("ccu.log")
+        .join("cost.log")
 }
 
 fn resolve_log_filter(cli_level: Option<&str>, config_level: Option<&str>) -> (String, bool) {

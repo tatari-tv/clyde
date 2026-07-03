@@ -83,3 +83,17 @@ fn pdf_engine_help_names_pandoc_as_the_required_binary() {
         "pdf-engine help does not name pandoc as the invoked binary: {help}"
     );
 }
+
+#[test]
+fn required_tools_block_renders_the_unified_log_path() {
+    // Phase 8 (D3): the REQUIRED TOOLS block must render from `log_file_path()`, never the old
+    // hardcoded `claude-report/logs/claude-report.log` shim path.
+    let cmd = ReportCli::command();
+    let help = cmd.get_after_help().map(|h| h.to_string()).unwrap_or_default();
+    let expected = format!("Logs: {}", crate::log_file_path().display());
+    assert!(help.contains(&expected), "expected {expected:?} in help: {help}");
+    assert!(
+        !help.contains("claude-report/logs/claude-report.log"),
+        "help still names the pre-Phase-8 legacy log path: {help}"
+    );
+}

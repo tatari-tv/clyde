@@ -40,6 +40,14 @@ and `claude-permit` each parse their tool's `Parser` wrapper and call its `run()
 they behave identically to the pre-merge tools and don't depend on `clyde` being on PATH. There is
 no `klod` shim — `clyde bootstrap` repoints the one machine consumer (the enrich timer).
 
+**Log paths are the one deliberate exception to "behavior-exact."** As of the release that ships
+the log-unification work (see `docs/design/2026-07-03-deep-dive-remediations.md`, Decision D3),
+`cr`/`ccu`/`claude-permit` (and `clyde report`/`clyde cost`/`clyde permit`) all log to the unified
+`$XDG_DATA_HOME/clyde/logs/<tool>.log` location instead of their old per-tool legacy dirs
+(`claude-report/logs/`, `ccu/logs/`, `claude-permit/logs/`). Old log *content* is not migrated —
+logs are disposable diagnostics — so the legacy dirs are left in place; `clyde doctor` lists them
+informationally if present. Every `--help` renders the live path, never a hardcoded string.
+
 ## Install
 
 ```
@@ -53,7 +61,8 @@ of the permit events DB and a merge of the ccu/cr pricing overrides), then repoi
 integrations (ccu statusline, permit hook in global + local `settings.json`, and the enrich
 systemd user timer). Every file is backed up to `<path>.clyde.bak` before it is rewritten.
 `doctor` exits non-zero while any integration still resolves to an old binary name or any tool's
-state still lives only at a legacy path.
+state still lives only at a legacy path. It also reports each tool's log location and, purely
+informationally (never affecting the exit code), any legacy log dirs still present on disk.
 
 ## Data layout (XDG)
 
@@ -63,6 +72,10 @@ Everything lives under one clyde home:
 $XDG_DATA_HOME/clyde/sessions.db     # the session index (rebuildable: delete + reindex)
 $XDG_DATA_HOME/clyde/events.db       # permit events (moved from claude-permit, WAL-safe)
 $XDG_DATA_HOME/clyde/staged/         # durable transcript copies (TTL insurance, via `stage`)
+$XDG_DATA_HOME/clyde/logs/clyde.log  # clyde's own log
+$XDG_DATA_HOME/clyde/logs/cost.log   # was ccu/logs/ccu.log
+$XDG_DATA_HOME/clyde/logs/permit.log # was claude-permit/logs/claude-permit.log
+$XDG_DATA_HOME/clyde/logs/report.log # was claude-report/logs/claude-report.log
 $XDG_CONFIG_HOME/clyde/permit.yml    # permit config (was claude-permit/)
 $XDG_CONFIG_HOME/clyde/cost.yml      # cost config (was ccu/ccu.yml)
 $XDG_CONFIG_HOME/clyde/pricing.json  # merged pricing override (was ccu/ + cr/)

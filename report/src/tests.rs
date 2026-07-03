@@ -223,3 +223,23 @@ fn stdout_mode_resolves_title_cache_source() {
     }
     drop(guard);
 }
+
+#[test]
+fn log_file_path_resolves_under_unified_clyde_logs_dir() {
+    // Phase 8 (D3): report's log moves off the legacy `claude-report/logs/` dir onto the unified
+    // `<xdg-data>/clyde/logs/report.log` location shared with cost and permit.
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior_xdg = std::env::var("XDG_DATA_HOME").ok();
+
+    let tmp = TempDir::new().unwrap();
+    unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
+
+    let path = crate::log_file_path();
+    assert_eq!(path, tmp.path().join("clyde").join("logs").join("report.log"));
+
+    match prior_xdg {
+        Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+    drop(guard);
+}

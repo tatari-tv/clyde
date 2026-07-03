@@ -153,3 +153,40 @@ fn resolve_current_none_when_no_sessions() {
     assert!(resolve_current_session(&sessions, Some("049209b7-aaaa")).is_none());
     assert!(resolve_current_session(&sessions, None).is_none());
 }
+
+// Serialize env-var-touching tests (XDG_DATA_HOME) so parallel runs can't race.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn log_file_path_resolves_under_unified_clyde_logs_dir() {
+    // Phase 8 (D3): cost's log moves off the legacy `ccu/logs/` dir onto the unified
+    // `<xdg-data>/clyde/logs/cost.log` location shared with permit and report.
+    let guard = ENV_LOCK.lock().expect("env lock");
+    let prior = std::env::var("XDG_DATA_HOME").ok();
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
+
+    let path = log_file_path();
+    assert_eq!(path, dir.path().join("clyde").join("logs").join("cost.log"));
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+    drop(guard);
+}
+
+#[test]
+fn cost_cli_after_help_renders_from_log_file_path_not_a_hardcoded_string() {
+    // Phase 8 (D3): the CostCli static after-help fallback must never hardcode a log path; it
+    // renders from log_file_path(), which now points at the unified `clyde/logs/cost.log`.
+    use clap::CommandFactory;
+    let cmd = crate::cli::CostCli::command();
+    let help = cmd.get_after_help().map(|h| h.to_string()).unwrap_or_default();
+    let expected = format!("Logs are written to: {}", log_file_path().display());
+    assert!(help.contains(&expected), "expected {expected:?} in help: {help}");
+    assert!(
+        !help.contains("ccu/logs/ccu.log"),
+        "help still names the pre-Phase-8 legacy log path: {help}"
+    );
+}

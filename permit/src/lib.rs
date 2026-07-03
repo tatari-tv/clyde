@@ -24,17 +24,25 @@ use crate::db::EventStore;
 use crate::risk::Rules;
 use crate::settings::discover_settings_local;
 
-/// File-target logger to `~/.local/share/claude-permit/logs/claude-permit.log`, preserved exactly
-/// from the pre-merge `claude-permit` binary. Honors `globals.log_level` when clyde passes one
-/// (`clyde --log-level <lvl> permit ...`); when unset (the standalone shim path) it falls back to
-/// `env_logger`'s default (`RUST_LOG`), which is behavior-exact with the old tool.
-fn setup_logging(log_level: Option<&str>) -> Result<()> {
-    let log_dir = crate::config::xdg_data_dir()
+/// Path to permit's log file, unified under `<xdg-data>/clyde/logs/permit.log` (Phase 8, D3: log
+/// paths are declared outside the behavior-exact shim surface). `pub` so `PermitCli`'s after-help
+/// and the `claude-permit` shim render the same dynamic path the logger actually writes.
+pub fn log_file_path() -> PathBuf {
+    crate::config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-permit")
-        .join("logs");
-    fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
-    let log_file = log_dir.join("claude-permit.log");
+        .join("clyde")
+        .join("logs")
+        .join("permit.log")
+}
+
+/// File-target logger to the unified `clyde/logs/permit.log` path (Phase 8). Honors
+/// `globals.log_level` when clyde passes one (`clyde --log-level <lvl> permit ...`); when unset
+/// (the standalone shim path) it falls back to `env_logger`'s default (`RUST_LOG`), which is
+/// behavior-exact with the old tool.
+fn setup_logging(log_level: Option<&str>) -> Result<()> {
+    let log_file = log_file_path();
+    let log_dir = log_file.parent().expect("log file has parent");
+    fs::create_dir_all(log_dir).context("Failed to create log directory")?;
     let target = Box::new(
         fs::OpenOptions::new()
             .create(true)

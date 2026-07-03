@@ -1,5 +1,11 @@
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
+use std::sync::LazyLock;
+
+/// Renders from [`crate::log_file_path`] so `--help` can never drift from the path the logger
+/// actually writes (Phase 8, D3: log paths declared outside the behavior-exact shim surface).
+static HELP_TEXT: LazyLock<String> =
+    LazyLock::new(|| format!("Logs are written to: {}", crate::log_file_path().display()));
 
 /// The permit command surface, nested under `clyde permit ...`. Derives `Args` (not `Parser`) so
 /// it can be a `Subcommand` payload in the clyde umbrella. permit has no common globals of its
@@ -19,7 +25,7 @@ pub struct PermitArgs {
     name = "claude-permit",
     about = "Manage Claude Code permission hygiene",
     version = env!("GIT_DESCRIBE"),
-    after_help = "Logs are written to: ~/.local/share/claude-permit/logs/claude-permit.log"
+    after_help = HELP_TEXT.as_str()
 )]
 pub struct PermitCli {
     #[command(flatten)]

@@ -409,3 +409,78 @@ Design doc: `docs/design/2026-07-03-deep-dive-remediations.md`
 
 ### Open questions
 - None.
+
+## Phase 8: log unification + doctor awareness (F6)
+
+### Design decisions
+- Added `pub fn log_file_path() -> PathBuf` to `permit/src/lib.rs` and `report/src/lib.rs`,
+  matching `cost/src/lib.rs::log_file_path`'s existing shape exactly (same signature, same
+  `xdg_data_dir().unwrap_or_else(|| PathBuf::from("."))` fallback). All three now build
+  `<xdg-data>/clyde/logs/<tool>.log` (`cost.log`, `permit.log`, `report.log`); `permit`'s and
+  `report`'s private `setup_logging` were rewired to call the new function and derive their
+  `create_dir_all` target from `log_file.parent()`, mirroring `cost`'s existing pattern instead
+  of re-deriving the directory independently.
+- clyde's own log is untouched: `clyde/src/main.rs` already resolves
+  `session::paths::data_root().join("logs").join("clyde.log")` = `<xdg-data>/clyde/logs/clyde.log`
+  - the exact unified directory the other three tools now share, just a different filename. No
+    change needed there.
+- Every help string naming a log path now renders from the function, never a literal:
+  - `cost/src/cli.rs`: `CostCli`'s `after_help` was a hardcoded string, always overridden anyway
+    by `ccu.rs`'s dynamic `~`-relative render (unaffected by this phase, already correct). Replaced
+    the hardcoded static fallback with a `LazyLock<String>` built from `crate::log_file_path()`, so
+    the *only* remaining hardcoded log-path literal in the crate is gone even though it was
+    previously dead in the actual `ccu` invocation path.
+  - `permit/src/cli.rs`: `PermitCli`'s `after_help` was a hardcoded string and, unlike `cost`, is
+    NOT overridden anywhere (`claude-permit.rs`'s bin uses plain `Parser::parse()`). Replaced with
+    a `LazyLock<String>` rendering `crate::log_file_path()`, matching the pattern `report/src/cli.rs`
+    already used for its `HELP_TEXT` static (chosen over restructuring `claude-permit.rs` into a
+    `CommandFactory`/`FromArgMatches` two-step like `ccu.rs`, since the existing `report` precedent
+    achieves the same "never hardcoded, always current" property with a smaller diff).
+  - `report/src/cli.rs::get_tool_validation_help` (the REQUIRED TOOLS block, the explicit Phase 6
+    handoff): the trailing `"\nLogs: ~/.local/share/claude-report/logs/claude-report.log"` literal
+    became `format!("\nLogs: {}", crate::log_file_path().display())`.
+- `clyde/src/doctor.rs::Report` gained two new fields, both populated unconditionally (never
+  affecting `healthy()`): `log_locations: Vec<(&'static str, PathBuf)>` (all four tools' current
+  unified log paths, always shown so `clyde doctor` answers "where are the logs" even before a
+  tool has ever run) and `legacy_log_dirs: Vec<PathBuf>` (any of `ccu/logs/`, `claude-permit/logs/`,
+  `claude-report/logs/` that still exist under `xdg_data`, filtered to only present ones).
+  Both are computed in a new `log_state(paths: &Paths)` helper and printed in `print_report` under
+  a `logs:` section; `legacy_log_dirs` prints only when non-empty, under a yellow "informational"
+  header, explicitly NOT folded into `legacy_state` or `healthy()`.
+- README: added a "Log paths are the one deliberate exception to 'behavior-exact'" paragraph under
+  "Compat shims" (naming D3 and this design doc), and extended the "Data layout (XDG)" code block
+  with the four unified log paths (annotated with their legacy `was ...` predecessors) plus a note
+  under "Install" that `doctor` now reports log locations and legacy log dirs informationally.
+- Design doc: appended one line to its own "Rollout Plan" section noting Phase 8 landed and
+  pointing at the README note, per the phase's "compat note in ... this doc" instruction. The
+  design doc itself is intentionally NOT staged in this phase's commit (per the parent
+  orchestrator owning its finalization); the note is a working-copy edit only until the
+  orchestrator's own commit picks it up.
+
+### Deviations
+- None from the phase's stated scope. `permit`'s `after_help` fix uses the `LazyLock` pattern
+  (matching `report`'s existing precedent) rather than the `ccu.rs`-style dynamic-override-in-`main`
+  pattern the doc's `cost` reference point uses - same effect (help always renders the live path,
+  never a hardcoded string), correct seam for the fact that `claude-permit.rs` doesn't already have
+  the `CommandFactory`/`FromArgMatches` two-step `ccu.rs` uses.
+
+### Tradeoffs
+- `LazyLock<String>` static after-help (permit, and the `cost` static fallback) vs. restructuring
+  each shim's `main()` to override `after_help` dynamically before parsing (the `ccu.rs` pattern):
+  the `LazyLock` approach is a smaller, crate-internal diff that doesn't touch the compat shim
+  binaries' argument-parsing flow at all, and is already the established pattern in this same
+  workspace (`report/src/cli.rs::HELP_TEXT`) for exactly this "render a runtime value into a static
+  clap attribute" problem. `ccu.rs`'s extra `~`-relative display polish was left as `cost`-only
+  (pre-existing, unchanged), not replicated onto `permit`/`report`, since the phase's ask is
+  "never hardcoded," not "identical display formatting" across all three shims.
+- Two new `Vec` fields on `doctor::Report` (`log_locations`, `legacy_log_dirs`) vs. a single
+  combined struct: kept them as two independent fields (one always-populated informational list,
+  one presence-filtered informational list) rather than inventing a `LogState` wrapper type, since
+  both are consumed identically (iterate and print) and a wrapper would add a name without adding
+  behavior for a two-field, doctor-internal shape.
+
+### Open questions
+- None beyond the ones the design doc's own "Open Questions" section already tracks (legacy
+  log-dir lifecycle after Phase 8 - fold into a future `clyde clean` or leave forever - is
+  explicitly called out there and not re-litigated here).
+
