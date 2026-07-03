@@ -121,3 +121,71 @@ Design doc: `docs/design/2026-07-03-deep-dive-remediations.md`
 
 ### Open questions
 - None.
+
+## Phase 3: hook panic containment (F2)
+
+### Design decisions
+- The `log`-path degradation moved out of `run`'s inline `match` into a new
+  `contain_log_panics<F, W>(out, f)` helper (`permit/src/lib.rs`). `run` now branches on `is_log`
+  BEFORE dispatching: the log path calls `contain_log_panics(&mut stdout, || run_inner(...))`; every
+  other command calls `run_inner` directly and propagates its `Err`/panic unchanged. Because
+  `run_inner` runs `setup_logging` -> `Config::load` -> `EventStore::open` -> the `Command::Log` arm
+  all inside the wrapped closure, `catch_unwind` covers the ENTIRE log path, not just the dispatch
+  arm - the exact panel finding the doc calls out (`lib.rs:62-64` promises `{}` for ANY failure).
+- `catch_unwind` uses `std::panic::AssertUnwindSafe(f)` around the closure. The closure captures
+  `args`/`globals` by move and consumes them exactly once; nothing is observed again after an
+  unwind, so there is no broken-invariant hazard - `AssertUnwindSafe` is the correct, minimal way
+  to satisfy the `UnwindSafe` bound without restructuring unrelated code (per the phase requirement).
+- The `{}` marker is written through an injected `W: std::io::Write` sink rather than `println!`.
+  Production passes `std::io::stdout()`; tests pass a `Vec<u8>` so the exact bytes (`{}\n`, matching
+  the old `println!` newline) and the Ok/Err/panic branch choice are asserted deterministically
+  in-process. This is a DI shape consistent with the repo's "inject deps, test with fakes" rust
+  convention; it is the design of the new helper, not a restructuring of existing code.
+- `panic_message(&(dyn Any + Send)) -> String` downcasts the caught payload to `&str` or `String`
+  (the two shapes `panic!` produces) for the failure log, generic fallback otherwise. Logged via
+  `log::error!("log command panicked: ...")` before `{}` is emitted, mirroring the existing
+  `log::error!("log command failed: ...")` on the `Err` branch.
+- NO global panic-hook mutation (`panic::set_hook`) - it races other threads on swap/restore. The
+  default hook's stderr backtrace is tolerated because Claude Code parses only stdout (per doc).
+- Pinned `panic = "unwind"` in the workspace root `[profile.dev]` and `[profile.release]`
+  (`Cargo.toml`). Unwind is already the default, so this is insurance-only: a future
+  `panic = "abort"` would otherwise silently turn the `catch_unwind` boundary into a process-abort
+  no-op. Profiles must live in the workspace root, which is where they were added.
+- Test-only panic injection points are `#[cfg(test)]`-gated statements at two spots in `run_inner`:
+  `InjectPoint::Setup` at the very top (before `setup_logging`) and `InjectPoint::Dispatch` at the
+  top of the `Command::Log` arm (before the DB open / stdin read). They read a `thread_local!`
+  `Cell<Option<InjectPoint>>` and `panic!` when armed. `catch_unwind` runs its closure on the
+  calling thread, so a thread-local armed in a test is visible inside `run_inner`; the gates compile
+  to nothing in production builds (zero production cost).
+
+### Deviations
+- The doc's test bullet says "an injected panic (test-only panicking store path)". Implemented as a
+  hybrid rather than a single mechanism: the assertable-`{}`-output coverage of a store-path panic
+  is a unit test on `contain_log_panics` with a panicking closure (`contain_degrades_panic_to_empty_json_and_zero`),
+  while the "panic in setup (before dispatch)" case AND the dispatch-arm case are covered
+  end-to-end through the real `run` entry point via the `#[cfg(test)]` injection points
+  (`run_contains_setup_panic_before_dispatch`, `run_contains_dispatch_panic`). Reason: the log
+  path's success/failure output goes to the process stdout, which cannot be asserted in-process
+  without a redirect crate; the injected `Vec<u8>` writer on the helper is what makes the exact
+  `{}\n` bytes assertable, and the real-`run` tests then prove the boundary genuinely wraps the
+  whole path (setup included) rather than only the arm.
+
+### Tradeoffs
+- Injected `W: Write` sink vs. `println!` + a stdout-capture crate: the injected writer keeps the
+  test in-process and dependency-free and lets the failure branches assert exact bytes; the cost is
+  `run` now threads `&mut std::io::stdout()` into the helper (one extra line). Chosen over adding a
+  `gag`/`libc dup2` stdout-capture dependency purely for a test assertion.
+- `run_contains_dispatch_panic` drives real `setup_logging` (which calls `env_logger::Builder::init`,
+  a process-global one-shot). It is the ONLY test that reaches `setup_logging` (the setup-panic test
+  fires before it), so exactly one init happens per test process. It isolates `XDG_DATA_HOME` /
+  `XDG_CONFIG_HOME` to a `TempDir` (under an `ENV_LOCK` mutex, per the repo's env-test convention) so
+  nothing touches the real home. The assertion is robust regardless: if `init` ever double-fired, that
+  panic is itself inside the boundary and still degrades to exit 0.
+- The `ENV_LOCK` guard is bound as a bare `guard` + explicit `drop(guard)` at the end, not
+  `let _guard = ...`. The repo's `lint-unused` CI task denies the `_varname` pattern even for RAII
+  guards (it flagged the initial `_guard`), and every existing env-lock test in the workspace
+  (`common/src/config/tests.rs`, `report/src/tests.rs`, `session/src/paths/tests.rs`) uses the bare
+  `guard` + `drop` form; matched local convention over the language-level drop-guard carve-out.
+
+### Open questions
+- None.
