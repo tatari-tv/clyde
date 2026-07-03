@@ -84,10 +84,8 @@ pub fn subsumes(broad: &str, narrow: &str) -> bool {
 /// Split "Tool(pattern)" into ("Tool", "pattern"), or None.
 fn split_paren(rule: &str) -> Option<(&str, &str)> {
     let i = rule.find('(')?;
-    if !rule.ends_with(')') {
-        return None;
-    }
-    Some((&rule[..i], &rule[i + 1..rule.len() - 1]))
+    let without_close = rule.strip_suffix(')')?;
+    Some((rule.get(..i)?, without_close.get(i + 1..)?))
 }
 
 // --- Built-in defaults ---
@@ -314,6 +312,15 @@ impl Rules {
     }
 
     /// Classify a raw tool invocation (tool_name + tool_input).
+    ///
+    /// Note the intentional asymmetry with `classify_rule` above: a bare `Read` *rule*
+    /// is Moderate there because a persisted rule grants unbounded future filesystem
+    /// access (see the "carte blanche" comment on `classify_rule`), while a live `Read`
+    /// *event* here is Safe because one event is one read of one already-known path.
+    /// The two functions answer different questions on purpose; this is not a bug to
+    /// unify. `suggest` builds rule proposals from event classifications, so a
+    /// suggest-promoted bare-Read rule can still land Safe at proposal time - `audit` is
+    /// the backstop that re-classifies persisted rules and catches it there.
     pub fn classify_tool_input(&self, tool_name: &str, normalized_input: &str) -> RiskTier {
         match tool_name {
             "Bash" => self.classify_bash_command(normalized_input),
@@ -432,10 +439,7 @@ fn resolve_list(defaults: &[&str], list_config: &ListConfig) -> Vec<String> {
 
 /// Extract the command pattern from a Bash() rule, stripping the trailing :*
 fn extract_bash_pattern(rule: &str) -> Option<&str> {
-    if !rule.starts_with("Bash(") || !rule.ends_with(')') {
-        return None;
-    }
-    let inner = &rule[5..rule.len() - 1];
+    let inner = rule.strip_prefix("Bash(")?.strip_suffix(')')?;
     // Strip trailing :* if present
     Some(inner.strip_suffix(":*").unwrap_or(inner))
 }
@@ -473,13 +477,16 @@ fn glob_match(pattern: &str, text: &str) -> bool {
         if part.is_empty() {
             continue;
         }
+        let Some(remaining) = text.get(pos..) else {
+            return false;
+        };
         if i == 0 {
-            if !text[pos..].starts_with(part) {
+            if !remaining.starts_with(part) {
                 return false;
             }
             pos += part.len();
         } else {
-            match text[pos..].find(part) {
+            match remaining.find(part) {
                 Some(found) => {
                     if found == 0 {
                         return false;
@@ -494,6 +501,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

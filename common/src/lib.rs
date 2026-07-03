@@ -1,3 +1,5 @@
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::string_slice)]
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
@@ -8,9 +10,11 @@
 //! `Args`-deriving inner type (nested under clyde) and the `Parser`-deriving outer wrapper
 //! (used by the compat shim).
 
+pub mod atomic;
 pub mod config;
 pub mod since;
 
+pub use atomic::write_atomic;
 pub use config::Config;
 pub use since::{DateTz, parse_since};
 

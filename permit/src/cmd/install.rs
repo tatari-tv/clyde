@@ -48,9 +48,10 @@ pub fn run_install(settings_path: &Path, yes: bool) -> Result<bool> {
     // Insert the hook
     insert_hook(&mut root)?;
 
-    // Write back
+    // Write back atomically: a crash mid-write must not leave `settings.json` truncated, since
+    // that file gates every tool permission Claude Code enforces.
     let output = serde_json::to_string_pretty(&root).context("Failed to serialize settings")?;
-    std::fs::write(settings_path, format!("{output}\n")).context("Failed to write settings file")?;
+    common::write_atomic(settings_path, format!("{output}\n").as_bytes()).context("Failed to write settings file")?;
 
     println!(
         "{} Installed clyde permit log hook in {}",
@@ -115,6 +116,7 @@ fn insert_hook(root: &mut Map<String, Value>) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

@@ -185,8 +185,9 @@ pub fn run_suggest(
             let mut out = String::new();
             let sep = format!("{:-<9}  {:->5}  {:->8}  {:-<rw$}", "", "", "", "");
 
-            writeln!(out, "{:<9}  {:>5}  {:>8}  Rule", "Risk", "Count", "Sessions").unwrap();
-            writeln!(out, "{sep}").unwrap();
+            writeln!(out, "{:<9}  {:>5}  {:>8}  Rule", "Risk", "Count", "Sessions")
+                .expect("write to String cannot fail");
+            writeln!(out, "{sep}").expect("write to String cannot fail");
 
             for e in &claude_entries {
                 writeln!(
@@ -194,11 +195,11 @@ pub fn run_suggest(
                     "{:<9}  {:>5}  {:>8}  {}",
                     e.risk, e.count, e.sessions, e.suggested_rule
                 )
-                .unwrap();
+                .expect("write to String cannot fail");
             }
 
             if !claude_entries.is_empty() && !system_entries.is_empty() {
-                writeln!(out, "{sep}").unwrap();
+                writeln!(out, "{sep}").expect("write to String cannot fail");
             }
 
             for e in &system_entries {
@@ -207,7 +208,7 @@ pub fn run_suggest(
                     "{:<9}  {:>5}  {:>8}  {}",
                     e.risk, e.count, e.sessions, e.suggested_rule
                 )
-                .unwrap();
+                .expect("write to String cannot fail");
             }
 
             page_output(&out, pager);
@@ -218,6 +219,7 @@ pub fn run_suggest(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

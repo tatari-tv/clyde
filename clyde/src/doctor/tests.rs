@@ -241,6 +241,54 @@ fn clyde_service_with_stale_sessions_subcommand_is_legacy() {
 }
 
 #[test]
+fn log_locations_always_report_the_unified_clyde_logs_dir() {
+    // Populated even when nothing has been written yet — doctor is a one-stop answer to
+    // "where are the logs" regardless of whether a tool has run since bootstrap.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+
+    let report = diagnose(&paths).unwrap();
+    let unified = paths.xdg_data.join("clyde").join("logs");
+    assert_eq!(
+        report.log_locations,
+        vec![
+            ("clyde", unified.join("clyde.log")),
+            ("cost", unified.join("cost.log")),
+            ("permit", unified.join("permit.log")),
+            ("report", unified.join("report.log")),
+        ]
+    );
+    assert!(report.legacy_log_dirs.is_empty());
+}
+
+#[test]
+fn legacy_log_dirs_are_listed_but_do_not_affect_healthy() {
+    // Phase 8 (D3): legacy log dirs are disposable diagnostics, not migration state — their
+    // presence must be surfaced informationally but must NOT flip healthy() to false.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    fs::create_dir_all(paths.xdg_data.join("ccu").join("logs")).unwrap();
+    fs::create_dir_all(paths.xdg_data.join("claude-permit").join("logs")).unwrap();
+
+    let report = diagnose(&paths).unwrap();
+    assert_eq!(report.legacy_log_dirs.len(), 2);
+    assert!(
+        report
+            .legacy_log_dirs
+            .contains(&paths.xdg_data.join("ccu").join("logs"))
+    );
+    assert!(
+        report
+            .legacy_log_dirs
+            .contains(&paths.xdg_data.join("claude-permit").join("logs"))
+    );
+    assert!(
+        report.healthy(),
+        "legacy log dirs must not affect healthy(): {report:?}"
+    );
+}
+
+#[test]
 fn clyde_service_with_clyde_execstart_is_healthy() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());

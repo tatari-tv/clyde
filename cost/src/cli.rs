@@ -1,5 +1,16 @@
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
+use std::sync::LazyLock;
+
+/// Static fallback rendered when `CostCli::command()` is built without the `ccu` shim's dynamic
+/// `~`-relative override (see `src/bin/ccu.rs`). Always renders from [`crate::log_file_path`], so
+/// it can never drift from the log path the logger actually writes (Phase 8, D3).
+static HELP_TEXT: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "Parses Claude Code JSONL session logs to compute cost summaries.\n\nLogs are written to: {}",
+        crate::log_file_path().display()
+    )
+});
 
 /// The cost command surface, nested under `clyde cost ...`. Derives `Args` (not `Parser`) so it
 /// can be a `Subcommand` payload in the clyde umbrella. Tool-unique globals (`--offline`,
@@ -39,7 +50,7 @@ pub struct CostArgs {
     name = "ccu",
     about = "Claude Code cost and usage tracker",
     version = env!("GIT_DESCRIBE"),
-    after_help = "Parses Claude Code JSONL session logs to compute cost summaries.\n\nLogs are written to: ~/.local/share/ccu/logs/ccu.log",
+    after_help = HELP_TEXT.as_str(),
 )]
 pub struct CostCli {
     /// Set log level (trace, debug, info, warn, error)

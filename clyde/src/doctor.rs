@@ -4,7 +4,7 @@
 //! binary name (`klod`/`ccu`/`claude-permit`) or any tool's state still lives only at a legacy
 //! path — so a missed `bootstrap` step fails loud.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use colored::Colorize;
 use eyre::Result;
@@ -63,6 +63,14 @@ pub struct Report {
     /// Any tool state still living at a legacy path (klod data/config dirs, ccu/cr/claude-permit
     /// config, cr/ccu pricing override), by label.
     pub legacy_state: Vec<String>,
+    /// Where each tool's log currently lives, unified under `<xdg-data>/clyde/logs/<tool>.log`
+    /// (Phase 8, D3). Always populated (the target location, whether or not the file has been
+    /// written yet) so `clyde doctor` is a one-stop answer to "where are the logs".
+    pub log_locations: Vec<(&'static str, PathBuf)>,
+    /// Legacy per-tool log dirs still present on disk (`ccu/logs/`, `claude-permit/logs/`,
+    /// `claude-report/logs/`). Purely informational: logs are disposable diagnostics, so this
+    /// does NOT feed [`Report::healthy`] the way `legacy_state` does.
+    pub legacy_log_dirs: Vec<PathBuf>,
 }
 
 impl Report {
@@ -117,6 +125,8 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
         legacy_state.push("klod config dir".to_string());
     }
 
+    let (log_locations, legacy_log_dirs) = log_state(paths);
+
     Ok(Report {
         statusline,
         hook_global,
@@ -128,7 +138,33 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
         events_db_at_legacy,
         events_db_rows,
         legacy_state,
+        log_locations,
+        legacy_log_dirs,
     })
+}
+
+/// Per-tool log locations under the unified `clyde/logs/` dir (Phase 8, D3), plus any legacy
+/// per-tool log dirs still present. Informational only — legacy logs are disposable diagnostics,
+/// not migration state, so callers must NOT fold `legacy_log_dirs` into [`Report::healthy`].
+fn log_state(paths: &Paths) -> (Vec<(&'static str, PathBuf)>, Vec<PathBuf>) {
+    let unified_dir = paths.xdg_data.join("clyde").join("logs");
+    let log_locations = vec![
+        ("clyde", unified_dir.join("clyde.log")),
+        ("cost", unified_dir.join("cost.log")),
+        ("permit", unified_dir.join("permit.log")),
+        ("report", unified_dir.join("report.log")),
+    ];
+
+    let legacy_log_dirs = [
+        paths.xdg_data.join("ccu").join("logs"),
+        paths.xdg_data.join("claude-permit").join("logs"),
+        paths.xdg_data.join("claude-report").join("logs"),
+    ]
+    .into_iter()
+    .filter(|d| d.exists())
+    .collect();
+
+    (log_locations, legacy_log_dirs)
 }
 
 /// A config file that exists ONLY at its legacy path (not yet migrated to clyde) is unhealthy.
@@ -276,6 +312,21 @@ fn print_report(paths: &Paths, report: &Report) {
     }
     for item in &report.legacy_state {
         println!("  {} {}", "legacy state:".red(), item);
+    }
+    println!("  logs:");
+    for (tool, path) in &report.log_locations {
+        println!("    {:<8} {}", tool, path.display());
+    }
+    // Informational only: legacy log dirs are disposable diagnostics, not migration state, so
+    // their presence never flips the healthy() verdict (unlike `legacy_state`).
+    if !report.legacy_log_dirs.is_empty() {
+        println!(
+            "  {}",
+            "legacy log dirs (informational; safe to leave or archive):".yellow()
+        );
+        for dir in &report.legacy_log_dirs {
+            println!("    {}", dir.display());
+        }
     }
     if report.healthy() {
         println!("{}", "✓ all integrations resolve to clyde".green());

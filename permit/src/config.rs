@@ -140,6 +140,7 @@ pub fn xdg_data_dir() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

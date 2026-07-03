@@ -133,6 +133,7 @@ fn parse_settings_file(path: &Path) -> Result<SettingsFile> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

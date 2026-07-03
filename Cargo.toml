@@ -36,3 +36,12 @@ tempfile = "3.27.0"
 thiserror = "2.0.18"
 ureq = "3.3.0"
 which = "8.0.2"
+
+# Panic strategy pinned explicitly (unwind is already the default) so a future `panic = "abort"`
+# cannot silently turn permit's hook-path `catch_unwind` boundary into a process-abort no-op. See
+# docs/design/2026-07-03-deep-dive-remediations.md (Phase 3, hook panic containment).
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"

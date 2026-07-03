@@ -124,13 +124,10 @@ fn title_appears_first_in_session_entry() {
 
     let body = fs::read_to_string(&path).unwrap();
     let session_idx = body.find("\"9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042\":").unwrap();
-    let title_idx = body[session_idx..].find("\"title\":").unwrap();
-    let repo_idx = body[session_idx..].find("\"repo\":").unwrap();
-    assert!(
-        title_idx < repo_idx,
-        "title must appear before repo:\n{}",
-        &body[session_idx..]
-    );
+    let tail = body.get(session_idx..).unwrap();
+    let title_idx = tail.find("\"title\":").unwrap();
+    let repo_idx = tail.find("\"repo\":").unwrap();
+    assert!(title_idx < repo_idx, "title must appear before repo:\n{}", tail);
 }
 
 #[test]

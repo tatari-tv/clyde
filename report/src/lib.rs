@@ -1,4 +1,5 @@
 #![deny(clippy::unwrap_used)]
+#![deny(clippy::string_slice)]
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
@@ -87,15 +88,22 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     Ok(0)
 }
 
-/// File-target logger to `~/.local/share/claude-report/logs/claude-report.log`. Preserved exactly
-/// from the pre-merge `cr` binary so the tool's log destination is unchanged.
-fn setup_logging(level: &str) -> Result<()> {
-    let log_dir = crate::config::xdg_data_dir()
+/// Path to report's log file, unified under `<xdg-data>/clyde/logs/report.log` (Phase 8, D3: log
+/// paths are declared outside the behavior-exact shim surface). `pub` so `ReportCli`'s after-help
+/// (the REQUIRED TOOLS block) renders the same dynamic path the logger actually writes.
+pub fn log_file_path() -> PathBuf {
+    crate::config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-report")
-        .join("logs");
-    std::fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
-    let log_file = log_dir.join("claude-report.log");
+        .join("clyde")
+        .join("logs")
+        .join("report.log")
+}
+
+/// File-target logger to the unified `clyde/logs/report.log` path (Phase 8).
+fn setup_logging(level: &str) -> Result<()> {
+    let log_file = log_file_path();
+    let log_dir = log_file.parent().expect("log file has parent");
+    std::fs::create_dir_all(log_dir).context("Failed to create log directory")?;
     let target = Box::new(
         std::fs::OpenOptions::new()
             .create(true)

@@ -167,7 +167,7 @@ fn truncate(s: &str, max: usize) -> String {
     while !s.is_char_boundary(end) && end > 0 {
         end -= 1;
     }
-    s[..end].to_string()
+    s.get(..end).unwrap_or_default().to_string()
 }
 
 #[derive(Deserialize)]

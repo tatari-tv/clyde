@@ -1,3 +1,6 @@
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::string_slice)]
+
 pub mod cli;
 pub mod cmd;
 pub mod config;
@@ -21,17 +24,25 @@ use crate::db::EventStore;
 use crate::risk::Rules;
 use crate::settings::discover_settings_local;
 
-/// File-target logger to `~/.local/share/claude-permit/logs/claude-permit.log`, preserved exactly
-/// from the pre-merge `claude-permit` binary. Honors `globals.log_level` when clyde passes one
-/// (`clyde --log-level <lvl> permit ...`); when unset (the standalone shim path) it falls back to
-/// `env_logger`'s default (`RUST_LOG`), which is behavior-exact with the old tool.
-fn setup_logging(log_level: Option<&str>) -> Result<()> {
-    let log_dir = crate::config::xdg_data_dir()
+/// Path to permit's log file, unified under `<xdg-data>/clyde/logs/permit.log` (Phase 8, D3: log
+/// paths are declared outside the behavior-exact shim surface). `pub` so `PermitCli`'s after-help
+/// and the `claude-permit` shim render the same dynamic path the logger actually writes.
+pub fn log_file_path() -> PathBuf {
+    crate::config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-permit")
-        .join("logs");
-    fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
-    let log_file = log_dir.join("claude-permit.log");
+        .join("clyde")
+        .join("logs")
+        .join("permit.log")
+}
+
+/// File-target logger to the unified `clyde/logs/permit.log` path (Phase 8). Honors
+/// `globals.log_level` when clyde passes one (`clyde --log-level <lvl> permit ...`); when unset
+/// (the standalone shim path) it falls back to `env_logger`'s default (`RUST_LOG`), which is
+/// behavior-exact with the old tool.
+fn setup_logging(log_level: Option<&str>) -> Result<()> {
+    let log_file = log_file_path();
+    let log_dir = log_file.parent().expect("log file has parent");
+    fs::create_dir_all(log_dir).context("Failed to create log directory")?;
     let target = Box::new(
         fs::OpenOptions::new()
             .create(true)
@@ -60,27 +71,84 @@ fn cwd() -> PathBuf {
 }
 
 /// Behavior-exact entry point for both the `claude-permit` shim and `clyde permit`. Owns the
-/// hook-safe `{}`-on-failure contract: if the `log` command path fails for ANY reason, it prints
-/// `{}` to stdout and returns `Ok(0)` so it never blocks Claude Code's hook pipeline. Returns the
-/// intended exit code; the caller maps it to `process::exit`.
+/// hook-safe `{}`-on-failure contract: if the `log` command path fails for ANY reason - an `Err`
+/// OR a panic - it prints `{}` to stdout and returns `Ok(0)` so it never blocks Claude Code's hook
+/// pipeline. Returns the intended exit code; the caller maps it to `process::exit`.
+///
+/// The `log` path is wrapped in [`contain_log_panics`] so a panic anywhere on it (logging setup,
+/// config load, DB open, or the `Command::Log` arm - all inside `run_inner`) degrades exactly like
+/// an `Err` instead of unwinding past the contract. Non-`log` commands run `run_inner` directly and
+/// propagate their errors and panics unchanged.
 pub fn run(args: PermitArgs, globals: common::Globals) -> Result<i32> {
     let is_log = matches!(args.command, Command::Log);
-    match run_inner(args, globals) {
-        Ok(code) => Ok(code),
-        Err(e) => {
-            if is_log {
-                // Never block the hook pipeline: always emit valid JSON, even on error.
-                println!("{{}}");
-                log::error!("log command failed: {e:?}");
-                Ok(0)
-            } else {
-                Err(e)
-            }
+    if is_log {
+        let mut out = std::io::stdout();
+        Ok(contain_log_panics(&mut out, || run_inner(args, globals)))
+    } else {
+        run_inner(args, globals)
+    }
+}
+
+/// Run the hook `log` path under a panic-containment boundary. The contract on [`run`] promises
+/// `{}` + exit 0 for ANY failure so a broken hook never blocks Claude Code's pipeline. An `Err` is
+/// already degraded this way; a panic would otherwise unwind straight past that handling, so
+/// `catch_unwind` here contains a panic ANYWHERE on the log path (`run_inner`'s logging setup,
+/// `Config::load`, `EventStore::open`, and the `Command::Log` arm all run inside `f`) and degrades
+/// it identically. `out` receives the `{}` marker (process stdout in production, a buffer in tests
+/// so the exact bytes can be asserted).
+///
+/// `AssertUnwindSafe` is sound here: `f` captures `args`/`globals` by move, consumes them exactly
+/// once, and nothing is observed again after an unwind, so no logic-broken state can leak across
+/// the boundary. No global panic-hook swap is done (`panic::set_hook` swap-and-restore races other
+/// threads); the default hook's stderr backtrace is tolerated because Claude Code parses only
+/// stdout. The `panic = "unwind"` pin in the workspace profile keeps this boundary real (a future
+/// `panic = "abort"` would otherwise turn it into a process-abort no-op).
+fn contain_log_panics<F, W>(out: &mut W, f: F) -> i32
+where
+    F: FnOnce() -> Result<i32>,
+    W: std::io::Write,
+{
+    log::debug!("contain_log_panics: entering hook-safe boundary");
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(Ok(code)) => {
+            log::debug!("contain_log_panics: log path returned exit code {code}");
+            code
+        }
+        Ok(Err(e)) => {
+            // Never block the hook pipeline: always emit valid JSON, even on error.
+            let _ = writeln!(out, "{{}}");
+            log::error!("log command failed: {e:?}");
+            0
+        }
+        Err(payload) => {
+            // A panic on the log path degrades to the same observe-nothing `{}` + exit 0 as an Err.
+            let _ = writeln!(out, "{{}}");
+            log::error!("log command panicked: {}", panic_message(payload.as_ref()));
+            0
         }
     }
 }
 
+/// Best-effort human-readable rendering of a caught panic payload for the failure log. `panic!`
+/// payloads are almost always `&'static str` (a literal message) or `String` (a formatted one);
+/// anything else is reported generically. Used only to log context before the hook emits `{}`.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unrecognized panic payload".to_string()
+    }
+}
+
 fn run_inner(args: PermitArgs, globals: common::Globals) -> Result<i32> {
+    // Test-only panic injection at the very top of the log path, BEFORE any setup runs. Proves the
+    // catch_unwind boundary in `run` wraps the ENTIRE path, not just the dispatch arm. No-op in
+    // production builds (the statement is `#[cfg(test)]`-gated away).
+    #[cfg(test)]
+    crate::tests::inject_panic(crate::tests::InjectPoint::Setup);
+
     setup_logging(globals.log_level.as_deref()).context("Failed to setup logging")?;
 
     let config = Config::load(None).unwrap_or_default();
@@ -88,6 +156,11 @@ fn run_inner(args: PermitArgs, globals: common::Globals) -> Result<i32> {
 
     match args.command {
         Command::Log => {
+            // Test-only panic injection inside the dispatch arm, before the DB is opened or stdin
+            // is read. No-op in production builds.
+            #[cfg(test)]
+            crate::tests::inject_panic(crate::tests::InjectPoint::Dispatch);
+
             let db_path = EventStore::default_path()?;
             let store = EventStore::open(&db_path)?;
             let result = cmd::run_log(&store, &rules)?;
@@ -188,3 +261,6 @@ fn run_inner(args: PermitArgs, globals: common::Globals) -> Result<i32> {
 
     Ok(0)
 }
+
+#[cfg(test)]
+mod tests;

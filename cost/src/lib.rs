@@ -1,4 +1,5 @@
 #![deny(clippy::unwrap_used)]
+#![deny(clippy::string_slice)]
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
@@ -73,14 +74,16 @@ fn resolve_current_session<'a>(
     sessions.iter().max_by_key(|s| s.last_active)
 }
 
-/// Path to ccu's log file. `pub` so the `ccu` compat shim can render the same dynamic
-/// `Logs are written to: ...` after-help line the pre-merge binary showed.
+/// Path to cost's log file, unified under `<xdg-data>/clyde/logs/cost.log` (Phase 8, D3: log
+/// paths are declared outside the behavior-exact shim surface). `pub` so the `ccu` compat shim
+/// can render the same dynamic `Logs are written to: ...` after-help line the pre-merge binary
+/// showed, now pointed at the unified location.
 pub fn log_file_path() -> PathBuf {
     config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("ccu")
+        .join("clyde")
         .join("logs")
-        .join("ccu.log")
+        .join("cost.log")
 }
 
 fn resolve_log_filter(cli_level: Option<&str>, config_level: Option<&str>) -> (String, bool) {
@@ -696,7 +699,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                 if let Some(session) = resolve_current_session(&sessions, env_session_id.as_deref()) {
                     println!(
                         "Session {}: ${:.2} ({} entries)",
-                        &session.session_id[..8.min(session.session_id.len())],
+                        output::truncated_session_id(&session.session_id),
                         session.cost,
                         session.entries
                     );
@@ -716,7 +719,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                         let s = &matches[0];
                         println!(
                             "Session {}: ${:.2} ({} entries)",
-                            &s.session_id[..8.min(s.session_id.len())],
+                            output::truncated_session_id(&s.session_id),
                             s.cost,
                             s.entries
                         );
@@ -726,7 +729,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                         for s in matches {
                             println!(
                                 "  {} ${:.2} ({} entries)",
-                                &s.session_id[..8.min(s.session_id.len())],
+                                output::truncated_session_id(&s.session_id),
                                 s.cost,
                                 s.entries
                             );
