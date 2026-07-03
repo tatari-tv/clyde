@@ -19,6 +19,7 @@ pub fn run_clean(store: &EventStore, older_than_days: u32, dry_run: bool) -> Res
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

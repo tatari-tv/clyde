@@ -122,6 +122,7 @@ fn check_binary_in_path() -> CheckResult {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

@@ -84,10 +84,8 @@ pub fn subsumes(broad: &str, narrow: &str) -> bool {
 /// Split "Tool(pattern)" into ("Tool", "pattern"), or None.
 fn split_paren(rule: &str) -> Option<(&str, &str)> {
     let i = rule.find('(')?;
-    if !rule.ends_with(')') {
-        return None;
-    }
-    Some((&rule[..i], &rule[i + 1..rule.len() - 1]))
+    let without_close = rule.strip_suffix(')')?;
+    Some((rule.get(..i)?, without_close.get(i + 1..)?))
 }
 
 // --- Built-in defaults ---
@@ -432,10 +430,7 @@ fn resolve_list(defaults: &[&str], list_config: &ListConfig) -> Vec<String> {
 
 /// Extract the command pattern from a Bash() rule, stripping the trailing :*
 fn extract_bash_pattern(rule: &str) -> Option<&str> {
-    if !rule.starts_with("Bash(") || !rule.ends_with(')') {
-        return None;
-    }
-    let inner = &rule[5..rule.len() - 1];
+    let inner = rule.strip_prefix("Bash(")?.strip_suffix(')')?;
     // Strip trailing :* if present
     Some(inner.strip_suffix(":*").unwrap_or(inner))
 }
@@ -473,13 +468,16 @@ fn glob_match(pattern: &str, text: &str) -> bool {
         if part.is_empty() {
             continue;
         }
+        let Some(remaining) = text.get(pos..) else {
+            return false;
+        };
         if i == 0 {
-            if !text[pos..].starts_with(part) {
+            if !remaining.starts_with(part) {
                 return false;
             }
             pos += part.len();
         } else {
-            match text[pos..].find(part) {
+            match remaining.find(part) {
                 Some(found) => {
                     if found == 0 {
                         return false;
@@ -494,6 +492,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -1,4 +1,5 @@
 #![deny(clippy::unwrap_used)]
+#![deny(clippy::string_slice)]
 #![deny(dead_code)]
 #![deny(unused_variables)]
 

@@ -189,7 +189,7 @@ pub fn format_verbose_sessions(sessions: &[SessionSummary]) -> String {
     for s in sessions {
         out.push_str(&format!(
             "  {}  ${:.2} ({} entries)\n",
-            &s.session_id[..8.min(s.session_id.len())],
+            s.session_id.get(..8).unwrap_or(&s.session_id),
             s.cost,
             s.entries
         ));

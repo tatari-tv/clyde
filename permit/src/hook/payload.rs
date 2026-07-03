@@ -46,6 +46,7 @@ pub fn normalize_tool_input(tool_name: &str, tool_input: &Value) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use serde_json::json;

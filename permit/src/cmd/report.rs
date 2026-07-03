@@ -136,6 +136,7 @@ pub fn run_report(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -1,3 +1,6 @@
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::string_slice)]
+
 pub mod cli;
 pub mod cmd;
 pub mod config;

@@ -354,6 +354,7 @@ fn remove_from_array(arr: &mut Vec<Value>, rule: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

@@ -116,6 +116,7 @@ fn insert_hook(root: &mut Map<String, Value>) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

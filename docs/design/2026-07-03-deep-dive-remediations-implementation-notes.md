@@ -189,3 +189,104 @@ Design doc: `docs/design/2026-07-03-deep-dive-remediations.md`
 
 ### Open questions
 - None.
+
+## Phase 4: lint hardening pass (F2)
+
+### Design decisions
+- Crate-root deny placement matches `session`/`sessions`/`clyde` exactly: `#![deny(...)]` lines as
+  the first lines of the crate root, in the order `clippy::unwrap_used`, `clippy::string_slice`,
+  `dead_code`, `unused_variables` wherever more than one applies.
+  - `permit/src/lib.rs`: had none of the four; added only `#![deny(clippy::unwrap_used)]` and
+    `#![deny(clippy::string_slice)]` (the two this phase specifies for `permit`) - left
+    `dead_code`/`unused_variables` untouched since the phase's bullet list does not ask for them
+    there and adding lints outside the stated scope risks unrelated churn.
+  - `common/src/lib.rs`: already had `dead_code`/`unused_variables`; added
+    `clippy::unwrap_used` + `clippy::string_slice` ahead of them, matching the order above.
+  - `cost/src/lib.rs`, `report/src/lib.rs`, `pricing/src/lib.rs`: each already had
+    `clippy::unwrap_used`; added `clippy::string_slice` immediately after it.
+- Re-swept with `cargo clippy --workspace --all-targets --all-features` after the denies landed
+  (not just `-p permit`) - the doc's known-sites list undercounted by a wide margin once
+  `permit`'s `unwrap_used` deny went from absent to present. The **full set of sites actually
+  fixed**, in the order clippy surfaced them:
+  - **`permit/src/risk/tier.rs`**: `split_paren` (byte-index into `broad`/`narrow` for the tool
+    name and inner-pattern substrings) -> `rule.strip_suffix(')')?.get(i + 1..)?` +
+    `rule.get(..i)?`; `extract_bash_pattern` (`&rule[5..rule.len()-1]` after manual
+    `starts_with("Bash(")`/`ends_with(')')` checks) -> `rule.strip_prefix("Bash(")?.strip_suffix(')')?`,
+    which also subsumes the manual checks; `glob_match`'s two `text[pos..]` sites (loop-local,
+    `pos` accumulated from prior `.find()`/`.len()` results) -> a single `let Some(remaining) =
+    text.get(pos..) else { return false };` computed once per iteration, used by both the `i == 0`
+    and `else` branches.
+  - **`permit/src/cmd/suggest.rs`**: NOT a slice site - `unwrap_used` (not `string_slice`) flagged
+    five `writeln!(out, ...).unwrap()` calls inside `run_suggest`'s plain-text formatter (`out` is
+    a `String`, so the write is infallible in practice but clippy can't prove it). Changed each to
+    `.expect("write to String cannot fail")`, per the rust-conventions carve-out that `.expect()`
+    with a clear reason is acceptable in production and is not itself flagged by
+    `clippy::unwrap_used`.
+  - **14 inline `#[cfg(test)] mod tests { ... }` blocks across `permit`** (`filter.rs`,
+    `cmd/report.rs`, `settings/parser.rs`, `cmd/log.rs`, `risk/tier.rs`, `hook/payload.rs`,
+    `config.rs`, `cmd/clean.rs`, `cmd/audit.rs`, `db/store.rs`, `cmd/check.rs`, `cmd/install.rs`,
+    `cmd/apply.rs`, `cmd/suggest.rs`): none of `permit`'s test modules live in separate
+    `tests.rs` files (pre-existing structure, unchanged by this phase - restructuring test file
+    placement is a separate mechanical pass, not this phase's scope), so the workspace's
+    `#![allow(clippy::unwrap_used)]`-at-top-of-`tests.rs` convention doesn't have a literal landing
+    spot; added `#[allow(clippy::unwrap_used)]` directly above each `mod tests {` instead, which is
+    the equivalent scoping for an inline module. Applied uniformly to all 14 (not just the ones
+    clippy happened to flag first), matching the observed workspace-wide convention that every
+    crate with the deny has the allow on every one of its test modules, not a subset.
+  - **`pricing/src/pricing.rs`**: `strip_date_suffix`'s two slices
+    (`&model_id[pos + 1..]`, `&model_id[..pos]`, `pos` from `.rfind('-')`) ->
+    `model_id.get(pos + 1..).unwrap_or("")` / `model_id.get(..pos).unwrap_or(model_id)`.
+  - **`cost/src/output.rs:192`** (`format_verbose_sessions`) and **`cost/src/lib.rs` (three
+    sites: the `Command::Session { id: "current" }` arm, the single-match arm, and the
+    multiple-matches loop)**: all the same pattern, `&s.session_id[..8.min(s.session_id.len())]`
+    -> `s.session_id.get(..8).unwrap_or(&s.session_id)` (identical truncate-or-keep-whole
+    semantics: `Some` when the id is >= 8 bytes, `None` -> full id otherwise, matching what
+    `8.min(len)` produced).
+  - **`report/src/title.rs:170`** (`truncate`, called from the title pipeline): the function
+    already floors `end` to a char boundary via a `while !s.is_char_boundary(end)` loop before
+    slicing, so the site is boundary-safe today - clippy still flags the terminal `s[..end]`
+    because it can't see that invariant. Changed to `s.get(..end).unwrap_or_default().to_string()`.
+  - **`report/src/report/tests.rs`** (`title_appears_first_in_session_entry`): three
+    `body[session_idx..]` re-slices of the same suffix. Rather than adding a new
+    `#[allow(clippy::string_slice)]` (no such allow exists anywhere in the workspace today to
+    match), computed the suffix once via `body.get(session_idx..).unwrap()` (test code, `.unwrap()`
+    already allowed there) into a `tail` binding and reused it for both `.find()` calls and the
+    assertion message - avoids the lint by construction and reads cleaner than three repeated
+    slices of the same substring.
+- No `#[allow(clippy::string_slice)]` was added anywhere in this phase - every flagged
+  `string_slice` site had a safe `strip_prefix`/`strip_suffix`/`.get()` equivalent, so none needed
+  a blanket exemption (this also means there was no existing in-tree pattern to copy for that
+  specific allow, unlike `unwrap_used`).
+
+### Deviations
+- The design doc's known-sites list (`permit/src/risk/tier.rs` x4, `pricing/src/pricing.rs:116`,
+  `cost/src/output.rs:192`, `cost/src/lib.rs:699`, `report/src/title.rs:170`) covered every
+  `string_slice` site but named none of the `unwrap_used` fallout in `permit` (the five
+  `suggest.rs` `writeln!().unwrap()` calls, plus the need to annotate all 14 inline test modules).
+  This is exactly the "re-sweep at implementation time" the phase called for, not a scope
+  deviation - `permit` had zero crate-root denies before this phase, so its `unwrap_used` surface
+  was necessarily larger than `string_slice` alone. Line numbers in the doc's list had also
+  drifted from Phases 1-3 (e.g. `cost/src/lib.rs:699` is `:700`/`:720`/`:730` post-drift, three
+  sites not one); the re-swept set above is authoritative.
+
+### Tradeoffs
+- `.expect("write to String cannot fail")` vs. threading a `Result` up through `run_suggest`
+  for the `writeln!` sites: `run_suggest` already returns `Result<()>`, so propagating with `?`
+  was possible, but `fmt::Write` for `String` genuinely cannot fail (the underlying allocator
+  failure path aborts, it doesn't return `Err`), and the existing workspace precedent for
+  `writeln!`-to-buffer (`cost/src/scanner.rs`, test-only) also uses `.expect("write")` rather than
+  `?`. `.expect()` with a specific reason keeps the call sites flat and matches that precedent
+  while staying outside `clippy::unwrap_used`'s scope.
+- Inline `#[allow(clippy::unwrap_used)]` per test module vs. migrating `permit`'s inline
+  `mod tests` blocks to the `foo/tests.rs` submodule convention first: the latter is the
+  documented house style and would have let the allow live at the top of a dedicated file like
+  every other crate, but doing that migration as a drive-by inside a lint-only phase would have
+  produced a much larger, harder-to-review diff mixing file-structure churn with the lint-hardening
+  change this phase is scoped to. Left as a candidate for a future dedicated test-file-placement
+  pass.
+
+### Open questions
+- `permit`'s test modules are still inline (`#[cfg(test)] mod tests { ... }` at the bottom of
+  their source files) rather than the workspace's `foo/tests.rs` submodule convention used
+  everywhere else (`session`, `sessions`, `cost`, `report`, `pricing`, `common`). Worth a dedicated
+  mechanical pass to align `permit` with the rest of the workspace; out of scope here.

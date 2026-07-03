@@ -113,9 +113,9 @@ pub(crate) fn normalize_with<'a>(
 
 fn strip_date_suffix(model_id: &str) -> &str {
     if let Some(pos) = model_id.rfind('-') {
-        let suffix = &model_id[pos + 1..];
+        let suffix = model_id.get(pos + 1..).unwrap_or("");
         if suffix.len() == DATE_SUFFIX_LEN && suffix.chars().all(|c| c.is_ascii_digit()) {
-            return &model_id[..pos];
+            return model_id.get(..pos).unwrap_or(model_id);
         }
     }
     model_id
