@@ -17,13 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run bin/update
-        run: bin/update
+      - name: Run pricing/bin/update
+        run: pricing/bin/update
 
       - name: Detect changes
         id: changes
         run: |
-          if git diff --quiet -- data/pricing.json data/pricing-page.sha256; then
+          if git diff --quiet -- pricing/data/pricing.json pricing/data/pricing-page.sha256; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -38,18 +38,19 @@ jobs:
           commit-message: 'data: refresh pricing from Anthropic'
           title: 'data: refresh pricing from Anthropic'
           body: |
-            Automated daily refresh of `data/pricing.json` from
+            Automated daily refresh of `pricing/data/pricing.json` from
             <https://platform.claude.com/docs/en/about-claude/pricing.md>.
 
             Review the diff carefully before merging - the awk parser is
             the only piece of fragility in this pipeline.
 
-            This is a data-only refresh: do **not** bump the crate version or
-            re-pin consumers (`ccu`, `cr`). They pick up the new feed at runtime
-            within 24h. Cut a tag only for library code changes (`src/**`).
+            This is a data-only refresh: do **not** bump the crate version.
+            Merging to `main` deploys the new feed to GitHub Pages (`pages.yml`),
+            and clyde picks it up at runtime within ~24h. Cut a tag only for
+            library code changes (`pricing/src/**`).
           add-paths: |
-            data/pricing.json
-            data/pricing-page.sha256
+            pricing/data/pricing.json
+            pricing/data/pricing-page.sha256
 
       - name: Open issue on failure
         if: failure()

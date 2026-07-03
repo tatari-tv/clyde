@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - data/pricing.json
+      - pricing/data/pricing.json
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -29,7 +29,7 @@ jobs:
       - name: Stage Pages content
         run: |
           mkdir -p _site
-          cp data/pricing.json _site/pricing.json
+          cp pricing/data/pricing.json _site/pricing.json
           touch _site/.nojekyll
 
       - name: Configure Pages
