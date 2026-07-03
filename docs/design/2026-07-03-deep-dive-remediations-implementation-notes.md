@@ -484,3 +484,64 @@ Design doc: `docs/design/2026-07-03-deep-dive-remediations.md`
   log-dir lifecycle after Phase 8 - fold into a future `clyde clean` or leave forever - is
   explicitly called out there and not re-litigated here).
 
+
+## Phase 9: pricing staleness guard (F1)
+
+### Design decisions
+- Added `#[serde(default)] data_version: Option<String>` to `PricingFile` and to `EmbeddedData`,
+  parsed once via the existing `embedded_data()` `OnceLock` cell, and exposed
+  `pub(crate) embedded_data_version() -> Option<&'static str>` -- `pricing/src/pricing.rs` -- so the
+  embedded baseline stops discarding its own timestamp and the guard has an authority to compare
+  against.
+- Guard lives INSIDE `fetch_and_cache`, immediately after the incompatible-feed check and BEFORE
+  `write_cache_atomic` -- `pricing/src/fetch.rs::fetch_and_cache` -- so a stale feed is rejected
+  before it can overwrite a newer cache or land on disk. A stale feed returns `Err(PricingError::Fetch)`
+  (same shape as the incompatible-feed guard), which routes `auto_with_config` through `record_failure`
+  + the unchanged `fallback_chain` (cache -> user override -> embedded). A `warn!` naming both
+  versions and the URL fires at the guard site.
+- Staleness policy in `fetched_feed_is_stale` + `is_canonical_utc` -- `pricing/src/fetch.rs` --
+  strictly-older-than-embedded loses; equal or newer wins; missing or non-canonical-UTC fetched
+  version is treated as stale; a non-canonical or absent EMBEDDED version disables the guard
+  (fail-open to pre-guard behavior). Canonical UTC is RFC-3339 parseable, zero offset, literal `Z`
+  suffix (lexicographic compare is sound only across that fixed-width form; `+00:00` is rejected).
+- Documented the full source-selection state machine (cache-hit / backoff / fetch-fail /
+  fetch-stale / fetch-newer / fallback_chain, and the single cache-write point) in the `fetch.rs`
+  module doc, since the state count outgrew per-function prose.
+
+### Deviations
+- The `data_version` plumbing (the `PricingFile` field, the `EmbeddedData` field, and
+  `embedded_data_version()`) is `#[cfg(feature = "fetch")]`-gated. The design's Data Model note
+  says add the field unconditionally, but only the fetch-gated guard reads it; leaving it
+  ungated makes the field/accessor dead code under `#![deny(dead_code)]` when the crate is built
+  without `fetch` (external consumers `ccu`/`cr`). Same effect where it matters (guard reads the
+  embedded version), correct seam for the lint. `PricingFile` has no `deny_unknown_fields`, so the
+  JSON key is simply ignored in a no-fetch build.
+- Bumped the shared `V1_FEED` fixture in `pricing/src/fetch/tests.rs` from `2026-04-28T00:00:00Z`
+  to `2099-01-01T00:00:00Z`. That fixture predates the guard and its date is now older than the
+  embedded baseline (`2026-06-30T23:29:00Z`), so every existing fetch-success test would otherwise
+  trip the new stale guard and fail. Bumping to a fixed far-future date keeps those tests
+  exercising the "fetch newer wins" path and stable against the daily-advancing embedded baseline.
+  Test bodies/assertions are unchanged; only the fixture constant moved. (The independent
+  `V1_FEED` const in `pricing/src/feed/tests.rs` was left untouched -- those tests exercise
+  `from_bytes` directly, never `fetch_and_cache`, so the guard does not apply.)
+
+### Tradeoffs
+- Rejecting a stale feed as `Err` (entering the failure-backoff window) vs. a softer "reject but
+  keep retrying" path: chose `Err`, matching the existing incompatible-feed guard exactly. During a
+  publish lag this backs off instead of hammering the stale endpoint, and reuses the already-tested
+  `record_failure` + `fallback_chain` machinery rather than inventing a third resolution path.
+- `is_canonical_utc` requires a literal `Z` and rejects `+00:00`: stricter than "is this UTC," but
+  lexicographic ordering (what the guard uses) is only sound across a single canonical textual form.
+  A `+00:00`-suffixed feed is treated as stale rather than mis-compared -- fail toward the reviewed
+  embedded baseline, which is the safe direction per D2.
+
+### Open questions
+- Stale-feed observability in `clyde cost pricing` output (and/or the statusline), plus a debounce
+  so a legitimately-lagging feed does not warn on every statusline tick: the design's Open Questions
+  lean yes on output surfacing but say "decide debounce at implementation." DEFERRED out of this
+  phase. This phase delivers the core guard and a `warn!` naming both versions + the URL; wiring the
+  state into `clyde cost pricing`'s rendered output and choosing a debounce touches the cost/output
+  crate and a new surfaced field, which is beyond the guard's seam. Flagging explicitly rather than
+  silently expanding scope -- recommend a follow-up that reads `Pricing::source()`/`data_version()`
+  at the render site and shows a one-line staleness banner, debounced on the cache's last-attempt
+  timestamp.

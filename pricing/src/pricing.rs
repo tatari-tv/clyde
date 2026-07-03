@@ -41,6 +41,14 @@ pub struct FamilyRule {
 
 #[derive(Deserialize)]
 struct PricingFile {
+    // Only the staleness guard (behind the `fetch` feature) reads the embedded
+    // baseline's own `data_version`; gate the field to that feature so the
+    // struct carries no never-read field when the crate is built without fetch
+    // (external consumers like `ccu`/`cr`). `PricingFile` has no
+    // `deny_unknown_fields`, so the JSON key is simply ignored when absent here.
+    #[cfg(feature = "fetch")]
+    #[serde(default)]
+    data_version: Option<String>,
     #[serde(default)]
     aliases: HashMap<String, String>,
     #[serde(default)]
@@ -52,6 +60,8 @@ struct EmbeddedData {
     pricing: HashMap<String, ModelPricing>,
     aliases: HashMap<String, String>,
     family_rules: Vec<FamilyRule>,
+    #[cfg(feature = "fetch")]
+    data_version: Option<String>,
 }
 
 fn embedded_data() -> &'static EmbeddedData {
@@ -62,8 +72,23 @@ fn embedded_data() -> &'static EmbeddedData {
             pricing: parsed.pricing,
             aliases: parsed.aliases,
             family_rules: parsed.family_rules,
+            #[cfg(feature = "fetch")]
+            data_version: parsed.data_version,
         }
     })
+}
+
+/// The embedded baseline's `data_version` (the ISO-8601 UTC timestamp shipped in
+/// `data/pricing.json`), parsed once alongside the rest of the embedded data.
+///
+/// This is the authority the staleness guard compares a fetched feed against: a
+/// fetched feed older than this loses (see `fetch::fetch_and_cache`). Returns
+/// `None` only if the embedded baseline somehow carries no `data_version`, in
+/// which case the guard disables itself (fail-open) rather than treating every
+/// fetched feed as stale.
+#[cfg(feature = "fetch")]
+pub(crate) fn embedded_data_version() -> Option<&'static str> {
+    embedded_data().data_version.as_deref()
 }
 
 pub fn default_pricing() -> &'static HashMap<String, ModelPricing> {

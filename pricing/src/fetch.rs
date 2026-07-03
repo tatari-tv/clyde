@@ -1,7 +1,42 @@
+//! Feed resolution and on-disk caching for the pricing feed.
+//!
+//! # Source-selection state machine
+//!
+//! `auto_with_config` resolves a `Pricing` from several sources. There is
+//! exactly ONE point that writes the on-disk cache (`write_cache_atomic` inside
+//! `fetch_and_cache`), and every rejection path is arranged so a bad or stale
+//! feed can never reach it.
+//!
+//! ```text
+//!                    ┌─ cache fresh (within TTL) ─────────────► cache-hit:   load_from_cache  (no network)
+//!                    │
+//!  auto_with_config ─┤─ in failure backoff window ────────────► backoff:     fallback_chain   (no network)
+//!                    │
+//!                    └─ else fetch_and_cache ──┬─ HTTP/IO error ──────────────► fetch-fail:  Err → record_failure → fallback_chain
+//!                                              │
+//!                                              ├─ malformed / schema-too-new /
+//!                                              │  library-too-old (from_bytes) ─► fetch-fail:  Err (NOT cached) → fallback_chain
+//!                                              │
+//!                                              ├─ data_version < embedded, or
+//!                                              │  missing / malformed version ──► fetch-stale: Err (NOT cached) → fallback_chain, warn! both versions + URL
+//!                                              │
+//!                                              └─ data_version >= embedded ─────► fetch-newer: write_cache_atomic  ◄── the single cache-write point
+//!
+//!  fallback_chain: existing on-disk cache ─► user override (~/.config/<app>/pricing.json) ─► embedded baseline
+//! ```
+//!
+//! The staleness guard (`fetch-stale`) lives INSIDE `fetch_and_cache`, before
+//! `write_cache_atomic`, precisely so a stale feed is rejected before it can
+//! overwrite a newer cache or land on disk. A check at a higher composition
+//! point (e.g. in `auto_with_config` after the fetch returns) would run *after*
+//! the bytes were already written, poisoning the cache. The user override keeps
+//! its position in `fallback_chain`: an explicit local override is the
+//! operator's documented escape hatch even when embedded is newer.
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use log::{debug, warn};
 
 use crate::error::PricingError;
@@ -167,6 +202,7 @@ fn load_from_cache(path: &Path, url: &str) -> Result<Pricing, PricingError> {
 }
 
 fn fetch_and_cache(cfg: &FetchConfig) -> Result<Pricing, PricingError> {
+    debug!("claude-pricing: fetch_and_cache url={}", cfg.url);
     let agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(CONNECT_TIMEOUT_SECS)))
         .timeout_recv_response(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
@@ -214,6 +250,27 @@ fn fetch_and_cache(cfg: &FetchConfig) -> Result<Pricing, PricingError> {
         });
     }
 
+    // Staleness guard (D2): a reachable, schema-valid feed whose data_version is
+    // older than the embedded baseline (or missing/malformed) must lose to the
+    // newer embedded data. Treat it exactly like an invalid feed - reject before
+    // the cache write so it never overwrites a newer cache nor lands on disk;
+    // resolution then falls through fallback_chain (cache -> override ->
+    // embedded). Placement before write_cache_atomic is load-bearing.
+    let fetched_version = pricing.data_version();
+    let embedded_version = crate::pricing::embedded_data_version();
+    if fetched_feed_is_stale(fetched_version, embedded_version) {
+        warn!(
+            "claude-pricing: fetched feed from {} is stale (data_version={:?}) versus embedded baseline (data_version={:?}); not caching, preferring the newer embedded/cache data",
+            cfg.url, fetched_version, embedded_version
+        );
+        return Err(PricingError::Fetch {
+            url: cfg.url.clone(),
+            message: format!(
+                "fetched data_version {fetched_version:?} is not newer than embedded baseline {embedded_version:?}"
+            ),
+        });
+    }
+
     write_cache_atomic(&cfg.cache_path(), &bytes)?;
     let _ = std::fs::remove_file(cfg.last_attempt_path());
 
@@ -243,6 +300,42 @@ fn write_cache_atomic(target: &Path, bytes: &[u8]) -> Result<(), PricingError> {
         source: e.error,
     })?;
     Ok(())
+}
+
+/// Decide whether a fetched feed is stale relative to the embedded baseline.
+///
+/// Returns `true` (feed loses; embedded/cache should win) when the fetched
+/// `data_version` is strictly older than embedded, or is missing/malformed.
+/// Returns `false` (guard permits the feed) when the fetched version is equal
+/// or newer, OR when the embedded baseline itself carries no comparable version
+/// (the guard disables itself and falls open to pre-guard behavior rather than
+/// treating every fetched feed as stale).
+///
+/// Comparison is lexicographic and is sound only for canonical UTC ISO-8601
+/// timestamps (`YYYY-MM-DDTHH:MM:SSZ`); a non-canonical value on either side is
+/// not comparable (see `is_canonical_utc`), so a non-canonical *fetched* version
+/// is treated as stale and a non-canonical *embedded* version disables the guard.
+fn fetched_feed_is_stale(fetched: Option<&str>, embedded: Option<&str>) -> bool {
+    let Some(embedded) = embedded.filter(|e| is_canonical_utc(e)) else {
+        debug!("claude-pricing: embedded baseline has no comparable data_version; staleness guard disabled");
+        return false;
+    };
+    match fetched {
+        Some(f) if is_canonical_utc(f) => f < embedded,
+        _ => true,
+    }
+}
+
+/// A `data_version` is comparable only when it is a canonical UTC ISO-8601
+/// timestamp: RFC 3339 parseable, zero UTC offset, and written with a literal
+/// `Z` (not `+00:00`). Lexicographic ordering is valid only across this
+/// fixed-width `Z`-suffixed form; anything else (a non-`Z` offset, fractional
+/// seconds, or unparseable text) would compare as garbage and is rejected.
+fn is_canonical_utc(s: &str) -> bool {
+    match DateTime::parse_from_rfc3339(s) {
+        Ok(dt) => dt.offset().local_minus_utc() == 0 && s.ends_with('Z'),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
