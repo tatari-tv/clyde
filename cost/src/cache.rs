@@ -2,15 +2,28 @@ use chrono::NaiveDate;
 use eyre::{Context, Result};
 use log::{info, trace, warn};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::scanner::SessionFile;
 
-const CACHE_VERSION: u64 = 4;
+const CACHE_VERSION: u64 = 5;
+
+/// FNV-1a 64-bit offset basis. Pinned so cache keys are stable across Rust releases, unlike
+/// `DefaultHasher` (SipHash), whose output is not guaranteed stable toolchain-to-toolchain.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// FNV-1a 64-bit prime.
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// FNV-1a over a single byte slice, folding into the running hash state.
+fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CachedDay {
@@ -21,22 +34,24 @@ pub struct CachedDay {
     pub version: u64,
 }
 
-/// Compute a hash of file paths, mtimes, and sizes for cache invalidation
+/// Compute a hash of file paths, mtimes, and sizes for cache invalidation. Uses inline
+/// FNV-1a (not `DefaultHasher`/SipHash) so the hash is stable across Rust toolchain versions,
+/// since the value is persisted to disk in the cache file.
 pub fn compute_mtime_hash(files: &[&SessionFile]) -> u64 {
     trace!("compute_mtime_hash: file_count={}", files.len());
 
-    let mut hasher = DefaultHasher::new();
+    let mut hash = FNV_OFFSET_BASIS;
     for f in files {
-        f.path.to_string_lossy().hash(&mut hasher);
+        hash = fnv1a_update(hash, f.path.to_string_lossy().as_bytes());
         let mtime_secs = f
             .mtime
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        mtime_secs.hash(&mut hasher);
-        f.size.hash(&mut hasher);
+        hash = fnv1a_update(hash, &mtime_secs.to_le_bytes());
+        hash = fnv1a_update(hash, &f.size.to_le_bytes());
     }
-    hasher.finish()
+    hash
 }
 
 /// Get the cache directory (~/.cache/clyde/cost/). Disposable day-cost cache: not migrated by
@@ -130,6 +145,21 @@ mod tests {
     use super::*;
     use crate::scanner::SessionFile;
     use std::time::SystemTime;
+
+    /// Pins `compute_mtime_hash` against a known `(path, mtime, size)` tuple so an
+    /// accidental algorithm change (e.g. reverting to `DefaultHasher`, or swapping the
+    /// FNV-1a constants) is caught even though the other tests here only assert
+    /// determinism/uniqueness, not a specific value.
+    #[test]
+    fn test_compute_mtime_hash_pinned_vector() {
+        let files = [SessionFile {
+            path: PathBuf::from("/tmp/pinned.jsonl"),
+            mtime: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+            size: 4096,
+        }];
+        let refs: Vec<&SessionFile> = files.iter().collect();
+        assert_eq!(compute_mtime_hash(&refs), 0x3b63_b3cb_8480_3ced);
+    }
 
     #[test]
     fn test_compute_mtime_hash_deterministic() {

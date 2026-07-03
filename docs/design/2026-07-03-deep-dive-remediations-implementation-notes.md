@@ -290,3 +290,45 @@ Design doc: `docs/design/2026-07-03-deep-dive-remediations.md`
   their source files) rather than the workspace's `foo/tests.rs` submodule convention used
   everywhere else (`session`, `sessions`, `cost`, `report`, `pricing`, `common`). Worth a dedicated
   mechanical pass to align `permit` with the rest of the workspace; out of scope here.
+
+## Phase 5: cost cache stable hash (F9)
+
+### Design decisions
+- `cost/src/cache.rs::compute_mtime_hash` no longer builds a `std::collections::hash_map::DefaultHasher`
+  (SipHash); it folds `FNV_OFFSET_BASIS` through a small local `fnv1a_update(hash, bytes) -> u64`
+  helper, called once per field (`path` as UTF-8-lossy bytes, `mtime_secs.to_le_bytes()`,
+  `size.to_le_bytes()`) per file, in the same field order the old `Hash` impl visited them - the
+  observable "hash changes with path/mtime/size" behavior each existing property test asserts is
+  unchanged, only the algorithm underneath is.
+- `FNV_OFFSET_BASIS` (`0xcbf2_9ce4_8422_2325`) and `FNV_PRIME` (`0x0000_0100_0000_01b3`) are the
+  two published FNV-1a 64-bit constants, added as crate-local `const`s in `cache.rs` (per the
+  "no magic numbers" convention) rather than imported from a crate, per the design doc's Alternative 5.
+- `CACHE_VERSION` bumped from `4` to `5` in the same file, so every on-disk cache entry written
+  under the old SipHash-based hash misses on the `cached.version != CACHE_VERSION` branch in
+  `load_cached_day` (a clean, deterministic miss) rather than only sometimes colliding on the raw
+  `u64` hash value by chance.
+- Added `test_compute_mtime_hash_pinned_vector` (`cost/src/cache.rs`): fixes one `SessionFile`
+  (`path="/tmp/pinned.jsonl"`, `mtime=UNIX_EPOCH+1_700_000_000s`, `size=4096`) and asserts
+  `compute_mtime_hash` returns the literal `0x3b63_b3cb_8480_3ced`. The expected value was computed
+  independently with a standalone `rustc`-compiled program running the identical
+  offset-basis/prime/byte-order algorithm, not copy-pasted from a single build's output, so the
+  test is a real pin against the documented FNV-1a algorithm rather than a tautological
+  self-check.
+
+### Deviations
+- None. Implemented at the file/function named in the design doc's Data Model note
+  (`cost/src/cache.rs::compute_mtime_hash`), no new dependency, `CACHE_VERSION` bumped exactly as
+  specified.
+
+### Tradeoffs
+- Inline FNV-1a vs. the `fnv` crate: per the design doc's Alternative 5, inline is smaller than the
+  `Cargo.toml`/`Cargo.lock` diff a new dependency would add and is directly testable against a
+  known vector without depending on the crate's own internal layout.
+- `f.path.to_string_lossy().as_bytes()` (lossy UTF-8 bytes) rather than hashing the `PathBuf`'s raw
+  OS bytes (`OsStr`, platform-dependent representation): kept the exact input the old code hashed
+  (`to_string_lossy()` was already the site feeding `Hash`), since changing what bytes go into the
+  hash is a distinct concern from changing the hash algorithm, and the doc's Data Model note scopes
+  this phase to "the same `(path, mtime-secs, size)` tuple stream."
+
+### Open questions
+- None.
