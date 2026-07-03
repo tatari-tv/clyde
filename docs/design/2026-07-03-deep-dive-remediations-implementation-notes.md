@@ -332,3 +332,48 @@ Design doc: `docs/design/2026-07-03-deep-dive-remediations.md`
 
 ### Open questions
 - None.
+
+## Phase 6: report help-text truth (F8)
+
+### Design decisions
+- Verified the actual six placeholders directly against `render_custom`
+  (`report/src/render.rs::render_custom`) before touching any help text, per the phase
+  instructions: `{{host}}`, `{{since}}`, `{{until}}`, `{{session-count}}`, `{{total-tokens}}`,
+  `{{total-spend}}`, in that order, each a plain `.replace(...)` call. This matches the design
+  doc's enumeration exactly - no drift found.
+- `RenderArgs::template`'s doc comment (`report/src/cli.rs`) rewritten to say the rendering is
+  plain `{{token}}` string replacement over exactly those six placeholders, and to state
+  explicitly that no other tokens, loops, or conditionals are supported (removing any implication
+  of a templating engine, not just the "Jinja2/Tera" name).
+- `RenderArgs::pdf_engine`'s doc comment rewritten to: "PDF engine to use when `--pdf` is set
+  (default: `wkhtmltopdf`), passed to pandoc as `--pdf-engine`; `pandoc` is the required binary
+  that must be on `PATH`." This matches the phase's required wording ("passed to pandoc as
+  --pdf-engine; pandoc is the required binary") while keeping the existing default-value and
+  `PATH` details the old text already carried.
+- Added two tests in `report/src/cli/tests.rs` that read the *actual* clap-rendered help text off
+  `ReportCli::command()` (via `clap::CommandFactory`) for the `render` subcommand's `template` and
+  `pdf_engine` arguments, rather than testing the doc-comment string directly: (1) the template
+  help contains all six placeholder literals and does not mention "jinja" or "tera"
+  (case-insensitive); (2) the pdf-engine help mentions both `pandoc` and `--pdf-engine`. The six
+  placeholder literals are declared once as a `TEMPLATE_PLACEHOLDERS` const with a comment pointing
+  back at `render_custom`, so a future change to the actual replacement tokens without a matching
+  help-text update fails this test instead of shipping silently (there is no existing
+  cross-reference mechanism between `render.rs` and `cli.rs`, so this is a manual but explicit
+  tripwire, the closest fit to the repo's existing help-text test style, which was previously
+  limited to `extract_version` unit tests only).
+
+### Deviations
+- None. Implemented exactly the two help-string corrections named in the phase (`--template`,
+  `--pdf-engine`); the REQUIRED TOOLS log-path line (`get_tool_validation_help`,
+  `report/src/cli.rs`) was left untouched as instructed - that rendering-from-the-path-function
+  work is Phase 8's scope.
+
+### Tradeoffs
+- Testing the rendered clap help output vs. testing the raw doc-comment source text: clap derive
+  doc comments aren't exposed as a standalone constant, only via the built `Command`, so asserting
+  against `ReportCli::command()`'s `Arg::get_help()` output is the only way to pin the actual
+  user-visible help string (the thing that can go stale) rather than a string literal duplicated in
+  the test file that could drift from the real `#[arg]` attribute independently.
+
+### Open questions
+- None.

@@ -113,7 +113,10 @@ pub struct RenderArgs {
     #[arg(long)]
     pub pdf: bool,
 
-    /// Path to a Jinja2/Tera template that overrides the built-in Markdown template.
+    /// Path to a template that overrides the built-in Markdown template. Rendering is
+    /// plain `{{token}}` string replacement over exactly six placeholders: `{{host}}`,
+    /// `{{since}}`, `{{until}}`, `{{session-count}}`, `{{total-tokens}}`,
+    /// `{{total-spend}}`. No other tokens, loops, or conditionals are supported.
     #[arg(long)]
     pub template: Option<PathBuf>,
 
@@ -127,8 +130,8 @@ pub struct RenderArgs {
     #[arg(long)]
     pub include_tradeoffs: bool,
 
-    /// PDF converter binary to use when `--pdf` is set (default: `wkhtmltopdf`).
-    /// Must be on `PATH`.
+    /// PDF engine to use when `--pdf` is set (default: `wkhtmltopdf`), passed to pandoc
+    /// as `--pdf-engine`; `pandoc` is the required binary that must be on `PATH`.
     #[arg(long, default_value = "wkhtmltopdf")]
     pub pdf_engine: String,
 }
