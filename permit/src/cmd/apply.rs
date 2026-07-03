@@ -7,6 +7,12 @@ use std::path::Path;
 use crate::cmd::audit::{AuditEntry, audit};
 use crate::risk::{Recommendation, Rules};
 
+/// Dry-run message for the standalone `apply` subcommand, whose write gate is `--yes`
+/// (`audit --apply`'s gate is `--apply` itself and never reaches this branch - it always calls
+/// `apply_entries` with `write: true`). Kept as a named constant so the exact wording is pinned
+/// by a test instead of drifting silently if the CLI's flag name ever changes.
+const DRY_RUN_MESSAGE: &str = "Pass --yes to write these changes.";
+
 /// Which recommendation types to apply.
 pub struct ApplyFilter {
     pub promote: bool,
@@ -79,7 +85,7 @@ pub fn apply_entries(
     print_plan(&summary, write);
 
     if !write {
-        println!("\n{}", "Pass --apply to write these changes.".yellow().bold());
+        println!("\n{}", DRY_RUN_MESSAGE.yellow().bold());
         return Ok(());
     }
 
@@ -94,9 +100,18 @@ pub fn apply_entries(
     let mut local: Value = serde_json::from_str(&local_content).context("Failed to parse settings.local.json")?;
 
     if backup && which::which("rkvr").is_ok() {
-        let mut args = vec![settings_path.to_str().expect("valid path")];
+        let global_path_str = settings_path
+            .to_str()
+            .ok_or_else(|| eyre::eyre!("settings path is not valid UTF-8: {}", settings_path.display()))?;
+        let mut args = vec![global_path_str];
         if settings_local_path.exists() {
-            args.push(settings_local_path.to_str().expect("valid path"));
+            let local_path_str = settings_local_path.to_str().ok_or_else(|| {
+                eyre::eyre!(
+                    "settings.local path is not valid UTF-8: {}",
+                    settings_local_path.display()
+                )
+            })?;
+            args.push(local_path_str);
         }
         let status = std::process::Command::new("rkvr")
             .arg("bkup")
@@ -108,8 +123,8 @@ pub fn apply_entries(
         }
     }
 
-    let global_allow = get_allow_array(&mut global);
-    let local_allow = get_allow_array(&mut local);
+    let global_allow = get_allow_array(&mut global)?;
+    let local_allow = get_allow_array(&mut local)?;
 
     let global_existing: HashSet<String> = global_allow
         .iter()
@@ -285,21 +300,27 @@ fn print_rules(rules: &[String], prefix: &str, max_show: usize) {
     }
 }
 
-fn get_allow_array(value: &mut Value) -> &mut Vec<Value> {
-    value
+/// Returns a mutable handle to `permissions.allow`, creating `permissions` and/or `allow` when
+/// absent. Returns an error (rather than panicking) when the settings document is hand-malformed,
+/// e.g. the root is not an object, `permissions` is not an object, or `permissions.allow` is not
+/// an array.
+fn get_allow_array(value: &mut Value) -> Result<&mut Vec<Value>> {
+    let perms = value
         .as_object_mut()
-        .and_then(|obj| {
-            obj.entry("permissions")
-                .or_insert_with(|| Value::Object(serde_json::Map::new()))
-                .as_object_mut()
-        })
-        .and_then(|perms| {
-            if !perms.contains_key("allow") {
-                perms.insert("allow".to_string(), Value::Array(Vec::new()));
-            }
-            perms.get_mut("allow").and_then(|v| v.as_array_mut())
-        })
-        .expect("permissions.allow should be an array")
+        .ok_or_else(|| eyre::eyre!("settings document is not a JSON object"))?
+        .entry("permissions")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| eyre::eyre!("settings `permissions` is not a JSON object"))?;
+
+    if !perms.contains_key("allow") {
+        perms.insert("allow".to_string(), Value::Array(Vec::new()));
+    }
+
+    perms
+        .get_mut("allow")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| eyre::eyre!("settings `permissions.allow` is not a JSON array"))
 }
 
 fn remove_from_array(arr: &mut Vec<Value>, rule: &str) {
@@ -602,5 +623,65 @@ mod tests {
     #[test]
     fn parse_apply_filter_unknown_errors() {
         assert!(parse_apply_filter(&["foo".to_string()]).is_err());
+    }
+
+    #[test]
+    fn get_allow_array_errors_on_non_array_allow() {
+        let mut value: Value = serde_json::from_str(r#"{"permissions":{"allow":"not-an-array"}}"#).expect("parse");
+        let err = get_allow_array(&mut value).expect_err("non-array allow must error, not panic");
+        assert!(
+            err.to_string().contains("permissions.allow"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn get_allow_array_errors_on_non_object_permissions() {
+        let mut value: Value = serde_json::from_str(r#"{"permissions":"not-an-object"}"#).expect("parse");
+        let err = get_allow_array(&mut value).expect_err("non-object permissions must error, not panic");
+        assert!(
+            err.to_string().contains("permissions"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn apply_entries_errors_on_non_array_allow_settings() {
+        // Drives apply_entries directly (bypassing audit()'s typed Vec<String> parsing, which
+        // would reject this shape earlier) so the fix in get_allow_array is actually exercised:
+        // settings.json is valid JSON but permissions.allow is not an array.
+        use crate::risk::RiskTier;
+
+        let dir = TempDir::new().expect("temp");
+        let (gp, lp) = write_settings(
+            dir.path(),
+            r#"{"permissions":{"allow":"not-an-array"}}"#,
+            r#"{"permissions":{"allow":["Bash(ls:*)"]}}"#,
+        );
+
+        let entries = vec![AuditEntry {
+            rule: "Bash(ls:*)".to_string(),
+            list: "allow".to_string(),
+            source: "local".to_string(),
+            risk: RiskTier::Safe,
+            recommendation: Recommendation::Promote,
+        }];
+
+        // Malformed-but-parseable settings must surface as an error, not panic (F4-panics).
+        let result = apply_entries(&entries, &ApplyFilter::all(), &gp, &lp, false, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dry_run_message_names_yes_flag() {
+        // D1: the standalone `apply` subcommand's write gate is `--yes`, not `--apply`.
+        assert!(
+            DRY_RUN_MESSAGE.contains("--yes"),
+            "dry-run message must name its actual gate, --yes: {DRY_RUN_MESSAGE}"
+        );
+        assert!(
+            !DRY_RUN_MESSAGE.contains("--apply"),
+            "dry-run message must not reference the wrong flag: {DRY_RUN_MESSAGE}"
+        );
     }
 }

@@ -1,6 +1,13 @@
 use eyre::{Context, Result};
+use log::debug;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
+
+/// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
+/// Mirrors `sessions/src/db.rs::BUSY_TIMEOUT_MS`. The hook fires on every tool call and can
+/// race `suggest`/`report`/`clean`; without this a lost write is silent (the `log` command's
+/// failures degrade to printing `{}`).
+const BUSY_TIMEOUT_MS: i64 = 5_000;
 
 /// Manages the SQLite event database.
 pub struct EventStore {
@@ -10,6 +17,7 @@ pub struct EventStore {
 impl EventStore {
     /// Open (or create) the database at the given path, with WAL mode and schema init.
     pub fn open(path: &Path) -> Result<Self> {
+        debug!("EventStore::open: path={}", path.display());
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("Failed to create database directory")?;
         }
@@ -17,6 +25,10 @@ impl EventStore {
         let conn = Connection::open(path).context("Failed to open SQLite database")?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")
             .context("Failed to set WAL mode")?;
+        conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)
+            .context("Failed to set busy_timeout")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .context("Failed to set synchronous mode")?;
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS events (
@@ -35,6 +47,7 @@ impl EventStore {
         )
         .context("Failed to initialize database schema")?;
 
+        debug!("EventStore::open: ready, path={}", path.display());
         Ok(Self { conn })
     }
 
@@ -246,6 +259,25 @@ mod tests {
         let t = TestDb::new();
         assert!(t.store.is_writable());
         assert_eq!(t.store.count_events().expect("count"), 0);
+    }
+
+    #[test]
+    fn open_sets_busy_timeout_and_synchronous() {
+        let t = TestDb::new();
+        let busy_timeout: i64 = t
+            .store
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .expect("query busy_timeout");
+        assert_eq!(busy_timeout, BUSY_TIMEOUT_MS);
+
+        // SQLite reports synchronous as an integer: 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA.
+        let synchronous: i64 = t
+            .store
+            .conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .expect("query synchronous");
+        assert_eq!(synchronous, 1, "expected synchronous=NORMAL");
     }
 
     #[test]
