@@ -377,3 +377,35 @@ Design doc: `docs/design/2026-07-03-deep-dive-remediations.md`
 
 ### Open questions
 - None.
+
+## Phase 7: Read asymmetry comment (F7)
+### Design decisions
+- Added a doc comment directly above `pub fn classify_tool_input` in
+  `permit/src/risk/tier.rs` (found by name; the doc's `tier.rs:~321` line reference had
+  already drifted from Phases 1-6 touching the file) explaining that the Moderate-vs-Safe
+  split with `classify_rule`'s bare-`Read` handling is intentional (D4): a persisted rule
+  grants unbounded future filesystem access (Moderate, per the existing "carte blanche"
+  comment on `classify_rule`), while a single live tool-call event is one read of one
+  already-known path (Safe). The comment also names the one real interaction point:
+  `suggest` builds rule proposals from event classifications, so a suggest-promoted
+  bare-Read rule can be proposed at Safe; `audit` re-classifies persisted rules via
+  `classify_rule` and is the backstop that catches it there.
+- No new tests. This phase is documentation-only; `classify_tool_input` and
+  `classify_rule` logic and every existing test pass unchanged.
+
+### Deviations
+- Line-number pointer in the phase bullet (`tier.rs:~321`) no longer matched the file
+  after Phases 1-6; located the target by function name (`classify_tool_input`) instead,
+  per the doc's own caveat that exact locations drift. Same seam, no behavior change.
+
+### Tradeoffs
+- Comment-only fix (chosen, per D4/Alternative 4) vs. a shared `RuleOrEvent` classifier
+  parameter: a shared classifier would give typed consistency and let `suggest` label
+  proposals by eventual rule tier, but it is churn in permit's most behavior-sensitive
+  module for zero tier reassignment, and the two functions legitimately answer different
+  questions (a persisted grant vs. a single observed event). The comment documents the
+  intent at zero risk; `audit` already covers the one place the two classifiers actually
+  interact.
+
+### Open questions
+- None.

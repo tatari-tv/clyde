@@ -312,6 +312,15 @@ impl Rules {
     }
 
     /// Classify a raw tool invocation (tool_name + tool_input).
+    ///
+    /// Note the intentional asymmetry with `classify_rule` above: a bare `Read` *rule*
+    /// is Moderate there because a persisted rule grants unbounded future filesystem
+    /// access (see the "carte blanche" comment on `classify_rule`), while a live `Read`
+    /// *event* here is Safe because one event is one read of one already-known path.
+    /// The two functions answer different questions on purpose; this is not a bug to
+    /// unify. `suggest` builds rule proposals from event classifications, so a
+    /// suggest-promoted bare-Read rule can still land Safe at proposal time - `audit` is
+    /// the backstop that re-classifies persisted rules and catches it there.
     pub fn classify_tool_input(&self, tool_name: &str, normalized_input: &str) -> RiskTier {
         match tool_name {
             "Bash" => self.classify_bash_command(normalized_input),
