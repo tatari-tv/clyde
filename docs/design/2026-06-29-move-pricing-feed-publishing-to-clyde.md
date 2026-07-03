@@ -90,7 +90,7 @@ its internal `data/` paths already point at `pricing/data/`. Only the workflow s
 Two independent workflows, two distinct trigger surfaces, no collision with clyde's existing CI or
 release:
 
-```
+```text
 clyde/.github/workflows/
   ci.yml            (existing) push to **, runs otto ci in builder-base container
   release.yml       (existing) push v* tag, cross-compiles + publishes GitHub Release
@@ -117,7 +117,12 @@ workflows chain: refresh opens a PR -> human merges -> push-to-main deploys the 
 the default `GITHUB_TOKEN`. A PR (and its branch push) authored by `GITHUB_TOKEN` does **not**
 trigger clyde's `ci.yml` - that workflow triggers on `push` to `**` and `workflow_dispatch`, never
 `pull_request`, and GitHub deliberately suppresses workflow runs on `GITHUB_TOKEN`-authored pushes
-to prevent recursion. This is not a problem here: `main` has **no required status checks**
+to prevent recursion. That suppression is documented GitHub behavior, not an assumption: "When you
+use the repository's `GITHUB_TOKEN` to perform tasks, events triggered by the `GITHUB_TOKEN` [...]
+will not create a new workflow run" (GitHub Actions docs, *Triggering a workflow* ->
+*Triggering a workflow from a workflow*), and `peter-evans/create-pull-request` restates the same
+limitation in its "Triggering further workflow runs" FAQ. This is not a problem here: `main` has
+**no required status checks**
 (`gh api repos/tatari-tv/clyde/branches/main/protection` returns `required_pull_request_reviews`
 with `required_approving_review_count: 1` and `require_code_owner_reviews: true`, but **no**
 `required_status_checks` block, and `enforce_admins: false`). The only merge gate is **one
@@ -260,8 +265,8 @@ feed before the default flips (point a build at the new URL without editing the 
   verbatim. Re-architecting the publish mechanism during a move adds risk for no benefit.
 
 ### Alternative 2: Keep publishing in `claude-pricing`, never move it
-- **Description:** Leave the feed hosted at the standalone repo's Pages indefinitely; clyde keeps
-  pointing at it.
+- **Description:** Leave the feed hosted at the standalone repo's Pages indefinitely; clyde
+  continues to point at it.
 - **Pros:** Zero work.
 - **Cons:** clyde stays permanently dependent on an external repo it intends to retire; the daily
   refresh and the live feed are outside clyde's control.
