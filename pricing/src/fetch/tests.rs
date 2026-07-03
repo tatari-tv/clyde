@@ -620,6 +620,38 @@ fn non_z_offset_version_treated_as_stale() {
 }
 
 #[test]
+fn fractional_seconds_version_treated_as_stale() {
+    // A fractional-seconds timestamp parses as RFC-3339 and ends in Z, but is NOT the fixed-width
+    // canonical form, so lexicographic comparison is unsound (e.g. "...00.500Z" sorts before
+    // "...00Z" because '.' < 'Z'). Even though this version is chronologically far newer than the
+    // 2026 embedded baseline, the non-canonical format alone must make it lose. Without the
+    // round-trip check in is_canonical_utc this feed would be wrongly accepted and cached.
+    let body = feed_with_version(Some("2099-06-01T00:00:00.500Z"));
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(&body)
+        .create();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        &format!("{}/pricing.json", server.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+
+    let p = auto_with_config("test-app", &cfg).unwrap();
+    mock.assert();
+    assert!(matches!(p.source(), crate::feed::Source::Embedded));
+    assert!(
+        !cfg.cache_path().exists(),
+        "fractional-seconds version feed must NOT be cached"
+    );
+}
+
+#[test]
 fn stale_feed_falls_through_to_user_override() {
     // The staleness guard routes rejection through the existing fallback_chain,
     // which keeps the user override ahead of embedded. A stale fetch with no

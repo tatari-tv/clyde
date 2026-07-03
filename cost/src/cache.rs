@@ -43,12 +43,17 @@ pub fn compute_mtime_hash(files: &[&SessionFile]) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
     for f in files {
         hash = fnv1a_update(hash, f.path.to_string_lossy().as_bytes());
-        let mtime_secs = f
+        // Nanosecond precision (not whole seconds): two writes to the same file within one
+        // wall-clock second would otherwise hash identically and the cache could serve stale data.
+        // `size` already changes on the common append-only path, but nanoseconds close the
+        // same-second-same-size window where the filesystem records sub-second mtime. `as_nanos()`
+        // is a fixed-width integer, so the hash stays stable across toolchains.
+        let mtime_nanos = f
             .mtime
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
+            .map(|d| d.as_nanos())
             .unwrap_or(0);
-        hash = fnv1a_update(hash, &mtime_secs.to_le_bytes());
+        hash = fnv1a_update(hash, &mtime_nanos.to_le_bytes());
         hash = fnv1a_update(hash, &f.size.to_le_bytes());
     }
     hash
@@ -158,7 +163,7 @@ mod tests {
             size: 4096,
         }];
         let refs: Vec<&SessionFile> = files.iter().collect();
-        assert_eq!(compute_mtime_hash(&refs), 0x3b63_b3cb_8480_3ced);
+        assert_eq!(compute_mtime_hash(&refs), 0x9207_5a54_a049_57ce);
     }
 
     #[test]

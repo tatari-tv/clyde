@@ -41,31 +41,31 @@ fn overwrite_preserves_existing_file_mode() {
     assert_eq!(mode, 0o755, "exec bit must survive an atomic overwrite");
 }
 
-// Deliberately does NOT mutate a process-global env var (e.g. `TMPDIR`) to prove this property:
-// doing so would make every OTHER concurrently-running test's own `TempDir::new()` (which
-// consults the same system temp dir) flaky, since Rust runs tests in parallel by default.
-// Instead, this makes the target's own parent directory read-only (write+execute stays clear on
-// nothing) and inspects *which stage* of `write_atomic` fails. A correct implementation calls
-// `NamedTempFile::new_in(parent)`, so the temp-file *creation* itself fails inside `parent` and
-// the error names "failed to create temp file in <parent>". An implementation that instead
-// created its temp file in the OS temp dir (which stays writable here) would get past creation
-// and only fail later at `persist`'s rename step, with a different message. Pinning the former
-// message proves the temp file was attempted directly inside the target's own directory.
+// This proves the temp file is created in the target's OWN parent directory, not the OS temp dir.
+//
+// It deliberately does NOT prove the point by making the parent directory read-only: CI runs the
+// test suite as root, and root bypasses directory permission bits (CAP_DAC_OVERRIDE), so a 0o500
+// dir stays writable there and the write would wrongly succeed. It also must NOT mutate a
+// process-global env var (e.g. `TMPDIR`): that would make every OTHER concurrently-running test's
+// own `TempDir::new()` (which consults the same system temp dir) flaky, since Rust runs tests in
+// parallel by default.
+//
+// Instead the target's own parent directory is *missing*. `stat` of the target then reports
+// NotFound (ENOENT), so `write_atomic` proceeds past its existing-file probe, and
+// `NamedTempFile::new_in(parent)` fails with ENOENT because the directory isn't there. The error
+// names "failed to create temp file in <parent>". ENOENT is uid-independent, so this holds under
+// CI's root too. An implementation that instead created its temp file in the OS temp dir (which
+// exists) would get past creation and only fail later at `persist`'s rename step, with a different
+// message. Pinning the former message proves the temp file was attempted directly inside the
+// target's own directory.
 #[cfg(unix)]
 #[test]
 fn temp_file_is_created_in_targets_own_directory_not_system_tmp() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = TempDir::new().unwrap();
-    let target_parent = dir.path().join("only-writable-by-nobody");
-    std::fs::create_dir(&target_parent).unwrap();
-    std::fs::set_permissions(&target_parent, std::fs::Permissions::from_mode(0o500)).unwrap();
-
+    let target_parent = dir.path().join("does-not-exist");
     let target = target_parent.join("settings.json");
-    let err = write_atomic(&target, b"hello").expect_err("a read-only target directory must fail the write");
 
-    // Restore write permission so TempDir can clean up the directory on drop.
-    std::fs::set_permissions(&target_parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let err = write_atomic(&target, b"hello").expect_err("temp-file creation in a missing parent must fail");
 
     let message = err.to_string();
     assert!(
@@ -79,21 +79,19 @@ fn temp_file_is_created_in_targets_own_directory_not_system_tmp() {
     );
 }
 
+// A parent that is a regular file (not a directory) makes `stat` of the target return ENOTDIR,
+// exercising `write_atomic`'s non-NotFound stat-error arm; the whole thing must surface as a typed
+// error, never a panic. Uses this uid-independent failure rather than a read-only directory because
+// CI runs as root and root bypasses read-only directory bits.
 #[cfg(unix)]
 #[test]
-fn readonly_parent_dir_returns_error_not_panic() {
-    use std::os::unix::fs::PermissionsExt;
-
+fn non_directory_parent_returns_error_not_panic() {
     let dir = TempDir::new().unwrap();
-    let sub = dir.path().join("readonly");
-    std::fs::create_dir(&sub).unwrap();
-    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let not_a_dir = dir.path().join("not-a-directory");
+    std::fs::write(&not_a_dir, b"regular file").unwrap();
 
-    let target = sub.join("settings.json");
+    let target = not_a_dir.join("settings.json");
     let result = write_atomic(&target, b"{}");
 
-    // Restore write permission so TempDir can clean up the directory on drop.
-    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
-
-    assert!(result.is_err(), "a read-only parent directory must error, not panic");
+    assert!(result.is_err(), "a non-directory parent must error, not panic");
 }

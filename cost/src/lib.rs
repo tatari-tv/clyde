@@ -699,7 +699,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                 if let Some(session) = resolve_current_session(&sessions, env_session_id.as_deref()) {
                     println!(
                         "Session {}: ${:.2} ({} entries)",
-                        session.session_id.get(..8).unwrap_or(&session.session_id),
+                        output::truncated_session_id(&session.session_id),
                         session.cost,
                         session.entries
                     );
@@ -719,7 +719,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                         let s = &matches[0];
                         println!(
                             "Session {}: ${:.2} ({} entries)",
-                            s.session_id.get(..8).unwrap_or(&s.session_id),
+                            output::truncated_session_id(&s.session_id),
                             s.cost,
                             s.entries
                         );
@@ -729,7 +729,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                         for s in matches {
                             println!(
                                 "  {} ${:.2} ({} entries)",
-                                s.session_id.get(..8).unwrap_or(&s.session_id),
+                                output::truncated_session_id(&s.session_id),
                                 s.cost,
                                 s.entries
                             );

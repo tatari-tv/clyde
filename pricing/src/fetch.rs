@@ -326,14 +326,19 @@ fn fetched_feed_is_stale(fetched: Option<&str>, embedded: Option<&str>) -> bool 
     }
 }
 
-/// A `data_version` is comparable only when it is a canonical UTC ISO-8601
-/// timestamp: RFC 3339 parseable, zero UTC offset, and written with a literal
-/// `Z` (not `+00:00`). Lexicographic ordering is valid only across this
-/// fixed-width `Z`-suffixed form; anything else (a non-`Z` offset, fractional
-/// seconds, or unparseable text) would compare as garbage and is rejected.
+/// A `data_version` is comparable only when it is a canonical whole-second UTC
+/// ISO-8601 timestamp: `YYYY-MM-DDTHH:MM:SSZ`. Lexicographic ordering is valid
+/// only across this exact fixed-width form; anything else (a non-`Z` offset like
+/// `+00:00`, fractional seconds like `...SS.fffZ`, a lowercase `z`, or
+/// unparseable text) would compare as garbage and is rejected.
+///
+/// The check round-trips: a string is canonical iff it is byte-identical to the
+/// canonical rendering of its own parsed value. That single equality rejects
+/// every non-fixed-width variant at once (in particular fractional seconds,
+/// which `DateTime::parse_from_rfc3339` otherwise accepts).
 fn is_canonical_utc(s: &str) -> bool {
     match DateTime::parse_from_rfc3339(s) {
-        Ok(dt) => dt.offset().local_minus_utc() == 0 && s.ends_with('Z'),
+        Ok(dt) => dt.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string() == s,
         Err(_) => false,
     }
 }

@@ -184,12 +184,18 @@ pub fn format_monthly_json(months: &[(String, f64, usize)], avg: Option<(f64, f6
     serde_json::to_string(&json).unwrap_or_default()
 }
 
+/// The first 8 chars of a session id (its short display form), or the whole id when shorter.
+/// `get(..8)` returns `None` rather than panicking on a sub-8-byte or non-char-boundary id.
+pub(crate) fn truncated_session_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
 pub fn format_verbose_sessions(sessions: &[SessionSummary]) -> String {
     let mut out = String::new();
     for s in sessions {
         out.push_str(&format!(
             "  {}  ${:.2} ({} entries)\n",
-            s.session_id.get(..8).unwrap_or(&s.session_id),
+            truncated_session_id(&s.session_id),
             s.cost,
             s.entries
         ));

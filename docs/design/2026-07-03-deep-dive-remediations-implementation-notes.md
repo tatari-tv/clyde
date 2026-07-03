@@ -545,3 +545,45 @@ Design doc: `docs/design/2026-07-03-deep-dive-remediations.md`
   silently expanding scope -- recommend a follow-up that reads `Pricing::source()`/`data_version()`
   at the render site and shows a one-line staleness banner, debounced on the cache's last-attempt
   timestamp.
+
+## Post-review remediation (PR #18: CI failure + CodeRabbit)
+
+Applied after the PR opened, in response to a red `Build and Test` and CodeRabbit's review.
+
+### Design decisions
+- `common/src/atomic/tests.rs` -- the two read-only-directory tests failed in CI because CI runs
+  as root, and root bypasses directory permission bits (CAP_DAC_OVERRIDE), so a `0o500` parent
+  stays writable and the "must error" assertions never fired. Rewrote both to use uid-independent
+  failures: `temp_file_is_created_in_targets_own_directory_not_system_tmp` now uses a *missing*
+  parent (ENOENT at temp-file creation, still proving temp-in-parent placement via the pinned error
+  message), and `readonly_parent_dir_returns_error_not_panic` -> `non_directory_parent_returns_error_not_panic`
+  uses a regular-file parent (ENOTDIR at the stat probe). Both hold under root.
+- `cost/src/tests.rs`, `permit/src/tests.rs` -- guarded the two `*_after_help_renders_from_log_file_path_*`
+  tests with `ENV_LOCK` (named binding + explicit `drop(guard)`, matching the crate's existing
+  env-test convention and the repo `lint-unused` rule that forbids `_guard`). Their after-help comes
+  from a `HELP_TEXT: LazyLock<String>` capturing `log_file_path()` (reads `XDG_DATA_HOME`); without
+  the lock they could race the `XDG_DATA_HOME`-mutating tests and bake a temp path into the process
+  cache. Production keeps the compute-once `LazyLock` (env is set once at startup).
+
+### Deviations
+- `cost/src/cache.rs` -- `compute_mtime_hash` now folds mtime at **nanosecond** precision
+  (`as_nanos()`), not the whole-second `as_secs()` the Phase 5 plan specified ("same tuple stream").
+  CodeRabbit flagged that same-second in-place rewrites could hash identically and serve stale data.
+  `size` already guards the common append-only path, but nanoseconds close the same-second-same-size
+  window; the value stays a fixed-width integer so the hash is still toolchain-stable. Pinned test
+  vector updated to `0x9207_5a54_a049_57ce`.
+- `pricing/src/fetch.rs::is_canonical_utc` -- tightened to reject fractional seconds (and any
+  non-fixed-width variant) via a round-trip equality check, matching what the function's own doc
+  comment already claimed. `DateTime::parse_from_rfc3339` accepts `...SS.fffZ`, which the prior
+  `ends_with('Z')` check let through, making the lexicographic `data_version` compare unsound (a
+  newer fractional timestamp sorts before the whole-second form). Added
+  `fractional_seconds_version_treated_as_stale`.
+
+### Tradeoffs
+- Left the `HELP_TEXT` `LazyLock` in place (test-side `ENV_LOCK` guard) rather than rebuilding the
+  after-help on demand. On-demand would require dropping the derive `after_help` (which needs a
+  `'static str`) and restructuring each shim binary's arg parsing across cost/permit/report; the
+  env race is purely a test artifact, so guarding the tests is the smaller correct fix.
+
+### Open questions
+- None.
