@@ -334,6 +334,7 @@ dependencies = [
  "chrono",
  "dirs",
  "eyre",
+ "log",
  "serde",
  "serde_yaml",
  "tempfile",

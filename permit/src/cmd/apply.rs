@@ -90,7 +90,11 @@ pub fn apply_entries(
     }
 
     let global_content = std::fs::read_to_string(settings_path).context("Failed to read settings.json")?;
-    let local_content = if settings_local_path.exists() {
+    // Track whether the local document was actually loaded (vs. defaulted to `{}` because the
+    // file never existed) so an untouched, defaulted local document is never materialized to
+    // disk below.
+    let local_existed = settings_local_path.exists();
+    let local_content = if local_existed {
         std::fs::read_to_string(settings_local_path).context("Failed to read settings.local.json")?
     } else {
         String::from("{}")
@@ -131,35 +135,53 @@ pub fn apply_entries(
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect();
 
+    // Tracks whether any recommendation actually removed something from `local_allow`, as
+    // opposed to `get_allow_array` merely materializing an empty `permissions.allow` on a
+    // document that never had one - that structural touch alone must not count as a mutation.
+    let mut local_mutated = false;
+
     for rule in &summary.promoted {
         if !global_existing.contains(rule) {
             global_allow.push(Value::String(rule.clone()));
         }
-        remove_from_array(local_allow, rule);
+        local_mutated |= remove_from_array(local_allow, rule);
     }
 
     for rule in &summary.removed {
-        remove_from_array(local_allow, rule);
+        local_mutated |= remove_from_array(local_allow, rule);
     }
 
     for rule in &summary.denied {
         remove_from_array(global_allow, rule);
-        remove_from_array(local_allow, rule);
+        local_mutated |= remove_from_array(local_allow, rule);
     }
 
     for (rule, source) in &summary.duped {
         if source == "global" {
             remove_from_array(global_allow, rule);
         } else {
-            remove_from_array(local_allow, rule);
+            local_mutated |= remove_from_array(local_allow, rule);
         }
     }
 
     let global_out = serde_json::to_string_pretty(&global)?;
     let local_out = serde_json::to_string_pretty(&local)?;
 
-    std::fs::write(settings_path, format!("{global_out}\n")).context("Failed to write settings.json")?;
-    std::fs::write(settings_local_path, format!("{local_out}\n")).context("Failed to write settings.local.json")?;
+    common::write_atomic(settings_path, format!("{global_out}\n").as_bytes())
+        .context("Failed to write settings.json")?;
+
+    // Only write settings.local.json if it already existed, or if this run actually mutated it.
+    // Otherwise a run that only touches global (e.g. denying a rule present solely in global)
+    // would materialize a spurious, empty local override file that never existed before.
+    if local_existed || local_mutated {
+        common::write_atomic(settings_local_path, format!("{local_out}\n").as_bytes())
+            .context("Failed to write settings.local.json")?;
+    } else {
+        log::debug!(
+            "apply_entries: skipping write of untouched, defaulted local settings at {}",
+            settings_local_path.display()
+        );
+    }
 
     println!();
     println!(
@@ -323,8 +345,12 @@ fn get_allow_array(value: &mut Value) -> Result<&mut Vec<Value>> {
         .ok_or_else(|| eyre::eyre!("settings `permissions.allow` is not a JSON array"))
 }
 
-fn remove_from_array(arr: &mut Vec<Value>, rule: &str) {
+/// Removes `rule` from `arr`. Returns whether anything was actually removed, so callers can
+/// distinguish "attempted a removal that found nothing" from "actually mutated this document".
+fn remove_from_array(arr: &mut Vec<Value>, rule: &str) -> bool {
+    let before = arr.len();
     arr.retain(|v| v.as_str() != Some(rule));
+    arr.len() != before
 }
 
 #[cfg(test)]
@@ -563,9 +589,62 @@ mod tests {
         let dir = TempDir::new().expect("temp");
         let gp = dir.path().join("settings.json");
         let lp = dir.path().join("settings.local.json");
-        std::fs::write(&gp, r#"{"permissions":{"allow":["Bash(ls:*)"]}}"#).expect("write");
+        // `Bash(rm -rf:*)` matches the built-in deny list, so this is Denied (actionable) purely
+        // from global - the write path is exercised for real, not the early "no actionable
+        // recommendations" return - while never touching `lp`, which does not exist.
+        std::fs::write(&gp, r#"{"permissions":{"allow":["Bash(rm -rf:*)"]}}"#).expect("write");
 
         run_apply(&gp, &lp, &ApplyFilter::all(), true, false, &Rules::default()).expect("apply");
+
+        assert!(
+            !lp.exists(),
+            "settings.local.json must not be created when it never existed and nothing mutated it"
+        );
+
+        let global: Value = serde_json::from_str(&std::fs::read_to_string(&gp).expect("read")).expect("parse");
+        assert!(
+            global["permissions"]["allow"]
+                .as_array()
+                .expect("array")
+                .iter()
+                .all(|v| v.as_str() != Some("Bash(rm -rf:*)")),
+            "denied rule should have been removed from global allow"
+        );
+    }
+
+    #[test]
+    fn local_file_written_when_it_already_existed() {
+        let dir = TempDir::new().expect("temp");
+        let (gp, lp) = write_settings(
+            dir.path(),
+            r#"{"permissions":{"allow":[]}}"#,
+            r#"{"permissions":{"allow":["Bash(sudo rm:*)"]}}"#,
+        );
+
+        run_apply(
+            &gp,
+            &lp,
+            &ApplyFilter {
+                promote: false,
+                remove: true,
+                deny: false,
+                dupe: false,
+            },
+            true,
+            false,
+            &Rules::default(),
+        )
+        .expect("apply");
+
+        assert!(lp.exists(), "local file existed before the run, so it is rewritten");
+        let local: Value = serde_json::from_str(&std::fs::read_to_string(&lp).expect("read")).expect("parse");
+        assert!(
+            local["permissions"]["allow"]
+                .as_array()
+                .expect("array")
+                .iter()
+                .all(|v| v.as_str() != Some("Bash(sudo rm:*)"))
+        );
     }
 
     #[test]

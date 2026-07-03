@@ -16,8 +16,7 @@ workspace = true
 chrono.workspace = true
 dirs.workspace = true
 eyre.workspace = true
+log.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_yaml.workspace = true
-
-[dev-dependencies]
 tempfile.workspace = true
