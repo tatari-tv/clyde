@@ -22,6 +22,21 @@ pub enum Source {
     Fetched { url: String, fetched_at: DateTime<Utc> },
 }
 
+/// Public read-out of a stale-feed rejection: the published feed's `data_version`
+/// (if any) lost to the embedded baseline. Persisted in the dedicated
+/// `stale_feed.json` sidecar and surfaced via [`Pricing::stale_feed`]. The marker
+/// means "the published feed is known stale until a clean non-stale fetch replaces
+/// that knowledge" - it is NOT "the last fetch attempt failed".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaleFeedInfo {
+    /// The fetched feed's `data_version`, or `None` when the feed carried none.
+    pub fetched: Option<String>,
+    /// The embedded baseline's `data_version` that won.
+    pub embedded: String,
+    /// The feed URL (origin-only when a custom `CLAUDE_PRICING_FEED_URL` is set).
+    pub url: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Pricing {
     schema_version: u32,
@@ -30,6 +45,7 @@ pub struct Pricing {
     family_rules: Vec<FamilyRule>,
     pricing: HashMap<String, ModelPricing>,
     source: Source,
+    stale_feed: Option<StaleFeedInfo>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -64,6 +80,7 @@ impl Pricing {
             family_rules: default_family_rules().to_vec(),
             pricing: default_pricing().clone(),
             source: Source::Embedded,
+            stale_feed: None,
         }
     }
 
@@ -144,6 +161,7 @@ impl Pricing {
             family_rules,
             pricing: feed.pricing,
             source,
+            stale_feed: None,
         })
     }
 
@@ -178,6 +196,21 @@ impl Pricing {
         &self.source
     }
 
+    /// The persisted stale-feed state, if the published feed is currently known
+    /// stale. `Some` means a fetched feed lost to the embedded baseline and no
+    /// clean non-stale fetch has replaced that knowledge yet.
+    pub fn stale_feed(&self) -> Option<&StaleFeedInfo> {
+        self.stale_feed.as_ref()
+    }
+
+    /// Attach (or clear) the stale-feed read-out. Used by the fetch layer to
+    /// hydrate `stale_feed` from the dedicated sidecar on every resolution path.
+    #[cfg(feature = "fetch")]
+    pub(crate) fn with_stale_feed(mut self, info: Option<StaleFeedInfo>) -> Self {
+        self.stale_feed = info;
+        self
+    }
+
     pub fn models(&self) -> impl Iterator<Item = (&String, &ModelPricing)> {
         self.pricing.iter()
     }
@@ -189,10 +222,23 @@ impl Pricing {
 
     #[cfg(feature = "fetch")]
     pub fn refresh(&mut self) -> Result<(), PricingError> {
+        debug!("claude-pricing: Pricing::refresh");
         let cfg = crate::fetch::FetchConfig::from_env();
-        let refreshed = crate::fetch::refresh(&cfg)?;
-        *self = refreshed;
-        Ok(())
+        match crate::fetch::refresh(&cfg) {
+            Ok(refreshed) => {
+                *self = refreshed;
+                Ok(())
+            }
+            // The shared fetch boundary already persisted the dedicated sidecar
+            // and the guard already logged once (D4/D5); surface the stale state
+            // on the current pricing rather than propagating an error, so
+            // `clyde cost pricing` (which refreshes) also shows it.
+            Err(PricingError::StaleFeed { .. }) => {
+                self.stale_feed = crate::fetch::read_stale_marker(&cfg);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 

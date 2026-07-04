@@ -38,9 +38,10 @@ use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 use log::{debug, warn};
+use serde::{Deserialize, Serialize};
 
 use crate::error::PricingError;
-use crate::feed::{DEFAULT_FEED_URL, Pricing, Source};
+use crate::feed::{DEFAULT_FEED_URL, Pricing, Source, StaleFeedInfo};
 
 const DEFAULT_TTL_HOURS: u64 = 24;
 const DEFAULT_FAILURE_BACKOFF_HOURS: u64 = 1;
@@ -51,6 +52,12 @@ const FAILURE_BACKOFF_ENV: &str = "CLAUDE_PRICING_FAILURE_BACKOFF_HOURS";
 const FEED_URL_ENV: &str = "CLAUDE_PRICING_FEED_URL";
 const CACHE_FILENAME: &str = "pricing.json";
 const LAST_ATTEMPT_FILENAME: &str = "pricing.json.last-attempt";
+// Dedicated stale-feed sidecar, SEPARATE from `last_attempt` (which is
+// backoff-timing only). Written on a stale rejection; deleted only on a clean
+// non-stale fetch. Its lifecycle ("the published feed is known stale until
+// replaced") is independent of the failure-backoff lifecycle, so the two must
+// not share a file (D2/F1).
+const STALE_FEED_FILENAME: &str = "stale_feed.json";
 
 #[derive(Debug, Clone)]
 pub(crate) struct FetchConfig {
@@ -83,6 +90,20 @@ impl FetchConfig {
     pub fn last_attempt_path(&self) -> PathBuf {
         self.cache_dir.join(LAST_ATTEMPT_FILENAME)
     }
+
+    pub fn stale_feed_path(&self) -> PathBuf {
+        self.cache_dir.join(STALE_FEED_FILENAME)
+    }
+}
+
+/// On-disk shape of the dedicated stale-feed sidecar. Carries an extra `at`
+/// timestamp (for humans/debugging) beyond the public `StaleFeedInfo` fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StaleMarker {
+    fetched: Option<String>,
+    embedded: String,
+    url: String,
+    at: String,
 }
 
 fn env_hours(name: &str, default_hours: u64) -> u64 {
@@ -98,10 +119,13 @@ pub(crate) fn auto(app_name: &str) -> Result<Pricing, PricingError> {
 }
 
 pub(crate) fn auto_with_config(app_name: &str, cfg: &FetchConfig) -> Result<Pricing, PricingError> {
+    debug!("claude-pricing: auto_with_config app_name={} url={}", app_name, cfg.url);
     let cache = cfg.cache_path();
     if cache_is_fresh(&cache, cfg.ttl) {
         match load_from_cache(&cache, &cfg.url) {
-            Ok(p) => return Ok(p),
+            // Fresh-cache tick: no fetch happened, but a prior stale rejection
+            // must still surface, so hydrate from the sidecar (D2/F2).
+            Ok(p) => return Ok(p.with_stale_feed(read_stale_marker(cfg))),
             Err(e) => warn!(
                 "claude-pricing: cache at {} unusable ({}); refetching",
                 cache.display(),
@@ -112,18 +136,55 @@ pub(crate) fn auto_with_config(app_name: &str, cfg: &FetchConfig) -> Result<Pric
 
     if in_failure_backoff(&cfg.last_attempt_path(), cfg.failure_backoff) {
         debug!("claude-pricing: in failure backoff window; skipping fetch");
-        return fallback_chain(app_name, &cache, &cfg.url);
+        // Backoff short-circuit: no fetch, but hydrate any persisted stale state.
+        return Ok(fallback_chain(app_name, &cache, &cfg.url)?.with_stale_feed(read_stale_marker(cfg)));
     }
 
+    match fetch_with_stale_persist(cfg) {
+        // Clean fetch: `fetch_and_cache` cleared the sidecar (the only clearer),
+        // so `stale_feed` is correctly None on the resolved pricing.
+        Ok(p) => Ok(p),
+        // Stale or transient error: resolve via the fallback chain and hydrate
+        // the stale marker. On a stale rejection the marker was just written; on
+        // a transient error a pre-existing marker is preserved (never cleared).
+        Err(_) => Ok(fallback_chain(app_name, &cache, &cfg.url)?.with_stale_feed(read_stale_marker(cfg))),
+    }
+}
+
+/// Shared `fetch_and_cache`-caller boundary for both `auto_with_config` and
+/// `refresh` (D5). Runs the fetch and reconciles the dedicated stale-feed
+/// sidecar:
+/// - a clean fetch already cleared the sidecar inside `fetch_and_cache` (the
+///   only clearer of it, F1);
+/// - a `StaleFeed` rejection persists the sidecar and SUPPRESSES the generic
+///   fetch-failure `warn!` (the guard already logged exactly once, D4/F5);
+/// - any other fetch error emits the generic `warn!`.
+///
+/// Every error records a failure for backoff timing. The `Result` is returned
+/// unchanged; each caller resolves its own fallback and hydrates `stale_feed`.
+fn fetch_with_stale_persist(cfg: &FetchConfig) -> Result<Pricing, PricingError> {
+    debug!("claude-pricing: fetch_with_stale_persist url={}", cfg.url);
     match fetch_and_cache(cfg) {
         Ok(p) => Ok(p),
+        Err(PricingError::StaleFeed { fetched, embedded, url }) => {
+            write_stale_marker(
+                cfg,
+                &StaleFeedInfo {
+                    fetched: fetched.clone(),
+                    embedded: embedded.clone(),
+                    url: url.clone(),
+                },
+            );
+            record_failure(&cfg.last_attempt_path());
+            Err(PricingError::StaleFeed { fetched, embedded, url })
+        }
         Err(e) => {
             warn!(
                 "claude-pricing: fetch from {} failed ({}); entering backoff",
                 cfg.url, e
             );
             record_failure(&cfg.last_attempt_path());
-            fallback_chain(app_name, &cache, &cfg.url)
+            Err(e)
         }
     }
 }
@@ -138,7 +199,90 @@ fn fallback_chain(app_name: &str, cache: &Path, url: &str) -> Result<Pricing, Pr
 }
 
 pub(crate) fn refresh(cfg: &FetchConfig) -> Result<Pricing, PricingError> {
-    fetch_and_cache(cfg)
+    debug!("claude-pricing: refresh url={}", cfg.url);
+    fetch_with_stale_persist(cfg)
+}
+
+/// Read the dedicated stale-feed sidecar, if present and parseable. A missing
+/// file is `None` (not an error); a malformed file is logged and ignored.
+pub(crate) fn read_stale_marker(cfg: &FetchConfig) -> Option<StaleFeedInfo> {
+    let path = cfg.stale_feed_path();
+    debug!("claude-pricing: read_stale_marker path={}", path.display());
+    let bytes = std::fs::read(&path).ok()?;
+    match serde_json::from_slice::<StaleMarker>(&bytes) {
+        Ok(m) => Some(StaleFeedInfo {
+            fetched: m.fetched,
+            embedded: m.embedded,
+            url: m.url,
+        }),
+        Err(e) => {
+            warn!(
+                "claude-pricing: stale marker at {} unreadable ({}); ignoring",
+                path.display(),
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Persist the dedicated stale-feed sidecar (atomically). Best-effort: a write
+/// failure is logged, never propagated - staleness is observe-only.
+fn write_stale_marker(cfg: &FetchConfig, info: &StaleFeedInfo) {
+    let path = cfg.stale_feed_path();
+    debug!(
+        "claude-pricing: write_stale_marker path={} fetched={:?} embedded={} url={}",
+        path.display(),
+        info.fetched,
+        info.embedded,
+        info.url
+    );
+    let marker = StaleMarker {
+        fetched: info.fetched.clone(),
+        embedded: info.embedded.clone(),
+        url: info.url.clone(),
+        at: Utc::now().to_rfc3339(),
+    };
+    match serde_json::to_vec_pretty(&marker) {
+        Ok(bytes) => {
+            if let Err(e) = write_cache_atomic(&path, &bytes) {
+                warn!("claude-pricing: cannot write stale marker at {}: {}", path.display(), e);
+            }
+        }
+        Err(e) => warn!("claude-pricing: cannot serialize stale marker: {}", e),
+    }
+}
+
+/// Delete the dedicated stale-feed sidecar. Called ONLY on a clean non-stale
+/// fetch - the single event that clears stale state (F1 invariant). A missing
+/// file is not an error.
+fn clear_stale_marker(cfg: &FetchConfig) {
+    let path = cfg.stale_feed_path();
+    debug!("claude-pricing: clear_stale_marker path={}", path.display());
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => warn!("claude-pricing: cannot clear stale marker at {}: {}", path.display(), e),
+    }
+}
+
+/// The feed URL to persist/surface. For the default feed the full URL is kept;
+/// for a custom `CLAUDE_PRICING_FEED_URL` only the origin (scheme+authority) is
+/// persisted so a private path/query is never written to disk (D7).
+fn feed_url_for_display(url: &str) -> String {
+    if url == DEFAULT_FEED_URL { url.to_string() } else { origin_only(url) }
+}
+
+/// Reduce a URL to scheme+authority, dropping path/query/fragment. Pure string
+/// splitting (no byte slicing) so a multibyte URL can never panic.
+fn origin_only(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let authority = rest.split('/').next().unwrap_or(rest);
+            format!("{scheme}://{authority}")
+        }
+        None => url.split('/').next().unwrap_or(url).to_string(),
+    }
 }
 
 fn cache_is_fresh(path: &Path, ttl: Duration) -> bool {
@@ -259,20 +403,24 @@ fn fetch_and_cache(cfg: &FetchConfig) -> Result<Pricing, PricingError> {
     let fetched_version = pricing.data_version();
     let embedded_version = crate::pricing::embedded_data_version();
     if fetched_feed_is_stale(fetched_version, embedded_version) {
+        // The guard logs the staleness exactly once here; the shared caller
+        // boundary suppresses the generic fetch-failure warn for this variant so
+        // a stale fetch never double-warns (D4/F5).
         warn!(
             "claude-pricing: fetched feed from {} is stale (data_version={:?}) versus embedded baseline (data_version={:?}); not caching, preferring the newer embedded/cache data",
             cfg.url, fetched_version, embedded_version
         );
-        return Err(PricingError::Fetch {
-            url: cfg.url.clone(),
-            message: format!(
-                "fetched data_version {fetched_version:?} is not newer than embedded baseline {embedded_version:?}"
-            ),
+        return Err(PricingError::StaleFeed {
+            fetched: fetched_version.map(str::to_string),
+            embedded: embedded_version.map(str::to_string).unwrap_or_default(),
+            url: feed_url_for_display(&cfg.url),
         });
     }
 
     write_cache_atomic(&cfg.cache_path(), &bytes)?;
     let _ = std::fs::remove_file(cfg.last_attempt_path());
+    // A clean, non-stale fetch is the ONLY event that clears stale state (F1).
+    clear_stale_marker(cfg);
 
     Ok(pricing)
 }
