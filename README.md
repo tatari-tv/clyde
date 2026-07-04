@@ -22,7 +22,7 @@ pricing/    was claude-pricing     — pricing data, JSONL parsing, cost math (l
 
 ## Command surface
 
-```
+```text
 clyde session  <search|ls|resume|tag|reindex|stage|enrich|doctor|serve>   # catalog + MCP server
 clyde report   <collect|render|merge>                                    # was `cr`
 clyde cost     <today|yesterday|daily|weekly|monthly|session|statusline|pricing>   # was `ccu`
@@ -51,7 +51,7 @@ informationally if present. Every `--help` renders the live path, never a hardco
 
 ## Install
 
-```
+```bash
 ./install.sh        # installs the clyde binary
 clyde bootstrap     # migrate config/data under one clyde home; repoint statusline/hook/timer
 clyde doctor        # verify every integration now resolves to clyde
