@@ -1,15 +1,63 @@
 #![allow(clippy::unwrap_used)]
 
-use std::sync::Mutex;
+use std::cell::RefCell;
+use std::sync::{Mutex, Once};
 use std::time::Duration;
 
 use super::*;
 
-// Serialize the one env-var-touching test (XDG_CONFIG_HOME) so it cannot race
-// its own set/restore. Other fetch tests only ever read the env indirectly and
-// never plant a "test-app" override, so their embedded-fallback assertions hold
-// regardless of this test's transient window.
+// Serialize every env-var-touching test (XDG_CONFIG_HOME, XDG_CACHE_HOME) so they cannot race
+// their own set/restore or each other. Other fetch tests only ever read the env indirectly and
+// never plant a "test-app" override, so their embedded-fallback assertions hold regardless of
+// these tests' transient windows.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+// A capturing logger for the single-warn assertion (AC4/F5). The global logger
+// is installed once, but capture is THREAD-LOCAL: each test runs on its own
+// thread and all of our WARNs fire synchronously on that thread, so a capturing
+// test sees exactly its own warns with zero cross-contamination from parallel
+// tests (port reuse across tests defeats any URL-based filter on a shared buffer).
+static LOG_INIT: Once = Once::new();
+
+thread_local! {
+    static TL_WARNS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+struct CapturingLogger;
+
+impl log::Log for CapturingLogger {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        if record.level() == log::Level::Warn {
+            TL_WARNS.with(|w| {
+                if let Some(buf) = w.borrow_mut().as_mut() {
+                    buf.push(record.args().to_string());
+                }
+            });
+        }
+    }
+    fn flush(&self) {}
+}
+
+fn install_capturing_logger() {
+    LOG_INIT.call_once(|| {
+        // Another logger being already set is fine; capture is opt-in per thread.
+        let _ = log::set_boxed_logger(Box::new(CapturingLogger));
+        log::set_max_level(log::LevelFilter::Trace);
+    });
+}
+
+/// Run `f` with WARN capture enabled on the current thread and return its output
+/// alongside the warns it emitted.
+fn capture_warns<T>(f: impl FnOnce() -> T) -> (T, Vec<String>) {
+    install_capturing_logger();
+    TL_WARNS.with(|w| *w.borrow_mut() = Some(Vec::new()));
+    let out = f();
+    let warns = TL_WARNS.with(|w| w.borrow_mut().take().unwrap_or_default());
+    (out, warns)
+}
 
 // V1_FEED carries a data_version far newer than the embedded baseline so that
 // every fetch-success test exercises the "fetch newer wins" path: the Phase 9
@@ -707,4 +755,340 @@ fn stale_feed_falls_through_to_user_override() {
         !cfg.cache_path().exists(),
         "stale feed must NOT be cached even when an override exists"
     );
+}
+
+// ---- Phase 1: stale-feed persistence + accessor (dedicated sidecar) ----
+
+#[test]
+fn stale_fetch_writes_sidecar_and_surfaces_info() {
+    // A stale rejection persists the dedicated sidecar and surfaces stale_feed().
+    let body = feed_with_version(Some("2000-01-01T00:00:00Z"));
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(&body)
+        .create();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        &format!("{}/pricing.json", server.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+
+    let p = auto_with_config("test-app", &cfg).unwrap();
+    mock.assert();
+    assert!(matches!(p.source(), crate::feed::Source::Embedded));
+    assert!(
+        cfg.stale_feed_path().exists(),
+        "stale rejection writes the dedicated sidecar"
+    );
+    let info = p.stale_feed().expect("stale_feed surfaced");
+    assert_eq!(info.fetched.as_deref(), Some("2000-01-01T00:00:00Z"));
+    assert!(!info.embedded.is_empty(), "embedded baseline version recorded");
+    // D7: a custom (mockito) URL is persisted origin-only, never the full path.
+    assert!(
+        !info.url.contains("/pricing.json"),
+        "custom feed URL persisted origin-only (D7): {}",
+        info.url
+    );
+}
+
+#[test]
+fn stale_then_fresh_cache_hit_still_reports_stale() {
+    // AC1/F2: after a stale rejection, a later tick that hits the FRESH CACHE
+    // (no fetch) must still surface the persisted stale marker.
+    let body = feed_with_version(Some("2000-01-01T00:00:00Z"));
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(&body)
+        .expect(1)
+        .create();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        &format!("{}/pricing.json", server.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+
+    // Step 1: stale fetch writes the sidecar; resolution falls back to embedded.
+    let p1 = auto_with_config("test-app", &cfg).unwrap();
+    assert!(matches!(p1.source(), crate::feed::Source::Embedded));
+    assert!(p1.stale_feed().is_some());
+    assert!(cfg.stale_feed_path().exists());
+
+    // Step 2: a fresh valid cache now exists; the next tick serves it WITHOUT a
+    // fetch and must still surface the sidecar-persisted stale state.
+    std::fs::write(cfg.cache_path(), V1_FEED).unwrap();
+    let p2 = auto_with_config("test-app", &cfg).unwrap();
+    mock.assert(); // still exactly one fetch total
+    assert!(
+        matches!(p2.source(), crate::feed::Source::Fetched { .. }),
+        "served the fresh cache without fetching"
+    );
+    assert!(
+        p2.stale_feed().is_some(),
+        "fresh-cache tick still reports stale (hydrated from sidecar)"
+    );
+}
+
+#[test]
+fn transient_error_after_stale_preserves_marker() {
+    // AC2/F1: a stale rejection followed by a transient fetch error must NOT
+    // clear the marker (only a clean fetch clears it).
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Step 1: stale-200 from server A writes the sidecar.
+    let stale = feed_with_version(Some("2000-01-01T00:00:00Z"));
+    let mut server_a = mockito::Server::new();
+    let mock_a = server_a
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(&stale)
+        .create();
+    let cfg_a = test_config(
+        &format!("{}/pricing.json", server_a.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+    let p1 = auto_with_config("test-app", &cfg_a).unwrap();
+    mock_a.assert();
+    assert!(cfg_a.stale_feed_path().exists());
+    assert!(p1.stale_feed().is_some());
+
+    // Step 2: a transient 500 from server B. Tiny backoff (with a sleep) lets the
+    // fetch actually run; the same cache_dir keeps the shared sidecar.
+    let mut server_b = mockito::Server::new();
+    let mock_b = server_b.mock("GET", "/pricing.json").with_status(500).create();
+    let cfg_b = test_config(
+        &format!("{}/pricing.json", server_b.url()),
+        dir.path(),
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    let p2 = auto_with_config("test-app", &cfg_b).unwrap();
+    mock_b.assert();
+    assert!(
+        cfg_b.stale_feed_path().exists(),
+        "a transient fetch error must NOT clear the stale marker (F1)"
+    );
+    assert!(
+        p2.stale_feed().is_some(),
+        "stale state still surfaced after a transient error"
+    );
+}
+
+#[test]
+fn clean_fetch_after_stale_clears_marker() {
+    // AC3: a stale rejection followed by a newer/equal-version 200 clears the
+    // sidecar and stale_feed() returns None.
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Step 1: stale-200 from server A writes the sidecar.
+    let stale = feed_with_version(Some("2000-01-01T00:00:00Z"));
+    let mut server_a = mockito::Server::new();
+    let mock_a = server_a
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(&stale)
+        .create();
+    let cfg_a = test_config(
+        &format!("{}/pricing.json", server_a.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+    let _ = auto_with_config("test-app", &cfg_a).unwrap();
+    assert!(cfg_a.stale_feed_path().exists());
+
+    // Step 2: a newer-200 from server B is a clean fetch: it clears the sidecar.
+    let newer = feed_with_version(Some("2099-06-01T00:00:00Z"));
+    let mut server_b = mockito::Server::new();
+    let mock_b = server_b
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(&newer)
+        .create();
+    let cfg_b = test_config(
+        &format!("{}/pricing.json", server_b.url()),
+        dir.path(),
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    let p2 = auto_with_config("test-app", &cfg_b).unwrap();
+    mock_b.assert();
+    assert!(matches!(p2.source(), crate::feed::Source::Fetched { .. }));
+    assert!(
+        !cfg_b.stale_feed_path().exists(),
+        "a clean fetch is the only event that clears the sidecar (AC3)"
+    );
+    assert!(p2.stale_feed().is_none(), "stale_feed cleared by the clean fetch");
+    let _ = mock_a;
+}
+
+#[test]
+fn single_stale_fetch_emits_exactly_one_warn() {
+    // AC4/F5: one stale rejection logs exactly one WARN (the guard), never two.
+    // The generic fetch-failure warn is suppressed for the StaleFeed variant.
+    let body = feed_with_version(Some("2000-01-01T00:00:00Z"));
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(&body)
+        .create();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        &format!("{}/pricing.json", server.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+
+    let (p, warns) = capture_warns(|| auto_with_config("test-app", &cfg).unwrap());
+    mock.assert();
+    assert!(p.stale_feed().is_some());
+    assert_eq!(
+        warns.len(),
+        1,
+        "a stale fetch must warn exactly once (the guard); got: {warns:?}"
+    );
+}
+
+#[test]
+fn legacy_last_attempt_suppresses_fetch_and_yields_no_stale() {
+    // AC5/F4: an empty/legacy last_attempt still suppresses a fetch within the
+    // backoff window and yields no stale info (last_attempt is backoff-only).
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(V1_FEED)
+        .expect(0)
+        .create();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        &format!("{}/pricing.json", server.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+    std::fs::create_dir_all(&cfg.cache_dir).unwrap();
+    std::fs::write(cfg.last_attempt_path(), b"").unwrap();
+
+    let p = auto_with_config("test-app", &cfg).unwrap();
+    mock.assert();
+    assert!(matches!(p.source(), crate::feed::Source::Embedded));
+    assert!(
+        p.stale_feed().is_none(),
+        "empty last_attempt is backoff-only; it must never hydrate stale info (F4)"
+    );
+    assert!(
+        !cfg.stale_feed_path().exists(),
+        "no stale sidecar is created by a backoff short-circuit"
+    );
+}
+
+#[test]
+fn refresh_persists_sidecar_on_stale_and_returns_stale_error() {
+    // D5: the shared fetch boundary is used by refresh too. A stale fetch through
+    // `refresh` persists the dedicated sidecar and returns the StaleFeed variant.
+    let body = feed_with_version(Some("2000-01-01T00:00:00Z"));
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/pricing.json")
+        .with_status(200)
+        .with_body(&body)
+        .create();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        &format!("{}/pricing.json", server.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+
+    let result = refresh(&cfg);
+    mock.assert();
+    assert!(
+        matches!(result, Err(PricingError::StaleFeed { .. })),
+        "refresh surfaces the typed StaleFeed error"
+    );
+    assert!(
+        cfg.stale_feed_path().exists(),
+        "refresh persists the sidecar via the shared boundary"
+    );
+    let marker = read_stale_marker(&cfg).expect("sidecar readable");
+    assert_eq!(marker.fetched.as_deref(), Some("2000-01-01T00:00:00Z"));
+}
+
+// ---- Phase 2: public `stale_marker()` wrapper for the offline/`cost` path ----
+
+#[test]
+fn stale_marker_wrapper_is_none_when_no_sidecar() {
+    // AC6 offline surfacing depends on this returning None cleanly (not erroring)
+    // when nothing has ever been written, e.g. a brand-new XDG_CACHE_HOME.
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior = std::env::var("XDG_CACHE_HOME").ok();
+    let dir = tempfile::TempDir::new().unwrap();
+    // SAFETY: serialized behind ENV_LOCK; restored before the lock is dropped.
+    unsafe { std::env::set_var("XDG_CACHE_HOME", dir.path()) };
+
+    let result = stale_marker();
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("XDG_CACHE_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+    }
+    drop(guard);
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn stale_marker_wrapper_reads_the_exact_path_a_shell_script_would_build() {
+    // Risk row (design doc): "Statusline shell path drifts from the Rust sidecar path." This
+    // test writes the sidecar to the literal path a bash segment computes
+    // (`${XDG_CACHE_HOME:-$HOME/.cache}/clyde/pricing/stale_feed.json`) using plain std::fs, NOT
+    // via write_stale_marker/FetchConfig, and asserts the public wrapper reads it back. That
+    // proves the two paths are the same path, not just "both call the same Rust helper."
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior = std::env::var("XDG_CACHE_HOME").ok();
+    let dir = tempfile::TempDir::new().unwrap();
+    // SAFETY: serialized behind ENV_LOCK; restored before the lock is dropped.
+    unsafe { std::env::set_var("XDG_CACHE_HOME", dir.path()) };
+
+    // The exact path a statusline segment script builds by hand.
+    let shell_path = dir.path().join("clyde").join("pricing").join("stale_feed.json");
+    std::fs::create_dir_all(shell_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &shell_path,
+        r#"{"fetched":"2000-01-01T00:00:00Z","embedded":"2026-01-01T00:00:00Z","url":"https://example.com","at":"2026-01-01T00:00:00Z"}"#,
+    )
+    .unwrap();
+
+    let result = stale_marker();
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("XDG_CACHE_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+    }
+    drop(guard);
+
+    let info = result.expect("wrapper reads the sidecar the shell script would find");
+    assert_eq!(info.fetched.as_deref(), Some("2000-01-01T00:00:00Z"));
+    assert_eq!(info.embedded, "2026-01-01T00:00:00Z");
+    assert_eq!(info.url, "https://example.com");
 }

@@ -10,7 +10,10 @@ static STATUSLINE_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/statusline.d");
 
 const DEFAULT_NAME: &str = "scottidler";
 
-fn find_entry(name: &str) -> Result<&'static str> {
+/// `pub(crate)` (not private) so the crate-level tests can assert on the shipped segment
+/// scripts' content directly (e.g. the stale-feed sidecar path they define, AC7) without
+/// duplicating the embedded-file lookup.
+pub(crate) fn find_entry(name: &str) -> Result<&'static str> {
     STATUSLINE_DIR
         .get_file(name)
         .and_then(|f| f.contents_utf8())
