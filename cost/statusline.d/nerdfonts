@@ -137,6 +137,16 @@ TODAY_COST=$(_timeout 5 clyde cost today --total 2>/dev/null || echo "0")
 WEEK_COST=$(_timeout 5 clyde cost weekly --total -w 1 2>/dev/null || echo "0")
 MONTH_COST=$(_timeout 5 clyde cost monthly --total -m 1 2>/dev/null || echo "0")
 
+# --- Stale pricing-feed marker (D3/AC7) ---
+# Mirrors FetchConfig::stale_feed_path() in pricing/src/fetch.rs
+# (dirs::cache_dir().join("clyde").join("pricing").join("stale_feed.json")): on Linux
+# dirs::cache_dir() honors $XDG_CACHE_HOME, falling back to $HOME/.cache. Presence alone gates
+# the glyph below; the numeric --total values fetched above are never touched.
+STALE_FEED_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/clyde/pricing/stale_feed.json"
+IC_WARN=$'\uf071'   # fa-exclamation-triangle (stale pricing feed)
+STALE_GLYPH=""
+[[ -f "$STALE_FEED_PATH" ]] && STALE_GLYPH="${IC_WARN} "
+
 # --- Format duration ---
 DS=$((DURATION_MS/1000)); DM=$((DS/60)); DH=$((DM/60)); DM=$((DM%60))
 [[ $DH -gt 0 ]] && DUR="${DH}h${DM}m" || DUR="${DM}m"
@@ -243,7 +253,7 @@ seg "${IC_CPU} ${MODEL}(${CTX_WIN}) " "$L2_B" "$L2_B_FG"
 seg "${IC_BAR} ${CTX} " "$L2_A" "$L2_A_FG"
 seg "${IC_DOWN}${TOK_IN_FMT} ${IC_UP}${TOK_OUT_FMT} " "$L2_B" "$L2_B_FG"
 seg "${IC_BOLT}${TOK_HR_FMT} " "$L2_A" "$L2_A_FG"
-seg "${IC_DOLLAR}${M_COST}$(fgr_split $L2_B_FG)|$(fgr_split $L2_B_FG)${IC_DOLLAR}${W_COST}$(fgr_split $L2_B_FG)|$(fgr_split $L2_B_FG)${IC_DOLLAR}${T_COST}$(fgr_split $L2_B_FG)|$(fgr_split $L2_B_FG)${IC_DOLLAR}${S_COST} " "$L2_B" "$L2_B_FG"
+seg "${STALE_GLYPH}${IC_DOLLAR}${M_COST}$(fgr_split $L2_B_FG)|$(fgr_split $L2_B_FG)${IC_DOLLAR}${W_COST}$(fgr_split $L2_B_FG)|$(fgr_split $L2_B_FG)${IC_DOLLAR}${T_COST}$(fgr_split $L2_B_FG)|$(fgr_split $L2_B_FG)${IC_DOLLAR}${S_COST} " "$L2_B" "$L2_B_FG"
 seg "${IC_CLOCK} ${DUR} " "$L2_A" "$L2_A_FG"
 end_seg
 

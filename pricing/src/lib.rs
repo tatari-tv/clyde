@@ -12,5 +12,7 @@ pub mod pricing;
 
 pub use error::PricingError;
 pub use feed::{CURRENT_SCHEMA_VERSION, DEFAULT_FEED_URL, Pricing, Source, StaleFeedInfo};
+#[cfg(feature = "fetch")]
+pub use fetch::stale_marker;
 pub use parse::{AssistantEntry, ParseResult, TokenUsage, parse_jsonl_file};
 pub use pricing::{ModelPricing, calculate_cost, calculate_usd, default_pricing, normalize_model_id};

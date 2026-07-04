@@ -226,6 +226,21 @@ pub(crate) fn read_stale_marker(cfg: &FetchConfig) -> Option<StaleFeedInfo> {
     }
 }
 
+/// Thin public wrapper over [`read_stale_marker`] for consumers that resolve pricing themselves
+/// (e.g. `cost`'s `--offline` path, which calls [`Pricing::with_user_override`] and therefore never
+/// touches `auto_with_config`'s hydration). Builds the same [`FetchConfig`] that `auto`/`refresh` use,
+/// so the sidecar path can never drift between the writer and this reader (Risk row: "statusline
+/// shell path drifts from the Rust sidecar path" applies equally to any Rust-side reader).
+///
+/// The design doc's API section names this `read_stale_marker(app_name)`; the sidecar path is a
+/// property of [`FetchConfig`]'s cache dir, not of an app name (Phase 1 noted this same seam
+/// correction for the private `read_stale_marker`), so this wrapper takes no `app_name` either.
+pub fn stale_marker() -> Option<StaleFeedInfo> {
+    debug!("claude-pricing: stale_marker (public wrapper)");
+    let cfg = FetchConfig::from_env();
+    read_stale_marker(&cfg)
+}
+
 /// Persist the dedicated stale-feed sidecar (atomically). Best-effort: a write
 /// failure is logged, never propagated - staleness is observe-only.
 fn write_stale_marker(cfg: &FetchConfig, info: &StaleFeedInfo) {

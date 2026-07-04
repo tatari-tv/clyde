@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use super::*;
 
-// Serialize the one env-var-touching test (XDG_CONFIG_HOME) so it cannot race
-// its own set/restore. Other fetch tests only ever read the env indirectly and
-// never plant a "test-app" override, so their embedded-fallback assertions hold
-// regardless of this test's transient window.
+// Serialize every env-var-touching test (XDG_CONFIG_HOME, XDG_CACHE_HOME) so they cannot race
+// their own set/restore or each other. Other fetch tests only ever read the env indirectly and
+// never plant a "test-app" override, so their embedded-fallback assertions hold regardless of
+// these tests' transient windows.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 // A capturing logger for the single-warn assertion (AC4/F5). The global logger
@@ -1032,4 +1032,63 @@ fn refresh_persists_sidecar_on_stale_and_returns_stale_error() {
     );
     let marker = read_stale_marker(&cfg).expect("sidecar readable");
     assert_eq!(marker.fetched.as_deref(), Some("2000-01-01T00:00:00Z"));
+}
+
+// ---- Phase 2: public `stale_marker()` wrapper for the offline/`cost` path ----
+
+#[test]
+fn stale_marker_wrapper_is_none_when_no_sidecar() {
+    // AC6 offline surfacing depends on this returning None cleanly (not erroring)
+    // when nothing has ever been written, e.g. a brand-new XDG_CACHE_HOME.
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior = std::env::var("XDG_CACHE_HOME").ok();
+    let dir = tempfile::TempDir::new().unwrap();
+    // SAFETY: serialized behind ENV_LOCK; restored before the lock is dropped.
+    unsafe { std::env::set_var("XDG_CACHE_HOME", dir.path()) };
+
+    let result = stale_marker();
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("XDG_CACHE_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+    }
+    drop(guard);
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn stale_marker_wrapper_reads_the_exact_path_a_shell_script_would_build() {
+    // Risk row (design doc): "Statusline shell path drifts from the Rust sidecar path." This
+    // test writes the sidecar to the literal path a bash segment computes
+    // (`${XDG_CACHE_HOME:-$HOME/.cache}/clyde/pricing/stale_feed.json`) using plain std::fs, NOT
+    // via write_stale_marker/FetchConfig, and asserts the public wrapper reads it back. That
+    // proves the two paths are the same path, not just "both call the same Rust helper."
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior = std::env::var("XDG_CACHE_HOME").ok();
+    let dir = tempfile::TempDir::new().unwrap();
+    // SAFETY: serialized behind ENV_LOCK; restored before the lock is dropped.
+    unsafe { std::env::set_var("XDG_CACHE_HOME", dir.path()) };
+
+    // The exact path a statusline segment script builds by hand.
+    let shell_path = dir.path().join("clyde").join("pricing").join("stale_feed.json");
+    std::fs::create_dir_all(shell_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &shell_path,
+        r#"{"fetched":"2000-01-01T00:00:00Z","embedded":"2026-01-01T00:00:00Z","url":"https://example.com","at":"2026-01-01T00:00:00Z"}"#,
+    )
+    .unwrap();
+
+    let result = stale_marker();
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("XDG_CACHE_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+    }
+    drop(guard);
+
+    let info = result.expect("wrapper reads the sidecar the shell script would find");
+    assert_eq!(info.fetched.as_deref(), Some("2000-01-01T00:00:00Z"));
+    assert_eq!(info.embedded, "2026-01-01T00:00:00Z");
+    assert_eq!(info.url, "https://example.com");
 }

@@ -9,7 +9,7 @@
 //! process exit code, preserving the pre-merge tool's behavior exactly.
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
-use claude_pricing::{Pricing, PricingError, normalize_model_id};
+use claude_pricing::{Pricing, PricingError, StaleFeedInfo, normalize_model_id};
 use eyre::{Context, Result};
 use log::{debug, info, warn};
 use rayon::prelude::*;
@@ -340,9 +340,25 @@ fn subtract_months(date: NaiveDate, n: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(target_year, target_month, 1).expect("valid date")
 }
 
-/// Display the effective pricing table by iterating the library's models view.
-fn pricing_show(pricing: &Pricing) -> Result<()> {
-    debug!("pricing_show");
+/// Render the stale-feed banner line (D3/AC6): "the published feed is stale; using
+/// embedded/cache" naming both versions and the feed's (origin-only, for a custom feed) URL.
+/// `None` `fetched` (a feed that carried no `data_version` at all) renders as `none`.
+fn format_stale_banner(info: &StaleFeedInfo) -> String {
+    format!(
+        "⚠ published feed is stale (fetched {} < embedded {}); using embedded/cache. URL: {}\n",
+        info.fetched.as_deref().unwrap_or("none"),
+        info.embedded,
+        info.url
+    )
+}
+
+/// Render the effective pricing table by iterating the library's models view, plus the D3 stale
+/// banner above the table when `stale` is `Some`. Returns the rendered text (rather than printing
+/// directly) so both the online and `--offline` call sites in [`run`] can supply their own
+/// resolution of the stale marker, and so the banner is assertable in tests without capturing
+/// stdout.
+fn format_pricing_show(pricing: &Pricing, stale: Option<&StaleFeedInfo>) -> Result<String> {
+    debug!("format_pricing_show: stale={}", stale.is_some());
 
     let mut models: Vec<_> = pricing.models().collect();
     if models.is_empty() {
@@ -350,7 +366,12 @@ fn pricing_show(pricing: &Pricing) -> Result<()> {
     }
     models.sort_by_key(|(name, _)| (*name).clone());
 
-    println!("Current pricing (per million tokens):\n");
+    let mut out = String::new();
+    if let Some(info) = stale {
+        out.push_str(&format_stale_banner(info));
+        out.push('\n');
+    }
+    out.push_str("Current pricing (per million tokens):\n\n");
 
     let mut rows: Vec<Vec<String>> = Vec::new();
     for (name, p) in &models {
@@ -374,16 +395,28 @@ fn pricing_show(pricing: &Pricing) -> Result<()> {
         }
     }
 
-    println!(
-        "{}",
-        table::build(
-            &["Model", "Input", "Output", "Cache5mW", "Cache1hW", "CacheR"],
-            rows,
-            &[1, 2, 3, 4, 5],
-        )
-    );
+    out.push_str(&table::build(
+        &["Model", "Input", "Output", "Cache5mW", "Cache1hW", "CacheR"],
+        rows,
+        &[1, 2, 3, 4, 5],
+    ));
 
-    Ok(())
+    Ok(out)
+}
+
+/// Resolve the stale-feed marker to surface alongside `pricing`, honoring both the online path
+/// (already hydrated onto `pricing` by every `auto_with_config` return path, Phase 1/D2) and the
+/// `--offline` path, where [`Pricing::with_user_override`] never touches the fetch layer's sidecar
+/// at all, so `--show` would otherwise show nothing even when a prior online run left the feed
+/// known-stale (AC6). `offline` reads the sidecar directly through the pricing crate's public
+/// `stale_marker()` wrapper rather than mutating `pricing` (its setter is `pub(crate)` to the
+/// pricing crate).
+fn resolve_stale_feed(pricing: &Pricing, offline: bool) -> Option<StaleFeedInfo> {
+    debug!("resolve_stale_feed: offline={}", offline);
+    pricing
+        .stale_feed()
+        .cloned()
+        .or_else(|| if offline { claude_pricing::stale_marker() } else { None })
 }
 
 /// Behavior-exact entry point for both the `ccu` shim and `clyde cost`. Owns the statusline and
@@ -422,7 +455,8 @@ pub fn run(args: CostArgs, globals: common::Globals) -> Result<i32> {
     );
 
     if let Some(Command::Pricing { .. }) = &args.command {
-        pricing_show(&pricing)?;
+        let stale = resolve_stale_feed(&pricing, args.offline);
+        println!("{}", format_pricing_show(&pricing, stale.as_ref())?);
         return Ok(0);
     }
 
