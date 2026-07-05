@@ -71,7 +71,7 @@ fn end_to_end_collect_writes_json() {
     assert_eq!(result.sessions_emitted, 2);
     match result.output {
         OutputDest::File(p) => assert_eq!(p, output),
-        OutputDest::Stdout => panic!("expected file output, got stdout"),
+        other => panic!("expected file output, got {other:?}"),
     }
 
     let body = fs::read_to_string(&output).unwrap();

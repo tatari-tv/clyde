@@ -2,6 +2,97 @@
 
 use super::*;
 
+// NOTE: `resolve_command` reads `clyde.yml` from `$XDG_CONFIG_HOME`; env mutation isn't
+// parallel-safe, so the config-precedence tests below serialize on the module's `ENV_LOCK`
+// (defined further down alongside the XDG-data tests).
+
+/// Run `f` with `$XDG_CONFIG_HOME` pointed at a fresh temp dir, optionally containing a
+/// `clyde/clyde.yml` with the given body. Restores the prior env value afterward.
+fn with_clyde_yml<T>(clyde_yml: Option<&str>, f: impl FnOnce() -> T) -> T {
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior = std::env::var("XDG_CONFIG_HOME").ok();
+    let dir = tempfile::TempDir::new().unwrap();
+    if let Some(body) = clyde_yml {
+        let cdir = dir.path().join("clyde");
+        std::fs::create_dir_all(&cdir).unwrap();
+        std::fs::write(cdir.join("clyde.yml"), body).unwrap();
+    }
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+    let out = f();
+    match prior {
+        Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+    }
+    drop(guard);
+    out
+}
+
+/// A `RenderArgs` with only `format`/`output` varied; every other field at its inert default.
+fn render_args(format: Option<crate::cli::Format>, output: Option<PathBuf>) -> crate::cli::RenderArgs {
+    crate::cli::RenderArgs {
+        input: None,
+        output,
+        format,
+        space: None,
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+    }
+}
+
+/// Omitting `--format` resolves to the `render.format` value in `clyde.yml`.
+#[test]
+fn omitted_format_resolves_from_clyde_yml() {
+    let resolved = with_clyde_yml(Some("render:\n  format: pdf\n"), || {
+        resolve_command(crate::cli::Command::Render(render_args(None, None))).unwrap()
+    });
+    match resolved {
+        ResolvedCommand::Render(c) => assert_eq!(c.format, crate::cli::Format::Pdf),
+        other => panic!("expected Render, got {other:?}"),
+    }
+}
+
+/// Omitting `--format` with no config file present falls back to the built-in markdown default.
+#[test]
+fn omitted_format_falls_back_to_markdown_without_config() {
+    let resolved = with_clyde_yml(None, || {
+        resolve_command(crate::cli::Command::Render(render_args(None, None))).unwrap()
+    });
+    match resolved {
+        ResolvedCommand::Render(c) => assert_eq!(c.format, crate::cli::Format::Markdown),
+        other => panic!("expected Render, got {other:?}"),
+    }
+}
+
+/// An explicit `--format` wins over the `clyde.yml` default (CLI > config precedence).
+#[test]
+fn explicit_flag_overrides_clyde_yml_default() {
+    let resolved = with_clyde_yml(Some("render:\n  format: pdf\n"), || {
+        let args = render_args(Some(crate::cli::Format::Markdown), None);
+        resolve_command(crate::cli::Command::Render(args)).unwrap()
+    });
+    match resolved {
+        ResolvedCommand::Render(c) => assert_eq!(c.format, crate::cli::Format::Markdown),
+        other => panic!("expected Render, got {other:?}"),
+    }
+}
+
+/// A config-set marquee default combined with `-o` is rejected against the RESOLVED format.
+#[test]
+fn config_set_marquee_default_plus_output_is_rejected() {
+    let err = with_clyde_yml(Some("render:\n  format: marquee-markdown\n"), || {
+        let args = render_args(None, Some(PathBuf::from("out.md")));
+        resolve_command(crate::cli::Command::Render(args)).unwrap_err()
+    });
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("-o") && msg.to_lowercase().contains("marquee"),
+        "config-default marquee + -o must be rejected: {msg}"
+    );
+}
+
 #[test]
 fn collect_accepts_relative_span_since() {
     // Regression for #4: `report collect --since 2d` used to fail (report's old parse_datetime
@@ -153,7 +244,8 @@ fn resolve_command_render_threads_outliers_into_config() {
     let args = crate::cli::RenderArgs {
         input: None,
         output: None,
-        pdf: false,
+        format: Some(crate::cli::Format::Markdown),
+        space: None,
         template: None,
         prompt: None,
         include_tradeoffs: false,
@@ -165,6 +257,70 @@ fn resolve_command_render_threads_outliers_into_config() {
         ResolvedCommand::Render(cfg) => assert_eq!(cfg.outliers, 3),
         other => panic!("expected Render, got {other:?}"),
     }
+}
+
+/// `resolve_command` must thread `--format` and `--space` from `RenderArgs` into `RenderConfig`.
+#[test]
+fn resolve_command_render_threads_format_and_space_into_config() {
+    let args = crate::cli::RenderArgs {
+        input: None,
+        output: None,
+        format: Some(crate::cli::Format::MarqueeHtml),
+        space: Some("eng".into()),
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+    };
+    let resolved = resolve_command(crate::cli::Command::Render(args)).unwrap();
+    match resolved {
+        ResolvedCommand::Render(cfg) => {
+            assert_eq!(cfg.format, crate::cli::Format::MarqueeHtml);
+            assert_eq!(cfg.space.as_deref(), Some("eng"));
+        }
+        other => panic!("expected Render, got {other:?}"),
+    }
+}
+
+/// `-o/--output` is meaningless for the marquee formats (output is a URL) and must be rejected at
+/// resolve time.
+#[test]
+fn resolve_command_render_rejects_output_with_marquee_format() {
+    let args = crate::cli::RenderArgs {
+        input: None,
+        output: Some(std::path::PathBuf::from("out.md")),
+        format: Some(crate::cli::Format::MarqueeMarkdown),
+        space: None,
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+    };
+    let err = resolve_command(crate::cli::Command::Render(args)).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("-o") && msg.to_lowercase().contains("marquee"),
+        "rejection message must mention -o and marquee: {msg}"
+    );
+}
+
+/// `-o` combined with a local format (markdown/pdf) must still be accepted.
+#[test]
+fn resolve_command_render_allows_output_with_local_format() {
+    let args = crate::cli::RenderArgs {
+        input: None,
+        output: Some(std::path::PathBuf::from("out.pdf")),
+        format: Some(crate::cli::Format::Pdf),
+        space: None,
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+    };
+    assert!(resolve_command(crate::cli::Command::Render(args)).is_ok());
 }
 
 /// Phase 5: `resolve_command` must thread `--no-outcomes` from `CollectArgs` into

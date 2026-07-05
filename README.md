@@ -76,10 +76,16 @@ $XDG_DATA_HOME/clyde/logs/clyde.log  # clyde's own log
 $XDG_DATA_HOME/clyde/logs/cost.log   # was ccu/logs/ccu.log
 $XDG_DATA_HOME/clyde/logs/permit.log # was claude-permit/logs/claude-permit.log
 $XDG_DATA_HOME/clyde/logs/report.log # was claude-report/logs/claude-report.log
+$XDG_CONFIG_HOME/clyde/clyde.yml     # top-level clyde config (report `date-tz`, `render.format` default)
 $XDG_CONFIG_HOME/clyde/permit.yml    # permit config (was claude-permit/)
 $XDG_CONFIG_HOME/clyde/cost.yml      # cost config (was ccu/ccu.yml)
 $XDG_CONFIG_HOME/clyde/pricing.json  # merged pricing override (was ccu/ + cr/)
 ```
+
+`clyde.yml` is optional and strict (`deny_unknown_fields`): a missing file is all-defaults, but a
+typo'd key is a hard error. Today it carries `date-tz` (how `report collect --since <date>`
+interprets a bare date) and a `render:` section whose `format` sets the default `report render`
+output format. See [`report/README.md`](report/README.md) for the render options.
 
 Config readers prefer the clyde location and fall back to the legacy path until `bootstrap`
 migrates, so a tool invoked before bootstrap still finds its existing state. Raw transcripts are

@@ -35,6 +35,31 @@ impl From<DateTzConfig> for DateTz {
     }
 }
 
+/// The serde view of `render.format`: the default output format for `report render` when
+/// `--format` is omitted. Mirrors the `report` crate's `cli::Format` variants (kebab-case), but
+/// lives here because `common` cannot depend on `report`; the mapping to `cli::Format` is done in
+/// `report`. Defaults to `markdown`, matching the built-in default, so an absent config is a no-op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FormatConfig {
+    #[default]
+    Markdown,
+    Pdf,
+    MarqueeHtml,
+    MarqueeMarkdown,
+}
+
+/// The `render:` section of `clyde.yml`: defaults for `report render`. Every field defaults, so an
+/// absent section is all-defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields)]
+pub struct RenderConfig {
+    /// Default output format when `--format` is omitted on the command line. Defaults to markdown.
+    #[serde(default)]
+    format: FormatConfig,
+}
+
 /// The parsed `clyde.yml`. Every field defaults, so an absent file deserializes to all-defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -43,12 +68,20 @@ pub struct Config {
     /// How a bare `YYYY-MM-DD` date's midnight is interpreted by `--since`. Defaults to `utc`.
     #[serde(default)]
     date_tz: DateTzConfig,
+    /// Defaults for `report render` (currently just the output format).
+    #[serde(default)]
+    render: RenderConfig,
 }
 
 impl Config {
     /// The bare-date timezone interpretation for `--since`, as the pure-parser type.
     pub fn date_tz(&self) -> DateTz {
         self.date_tz.into()
+    }
+
+    /// The configured default output format for `report render` (`markdown` when unset).
+    pub fn render_format(&self) -> FormatConfig {
+        self.render.format
     }
 }
 
