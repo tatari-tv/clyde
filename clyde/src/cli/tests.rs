@@ -209,32 +209,44 @@ fn argv(tokens: &[&str]) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn report_help_requested_matches_report_help_forms() {
-    // `report --help` / `report -h`, including with clyde globals before the subcommand.
-    assert!(report_help_requested(&argv(&["report", "--help"])));
-    assert!(report_help_requested(&argv(&["report", "-h"])));
-    assert!(report_help_requested(&argv(&[
-        "--log-level",
-        "debug",
-        "report",
-        "--help"
-    ])));
-    assert!(report_help_requested(&argv(&["-l", "debug", "report", "-h"])));
-    // clap's built-in `help report` form.
-    assert!(report_help_requested(&argv(&["help", "report"])));
+fn path(tokens: &[&str]) -> Option<Vec<String>> {
+    Some(tokens.iter().map(|s| s.to_string()).collect())
 }
 
 #[test]
-fn report_help_requested_ignores_unrelated_and_bare_invocations() {
-    // "report" appearing as a search TERM under another subcommand must not match.
-    assert!(!report_help_requested(&argv(&[
-        "session", "search", "report", "--help"
-    ])));
-    // A normal report run (no help) must not trigger the probes.
-    assert!(!report_help_requested(&argv(&["report", "collect"])));
-    assert!(!report_help_requested(&argv(&["report"])));
-    // Help for a different subcommand.
-    assert!(!report_help_requested(&argv(&["cost", "--help"])));
-    assert!(!report_help_requested(&argv(&["help", "cost"])));
+fn help_target_maps_help_flag_and_help_subcommand_forms() {
+    // `<path> --help` / `-h`, including with clyde globals before the subcommand.
+    assert_eq!(help_target(&argv(&["report", "--help"])), path(&["report"]));
+    assert_eq!(help_target(&argv(&["report", "-h"])), path(&["report"]));
+    assert_eq!(
+        help_target(&argv(&["--log-level", "debug", "report", "--help"])),
+        path(&["report"])
+    );
+    // Nested leaf subcommands.
+    assert_eq!(
+        help_target(&argv(&["session", "resume", "--help"])),
+        path(&["session", "resume"])
+    );
+    assert_eq!(
+        help_target(&argv(&["permit", "apply", "-h"])),
+        path(&["permit", "apply"])
+    );
+    // clap's `help <path>` form.
+    assert_eq!(help_target(&argv(&["help", "report"])), path(&["report"]));
+}
+
+#[test]
+fn help_target_is_none_for_non_help_and_keeps_terms_in_the_path() {
+    // No help flag → not a help invocation (a normal run must not trigger probes).
+    assert_eq!(help_target(&argv(&["report", "collect"])), None);
+    assert_eq!(help_target(&argv(&["report"])), None);
+    // `--help` is early-exit: `clyde --help report` is ROOT help, not report's — tokens after the
+    // flag must be ignored, so this yields None (no per-subcommand block attached).
+    assert_eq!(help_target(&argv(&["--help", "report"])), None);
+    // "report" as a search TERM yields the full path, which matches no tool-bearing subcommand in
+    // main.rs (it only attaches on exact paths like ["report"]), so it never mis-fires.
+    assert_eq!(
+        help_target(&argv(&["session", "search", "report", "--help"])),
+        path(&["session", "search", "report"])
+    );
 }

@@ -236,37 +236,47 @@ pub struct ServeArgs {
     pub no_reindex: bool,
 }
 
-/// True only when the invocation asks for **`clyde report`'s** help specifically: the leading
-/// subcommand is `report` followed by `-h`/`--help`, or clap's `help report` form. Anchors on the
-/// first positional (skipping clyde's value-taking global flags) so `clyde session search report
-/// --help` does NOT match and `clyde help report` DOES. Used to decide whether to attach report's
-/// REQUIRED TOOLS `after_help`, which spawns a `--version` probe per tool — so it must fire only
-/// when that help is genuinely requested, never on a normal `clyde report ...` run.
-pub(crate) fn report_help_requested(argv: &[String]) -> bool {
-    // clyde's value-taking global flags: the following token is their value, not the subcommand.
+/// The subcommand path whose help is being requested, or `None` when this is not a help
+/// invocation. Recognizes both `clyde <path...> -h/--help` and clap's `clyde help <path...>`
+/// form. Skips clyde's value-taking global flags so `clyde -l debug report --help` still maps to
+/// `["report"]`; anchors on the positionals so `clyde session search report --help` maps to
+/// `["session","search","report"]` (which matches no tool-bearing subcommand) rather than
+/// `["report"]`.
+///
+/// Used to decide whether — and which — REQUIRED TOOLS `after_help` to attach. Those blocks spawn
+/// a `--version` probe per tool, so they must be built only when that specific help is requested,
+/// never on a normal run.
+pub(crate) fn help_target(argv: &[String]) -> Option<Vec<String>> {
+    // clyde's value-taking global flags: the following token is their value, not a subcommand.
     const VALUE_FLAGS: &[&str] = &["-l", "--log-level", "--db"];
+    let mut positionals = Vec::new();
+    let mut saw_help_flag = false;
     let mut i = 1; // skip argv[0] (program name)
     while let Some(arg) = argv.get(i) {
         if arg == "--" {
-            return false;
+            break;
         }
-        if VALUE_FLAGS.contains(&arg.as_str()) {
+        if arg == "-h" || arg == "--help" {
+            // `--help` is an early-exit flag: clap renders help for the command parsed SO FAR and
+            // ignores anything after it. So stop here — `clyde --help report` targets root help
+            // (no positionals yet), not report.
+            saw_help_flag = true;
+            break;
+        } else if VALUE_FLAGS.contains(&arg.as_str()) {
             i += 2; // skip the flag and its value
             continue;
+        } else if !arg.starts_with('-') {
+            positionals.push(arg.clone());
         }
-        if arg.starts_with('-') {
-            i += 1; // any other flag (incl. `--log-level=debug`); keep scanning for the subcommand
-            continue;
-        }
-        // First positional is the top-level subcommand.
-        let rest = &argv[i + 1..];
-        return match arg.as_str() {
-            "report" => rest.iter().any(|t| t == "-h" || t == "--help"),
-            "help" => rest.iter().any(|t| t == "report"),
-            _ => false,
-        };
+        i += 1;
     }
-    false
+    // `clyde help <path...>` — the help subcommand names its target explicitly.
+    if positionals.first().map(String::as_str) == Some("help") {
+        let path = positionals[1..].to_vec();
+        return (!path.is_empty()).then_some(path);
+    }
+    // `clyde <path...> --help` — the positionals ARE the target path.
+    (saw_help_flag && !positionals.is_empty()).then_some(positionals)
 }
 
 #[cfg(test)]
