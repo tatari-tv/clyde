@@ -169,7 +169,7 @@ fn custom_template_substitutes_placeholders() {
 #[test]
 fn build_context_block_includes_slim_shape() {
     let report = sample_report();
-    let block = build_context_block(&report, true, None, &pricing()).unwrap();
+    let block = build_context_block(&report, true, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     assert_eq!(parsed.get("persona"), Some(&serde_json::json!({})));
     let opts = parsed.get("options").expect("options key");
@@ -250,7 +250,7 @@ fn build_context_block_includes_slim_shape() {
 #[test]
 fn build_context_block_omits_tradeoffs_when_false() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None, &pricing()).unwrap();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     let opts = parsed.get("options").expect("options key");
     assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(false));
@@ -265,7 +265,14 @@ fn build_context_block_embeds_persona_when_present() {
         email: Some("scott.idler@tatari.tv".into()),
         ..Default::default()
     };
-    let block = build_context_block(&report, false, Some(&persona), &pricing()).unwrap();
+    let block = build_context_block(
+        &report,
+        false,
+        Some(&persona),
+        &pricing(),
+        crate::aggregate::DEFAULT_OUTLIERS,
+    )
+    .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let p = parsed.get("persona").expect("persona key");
     assert_eq!(p.get("name").and_then(|v| v.as_str()), Some("Scott Idler"));
@@ -276,12 +283,96 @@ fn build_context_block_embeds_persona_when_present() {
 #[test]
 fn build_context_block_uses_compact_json_not_pretty() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None, &pricing()).unwrap();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
     assert!(
         !block.contains('\n'),
         "context block must be compact (no newlines) to minimize Opus token cost: {}",
         block
     );
+}
+
+/// Phase 5 (`--outliers <N>`): a report with more sessions than the requested outlier count
+/// must yield exactly `N` rows in `aggregates.outliers` -- neither the full session list nor
+/// the `DEFAULT_OUTLIERS` default.
+fn report_with_n_sessions(n: usize) -> Report {
+    let mut sessions = BTreeMap::new();
+    for i in 0..n {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "claude-opus-4-7".into(),
+            ModelTokens {
+                input: 100,
+                output: 50,
+                cache_5m_write: 0,
+                cache_1h_write: 0,
+                cache_read: 0,
+                total: 150,
+                spend_usd: Some(1.0 + i as f64),
+            },
+        );
+        sessions.insert(
+            format!("session-{i:02}"),
+            SessionEntry {
+                title: Some(format!("session {i}")),
+                repo: Some("tatari-tv/claude-report".into()),
+                begin: ts("2026-04-10T10:00:00Z"),
+                end: ts("2026-04-10T11:00:00Z"),
+                spend_usd: Some(1.0 + i as f64),
+                untracked_models: Vec::new(),
+                jsonl_paths: Vec::new(),
+                models,
+                outcomes: None,
+            },
+        );
+    }
+    Report {
+        schema_version: 1,
+        generated: ts("2026-04-27T19:42:08Z"),
+        host: "desk".into(),
+        since: ts("2026-04-01T00:00:00Z"),
+        until: ts("2026-04-30T00:00:00Z"),
+        outcomes_enabled: None,
+        totals: Totals {
+            sessions: n,
+            spend_usd: (0..n).map(|i| 1.0 + i as f64).sum(),
+            untracked_models: Vec::new(),
+            models: BTreeMap::new(),
+            outcomes: None,
+        },
+        sessions,
+    }
+}
+
+#[test]
+fn build_context_block_outliers_n_caps_outlier_table_to_exactly_n() {
+    let report = report_with_n_sessions(5);
+    let block = build_context_block(&report, false, None, &pricing(), 3).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let outliers = parsed
+        .get("aggregates")
+        .and_then(|a| a.get("outliers"))
+        .and_then(|v| v.as_array())
+        .expect("aggregates.outliers array");
+    assert_eq!(
+        outliers.len(),
+        3,
+        "expected exactly 3 outlier rows, got: {:?}",
+        outliers
+    );
+}
+
+#[test]
+fn build_context_block_default_outliers_n_matches_default_outliers_const() {
+    // Defaults unchanged when `--outliers` is absent: DEFAULT_OUTLIERS caps the table.
+    let report = report_with_n_sessions(crate::aggregate::DEFAULT_OUTLIERS + 5);
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let outliers = parsed
+        .get("aggregates")
+        .and_then(|a| a.get("outliers"))
+        .and_then(|v| v.as_array())
+        .expect("aggregates.outliers array");
+    assert_eq!(outliers.len(), crate::aggregate::DEFAULT_OUTLIERS);
 }
 
 #[test]
@@ -304,6 +395,7 @@ fn render_run_writes_markdown_file_with_custom_template() {
             prompt: None,
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
+            outliers: crate::aggregate::DEFAULT_OUTLIERS,
         }),
     };
     let result = crate::run_with_config(&cfg).unwrap();
@@ -328,6 +420,7 @@ fn render_run_rejects_yaml_input_extension() {
             prompt: None,
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
+            outliers: crate::aggregate::DEFAULT_OUTLIERS,
         }),
     };
     let err = crate::run_with_config(&cfg).unwrap_err();

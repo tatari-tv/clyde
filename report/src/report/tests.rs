@@ -56,6 +56,7 @@ fn write_json_round_trips() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     )
     .unwrap();
     assert_eq!(count, 1);
@@ -90,6 +91,7 @@ fn json_uses_kebab_case_keys_and_emits_jsonl_paths() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     )
     .unwrap();
 
@@ -121,6 +123,7 @@ fn title_appears_first_in_session_entry() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     )
     .unwrap();
 
@@ -145,6 +148,7 @@ fn load_existing_titles_returns_titles_only() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     )
     .unwrap();
 
@@ -241,6 +245,7 @@ fn totals_untracked_models_dedupes_across_sessions() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     );
     assert_eq!(
         report.totals.untracked_models,
@@ -262,6 +267,7 @@ fn json_with_null_spend_round_trips_to_none() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     )
     .unwrap();
     let body = fs::read_to_string(&path).unwrap();
@@ -355,6 +361,7 @@ fn build_report_rolls_up_outcomes_with_global_dedupe_and_marks_enabled() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     );
 
     assert_eq!(report.outcomes_enabled, Some(true));
@@ -376,6 +383,7 @@ fn build_report_with_no_outcomes_observed_still_enables_and_yields_zeroed_rollup
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     );
     assert_eq!(report.outcomes_enabled, Some(true));
     let outcomes = report.totals.outcomes.expect("rollup present even when all-zero");
@@ -404,6 +412,7 @@ fn write_json_round_trips_session_outcomes() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     )
     .unwrap();
 
@@ -460,6 +469,7 @@ fn write_is_atomic_via_rename() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     )
     .unwrap();
     write_json(
@@ -469,9 +479,105 @@ fn write_is_atomic_via_rename() {
         ts("2026-04-30T00:00:00Z"),
         "desk",
         &pricing(),
+        true,
     )
     .unwrap();
 
     let entries: Vec<_> = fs::read_dir(tmp.path()).unwrap().collect();
     assert_eq!(entries.len(), 1, "no leftover temp files: {:?}", entries);
+}
+
+/// Phase 5 (`--no-outcomes`): `build_report(.., outcomes_enabled: false)` must yield
+/// `outcomes-enabled: Some(false)` and NO `outcomes` field on totals, even when a summary
+/// happens to carry outcome data (fail closed at the persist seam, not just the extract seam).
+#[test]
+fn build_report_with_outcomes_disabled_yields_false_flag_and_absent_totals_rollup() {
+    let s = summary_with_outcomes(
+        "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042",
+        Some(Outcomes {
+            commits: vec!["sha-a".to_string()],
+            prs: vec![],
+            confluence_writes: 0,
+            jira_writes: 0,
+            slack_messages: 0,
+            files_edited: 1,
+        }),
+    );
+    let report = build_report(
+        &[s],
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        false,
+    );
+    assert_eq!(report.outcomes_enabled, Some(false));
+    assert!(
+        report.totals.outcomes.is_none(),
+        "totals.outcomes must be absent, not zeroed"
+    );
+}
+
+/// A stray per-session `outcomes` value must never survive onto the persisted `SessionEntry`
+/// when the report as a whole is `outcomes_enabled: false` -- the design's "no outcomes fields
+/// on sessions/totals" contract applies to sessions too, not only the totals rollup.
+#[test]
+fn build_report_with_outcomes_disabled_strips_session_outcomes() {
+    let s = summary_with_outcomes(
+        "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042",
+        Some(Outcomes {
+            commits: vec!["sha-a".to_string()],
+            prs: vec![],
+            confluence_writes: 0,
+            jira_writes: 0,
+            slack_messages: 0,
+            files_edited: 1,
+        }),
+    );
+    let report = build_report(
+        &[s],
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        false,
+    );
+    let entry = report.sessions.values().next().unwrap();
+    assert!(entry.outcomes.is_none());
+}
+
+#[test]
+fn write_json_with_outcomes_disabled_emits_no_outcomes_keys() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("claude-report.json");
+    let s = summary_with_outcomes(
+        "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042",
+        Some(Outcomes {
+            commits: vec!["sha-a".to_string()],
+            prs: vec![],
+            confluence_writes: 0,
+            jira_writes: 0,
+            slack_messages: 0,
+            files_edited: 1,
+        }),
+    );
+    write_json(
+        &path,
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        false,
+    )
+    .unwrap();
+
+    let body = fs::read_to_string(&path).unwrap();
+    assert!(body.contains("\"outcomes-enabled\": false"), "body:\n{}", body);
+    assert!(!body.contains("\"outcomes\":"), "no outcomes key anywhere: {}", body);
+    let report: Report = serde_json::from_str(&body).unwrap();
+    assert_eq!(report.outcomes_enabled, Some(false));
+    assert!(report.totals.outcomes.is_none());
+    let entry = report.sessions.values().next().unwrap();
+    assert!(entry.outcomes.is_none());
 }

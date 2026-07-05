@@ -31,6 +31,7 @@ fn make_collect_config(projects_dir: &Path, output: &Path) -> Config {
             projects_dir: projects_dir.to_path_buf(),
             no_rollup: false,
             skip_title: true,
+            no_outcomes: false,
         }),
     }
 }
@@ -88,6 +89,82 @@ fn end_to_end_collect_writes_json() {
     assert_eq!(sonnet.input, 20);
     assert_eq!(sonnet.output, 15);
     assert!(a.title.is_none());
+}
+
+fn make_collect_config_with_no_outcomes(projects_dir: &Path, output: &Path, no_outcomes: bool) -> Config {
+    Config {
+        log_level: "info".into(),
+        command: ResolvedCommand::Collect(CollectConfig {
+            since: "2026-01-01T00:00:00Z".parse().unwrap(),
+            until: "2030-01-01T00:00:00Z".parse().unwrap(),
+            output: Output::File(output.to_path_buf()),
+            projects_dir: projects_dir.to_path_buf(),
+            no_rollup: false,
+            skip_title: true,
+            no_outcomes,
+        }),
+    }
+}
+
+/// Phase 5, end to end: `clyde report collect --no-outcomes` must skip extraction entirely and
+/// produce a report with `outcomes-enabled: false` and no `outcomes` field anywhere, even when
+/// the transcript contains a signal (a commit) that extraction would otherwise pick up.
+#[test]
+fn collect_with_no_outcomes_skips_extraction_and_disables_the_flag() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let project = projects.join("-home-saidler-repos-foo-bar");
+
+    write_jsonl(
+        &project.join(format!("{}.jsonl", SID_A)),
+        &[
+            r#"{"type":"assistant","sessionId":"abc","timestamp":"2026-04-10T10:00:00Z","cwd":"/home/saidler/repos/foo/bar","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":5}}}"#,
+            r#"{"type":"user","timestamp":"2026-04-10T10:05:00Z","toolUseResult":{"gitOperation":{"commit":{"sha":"abc123","kind":"committed"}}}}"#,
+        ],
+    );
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = make_collect_config_with_no_outcomes(&projects, &output, true);
+    crate::run_with_config(&cfg).unwrap();
+
+    let body = fs::read_to_string(&output).unwrap();
+    assert!(!body.contains("\"outcomes\":"), "no outcomes key anywhere: {}", body);
+    assert!(body.contains("\"outcomes-enabled\": false"), "body:\n{}", body);
+    let report: Report = serde_json::from_str(&body).unwrap();
+    assert_eq!(report.outcomes_enabled, Some(false));
+    assert!(report.totals.outcomes.is_none());
+    let entry = &report.sessions[SID_A];
+    assert!(
+        entry.outcomes.is_none(),
+        "the commit must not be observed when extraction is skipped"
+    );
+}
+
+/// Defaults unchanged: the same transcript WITHOUT `--no-outcomes` still extracts the commit,
+/// proving the flag actually gates extraction rather than always suppressing the field.
+#[test]
+fn collect_without_no_outcomes_still_extracts_by_default() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let project = projects.join("-home-saidler-repos-foo-bar");
+
+    write_jsonl(
+        &project.join(format!("{}.jsonl", SID_A)),
+        &[
+            r#"{"type":"assistant","sessionId":"abc","timestamp":"2026-04-10T10:00:00Z","cwd":"/home/saidler/repos/foo/bar","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":5}}}"#,
+            r#"{"type":"user","timestamp":"2026-04-10T10:05:00Z","toolUseResult":{"gitOperation":{"commit":{"sha":"abc123","kind":"committed"}}}}"#,
+        ],
+    );
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = make_collect_config_with_no_outcomes(&projects, &output, false);
+    crate::run_with_config(&cfg).unwrap();
+
+    let body = fs::read_to_string(&output).unwrap();
+    let report: Report = serde_json::from_str(&body).unwrap();
+    assert_eq!(report.outcomes_enabled, Some(true));
+    let entry = &report.sessions[SID_A];
+    assert_eq!(entry.outcomes.as_ref().unwrap().commits, vec!["abc123".to_string()]);
 }
 
 #[test]

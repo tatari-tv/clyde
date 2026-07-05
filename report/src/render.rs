@@ -1,4 +1,4 @@
-use crate::aggregate::{self, Aggregates, DEFAULT_OUTLIERS};
+use crate::aggregate::{self, Aggregates};
 use crate::config::RenderConfig;
 use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd};
 use crate::persona::{self, PersonaBlock};
@@ -23,10 +23,11 @@ const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
 
 pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
-        "render::run: input={} pdf={} prompt={:?}",
+        "render::run: input={} pdf={} prompt={:?} outliers={}",
         cfg.input.display(),
         cfg.pdf,
-        cfg.prompt
+        cfg.prompt,
+        cfg.outliers
     );
 
     if let Some(ext) = cfg.input.extension().and_then(OsStr::to_str)
@@ -53,7 +54,13 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     } else {
         let prompt = resolve_prompt(cfg.prompt.as_deref(), Path::new("."))?;
         let persona_block = persona::whoami();
-        let context = build_context_block(&report, cfg.include_tradeoffs, persona_block.as_ref(), pricing)?;
+        let context = build_context_block(
+            &report,
+            cfg.include_tradeoffs,
+            persona_block.as_ref(),
+            pricing,
+            cfg.outliers,
+        )?;
         render_via_opus_text(&context, &prompt)?
     };
 
@@ -216,14 +223,16 @@ pub(crate) fn build_context_block(
     include_tradeoffs: bool,
     persona: Option<&PersonaBlock>,
     pricing: &Pricing,
+    outliers_n: usize,
 ) -> Result<String> {
     debug!(
-        "render::build_context_block: sessions={} include_tradeoffs={}",
+        "render::build_context_block: sessions={} include_tradeoffs={} outliers-n={}",
         report.sessions.len(),
-        include_tradeoffs
+        include_tradeoffs,
+        outliers_n
     );
     let default_persona = PersonaBlock::default();
-    let aggregates = aggregate::compute(report, DEFAULT_OUTLIERS, pricing);
+    let aggregates = aggregate::compute(report, outliers_n, pricing);
     let block = ContextBlock {
         persona: persona.unwrap_or(&default_persona),
         options: ContextOptions { include_tradeoffs },

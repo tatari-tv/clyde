@@ -137,12 +137,18 @@ pub(crate) fn run_with_pricing(config: &Config, pricing: &Pricing) -> Result<Run
 
 fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     let files = scan::find_session_files(&cfg.projects_dir)?;
-    log::info!("run_collect: discovered {} session files", files.len());
+    log::info!(
+        "run_collect: discovered {} session files no-outcomes={}",
+        files.len(),
+        cfg.no_outcomes
+    );
 
     // Each file is read twice inside the SAME par_iter closure while it is page-cache-hot: once
     // for pricing/usage (`parse_jsonl_file`) and once for outcome signals (`outcome::extract`).
     // Outcome extraction receives the period bounds so records are filtered by their initiating
-    // timestamp at extraction time (D8).
+    // timestamp at extraction time (D8). `--no-outcomes` (Phase 5) skips the second read
+    // entirely rather than extracting and discarding: it is the documented escape hatch from
+    // the design's performance section.
     let scanned: Vec<(PathBuf, ParseResult, outcome::FileOutcomes)> = files
         .par_iter()
         .filter_map(|f| {
@@ -153,16 +159,20 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
                     return None;
                 }
             };
-            let outcomes = match outcome::extract(&f.path, cfg.since, cfg.until) {
-                Ok(o) => o,
-                Err(e) => {
-                    // Fail closed: outcomes absent for this file, usage still counts.
-                    log::warn!(
-                        "outcome extraction failed for {}: {} (outcomes absent for this file)",
-                        f.path.display(),
-                        e
-                    );
-                    outcome::FileOutcomes::default()
+            let outcomes = if cfg.no_outcomes {
+                outcome::FileOutcomes::default()
+            } else {
+                match outcome::extract(&f.path, cfg.since, cfg.until) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        // Fail closed: outcomes absent for this file, usage still counts.
+                        log::warn!(
+                            "outcome extraction failed for {}: {} (outcomes absent for this file)",
+                            f.path.display(),
+                            e
+                        );
+                        outcome::FileOutcomes::default()
+                    }
                 }
             };
             Some((f.path.clone(), parsed, outcomes))
@@ -205,14 +215,15 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
         title_untitled_sessions(&mut summaries);
     }
 
+    let outcomes_enabled = !cfg.no_outcomes;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let (count, dest) = match &cfg.output {
         Output::File(path) => {
-            let count = report::write_json(path, &summaries, cfg.since, cfg.until, &host, pricing)?;
+            let count = report::write_json(path, &summaries, cfg.since, cfg.until, &host, pricing, outcomes_enabled)?;
             (count, OutputDest::File(path.clone()))
         }
         Output::Stdout => {
-            let (json, count) = report::build_json(&summaries, cfg.since, cfg.until, &host, pricing)?;
+            let (json, count) = report::build_json(&summaries, cfg.since, cfg.until, &host, pricing, outcomes_enabled)?;
             // Stream the JSON to stdout (and only the JSON — the "wrote N" note is on stderr).
             use std::io::Write;
             let mut out = std::io::stdout().lock();

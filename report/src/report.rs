@@ -144,15 +144,17 @@ pub fn build_json(
     until: DateTime<Utc>,
     host: &str,
     pricing: &Pricing,
+    outcomes_enabled: bool,
 ) -> Result<(String, usize)> {
     debug!(
-        "report::build_json: sessions={} since={} until={} host={}",
+        "report::build_json: sessions={} since={} until={} host={} outcomes-enabled={}",
         summaries.len(),
         since,
         until,
-        host
+        host,
+        outcomes_enabled
     );
-    let report = build_report(summaries, since, until, host, pricing);
+    let report = build_report(summaries, since, until, host, pricing, outcomes_enabled);
     let json = serde_json::to_string_pretty(&report).context("failed to serialize report to JSON")?;
     Ok((json, report.totals.sessions))
 }
@@ -164,17 +166,19 @@ pub fn write_json(
     until: DateTime<Utc>,
     host: &str,
     pricing: &Pricing,
+    outcomes_enabled: bool,
 ) -> Result<usize> {
     debug!(
-        "report::write_json: path={} sessions={} since={} until={} host={}",
+        "report::write_json: path={} sessions={} since={} until={} host={} outcomes-enabled={}",
         path.display(),
         summaries.len(),
         since,
         until,
-        host
+        host,
+        outcomes_enabled
     );
 
-    let (json, count) = build_json(summaries, since, until, host, pricing)?;
+    let (json, count) = build_json(summaries, since, until, host, pricing, outcomes_enabled)?;
 
     let dir = path
         .parent()
@@ -202,13 +206,26 @@ fn build_report(
     until: DateTime<Utc>,
     host: &str,
     pricing: &Pricing,
+    outcomes_enabled: bool,
 ) -> Report {
+    debug!(
+        "report::build_report: sessions={} host={} outcomes-enabled={}",
+        summaries.len(),
+        host,
+        outcomes_enabled
+    );
     let mut sessions = BTreeMap::new();
     let mut totals_models: BTreeMap<String, TokenTotals> = BTreeMap::new();
     let mut untracked: BTreeSet<String> = BTreeSet::new();
 
     for s in summaries {
-        let entry = to_entry(s, pricing);
+        let mut entry = to_entry(s, pricing);
+        // `--no-outcomes` (Phase 5): the extraction pass never ran, so no session may carry an
+        // `outcomes` field regardless of what the caller's summaries happen to hold. Fail closed
+        // at the seam that persists the report, not just at the seam that populates it.
+        if !outcomes_enabled {
+            entry.outcomes = None;
+        }
         for name in &entry.untracked_models {
             untracked.insert(name.clone());
         }
@@ -224,17 +241,20 @@ fn build_report(
         .collect();
     let totals_spend: f64 = totals_model_entries.values().filter_map(|m| m.spend_usd).sum();
 
-    // Outcome rollup: global dedupe by sha / PR url across every session in this report. Collect
-    // always runs extraction today (the `--no-outcomes` escape hatch lands in Phase 5), so
-    // `outcomes-enabled` is unconditionally `Some(true)` here.
-    let outcomes_rollup = outcome::rollup(sessions.values().map(|e| e.outcomes.as_ref()));
+    // Outcome rollup: global dedupe by sha / PR url across every session in this report. Absent
+    // entirely (not a zeroed rollup) when extraction did not run (`--no-outcomes`), per design.
+    let outcomes_rollup = if outcomes_enabled {
+        Some(outcome::rollup(sessions.values().map(|e| e.outcomes.as_ref())))
+    } else {
+        None
+    };
 
     let totals = Totals {
         sessions: sessions.len(),
         spend_usd: round_cents(totals_spend),
         untracked_models: untracked.into_iter().collect(),
         models: totals_model_entries,
-        outcomes: Some(outcomes_rollup),
+        outcomes: outcomes_rollup,
     };
 
     Report {
@@ -243,7 +263,7 @@ fn build_report(
         host: host.to_string(),
         since,
         until,
-        outcomes_enabled: Some(true),
+        outcomes_enabled: Some(outcomes_enabled),
         totals,
         sessions,
     }

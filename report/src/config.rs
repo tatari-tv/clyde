@@ -53,6 +53,9 @@ pub struct CollectConfig {
     pub projects_dir: PathBuf,
     pub no_rollup: bool,
     pub skip_title: bool,
+    /// `true` for `--no-outcomes`: skip the outcome extraction pass entirely (mirrors
+    /// `skip_title`'s shape). Default `false` (extraction on).
+    pub no_outcomes: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +69,9 @@ pub struct RenderConfig {
     pub prompt: Option<PathBuf>,
     pub include_tradeoffs: bool,
     pub pdf_engine: String,
+    /// Number of top-spend sessions in the outlier table (`--outliers <N>`, default
+    /// `aggregate::DEFAULT_OUTLIERS`).
+    pub outliers: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +110,7 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 prompt: args.prompt,
                 include_tradeoffs: args.include_tradeoffs,
                 pdf_engine: args.pdf_engine,
+                outliers: args.outliers,
             })
         }
         crate::cli::Command::Merge(args) => {
@@ -159,6 +166,7 @@ fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConf
         projects_dir,
         no_rollup: args.no_rollup,
         skip_title: args.skip_title,
+        no_outcomes: args.no_outcomes,
     })
 }
 

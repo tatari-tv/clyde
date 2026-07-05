@@ -13,6 +13,7 @@ fn collect_accepts_relative_span_since() {
         projects_dir: Some(std::env::temp_dir()),
         no_rollup: false,
         skip_title: false,
+        no_outcomes: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
     assert!(cfg.since < Utc::now());
@@ -27,6 +28,7 @@ fn collect_accepts_rfc3339_and_bare_date_since() {
         projects_dir: Some(std::env::temp_dir()),
         no_rollup: false,
         skip_title: false,
+        no_outcomes: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
     assert_eq!(cfg.since.to_rfc3339(), "2026-04-01T00:00:00+00:00");
@@ -42,6 +44,7 @@ fn collect_rejects_garbage_since() {
         projects_dir: Some(std::env::temp_dir()),
         no_rollup: false,
         skip_title: false,
+        no_outcomes: false,
     };
     assert!(collect_config_from_args(args, DateTz::Utc).is_err());
 }
@@ -88,6 +91,7 @@ fn explicit_output_selects_file_target() {
         projects_dir: Some(std::env::temp_dir()),
         no_rollup: false,
         skip_title: false,
+        no_outcomes: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
     match cfg.output {
@@ -106,9 +110,81 @@ fn omitting_output_selects_stdout() {
         projects_dir: Some(std::env::temp_dir()),
         no_rollup: false,
         skip_title: false,
+        no_outcomes: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
     assert!(matches!(cfg.output, Output::Stdout));
+}
+
+#[test]
+fn collect_config_carries_no_outcomes_flag() {
+    let args = CollectArgs {
+        since: None,
+        until: None,
+        output: None,
+        projects_dir: Some(std::env::temp_dir()),
+        no_rollup: false,
+        skip_title: false,
+        no_outcomes: true,
+    };
+    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    assert!(cfg.no_outcomes);
+}
+
+#[test]
+fn collect_config_no_outcomes_defaults_false() {
+    let args = CollectArgs {
+        since: None,
+        until: None,
+        output: None,
+        projects_dir: Some(std::env::temp_dir()),
+        no_rollup: false,
+        skip_title: false,
+        no_outcomes: false,
+    };
+    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    assert!(!cfg.no_outcomes, "extraction is on by default");
+}
+
+/// Phase 5: `resolve_command` must thread `--outliers <N>` from `RenderArgs` into
+/// `RenderConfig.outliers`.
+#[test]
+fn resolve_command_render_threads_outliers_into_config() {
+    let args = crate::cli::RenderArgs {
+        input: None,
+        output: None,
+        pdf: false,
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: 3,
+    };
+    let resolved = resolve_command(crate::cli::Command::Render(args)).unwrap();
+    match resolved {
+        ResolvedCommand::Render(cfg) => assert_eq!(cfg.outliers, 3),
+        other => panic!("expected Render, got {other:?}"),
+    }
+}
+
+/// Phase 5: `resolve_command` must thread `--no-outcomes` from `CollectArgs` into
+/// `CollectConfig.no_outcomes`.
+#[test]
+fn resolve_command_collect_threads_no_outcomes_into_config() {
+    let args = CollectArgs {
+        since: None,
+        until: None,
+        output: None,
+        projects_dir: Some(std::env::temp_dir()),
+        no_rollup: false,
+        skip_title: false,
+        no_outcomes: true,
+    };
+    let resolved = resolve_command(crate::cli::Command::Collect(args)).unwrap();
+    match resolved {
+        ResolvedCommand::Collect(cfg) => assert!(cfg.no_outcomes),
+        other => panic!("expected Collect, got {other:?}"),
+    }
 }
 
 #[test]

@@ -1,3 +1,4 @@
+use crate::aggregate::DEFAULT_OUTLIERS;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -96,6 +97,13 @@ pub struct CollectArgs {
     /// `ANTHROPIC_API_KEY` is not set or to avoid Haiku billing.
     #[arg(long)]
     pub skip_title: bool,
+
+    /// Skip the outcome extraction pass (commits, PRs opened, Confluence/Jira writes, Slack
+    /// messages, files edited) mined from session transcripts. Skips the extra per-file read;
+    /// the produced report carries `outcomes-enabled: false` and no `outcomes` fields anywhere.
+    /// Default: extraction on.
+    #[arg(long)]
+    pub no_outcomes: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -134,6 +142,10 @@ pub struct RenderArgs {
     /// as `--pdf-engine`; `pandoc` is the required binary that must be on `PATH`.
     #[arg(long, default_value = "wkhtmltopdf")]
     pub pdf_engine: String,
+
+    /// Number of top-spend sessions to include in the outlier table.
+    #[arg(long, default_value_t = DEFAULT_OUTLIERS)]
+    pub outliers: usize,
 }
 
 #[derive(clap::Args, Debug)]

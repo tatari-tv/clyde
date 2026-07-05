@@ -1,5 +1,5 @@
-use super::{ReportCli, extract_version};
-use clap::CommandFactory;
+use super::{Command, ReportCli, extract_version};
+use clap::{CommandFactory, Parser};
 
 /// The six placeholders `render_custom` (report/src/render.rs) actually replaces.
 /// Kept here so a drift between the help text and the real implementation fails a test
@@ -82,6 +82,37 @@ fn pdf_engine_help_names_pandoc_as_the_required_binary() {
         help.contains("pandoc") && help.contains("--pdf-engine"),
         "pdf-engine help does not name pandoc as the invoked binary: {help}"
     );
+}
+
+#[test]
+fn no_outcomes_flag_is_a_bare_boolean_defaulting_false() {
+    let cli = ReportCli::try_parse_from(["cr", "collect"]).expect("collect with no flags parses");
+    match cli.args.command {
+        Command::Collect(args) => assert!(!args.no_outcomes, "extraction is on by default"),
+        _ => panic!("expected Collect"),
+    }
+
+    let cli =
+        ReportCli::try_parse_from(["cr", "collect", "--no-outcomes"]).expect("--no-outcomes parses as a bare flag");
+    match cli.args.command {
+        Command::Collect(args) => assert!(args.no_outcomes),
+        _ => panic!("expected Collect"),
+    }
+}
+
+#[test]
+fn outliers_flag_defaults_to_default_outliers_const_and_accepts_a_value() {
+    let cli = ReportCli::try_parse_from(["cr", "render"]).expect("render with no flags parses");
+    match cli.args.command {
+        Command::Render(args) => assert_eq!(args.outliers, crate::aggregate::DEFAULT_OUTLIERS),
+        _ => panic!("expected Render"),
+    }
+
+    let cli = ReportCli::try_parse_from(["cr", "render", "--outliers", "3"]).expect("--outliers 3 parses");
+    match cli.args.command {
+        Command::Render(args) => assert_eq!(args.outliers, 3),
+        _ => panic!("expected Render"),
+    }
 }
 
 #[test]
