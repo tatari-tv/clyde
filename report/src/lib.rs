@@ -43,6 +43,8 @@ pub struct RunResult {
 pub enum OutputDest {
     File(PathBuf),
     Stdout,
+    /// A published marquee post; carries the resulting URL (from `--format marquee-*`).
+    Marquee(String),
 }
 
 impl std::fmt::Display for OutputDest {
@@ -50,6 +52,7 @@ impl std::fmt::Display for OutputDest {
         match self {
             OutputDest::File(p) => write!(f, "{}", p.display()),
             OutputDest::Stdout => write!(f, "stdout"),
+            OutputDest::Marquee(url) => write!(f, "{}", url),
         }
     }
 }
@@ -84,10 +87,18 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     }
 
     let result = run_with_config(&config).context("report failed")?;
-    // HAZARD 1 (review-flagged): this MUST go to stderr, not stdout. When collect streams its
-    // JSON to stdout (`-o` omitted), a `println!` here would interleave on stdout and corrupt
-    // the JSON stream that `... | jq` consumes.
+    // HAZARD 1 (review-flagged): the status line MUST go to stderr, not stdout. When collect
+    // streams its JSON to stdout (`-o` omitted), a `println!` here would interleave on stdout and
+    // corrupt the JSON stream that `... | jq` consumes.
     eprintln!("wrote {} sessions to {}", result.sessions_emitted, result.output);
+    // A published marquee post's whole value is a shareable URL, so ALSO emit the bare URL to
+    // stdout — that is the machine-readable result (`url=$(clyde report render --format ...)`),
+    // matching the collect convention of "payload on stdout, status on stderr". Other destinations
+    // (file/stdout-markdown) have no separate machine result: the file path is in the status line
+    // and markdown was already written to stdout by render.
+    if let OutputDest::Marquee(url) = &result.output {
+        println!("{url}");
+    }
     Ok(0)
 }
 

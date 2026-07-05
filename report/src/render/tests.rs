@@ -390,7 +390,8 @@ fn render_run_writes_markdown_file_with_custom_template() {
         command: ResolvedCommand::Render(RenderConfig {
             input: json_path.clone(),
             output: Some(md.clone()),
-            pdf: false,
+            format: crate::cli::Format::Markdown,
+            space: None,
             template: Some(template_path),
             prompt: None,
             include_tradeoffs: false,
@@ -415,7 +416,8 @@ fn render_run_rejects_yaml_input_extension() {
         command: ResolvedCommand::Render(RenderConfig {
             input: yml,
             output: None,
-            pdf: false,
+            format: crate::cli::Format::Markdown,
+            space: None,
             template: None,
             prompt: None,
             include_tradeoffs: false,
@@ -435,9 +437,9 @@ fn render_run_rejects_yaml_input_extension() {
 #[test]
 fn default_output_uses_since_yyyy_mm() {
     let report = sample_report(); // since = 2026-04-01
-    let md = default_output_path(&report, false);
+    let md = default_output_path(&report, crate::cli::Format::Markdown);
     assert_eq!(md, std::path::PathBuf::from("./2026-04-claude-report.md"));
-    let pdf = default_output_path(&report, true);
+    let pdf = default_output_path(&report, crate::cli::Format::Pdf);
     assert_eq!(pdf, std::path::PathBuf::from("./2026-04-claude-report.pdf"));
 }
 

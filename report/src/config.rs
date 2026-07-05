@@ -63,8 +63,12 @@ pub struct RenderConfig {
     pub input: PathBuf,
     /// Explicit output path. When `None`, render::run resolves a default of the form
     /// `./<YYYY-MM>-claude-report.{md,pdf}` using the `since` field from the input JSON.
+    /// Always `None` for the `marquee-*` formats (rejected during resolution).
     pub output: Option<PathBuf>,
-    pub pdf: bool,
+    /// Selected output format. `markdown`/`pdf` write locally; `marquee-*` publish to marquee.
+    pub format: crate::cli::Format,
+    /// Target marquee space for the `marquee-*` formats; `None` uses the caller's personal space.
+    pub space: Option<String>,
     pub template: Option<PathBuf>,
     pub prompt: Option<PathBuf>,
     pub include_tradeoffs: bool,
@@ -100,12 +104,27 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
             ResolvedCommand::Collect(collect_config_from_args(args, tz)?)
         }
         crate::cli::Command::Render(args) => {
-            let pdf = args.pdf;
+            // Effective format precedence: `--format` on the CLI, else the `render.format` default
+            // from `clyde.yml`, else the built-in markdown. Config is only read when the flag is
+            // absent, so a `--format` invocation never depends on (or is broken by) the config file.
+            let format = match args.format {
+                Some(f) => f,
+                None => common::config::load()?.render_format().into(),
+            };
+            // A marquee post's output is a published URL, not a path; `-o` has no meaning there.
+            // Reject against the RESOLVED format (so a config-set marquee default is caught too).
+            if format.is_marquee() && args.output.is_some() {
+                bail!(
+                    "-o/--output is not valid with --format {:?}; marquee output is a published URL",
+                    format
+                );
+            }
             let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_INPUT));
             ResolvedCommand::Render(RenderConfig {
                 input,
                 output: args.output,
-                pdf,
+                format,
+                space: args.space,
                 template: args.template,
                 prompt: args.prompt,
                 include_tradeoffs: args.include_tradeoffs,

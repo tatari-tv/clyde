@@ -1,10 +1,43 @@
 use crate::aggregate::DEFAULT_OUTLIERS;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::LazyLock;
 
 static HELP_TEXT: LazyLock<String> = LazyLock::new(get_tool_validation_help);
+
+/// Output format for `report render`, selected via `--format` (case-insensitive, kebab-case).
+/// `markdown` (default) and `pdf` write locally (see `-o`); the two `marquee-*` variants publish
+/// to marquee and print the resulting URL instead of writing a file.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[clap(rename_all = "kebab-case")]
+pub enum Format {
+    #[default]
+    Markdown,
+    Pdf,
+    MarqueeHtml,
+    MarqueeMarkdown,
+}
+
+impl Format {
+    /// The two publishing variants, whose output is a marquee URL rather than a local path.
+    pub fn is_marquee(self) -> bool {
+        matches!(self, Format::MarqueeHtml | Format::MarqueeMarkdown)
+    }
+}
+
+/// Map the `clyde.yml` `render.format` config value onto the CLI [`Format`]. Lives here (not in
+/// `common`) because the mapping's target type is owned by this crate.
+impl From<common::config::FormatConfig> for Format {
+    fn from(value: common::config::FormatConfig) -> Self {
+        match value {
+            common::config::FormatConfig::Markdown => Format::Markdown,
+            common::config::FormatConfig::Pdf => Format::Pdf,
+            common::config::FormatConfig::MarqueeHtml => Format::MarqueeHtml,
+            common::config::FormatConfig::MarqueeMarkdown => Format::MarqueeMarkdown,
+        }
+    }
+}
 
 /// The report command surface, nested under `clyde report ...`. Derives `Args` (not `Parser`)
 /// so it can be a `Subcommand` payload in the clyde umbrella; carries no common globals (clyde
@@ -53,11 +86,12 @@ pub enum Command {
     /// With `-o <path>`, writes the JSON report to that file; without `-o`, streams
     /// the JSON to stdout so `report collect | jq` works.
     Collect(CollectArgs),
-    /// Render a collected JSON report into Markdown (or PDF via `--pdf`).
+    /// Render a collected JSON report into Markdown, PDF, or a published marquee post (`--format`).
     ///
-    /// Reads the JSON produced by `collect` (default: `./claude-report.json`) and writes
-    /// a human-readable Markdown summary, optionally converting it to PDF with the
-    /// configured `--pdf-engine`.
+    /// Reads the JSON produced by `collect` (default: `./claude-report.json`) and writes a
+    /// human-readable Markdown summary. `--format pdf` converts it with the configured
+    /// `--pdf-engine`; `--format marquee-markdown` / `marquee-html` publish it to marquee and
+    /// print the resulting URL.
     Render(RenderArgs),
     /// Merge two or more collected JSON reports into one.
     ///
@@ -112,14 +146,24 @@ pub struct RenderArgs {
     #[arg(short, long)]
     pub input: Option<PathBuf>,
 
-    /// Write rendered Markdown (or PDF) to this path. When omitted, the output is
-    /// placed beside the input file with a `.md` (or `.pdf`) extension.
+    /// Write rendered Markdown (or PDF) to this path. When omitted, the output defaults to
+    /// `./<YYYY-MM>-claude-report.{md,pdf}` in the current directory (month derived from the
+    /// report's `since`). Not valid with the `marquee-*` formats, whose output is a published URL.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Convert the rendered Markdown to PDF using `--pdf-engine` after rendering.
+    /// Output format: `markdown`, `pdf`, `marquee-markdown`, or `marquee-html`. When omitted,
+    /// falls back to the `render.format` value in `clyde.yml`, and to `markdown` if that too is
+    /// unset. `markdown`/`pdf` write locally (see `-o`); the `marquee-*` variants publish to
+    /// marquee and print the URL. `pdf` and `marquee-html` require `pandoc`; the `marquee-*`
+    /// variants require the `marquee` CLI with an authenticated session.
+    #[arg(long, value_enum, ignore_case = true)]
+    pub format: Option<Format>,
+
+    /// Target marquee space for the `marquee-*` formats (defaults to your personal ~space).
+    /// Ignored by `markdown`/`pdf`.
     #[arg(long)]
-    pub pdf: bool,
+    pub space: Option<String>,
 
     /// Path to a template that overrides the built-in Markdown template. Rendering is
     /// plain `{{token}}` string replacement over exactly six placeholders: `{{host}}`,
@@ -138,7 +182,7 @@ pub struct RenderArgs {
     #[arg(long)]
     pub include_tradeoffs: bool,
 
-    /// PDF engine to use when `--pdf` is set (default: `wkhtmltopdf`), passed to pandoc
+    /// PDF engine to use when `--format pdf` is set (default: `wkhtmltopdf`), passed to pandoc
     /// as `--pdf-engine`; `pandoc` is the required binary that must be on `PATH`.
     #[arg(long, default_value = "wkhtmltopdf")]
     pub pdf_engine: String,
@@ -219,7 +263,12 @@ fn looks_like_version(s: &str) -> Option<&str> {
 fn get_tool_validation_help() -> String {
     let tools: &[(&str, &str, &str)] = &[
         ("persona", "--version", "report render: persona block in context"),
-        ("pandoc", "--version", "report render --pdf"),
+        ("pandoc", "--version", "report render --format pdf / marquee-html"),
+        (
+            "marquee",
+            "--version",
+            "report render --format marquee-html / marquee-markdown",
+        ),
         ("git", "--version", "report collect: repo detection"),
         ("jq", "--version", "report collect: query JSON report output"),
     ];

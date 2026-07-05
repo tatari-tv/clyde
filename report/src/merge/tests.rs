@@ -276,7 +276,7 @@ fn run_writes_merged_report_to_file() {
     assert_eq!(result.sessions_emitted, 2);
     match result.output {
         OutputDest::File(p) => assert_eq!(p, out),
-        OutputDest::Stdout => panic!("expected file output"),
+        other => panic!("expected file output, got {other:?}"),
     }
 
     // Output round-trips as a valid Report with both sessions and re-summed totals.

@@ -1,4 +1,4 @@
-use super::{Command, ReportCli, extract_version};
+use super::{Command, Format, ReportCli, extract_version};
 use clap::{CommandFactory, Parser};
 
 /// The six placeholders `render_custom` (report/src/render.rs) actually replaces.
@@ -113,6 +113,66 @@ fn outliers_flag_defaults_to_default_outliers_const_and_accepts_a_value() {
         Command::Render(args) => assert_eq!(args.outliers, 3),
         _ => panic!("expected Render"),
     }
+}
+
+#[test]
+fn format_flag_is_none_when_omitted() {
+    // No `--format` parses to None so `resolve_command` can fall back to the `clyde.yml` default
+    // (and then to markdown). The flag no longer carries a clap-level default.
+    let cli = ReportCli::try_parse_from(["cr", "render"]).expect("render with no flags parses");
+    match cli.args.command {
+        Command::Render(args) => assert_eq!(args.format, None),
+        _ => panic!("expected Render"),
+    }
+}
+
+#[test]
+fn format_flag_parses_all_variants_case_insensitively() {
+    let cases = [
+        ("markdown", Format::Markdown),
+        ("pdf", Format::Pdf),
+        ("PDF", Format::Pdf),
+        ("marquee-html", Format::MarqueeHtml),
+        ("Marquee-Html", Format::MarqueeHtml),
+        ("marquee-markdown", Format::MarqueeMarkdown),
+    ];
+    for (input, expected) in cases {
+        let cli = ReportCli::try_parse_from(["cr", "render", "--format", input])
+            .unwrap_or_else(|e| panic!("--format {input} should parse: {e}"));
+        match cli.args.command {
+            Command::Render(args) => assert_eq!(args.format, Some(expected), "for --format {input}"),
+            _ => panic!("expected Render"),
+        }
+    }
+}
+
+#[test]
+fn format_flag_rejects_comma_separated_and_unknown_values() {
+    assert!(
+        ReportCli::try_parse_from(["cr", "render", "--format", "pdf,markdown"]).is_err(),
+        "comma-joined values must not parse (no value_delimiter)"
+    );
+    assert!(
+        ReportCli::try_parse_from(["cr", "render", "--format", "docx"]).is_err(),
+        "unknown format must be rejected by ValueEnum"
+    );
+}
+
+#[test]
+fn format_maps_from_every_config_variant() {
+    use common::config::FormatConfig;
+    assert_eq!(Format::from(FormatConfig::Markdown), Format::Markdown);
+    assert_eq!(Format::from(FormatConfig::Pdf), Format::Pdf);
+    assert_eq!(Format::from(FormatConfig::MarqueeHtml), Format::MarqueeHtml);
+    assert_eq!(Format::from(FormatConfig::MarqueeMarkdown), Format::MarqueeMarkdown);
+}
+
+#[test]
+fn is_marquee_only_true_for_marquee_variants() {
+    assert!(!Format::Markdown.is_marquee());
+    assert!(!Format::Pdf.is_marquee());
+    assert!(Format::MarqueeHtml.is_marquee());
+    assert!(Format::MarqueeMarkdown.is_marquee());
 }
 
 #[test]

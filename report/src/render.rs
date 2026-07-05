@@ -1,4 +1,5 @@
 use crate::aggregate::{self, Aggregates};
+use crate::cli::Format;
 use crate::config::RenderConfig;
 use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::persona::{self, PersonaBlock};
@@ -13,19 +14,25 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 const STDOUT_SIGIL: &str = "-";
+/// Wall-clock ceiling for non-interactive external commands (pandoc, `marquee whoami`/`publish`).
+/// A stalled network publish or a wedged pandoc must not hang `report render` indefinitely.
+const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
 const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
 
 pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
-        "render::run: input={} pdf={} prompt={:?} outliers={}",
+        "render::run: input={} format={:?} space={:?} prompt={:?} outliers={}",
         cfg.input.display(),
-        cfg.pdf,
+        cfg.format,
+        cfg.space,
         cfg.prompt,
         cfg.outliers
     );
@@ -43,11 +50,6 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     let report: Report =
         serde_json::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
 
-    let output = match cfg.output.as_deref() {
-        Some(p) => p.to_path_buf(),
-        None => default_output_path(&report, cfg.pdf),
-    };
-
     let markdown = if let Some(template_path) = cfg.template.as_deref() {
         let template = load_template(Some(template_path))?;
         to_markdown(&report, &template, pricing)
@@ -64,38 +66,66 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
         render_via_opus_text(&context, &prompt)?
     };
 
-    if cfg.pdf {
-        if output.as_os_str() == STDOUT_SIGIL {
-            bail!("--pdf cannot write binary output to stdout; pass -o <path>");
-        }
-        write_pdf(&markdown, &output, &cfg.pdf_engine)?;
-    } else if output.as_os_str() == STDOUT_SIGIL {
-        std::io::stdout()
-            .write_all(markdown.as_bytes())
-            .context("failed to write markdown to stdout")?;
-    } else {
-        let dir = output
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
-        fs::write(&output, &markdown).with_context(|| format!("failed to write markdown to {}", output.display()))?;
-    }
-
-    let dest = if output.as_os_str() == STDOUT_SIGIL {
-        OutputDest::Stdout
-    } else {
-        OutputDest::File(output)
+    let dest = match cfg.format {
+        Format::Markdown => write_local_markdown(&markdown, &report, cfg)?,
+        Format::Pdf => write_local_pdf(&markdown, &report, cfg)?,
+        Format::MarqueeMarkdown => publish_marquee_markdown(&markdown, &report, cfg)?,
+        Format::MarqueeHtml => publish_marquee_html(&markdown, &report, cfg)?,
     };
+
     Ok(RunResult {
         sessions_emitted: report.totals.sessions,
         output: dest,
     })
 }
 
-pub(crate) fn default_output_path(report: &Report, pdf: bool) -> std::path::PathBuf {
+/// Write the rendered markdown to `-o <path>`, to stdout (`-o -`), or to the default
+/// `./<YYYY-MM>-claude-report.md` beside the input when `-o` is omitted.
+fn write_local_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    let output = match cfg.output.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => default_output_path(report, Format::Markdown),
+    };
+    debug!("render::write_local_markdown: output={}", output.display());
+
+    if output.as_os_str() == STDOUT_SIGIL {
+        std::io::stdout()
+            .write_all(markdown.as_bytes())
+            .context("failed to write markdown to stdout")?;
+        return Ok(OutputDest::Stdout);
+    }
+    let dir = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
+    fs::write(&output, markdown).with_context(|| format!("failed to write markdown to {}", output.display()))?;
+    Ok(OutputDest::File(output))
+}
+
+/// Convert the rendered markdown to PDF via pandoc and write it to `-o <path>` or the default
+/// `./<YYYY-MM>-claude-report.pdf`. Binary output cannot stream to stdout.
+fn write_local_pdf(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    let output = match cfg.output.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => default_output_path(report, Format::Pdf),
+    };
+    debug!(
+        "render::write_local_pdf: output={} engine={}",
+        output.display(),
+        cfg.pdf_engine
+    );
+
+    if output.as_os_str() == STDOUT_SIGIL {
+        bail!("--format pdf cannot write binary output to stdout; pass -o <path>");
+    }
+    write_pdf(markdown, &output, &cfg.pdf_engine)?;
+    Ok(OutputDest::File(output))
+}
+
+pub(crate) fn default_output_path(report: &Report, format: Format) -> std::path::PathBuf {
     let prefix = report.since.format("%Y-%m");
-    let ext = if pdf { "pdf" } else { "md" };
+    let ext = if format == Format::Pdf { "pdf" } else { "md" };
     std::path::PathBuf::from(format!("./{}-claude-report.{}", prefix, ext))
 }
 
@@ -510,37 +540,255 @@ fn render_custom(report: &Report, body: &str) -> String {
         .replace("{{total-spend}}", &format_usd(report.totals.spend_usd))
 }
 
+/// Spawn a non-interactive external command with piped stdio and a wall-clock ceiling
+/// ([`SUBPROCESS_TIMEOUT`]); on timeout, kill and reap the child rather than blocking forever
+/// (per the repo's subprocess-hygiene rule; mirrors `persona::whoami_via`). `spawn_err` maps a
+/// spawn failure (e.g. binary-not-found) to a caller-specific message. Only for commands whose
+/// combined output stays well under the OS pipe buffer (URLs, short stderr) — large stdout must go
+/// to a file, not a pipe, to avoid a fill-the-buffer deadlock.
+fn run_bounded(
+    label: &str,
+    cmd: &mut Command,
+    spawn_err: impl FnOnce(std::io::Error) -> eyre::Report,
+) -> Result<Output> {
+    debug!("render::run_bounded: label={label} timeout={:?}", SUBPROCESS_TIMEOUT);
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(spawn_err)?;
+    let status = match child.wait_timeout(SUBPROCESS_TIMEOUT) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            log::warn!("render::run_bounded: {label} timed out after {SUBPROCESS_TIMEOUT:?}, killing child");
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{label} timed out after {SUBPROCESS_TIMEOUT:?}");
+        }
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{label}: failed while waiting: {e}");
+        }
+    };
+    // `wait_timeout` has already reaped the child, so `wait_with_output()` (a second wait on the
+    // same PID) would fail with ECHILD. Read the piped handles directly instead — the process has
+    // exited, and callers only route commands whose output stays well under the pipe buffer here
+    // (large output, e.g. pandoc HTML, goes to a file), so a post-exit drain cannot deadlock.
+    // Mirrors `persona::whoami_via`.
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        out.read_to_end(&mut stdout)
+            .with_context(|| format!("failed to read stdout of {label}"))?;
+    }
+    if let Some(mut err) = child.stderr.take() {
+        err.read_to_end(&mut stderr)
+            .with_context(|| format!("failed to read stderr of {label}"))?;
+    }
+    Ok(Output { status, stdout, stderr })
+}
+
 fn write_pdf(markdown: &str, output: &Path, pdf_engine: &str) -> Result<()> {
+    debug!("render::write_pdf: output={} engine={}", output.display(), pdf_engine);
     let mut tmp = tempfile::NamedTempFile::new().context("failed to create temp markdown for pandoc")?;
     tmp.write_all(markdown.as_bytes())
         .context("failed to write temp markdown for pandoc")?;
     tmp.flush().context("failed to flush temp markdown")?;
 
-    let status = Command::new("pandoc")
-        .arg(tmp.path())
+    let mut cmd = Command::new("pandoc");
+    cmd.arg(tmp.path())
         .arg(format!("--pdf-engine={}", pdf_engine))
         .arg("-o")
-        .arg(output)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status();
-
-    let status = match status {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("pandoc is required for --pdf output but was not found on PATH; install pandoc and try again");
+        .arg(output);
+    let result = run_bounded("pandoc (--format pdf)", &mut cmd, |e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            eyre::eyre!(
+                "pandoc is required for --format pdf output but was not found on PATH; install pandoc and try again"
+            )
+        } else {
+            eyre::eyre!("failed to invoke pandoc: {}", e)
         }
-        Err(e) => return Err(eyre::eyre!("failed to invoke pandoc: {}", e)),
-    };
+    })?;
 
-    if !status.success() {
+    if !result.status.success() {
         bail!(
-            "pandoc exited with {}; the output was not written. If the engine '{}' is missing, install it or pass --pdf-engine=<other>",
-            status,
-            pdf_engine
+            "pandoc exited with {} (engine '{}'); the output was not written. If the engine is missing, install it or pass --pdf-engine=<other>. {}",
+            result.status,
+            pdf_engine,
+            String::from_utf8_lossy(&result.stderr).trim()
         );
     }
     Ok(())
+}
+
+/// Marquee post title / slug seed, derived from the report's period so a temp-dir name never
+/// leaks into the published slug (e.g. `claude-report-2026-07`).
+fn marquee_title(report: &Report) -> String {
+    format!("claude-report-{}", report.since.format("%Y-%m"))
+}
+
+/// Write the rendered markdown as `index.md` in a temp dir and publish it to marquee, letting the
+/// marquee server apply its house style. Returns the published URL.
+fn publish_marquee_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!("render::publish_marquee_markdown: space={:?}", cfg.space);
+    let dir = tempfile::tempdir().context("failed to create temp dir for marquee publish")?;
+    let index = dir.path().join("index.md");
+    fs::write(&index, markdown).with_context(|| format!("failed to write {}", index.display()))?;
+    let url = marquee_publish(dir.path(), report, cfg)?;
+    Ok(OutputDest::Marquee(url))
+}
+
+/// Convert the rendered markdown to standalone HTML via pandoc, write it as `index.html` in a temp
+/// dir, and publish it to marquee (which hosts our HTML as-is). Returns the published URL.
+fn publish_marquee_html(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!("render::publish_marquee_html: space={:?}", cfg.space);
+    let html = markdown_to_html(markdown, report)?;
+    let dir = tempfile::tempdir().context("failed to create temp dir for marquee publish")?;
+    let index = dir.path().join("index.html");
+    fs::write(&index, &html).with_context(|| format!("failed to write {}", index.display()))?;
+    let url = marquee_publish(dir.path(), report, cfg)?;
+    Ok(OutputDest::Marquee(url))
+}
+
+/// Render markdown to a self-contained, styled HTML document via pandoc (`-s --embed-resources`),
+/// so the published `index.html` needs no external assets. pandoc writes to a temp FILE (not a
+/// pipe) because the HTML can exceed the OS pipe buffer, which would deadlock a piped read.
+/// Returns the HTML as a string.
+fn markdown_to_html(markdown: &str, report: &Report) -> Result<String> {
+    debug!("render::markdown_to_html: bytes={}", markdown.len());
+    let mut tmp = tempfile::NamedTempFile::new().context("failed to create temp markdown for pandoc")?;
+    tmp.write_all(markdown.as_bytes())
+        .context("failed to write temp markdown for pandoc")?;
+    tmp.flush().context("failed to flush temp markdown")?;
+    let out = tempfile::NamedTempFile::new().context("failed to create temp HTML for pandoc")?;
+
+    let mut cmd = Command::new("pandoc");
+    cmd.arg(tmp.path())
+        .arg("-f")
+        .arg("markdown")
+        .arg("-t")
+        .arg("html")
+        .arg("-s")
+        .arg("--embed-resources")
+        .arg("--metadata")
+        .arg(format!("title={}", marquee_title(report)))
+        .arg("-o")
+        .arg(out.path());
+    let result = run_bounded("pandoc (--format marquee-html)", &mut cmd, |e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            eyre::eyre!(
+                "pandoc is required for --format marquee-html but was not found on PATH; install pandoc and try again"
+            )
+        } else {
+            eyre::eyre!("failed to invoke pandoc: {}", e)
+        }
+    })?;
+    if !result.status.success() {
+        bail!(
+            "pandoc exited with {} converting markdown to HTML: {}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr).trim()
+        );
+    }
+    fs::read_to_string(out.path()).context("failed to read pandoc HTML output (non-UTF-8 or missing)")
+}
+
+/// Publish a prepared directory (containing `index.md` or `index.html`) to marquee, ensuring an
+/// authenticated session first. Returns the published URL parsed from marquee's stdout.
+fn marquee_publish(dir: &Path, report: &Report, cfg: &RenderConfig) -> Result<String> {
+    debug!("render::marquee_publish: dir={} space={:?}", dir.display(), cfg.space);
+    ensure_marquee_auth()?;
+    let title = marquee_title(report);
+    let mut cmd = Command::new("marquee");
+    cmd.arg("publish")
+        .arg(dir)
+        .arg("--title")
+        .arg(&title)
+        .arg("--output")
+        .arg("url");
+    if let Some(space) = &cfg.space {
+        cmd.arg("--space").arg(space);
+    }
+    let output = run_bounded("marquee publish", &mut cmd, marquee_spawn_err)?;
+    if !output.status.success() {
+        bail!(
+            "marquee publish failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() {
+        bail!("marquee publish reported success but returned no URL");
+    }
+    Ok(url)
+}
+
+/// Ensure a usable marquee session: probe `marquee whoami`, and on failure attempt an interactive
+/// `marquee login` ONCE before re-probing. The login is attempted ONLY when both stdin and stdout
+/// are TTYs — `marquee login` is an interactive browser/device OAuth flow, so auto-launching it
+/// over SSH-without-a-tty, in CI, or under an agent would block `report render` forever. Outside a
+/// TTY (or if login/re-probe still fails) we error with the captured `whoami` detail and the
+/// manual remediation.
+fn ensure_marquee_auth() -> Result<()> {
+    debug!("render::ensure_marquee_auth");
+    let whoami = marquee_whoami()?;
+    if whoami.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&whoami.stderr).trim().to_string();
+    let detail = if detail.is_empty() {
+        "no detail".to_string()
+    } else {
+        detail
+    };
+
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        bail!("not authenticated with marquee (whoami: {detail}); run `marquee login` and retry");
+    }
+
+    log::warn!("marquee: not authenticated ({detail}); attempting interactive `marquee login`");
+    // Interactive: inherit the terminal for the browser/device flow. NOT time-bounded — a human is
+    // driving it — which is exactly why it is gated behind the TTY check above.
+    let status = Command::new("marquee")
+        .arg("login")
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(marquee_spawn_err)?;
+    if !status.success() {
+        bail!("`marquee login` failed ({status}); run `marquee login` manually and retry");
+    }
+    if marquee_whoami()?.status.success() {
+        return Ok(());
+    }
+    bail!("still not authenticated with marquee after login; run `marquee login` and retry");
+}
+
+/// Run `marquee whoami` with a wall-clock timeout, returning its captured output (exit 0 = a valid
+/// cached token). Stderr is preserved so a non-auth failure (e.g. a malformed marquee config) can
+/// be surfaced rather than silently read as "logged out".
+fn marquee_whoami() -> Result<Output> {
+    let mut cmd = Command::new("marquee");
+    cmd.arg("whoami");
+    let output = run_bounded("marquee whoami", &mut cmd, marquee_spawn_err)?;
+    debug!("render::marquee_whoami: success={}", output.status.success());
+    Ok(output)
+}
+
+/// Map a `marquee` spawn error to a helpful message, distinguishing "not installed" from other
+/// invocation failures.
+fn marquee_spawn_err(e: std::io::Error) -> eyre::Report {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        eyre::eyre!(
+            "the `marquee` CLI is required for --format marquee-html / marquee-markdown but was not found on PATH; install it and try again"
+        )
+    } else {
+        eyre::eyre!("failed to invoke marquee: {}", e)
+    }
 }
 
 #[cfg(test)]
