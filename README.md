@@ -33,6 +33,14 @@ clyde doctor                                                             # healt
 
 `clyde` owns one common global, `--log-level`, and passes it down to each tool.
 
+## External tools in `--help`
+
+Subcommands that shell out to external binaries (not linked libraries) advertise them, with live
+install status, in a `REQUIRED TOOLS` block at the end of their `--help`: `clyde report` (persona,
+pandoc, marquee, git, jq), `clyde session resume` (claude), `clyde permit apply` (rkvr), and
+`clyde bootstrap` (systemctl). The probes run only when that specific `--help` is requested, never
+on a normal invocation. Rendering lives in `common::tools`.
+
 ## Log paths
 
 `clyde report` / `clyde cost` / `clyde permit` all log to the unified

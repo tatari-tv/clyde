@@ -338,6 +338,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tempfile",
+ "wait-timeout",
 ]
 
 [[package]]

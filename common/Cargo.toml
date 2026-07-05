@@ -20,3 +20,4 @@ log.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_yaml.workspace = true
 tempfile.workspace = true
+wait-timeout = "0.2.1"

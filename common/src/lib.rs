@@ -3,20 +3,19 @@
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
-//! The clyde-common surface: the single set of common CLI globals that the `clyde` umbrella
-//! owns at the top level and passes down to each absorbed tool's `run(args, globals)` entry
-//! point. Each tool's standalone shim wrapper (`*Cli`) reconstructs a [`Globals`] from its own
-//! fields via a `globals()` accessor; that accessor is the integration seam between the
-//! `Args`-deriving inner type (nested under clyde) and the `Parser`-deriving outer wrapper
-//! (used by the compat shim).
+//! The clyde-common surface: the common CLI globals the `clyde` umbrella owns at the top level
+//! and passes down to each absorbed tool's `run(args, globals)` entry point, plus shared helpers
+//! (config loading, `--since` parsing, atomic writes, and external-tool `--help` advertising).
 
 pub mod atomic;
 pub mod config;
 pub mod since;
+pub mod tools;
 
 pub use atomic::write_atomic;
 pub use config::Config;
 pub use since::{DateTz, parse_since};
+pub use tools::{Tool, required_tools_help};
 
 /// Common globals shared across every clyde subcommand.
 ///

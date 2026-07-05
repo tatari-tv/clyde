@@ -44,12 +44,33 @@ fn main() -> Result<()> {
     let log_path = session::paths::data_root().join("logs").join("clyde.log");
     let after_help = format!("Logs are written to: {}", log_path.display());
     let mut command = Cli::command().after_help(after_help);
-    // `clyde report --help` ends with report's REQUIRED TOOLS block (pandoc/marquee/git/jq
-    // status). Building it spawns a `--version` probe per tool, so attach it only when the user
-    // is actually asking for report's help — never on a normal `clyde report ...` invocation.
+    // Subcommands that shell out to external binaries advertise them in a REQUIRED TOOLS block at
+    // the end of their `--help`. Building a block spawns a `--version` probe per tool, so attach
+    // one only when that specific subcommand's help is requested — never on a normal run.
     let argv: Vec<String> = std::env::args().collect();
-    if cli::report_help_requested(&argv) {
-        command = command.mut_subcommand("report", |c| c.after_help(report::tool_validation_help()));
+    if let Some(path) = cli::help_target(&argv) {
+        let path: Vec<&str> = path.iter().map(String::as_str).collect();
+        command = match path.as_slice() {
+            ["report"] => command.mut_subcommand("report", |c| c.after_help(report::tool_validation_help())),
+            ["permit", "apply"] => command.mut_subcommand("permit", |p| {
+                p.mut_subcommand("apply", |a| a.after_help(permit::apply_tools_help()))
+            }),
+            ["session", "resume"] => command.mut_subcommand("session", |s| {
+                s.mut_subcommand("resume", |r| {
+                    r.after_help(common::required_tools_help(&[common::Tool {
+                        name: "claude",
+                        purpose: "session resume: exec `claude --resume <id>`",
+                    }]))
+                })
+            }),
+            ["bootstrap"] => command.mut_subcommand("bootstrap", |b| {
+                b.after_help(common::required_tools_help(&[common::Tool {
+                    name: "systemctl",
+                    purpose: "bootstrap: repoint the enrich systemd user timer",
+                }]))
+            }),
+            _ => command,
+        };
     }
     let cli = Cli::from_arg_matches(&command.get_matches())?;
     // The absorbed tools (report/cost/permit) own their own logging, output, and exit code, so
