@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use eyre::{Context, Result};
 use log::{LevelFilter, info};
 
-pub use cli::{Command, PermitArgs, PermitCli};
+pub use cli::{Command, PermitArgs};
 
 use crate::config::Config;
 use crate::db::EventStore;
@@ -25,8 +25,8 @@ use crate::risk::Rules;
 use crate::settings::discover_settings_local;
 
 /// Path to permit's log file, unified under `<xdg-data>/clyde/logs/permit.log` (Phase 8, D3: log
-/// paths are declared outside the behavior-exact shim surface). `pub` so `PermitCli`'s after-help
-/// and the `claude-permit` shim render the same dynamic path the logger actually writes.
+/// paths are declared outside the behavior-exact shim surface). `pub` so the caller renders the
+/// same dynamic path the logger actually writes.
 pub fn log_file_path() -> PathBuf {
     crate::config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))

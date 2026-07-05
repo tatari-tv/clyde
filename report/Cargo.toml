@@ -10,12 +10,6 @@ description = "Scan Claude Code session JSONL files and emit a per-host JSON rep
 name = "report"
 path = "src/lib.rs"
 
-# Compat shim: the standalone `cr` binary parses the Parser-deriving ReportCli wrapper and calls
-# report::run in-process. Behavior-exact with the pre-merge tool; clyde nests ReportArgs instead.
-[[bin]]
-name = "cr"
-path = "src/bin/cr.rs"
-
 [lints]
 workspace = true
 

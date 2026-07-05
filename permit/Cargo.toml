@@ -10,13 +10,6 @@ description = "Manage Claude Code permission hygiene - log, audit, suggest, repo
 name = "permit"
 path = "src/lib.rs"
 
-# Compat shim: the standalone `claude-permit` binary parses the Parser-deriving PermitCli wrapper
-# and calls permit::run in-process. Behavior-exact with the pre-merge tool, including the
-# hook-safe `{}`-on-failure contract; clyde nests PermitArgs instead.
-[[bin]]
-name = "claude-permit"
-path = "src/bin/claude-permit.rs"
-
 [lints]
 workspace = true
 

@@ -1,8 +1,8 @@
-//! Integration test for `report collect` stdout streaming (Phase 6, #10b).
+//! Integration test for `clyde report collect` stdout streaming.
 //!
-//! Driven through the real `cr` binary so stdout and stderr are genuine, separable streams —
+//! Driven through the real `clyde` binary so stdout and stderr are genuine, separable streams —
 //! the only way to prove HAZARD 1 (the "wrote N sessions" note must NOT corrupt the JSON on
-//! stdout) end to end.
+//! stdout) end to end. (Formerly `report/tests/collect.rs`, which drove the removed `cr` shim.)
 
 use std::fs;
 use std::io::Write;
@@ -35,9 +35,10 @@ fn stdout_mode_streams_valid_json_and_message_to_stderr() {
         ],
     );
 
-    let bin = env!("CARGO_BIN_EXE_cr");
+    let bin = env!("CARGO_BIN_EXE_clyde");
     let out = std::process::Command::new(bin)
         .args([
+            "report",
             "collect",
             "--skip-title",
             "--since",
@@ -48,9 +49,13 @@ fn stdout_mode_streams_valid_json_and_message_to_stderr() {
         ])
         .arg(&projects)
         .output()
-        .expect("cr collect should run");
+        .expect("clyde report collect should run");
 
-    assert!(out.status.success(), "cr collect exited non-zero: {:?}", out.status);
+    assert!(
+        out.status.success(),
+        "clyde report collect exited non-zero: {:?}",
+        out.status
+    );
 
     let stdout = String::from_utf8(out.stdout).unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
@@ -60,9 +65,9 @@ fn stdout_mode_streams_valid_json_and_message_to_stderr() {
     assert_eq!(value["totals"]["sessions"], 1);
     assert!(value["sessions"].get(SID_A).is_some());
 
-    // Phase 4: a pre-v2.1.159-shaped transcript (no gitOperation/tool_use signals) still collects
-    // green, extraction still ran (outcomes-enabled true), the rollup is present but all-zero, and
-    // the session carries no `outcomes` key (none observed, per SessionEntry's skip-if-absent).
+    // A pre-v2.1.159-shaped transcript (no gitOperation/tool_use signals) still collects green,
+    // extraction still ran (outcomes-enabled true), the rollup is present but all-zero, and the
+    // session carries no `outcomes` key (none observed, per SessionEntry's skip-if-absent).
     assert_eq!(value["outcomes-enabled"], true);
     assert_eq!(value["totals"]["outcomes"]["commits"], 0);
     assert!(

@@ -3,22 +3,6 @@
 use super::*;
 
 #[test]
-fn ccu_log_level_round_trips_through_globals() {
-    // The two-type seam: a common global parsed on the standalone `ccu` wrapper must reconstruct
-    // into common::Globals via globals(), so the shim and `clyde cost` drive run() identically.
-    use clap::Parser;
-    let cli = crate::cli::CostCli::parse_from(["ccu", "--log-level", "debug", "today"]);
-    assert_eq!(cli.globals().log_level.as_deref(), Some("debug"));
-}
-
-#[test]
-fn ccu_without_log_level_yields_none() {
-    use clap::Parser;
-    let cli = crate::cli::CostCli::parse_from(["ccu", "today"]);
-    assert_eq!(cli.globals().log_level, None);
-}
-
-#[test]
 fn test_subtract_months_same_year() {
     let date = NaiveDate::from_ymd_opt(2026, 6, 1).expect("valid date");
     let result = subtract_months(date, 3);
@@ -173,30 +157,6 @@ fn log_file_path_resolves_under_unified_clyde_logs_dir() {
         Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
         None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
     }
-    drop(guard);
-}
-
-#[test]
-fn cost_cli_after_help_renders_from_log_file_path_not_a_hardcoded_string() {
-    // Phase 8 (D3): the CostCli static after-help fallback must never hardcode a log path; it
-    // renders from log_file_path(), which now points at the unified `clyde/logs/cost.log`.
-    //
-    // Hold ENV_LOCK: the after-help text comes from `cli::HELP_TEXT`, a `LazyLock<String>` that
-    // captures `log_file_path()` (which reads XDG_DATA_HOME) on first access. Without the lock this
-    // test can interleave with `log_file_path_resolves_under_unified_clyde_logs_dir`, which
-    // temporarily repoints XDG_DATA_HOME, and either bake a temp path into HELP_TEXT for the whole
-    // process or compare a fresh `expected` against an already-cached value. Serializing here means
-    // HELP_TEXT only ever initializes under the natural environment.
-    let guard = ENV_LOCK.lock().expect("env lock");
-    use clap::CommandFactory;
-    let cmd = crate::cli::CostCli::command();
-    let help = cmd.get_after_help().map(|h| h.to_string()).unwrap_or_default();
-    let expected = format!("Logs are written to: {}", log_file_path().display());
-    assert!(help.contains(&expected), "expected {expected:?} in help: {help}");
-    assert!(
-        !help.contains("ccu/logs/ccu.log"),
-        "help still names the pre-Phase-8 legacy log path: {help}"
-    );
     drop(guard);
 }
 

@@ -4,10 +4,8 @@ name: release
 # clyde umbrella binary for the four standard targets (linux amd64/arm64, macOS
 # x86_64/arm64), tarballs + sha256 each, and publishes the GitHub Release.
 #
-# Only the canonical `clyde` binary is shipped here. The cr/ccu/claude-permit compat
-# shims live in non-default workspace members (report/cost/permit) that a plain
-# `cargo build --release` does not build, and they are a transitional source-install
-# aid - so the release intentionally ships clyde alone.
+# Only the canonical `clyde` binary is shipped. The report/cost/permit members are
+# libraries reached through `clyde` subcommands; there are no separate binaries.
 
 on:
   push:

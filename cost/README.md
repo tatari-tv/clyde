@@ -5,7 +5,6 @@ also installs the Claude Code statusline. A member crate of the [`clyde`](../REA
 workspace.
 
 - Umbrella: `clyde cost <today|yesterday|daily|weekly|monthly|session|statusline|pricing>`
-- Compat shim: `ccu ...` (behavior-exact with the pre-merge `claude-cost-usage` tool)
 
-Library API: `cost::{CostArgs, CostCli, run}`. See the top-level README and
+Library API: `cost::{CostArgs, run}`. See the top-level README and
 `docs/design/2026-06-24-clyde-umbrella-cli.md` for the umbrella architecture.

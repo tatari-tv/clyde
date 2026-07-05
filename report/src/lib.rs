@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-pub use cli::{ReportArgs, ReportCli};
+pub use cli::ReportArgs;
 pub use config::{Config, ResolvedCommand};
 
 #[derive(Debug)]
@@ -103,8 +103,8 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
 }
 
 /// Path to report's log file, unified under `<xdg-data>/clyde/logs/report.log` (Phase 8, D3: log
-/// paths are declared outside the behavior-exact shim surface). `pub` so `ReportCli`'s after-help
-/// (the REQUIRED TOOLS block) renders the same dynamic path the logger actually writes.
+/// paths are declared outside the behavior-exact shim surface). `pub` so the caller renders the
+/// same dynamic path the logger actually writes.
 pub fn log_file_path() -> PathBuf {
     crate::config::xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))

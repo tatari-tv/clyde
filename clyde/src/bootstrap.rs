@@ -36,8 +36,8 @@ pub struct BootstrapArgs {
 
     /// Skip the statusline repoint (ccu -> clyde cost). Use when `~/.claude/statusline.sh` is
     /// managed elsewhere (e.g. a dotfiles symlink) and you will repoint it yourself. An existing
-    /// ccu-based statusline keeps working via the `ccu` compat shim for now, but the shims are
-    /// transitional — repoint it to `clyde cost` so it survives their eventual removal.
+    /// ccu-based statusline will break once the old `ccu` binary is gone, so repoint it to
+    /// `clyde cost`.
     #[arg(long)]
     pub skip_statusline: bool,
 
