@@ -49,7 +49,17 @@ fn run_fold(files: &[SessionFile], parsed: HashMap<PathBuf, ParseResult>, no_rol
     let until = ts("2030-01-01T00:00:00Z");
     let mut resolver = Resolver::default();
     let titles = HashMap::new();
-    fold(files, &parsed, since, until, no_rollup, &mut resolver, &titles)
+    let outcomes = HashMap::new();
+    fold(
+        files,
+        &parsed,
+        &outcomes,
+        since,
+        until,
+        no_rollup,
+        &mut resolver,
+        &titles,
+    )
 }
 
 #[test]
@@ -219,7 +229,8 @@ fn since_until_window_filters_out_session() {
     let until = ts("2030-01-01T00:00:00Z");
     let mut resolver = Resolver::default();
     let titles = HashMap::new();
-    let out = fold(&[f], &parsed, since, until, false, &mut resolver, &titles);
+    let outcomes = HashMap::new();
+    let out = fold(&[f], &parsed, &outcomes, since, until, false, &mut resolver, &titles);
     assert!(out.is_empty());
 }
 
@@ -277,7 +288,8 @@ fn existing_title_carried_forward() {
     let mut resolver = Resolver::default();
     let mut titles = HashMap::new();
     titles.insert(SID_A.into(), "do the thing".into());
-    let out = fold(&[f], &parsed, since, until, false, &mut resolver, &titles);
+    let outcomes = HashMap::new();
+    let out = fold(&[f], &parsed, &outcomes, since, until, false, &mut resolver, &titles);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].title.as_deref(), Some("do the thing"));
 }

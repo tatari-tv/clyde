@@ -8,6 +8,7 @@ pub mod cli;
 pub mod config;
 pub mod fmt;
 pub mod merge;
+pub mod outcome;
 pub mod persona;
 pub mod render;
 pub mod repo;
@@ -138,16 +139,42 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     let files = scan::find_session_files(&cfg.projects_dir)?;
     log::info!("run_collect: discovered {} session files", files.len());
 
-    let parsed: HashMap<PathBuf, ParseResult> = files
+    // Each file is read twice inside the SAME par_iter closure while it is page-cache-hot: once
+    // for pricing/usage (`parse_jsonl_file`) and once for outcome signals (`outcome::extract`).
+    // Outcome extraction receives the period bounds so records are filtered by their initiating
+    // timestamp at extraction time (D8).
+    let scanned: Vec<(PathBuf, ParseResult, outcome::FileOutcomes)> = files
         .par_iter()
-        .filter_map(|f| match parse_jsonl_file(&f.path) {
-            Ok(r) => Some((f.path.clone(), r)),
-            Err(e) => {
-                log::warn!("parse failed for {}: {}", f.path.display(), e);
-                None
-            }
+        .filter_map(|f| {
+            let parsed = match parse_jsonl_file(&f.path) {
+                Ok(r) => r,
+                Err(e) => {
+                    log::warn!("parse failed for {}: {}", f.path.display(), e);
+                    return None;
+                }
+            };
+            let outcomes = match outcome::extract(&f.path, cfg.since, cfg.until) {
+                Ok(o) => o,
+                Err(e) => {
+                    // Fail closed: outcomes absent for this file, usage still counts.
+                    log::warn!(
+                        "outcome extraction failed for {}: {} (outcomes absent for this file)",
+                        f.path.display(),
+                        e
+                    );
+                    outcome::FileOutcomes::default()
+                }
+            };
+            Some((f.path.clone(), parsed, outcomes))
         })
         .collect();
+
+    let mut parsed: HashMap<PathBuf, ParseResult> = HashMap::with_capacity(scanned.len());
+    let mut outcomes: HashMap<PathBuf, outcome::FileOutcomes> = HashMap::with_capacity(scanned.len());
+    for (path, pr, fo) in scanned {
+        parsed.insert(path.clone(), pr);
+        outcomes.insert(path, fo);
+    }
 
     // Titles are cached across runs in the prior report file. HAZARD 2 (review-flagged,
     // financial): the title cache MUST still be seeded when streaming to stdout (no `-o`), or
@@ -166,6 +193,7 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     let mut summaries = session::fold(
         &files,
         &parsed,
+        &outcomes,
         cfg.since,
         cfg.until,
         cfg.no_rollup,

@@ -1,8 +1,10 @@
+use crate::outcome::{FileOutcomes, Outcomes, PrRef};
 use crate::repo::Resolver;
 use crate::scan::{SessionFile, SessionFileKind};
 use chrono::{DateTime, Utc};
 use claude_pricing::{AssistantEntry, ParseResult, TokenUsage, normalize_model_id};
-use std::collections::{BTreeMap, HashMap};
+use log::debug;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default)]
@@ -55,6 +57,9 @@ pub struct SessionSummary {
     pub models: BTreeMap<String, TokenTotals>,
     pub jsonl_paths: Vec<PathBuf>,
     pub title: Option<String>,
+    /// Union of extracted outcomes across the session group's files (parent + subagents), deduped
+    /// (commits by sha, PRs by url, files by path). `None` when no outcome was observed.
+    pub outcomes: Option<Outcomes>,
 }
 
 impl SessionSummary {
@@ -66,6 +71,7 @@ impl SessionSummary {
 pub fn fold(
     files: &[SessionFile],
     parsed: &HashMap<PathBuf, ParseResult>,
+    outcomes: &HashMap<PathBuf, FileOutcomes>,
     since: DateTime<Utc>,
     until: DateTime<Utc>,
     no_rollup: bool,
@@ -98,12 +104,13 @@ pub fn fold(
 
     let mut out = Vec::with_capacity(groups.len());
     for mut g in groups.into_values() {
-        let summary = match g.finalize(since, until, resolver, existing_titles) {
+        let summary = match g.finalize(since, until, resolver, existing_titles, outcomes) {
             Some(s) => s,
             None => continue,
         };
         out.push(summary);
     }
+    debug!("session::fold: emitted {} session summaries", out.len());
     out
 }
 
@@ -159,6 +166,7 @@ impl GroupBuilder {
         until: DateTime<Utc>,
         resolver: &mut Resolver,
         existing_titles: &HashMap<String, String>,
+        outcomes: &HashMap<PathBuf, FileOutcomes>,
     ) -> Option<SessionSummary> {
         let kept: Vec<AssistantEntry> = dedupe(std::mem::take(&mut self.entries))
             .into_iter()
@@ -167,6 +175,10 @@ impl GroupBuilder {
         if kept.is_empty() {
             return None;
         }
+
+        // Union outcomes across all of this group's files (parent + subagents) BEFORE the path
+        // vecs are drained into `jsonl_paths` below.
+        let outcomes_union = union_outcomes(&self.parent_paths, &self.subagent_paths, outcomes);
 
         let mut models: BTreeMap<String, TokenTotals> = BTreeMap::new();
         let mut begin = kept[0].timestamp;
@@ -202,7 +214,57 @@ impl GroupBuilder {
             models,
             jsonl_paths,
             title,
+            outcomes: outcomes_union,
         })
+    }
+}
+
+/// Union the per-file [`FileOutcomes`] for every file in a session group into the persisted,
+/// per-session [`Outcomes`] shape: commits deduped by sha, PRs deduped by url, edited file paths
+/// deduped then counted, and the MCP counts summed (they carry no cross-file identity to dedupe
+/// on). Returns `None` when the group observed no outcome at all.
+fn union_outcomes(
+    parent_paths: &[PathBuf],
+    subagent_paths: &[PathBuf],
+    outcomes: &HashMap<PathBuf, FileOutcomes>,
+) -> Option<Outcomes> {
+    let mut commits: BTreeSet<String> = BTreeSet::new();
+    let mut prs: Vec<PrRef> = Vec::new();
+    let mut seen_urls: HashSet<String> = HashSet::new();
+    let mut files: BTreeSet<String> = BTreeSet::new();
+    let mut confluence_writes: u64 = 0;
+    let mut jira_writes: u64 = 0;
+    let mut slack_messages: u64 = 0;
+
+    for path in parent_paths.iter().chain(subagent_paths.iter()) {
+        let Some(fo) = outcomes.get(path) else {
+            continue;
+        };
+        commits.extend(fo.commits.iter().cloned());
+        for pr in &fo.prs {
+            if seen_urls.insert(pr.url.clone()) {
+                prs.push(pr.clone());
+            }
+        }
+        files.extend(fo.files_edited.iter().cloned());
+        confluence_writes += fo.confluence_writes;
+        jira_writes += fo.jira_writes;
+        slack_messages += fo.slack_messages;
+    }
+
+    let result = Outcomes {
+        commits: commits.into_iter().collect(),
+        prs,
+        confluence_writes,
+        jira_writes,
+        slack_messages,
+        files_edited: files.len() as u64,
+    };
+
+    if result == Outcomes::default() {
+        None
+    } else {
+        Some(result)
     }
 }
 

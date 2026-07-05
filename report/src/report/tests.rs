@@ -39,6 +39,7 @@ fn sample_summary(sid: &str, title: Option<&str>) -> SessionSummary {
         models,
         jsonl_paths: vec![PathBuf::from("/path/to/parent.jsonl")],
         title: title.map(str::to_string),
+        outcomes: None,
     }
 }
 
@@ -182,6 +183,7 @@ fn summary_with_models(sid: &str, models: BTreeMap<String, TokenTotals>) -> Sess
         models,
         jsonl_paths: vec![],
         title: None,
+        outcomes: None,
     }
 }
 
