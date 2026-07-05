@@ -43,7 +43,15 @@ fn main() -> Result<()> {
     reset_sigpipe();
     let log_path = session::paths::data_root().join("logs").join("clyde.log");
     let after_help = format!("Logs are written to: {}", log_path.display());
-    let cli = Cli::from_arg_matches(&Cli::command().after_help(after_help).get_matches())?;
+    let mut command = Cli::command().after_help(after_help);
+    // `clyde report --help` ends with report's REQUIRED TOOLS block (pandoc/marquee/git/jq
+    // status). Building it spawns a `--version` probe per tool, so attach it only when the user
+    // is actually asking for report's help — never on a normal `clyde report ...` invocation.
+    let argv: Vec<String> = std::env::args().collect();
+    if cli::report_help_requested(&argv) {
+        command = command.mut_subcommand("report", |c| c.after_help(report::tool_validation_help()));
+    }
+    let cli = Cli::from_arg_matches(&command.get_matches())?;
     // The absorbed tools (report/cost/permit) own their own logging, output, and exit code, so
     // clyde must NOT install a logger for those arms — env_logger can only be initialized once
     // per process. Only the clyde-native `sessions` subtree sets up clyde's logger here.

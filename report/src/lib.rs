@@ -17,6 +17,7 @@ pub mod scan;
 pub mod session;
 pub mod summarize;
 pub mod title;
+pub mod tools;
 
 use crate::config::{CollectConfig, Output};
 use claude_pricing::{ParseResult, Pricing, parse_jsonl_file};
@@ -29,6 +30,7 @@ use std::str::FromStr;
 
 pub use cli::ReportArgs;
 pub use config::{Config, ResolvedCommand};
+pub use tools::tool_validation_help;
 
 #[derive(Debug)]
 pub struct RunResult {
