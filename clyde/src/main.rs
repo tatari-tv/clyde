@@ -48,8 +48,7 @@ fn main() -> Result<()> {
     // status). Building it spawns a `--version` probe per tool, so attach it only when the user
     // is actually asking for report's help — never on a normal `clyde report ...` invocation.
     let argv: Vec<String> = std::env::args().collect();
-    let wants_report_help = argv.iter().any(|a| a == "report") && argv.iter().any(|a| a == "-h" || a == "--help");
-    if wants_report_help {
+    if cli::report_help_requested(&argv) {
         command = command.mut_subcommand("report", |c| c.after_help(report::tool_validation_help()));
     }
     let cli = Cli::from_arg_matches(&command.get_matches())?;

@@ -5,17 +5,48 @@
 //! that help is actually requested).
 
 use log::debug;
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
+
+/// Wall-clock ceiling for a single `--version` probe. A tool that hangs or blocks on stdin must
+/// not stall `clyde report --help`; on timeout the tool is simply reported unavailable.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct ToolStatus {
     version: String,
     icon: &'static str,
 }
 
+impl ToolStatus {
+    fn unavailable() -> Self {
+        ToolStatus {
+            version: "not found".to_string(),
+            icon: "❌",
+        }
+    }
+}
+
 fn check_tool(tool: &str, version_arg: &str) -> ToolStatus {
-    match Command::new(tool).arg(version_arg).output() {
-        Ok(output) if output.status.success() => {
-            let body = String::from_utf8_lossy(&output.stdout);
+    // stdin=null so a probe that reads stdin can't block; bounded wait so one that hangs can't
+    // stall the help render. Output is a short version line, well under the pipe buffer.
+    let spawn = Command::new(tool)
+        .arg(version_arg)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let mut child = match spawn {
+        Ok(c) => c,
+        Err(_) => return ToolStatus::unavailable(),
+    };
+    match child.wait_timeout(PROBE_TIMEOUT) {
+        Ok(Some(status)) if status.success() => {
+            let mut body = String::new();
+            if let Some(mut out) = child.stdout.take() {
+                let _ = out.read_to_string(&mut body);
+            }
             let version = extract_version(&body);
             ToolStatus {
                 version: if version.is_empty() {
@@ -26,10 +57,13 @@ fn check_tool(tool: &str, version_arg: &str) -> ToolStatus {
                 icon: "✅",
             }
         }
-        _ => ToolStatus {
-            version: "not found".to_string(),
-            icon: "❌",
-        },
+        Ok(Some(_)) => ToolStatus::unavailable(),
+        // Timed out or wait failed: reap the child so it can't linger, report unavailable.
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            ToolStatus::unavailable()
+        }
     }
 }
 

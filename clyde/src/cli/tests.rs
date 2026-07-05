@@ -201,3 +201,40 @@ fn resume_no_reindex_flag_parses() {
         _ => panic!("expected resume"),
     }
 }
+
+fn argv(tokens: &[&str]) -> Vec<String> {
+    std::iter::once("clyde")
+        .chain(tokens.iter().copied())
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn report_help_requested_matches_report_help_forms() {
+    // `report --help` / `report -h`, including with clyde globals before the subcommand.
+    assert!(report_help_requested(&argv(&["report", "--help"])));
+    assert!(report_help_requested(&argv(&["report", "-h"])));
+    assert!(report_help_requested(&argv(&[
+        "--log-level",
+        "debug",
+        "report",
+        "--help"
+    ])));
+    assert!(report_help_requested(&argv(&["-l", "debug", "report", "-h"])));
+    // clap's built-in `help report` form.
+    assert!(report_help_requested(&argv(&["help", "report"])));
+}
+
+#[test]
+fn report_help_requested_ignores_unrelated_and_bare_invocations() {
+    // "report" appearing as a search TERM under another subcommand must not match.
+    assert!(!report_help_requested(&argv(&[
+        "session", "search", "report", "--help"
+    ])));
+    // A normal report run (no help) must not trigger the probes.
+    assert!(!report_help_requested(&argv(&["report", "collect"])));
+    assert!(!report_help_requested(&argv(&["report"])));
+    // Help for a different subcommand.
+    assert!(!report_help_requested(&argv(&["cost", "--help"])));
+    assert!(!report_help_requested(&argv(&["help", "cost"])));
+}

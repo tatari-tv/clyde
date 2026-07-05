@@ -236,5 +236,38 @@ pub struct ServeArgs {
     pub no_reindex: bool,
 }
 
+/// True only when the invocation asks for **`clyde report`'s** help specifically: the leading
+/// subcommand is `report` followed by `-h`/`--help`, or clap's `help report` form. Anchors on the
+/// first positional (skipping clyde's value-taking global flags) so `clyde session search report
+/// --help` does NOT match and `clyde help report` DOES. Used to decide whether to attach report's
+/// REQUIRED TOOLS `after_help`, which spawns a `--version` probe per tool — so it must fire only
+/// when that help is genuinely requested, never on a normal `clyde report ...` run.
+pub(crate) fn report_help_requested(argv: &[String]) -> bool {
+    // clyde's value-taking global flags: the following token is their value, not the subcommand.
+    const VALUE_FLAGS: &[&str] = &["-l", "--log-level", "--db"];
+    let mut i = 1; // skip argv[0] (program name)
+    while let Some(arg) = argv.get(i) {
+        if arg == "--" {
+            return false;
+        }
+        if VALUE_FLAGS.contains(&arg.as_str()) {
+            i += 2; // skip the flag and its value
+            continue;
+        }
+        if arg.starts_with('-') {
+            i += 1; // any other flag (incl. `--log-level=debug`); keep scanning for the subcommand
+            continue;
+        }
+        // First positional is the top-level subcommand.
+        let rest = &argv[i + 1..];
+        return match arg.as_str() {
+            "report" => rest.iter().any(|t| t == "-h" || t == "--help"),
+            "help" => rest.iter().any(|t| t == "report"),
+            _ => false,
+        };
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests;
