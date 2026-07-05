@@ -127,10 +127,10 @@ pub(crate) fn resolve_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> R
     Ok(DEFAULT_PROMPT.to_string())
 }
 
-/// Slim render context sent to Opus: `{persona, options, period, totals, aggregates, sessions}`.
-/// Deliberately NOT the whole [`Report`] (that leaked `jsonl-paths`, 44.8% of context bytes with
-/// zero model signal, plus full per-model token detail per session). `Report` itself is
-/// unchanged; these are render-only view structs (design "API Design" section).
+/// Slim render context sent to Opus: `{persona, options, period, totals, aggregates, outcomes,
+/// sessions}`. Deliberately NOT the whole [`Report`] (that leaked `jsonl-paths`, 44.8% of context
+/// bytes with zero model signal, plus full per-model token detail per session). `Report` itself
+/// is unchanged; these are render-only view structs (design "API Design" section).
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct ContextBlock<'a> {
@@ -139,7 +139,40 @@ struct ContextBlock<'a> {
     period: PeriodView,
     totals: TotalsView,
     aggregates: &'a Aggregates,
+    /// Absent (never `null`, never zeroed) when the report carries no outcome rollup
+    /// (`--no-outcomes`, pre-outcomes JSONs, mixed-capability merges). The prompt omits the
+    /// Quantified Output section when this key is missing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcomes: Option<OutcomesView>,
     sessions: Vec<SessionView<'a>>,
+}
+
+/// `outcomes.totals` per the prompt's context-block schema: the persisted [`OutcomeTotals`]
+/// rollup re-exposed with fields present-if-nonzero, so "only fields present were observed"
+/// holds and a zero can never be mistaken for an observation.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct OutcomesView {
+    totals: OutcomeTotalsView,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct OutcomeTotalsView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sessions_with_commits: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commits: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prs_opened: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confluence_writes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jira_writes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slack_messages: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files_edited: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -182,9 +215,8 @@ struct ModelRow {
     model: String,
     sessions_using: usize,
     tokens_human: String,
-    /// Raw, nullable: the OLD (interim) prompt's untracked-spend detection keys on
-    /// `spend-usd == null` on this models rollup. Kept through the interim phases per the
-    /// design's Rollout Plan.
+    /// Raw, nullable (`null` when the model is unpriced); part of the prompt's documented
+    /// context-block schema alongside the `(untracked)` display string.
     spend_usd: Option<f64>,
     spend: String,
 }
@@ -201,9 +233,9 @@ struct TotalRow {
 
 /// Slim per-session view: `short-id`, `title`, `repo`, `begin`/`end`, `tokens-human`, a raw
 /// nullable `spend` alongside `spend-display`, and model NAMES only (no per-model token detail).
-/// No `jsonl-paths`. The raw `spend` and `short-id` fields are interim-compatibility: the OLD
-/// prompt's outlier-table math and untitled-session fallback read them directly from `sessions`
-/// during Phases 1-5 (design Rollout Plan).
+/// No `jsonl-paths`. The raw `spend` (null when unpriced) and `short-id` fields are part of the
+/// prompt's documented context-block schema: sessions feed THEMES and CITATIONS only (never
+/// counting or summing), and `short-id` backs the untitled-session fallback.
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct SessionView<'a> {
@@ -216,6 +248,11 @@ struct SessionView<'a> {
     spend: Option<f64>,
     spend_display: String,
     models: Vec<&'a str>,
+    /// The session's observed outcomes (commit shas, PR refs, write counts), absent when
+    /// extraction ran and found nothing or never ran; theme/citation material only, per the
+    /// prompt's "never for counting or summing" rule.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcomes: Option<&'a crate::outcome::Outcomes>,
 }
 
 pub(crate) fn build_context_block(
@@ -239,6 +276,7 @@ pub(crate) fn build_context_block(
         period: build_period_view(report, &aggregates),
         totals: build_totals_view(report),
         aggregates: &aggregates,
+        outcomes: build_outcomes_view(report),
         sessions: report
             .sessions
             .iter()
@@ -307,6 +345,25 @@ fn build_totals_view(report: &Report) -> TotalsView {
     }
 }
 
+/// Re-expose the persisted `Totals.outcomes` rollup as the context's `outcomes.totals`, fields
+/// present-if-nonzero (design API section). `None` when the report carries no rollup, which
+/// keeps the `outcomes` key out of the context entirely.
+fn build_outcomes_view(report: &Report) -> Option<OutcomesView> {
+    let totals = report.totals.outcomes.as_ref()?;
+    let nonzero = |v: u64| if v == 0 { None } else { Some(v) };
+    Some(OutcomesView {
+        totals: OutcomeTotalsView {
+            sessions_with_commits: nonzero(totals.sessions_with_commits),
+            commits: nonzero(totals.commits),
+            prs_opened: nonzero(totals.prs_opened),
+            confluence_writes: nonzero(totals.confluence_writes),
+            jira_writes: nonzero(totals.jira_writes),
+            slack_messages: nonzero(totals.slack_messages),
+            files_edited: nonzero(totals.files_edited),
+        },
+    })
+}
+
 fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a> {
     SessionView {
         short_id: sid.get(..8).unwrap_or(sid).to_string(),
@@ -318,6 +375,7 @@ fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a>
         spend: entry.spend_usd,
         spend_display: format_optional_usd(entry.spend_usd),
         models: entry.models.keys().map(String::as_str).collect(),
+        outcomes: entry.outcomes.as_ref(),
     }
 }
 

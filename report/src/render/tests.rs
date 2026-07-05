@@ -488,3 +488,107 @@ fn baked_in_default_matches_workspace_template() {
         "DEFAULT_PROMPT (include_str!) must be byte-identical to templates/report.pmt"
     );
 }
+
+/// Phase 6: `outcomes.totals` in the context re-exposes the persisted rollup with fields
+/// present-if-nonzero, per-session `outcomes` rides the slim session view, and outlier rows
+/// carry the session's outcome fields when available.
+fn report_with_outcomes() -> Report {
+    use crate::outcome::{OutcomeTotals, Outcomes, PrRef};
+    let mut report = sample_report();
+    report.totals.outcomes = Some(OutcomeTotals {
+        sessions_with_commits: 1,
+        commits: 2,
+        prs_opened: 1,
+        confluence_writes: 0,
+        jira_writes: 0,
+        slack_messages: 0,
+        files_edited: 7,
+    });
+    let entry = report.sessions.get_mut("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042").unwrap();
+    entry.outcomes = Some(Outcomes {
+        commits: vec!["abc123".into(), "def456".into()],
+        prs: vec![PrRef {
+            number: 42,
+            url: "https://github.com/tatari-tv/claude-report/pull/42".into(),
+            repository: Some("tatari-tv/claude-report".into()),
+        }],
+        confluence_writes: 0,
+        jira_writes: 0,
+        slack_messages: 0,
+        files_edited: 7,
+    });
+    report
+}
+
+#[test]
+fn build_context_block_carries_outcomes_totals_present_if_nonzero() {
+    let report = report_with_outcomes();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+
+    let totals = parsed
+        .get("outcomes")
+        .and_then(|o| o.get("totals"))
+        .expect("outcomes.totals key");
+    assert_eq!(totals.get("sessions-with-commits").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(totals.get("commits").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(totals.get("prs-opened").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(totals.get("files-edited").and_then(|v| v.as_u64()), Some(7));
+    for zero_field in ["confluence-writes", "jira-writes", "slack-messages"] {
+        assert!(
+            totals.get(zero_field).is_none(),
+            "zero rollup field `{}` must be absent (present-if-nonzero), got: {}",
+            zero_field,
+            totals
+        );
+    }
+
+    // Per-session outcomes ride the slim session view for themes/citations.
+    let sessions = parsed.get("sessions").and_then(|v| v.as_array()).expect("sessions");
+    let with = sessions
+        .iter()
+        .find(|s| s.get("outcomes").is_some())
+        .expect("one session carries outcomes");
+    let commits = with
+        .get("outcomes")
+        .and_then(|o| o.get("commits"))
+        .and_then(|v| v.as_array())
+        .expect("session outcomes.commits");
+    assert_eq!(commits.len(), 2);
+    assert!(
+        sessions.iter().any(|s| s.get("outcomes").is_none()),
+        "sessions without observed outcomes must omit the key"
+    );
+
+    // Outlier rows carry the session's outcome fields when available.
+    let outliers = parsed
+        .get("aggregates")
+        .and_then(|a| a.get("outliers"))
+        .and_then(|v| v.as_array())
+        .expect("aggregates.outliers");
+    let top = &outliers[0]; // opus session ($0.50) outranks sonnet ($0.10)
+    assert_eq!(top.get("short-id").and_then(|v| v.as_str()), Some("9d4c1f28"));
+    let pr = &top
+        .get("outcomes")
+        .and_then(|o| o.get("prs"))
+        .and_then(|v| v.as_array())
+        .expect("outlier outcomes.prs")[0];
+    assert_eq!(pr.get("number").and_then(|v| v.as_u64()), Some(42));
+}
+
+#[test]
+fn build_context_block_omits_outcomes_key_when_rollup_absent() {
+    let report = sample_report(); // totals.outcomes: None
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    assert!(
+        parsed.get("outcomes").is_none(),
+        "no rollup -> no outcomes key (absent, never null or zeroed): {}",
+        block
+    );
+    let sessions = parsed.get("sessions").and_then(|v| v.as_array()).expect("sessions");
+    assert!(
+        sessions.iter().all(|s| s.get("outcomes").is_none()),
+        "no session may carry an outcomes key when none were observed"
+    );
+}

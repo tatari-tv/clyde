@@ -8,6 +8,7 @@
 //! the single aggregate entry point; the counterfactual is the sole sanctioned computation.
 
 use crate::fmt::{format_optional_usd, format_tokens_human, format_usd};
+use crate::outcome::Outcomes;
 use crate::report::Report;
 use chrono::NaiveDate;
 use claude_pricing::{Pricing, TokenUsage};
@@ -104,6 +105,10 @@ pub struct OutlierRow {
     #[serde(skip)]
     pub spend_raw: Option<f64>,
     pub spend: String,
+    /// The session's observed outcomes, when extraction ran and found any; backs the outlier
+    /// table's "What it produced" column (prompt: "outcome fields when available").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcomes: Option<Outcomes>,
 }
 
 /// Compute all render-time aggregates over `report`. `outliers_n` caps the outlier table (0 is
@@ -356,6 +361,7 @@ fn compute_outliers(report: &Report, outliers_n: usize) -> Vec<OutlierRow> {
                 tokens_human: format_tokens_human(tokens),
                 spend_raw: entry.spend_usd,
                 spend: format_optional_usd(entry.spend_usd),
+                outcomes: entry.outcomes.clone(),
             }
         })
         .collect();
