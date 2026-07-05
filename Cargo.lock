@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "clyde"
-version = "0.5.3"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "clap",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.5.3"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "dirs",
@@ -387,7 +387,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cost"
-version = "0.5.3"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "clap",
@@ -1506,7 +1506,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permit"
-version = "0.5.3"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "clap",
@@ -1816,7 +1816,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "report"
-version = "0.5.3"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "clap",
@@ -2230,7 +2230,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.5.3"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "dirs",
@@ -2245,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "sessions"
-version = "0.5.3"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "common",
