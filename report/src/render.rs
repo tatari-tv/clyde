@@ -14,7 +14,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -558,8 +558,8 @@ fn run_bounded(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(spawn_err)?;
-    match child.wait_timeout(SUBPROCESS_TIMEOUT) {
-        Ok(Some(_)) => {}
+    let status = match child.wait_timeout(SUBPROCESS_TIMEOUT) {
+        Ok(Some(status)) => status,
         Ok(None) => {
             log::warn!("render::run_bounded: {label} timed out after {SUBPROCESS_TIMEOUT:?}, killing child");
             let _ = child.kill();
@@ -571,10 +571,23 @@ fn run_bounded(
             let _ = child.wait();
             bail!("{label}: failed while waiting: {e}");
         }
+    };
+    // `wait_timeout` has already reaped the child, so `wait_with_output()` (a second wait on the
+    // same PID) would fail with ECHILD. Read the piped handles directly instead — the process has
+    // exited, and callers only route commands whose output stays well under the pipe buffer here
+    // (large output, e.g. pandoc HTML, goes to a file), so a post-exit drain cannot deadlock.
+    // Mirrors `persona::whoami_via`.
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        out.read_to_end(&mut stdout)
+            .with_context(|| format!("failed to read stdout of {label}"))?;
     }
-    child
-        .wait_with_output()
-        .with_context(|| format!("failed to read output of {label}"))
+    if let Some(mut err) = child.stderr.take() {
+        err.read_to_end(&mut stderr)
+            .with_context(|| format!("failed to read stderr of {label}"))?;
+    }
+    Ok(Output { status, stdout, stderr })
 }
 
 fn write_pdf(markdown: &str, output: &Path, pdf_engine: &str) -> Result<()> {

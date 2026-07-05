@@ -146,9 +146,9 @@ pub struct RenderArgs {
     #[arg(short, long)]
     pub input: Option<PathBuf>,
 
-    /// Write rendered Markdown (or PDF) to this path. When omitted, the output is
-    /// placed beside the input file with a `.md` (or `.pdf`) extension. Not valid with the
-    /// `marquee-*` formats, whose output is a published URL.
+    /// Write rendered Markdown (or PDF) to this path. When omitted, the output defaults to
+    /// `./<YYYY-MM>-claude-report.{md,pdf}` in the current directory (month derived from the
+    /// report's `since`). Not valid with the `marquee-*` formats, whose output is a published URL.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
