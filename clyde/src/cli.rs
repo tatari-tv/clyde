@@ -257,7 +257,11 @@ pub(crate) fn help_target(argv: &[String]) -> Option<Vec<String>> {
             break;
         }
         if arg == "-h" || arg == "--help" {
+            // `--help` is an early-exit flag: clap renders help for the command parsed SO FAR and
+            // ignores anything after it. So stop here — `clyde --help report` targets root help
+            // (no positionals yet), not report.
             saw_help_flag = true;
+            break;
         } else if VALUE_FLAGS.contains(&arg.as_str()) {
             i += 2; // skip the flag and its value
             continue;

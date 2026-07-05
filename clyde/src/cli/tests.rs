@@ -240,6 +240,9 @@ fn help_target_is_none_for_non_help_and_keeps_terms_in_the_path() {
     // No help flag → not a help invocation (a normal run must not trigger probes).
     assert_eq!(help_target(&argv(&["report", "collect"])), None);
     assert_eq!(help_target(&argv(&["report"])), None);
+    // `--help` is early-exit: `clyde --help report` is ROOT help, not report's — tokens after the
+    // flag must be ignored, so this yields None (no per-subcommand block attached).
+    assert_eq!(help_target(&argv(&["--help", "report"])), None);
     // "report" as a search TERM yields the full path, which matches no tool-bearing subcommand in
     // main.rs (it only attaches on exact paths like ["report"]), so it never mis-fires.
     assert_eq!(

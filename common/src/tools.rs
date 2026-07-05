@@ -62,7 +62,7 @@ pub fn required_tools_help(tools: &[Tool]) -> String {
 
 fn check_tool(tool: &str) -> ToolStatus {
     // stdin=null so a probe that reads stdin can't block; bounded wait so one that hangs can't
-    // stall the help render. Output is a short version line, well under the pipe buffer.
+    // stall the help render.
     let spawn = Command::new(tool)
         .arg("--version")
         .stdin(Stdio::null())
@@ -73,25 +73,39 @@ fn check_tool(tool: &str) -> ToolStatus {
         Ok(c) => c,
         Err(_) => return ToolStatus::unavailable(),
     };
-    match child.wait_timeout(PROBE_TIMEOUT) {
-        Ok(Some(status)) if status.success() => {
-            let mut body = String::new();
-            if let Some(mut out) = child.stdout.take() {
-                let _ = out.read_to_string(&mut body);
-            }
-            let version = extract_version(&body);
-            ToolStatus {
-                version: if version.is_empty() { "installed".to_string() } else { version },
-                icon: "✅",
-            }
+    // Drain stdout in a separate thread WHILE waiting. `wait_timeout` only waits; it does not
+    // consume the pipe, so a tool with verbose `--version` output could fill the ~64 KB pipe
+    // buffer and block until the timeout, then be misreported as unavailable. The reader returns
+    // once the child exits (or is killed on timeout) and the pipe closes.
+    let stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut body = String::new();
+        if let Some(mut out) = stdout {
+            let _ = out.read_to_string(&mut body);
         }
-        Ok(Some(_)) => ToolStatus::unavailable(),
-        // Timed out or wait failed: reap the child so it can't linger, report unavailable.
+        body
+    });
+
+    let status = match child.wait_timeout(PROBE_TIMEOUT) {
+        Ok(Some(status)) => status,
+        // Timed out or wait failed: reap the child (which closes the pipe and unblocks the
+        // reader), then report unavailable.
         Ok(None) | Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
-            ToolStatus::unavailable()
+            let _ = reader.join();
+            return ToolStatus::unavailable();
         }
+    };
+
+    let body = reader.join().unwrap_or_default();
+    if !status.success() {
+        return ToolStatus::unavailable();
+    }
+    let version = extract_version(&body);
+    ToolStatus {
+        version: if version.is_empty() { "installed".to_string() } else { version },
+        icon: "✅",
     }
 }
 
