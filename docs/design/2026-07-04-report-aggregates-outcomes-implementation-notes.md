@@ -435,3 +435,29 @@ Design doc: `docs/design/2026-07-04-report-aggregates-outcomes.md`
   prompt's "No per-model numbers here; the Cost Summary already has them" style rule was not
   followed by Opus in this run. No success criterion is violated (no arithmetic, no hedge, no
   fabricated figure); flagging as a cosmetic prompt-compliance nit to watch in future months.
+
+## Post-audit remediation (review panel, 2026-07-04)
+
+The implementation-audit review panel (Architect + Staff Engineer) raised three findings; one
+was a genuine undisclosed spec violation, two were demoted against the code.
+
+### Fixed
+- **Merged-report `short-id` corruption (commit e471c40).** `merge.rs` re-keys sessions as
+  `host/uuid` (keep-both across hosts), but the three `short-id` sites (`aggregate.rs`
+  compute_outliers, `render.rs` build_session_view and the built-in markdown renderer) truncated
+  that composite key directly via `sid.get(..8)`, so a merged report rendered `short-id` as e.g.
+  `laptop/9` instead of the `9d4c1f28` UUID prefix design line 305 promises. Fixed with a shared
+  `fmt::short_id` helper that strips any host prefix before truncating; pinned by
+  `fmt/tests.rs::short_id_is_uuid_prefix_for_bare_and_merged_keys`. Undisclosed at the time of the
+  Phase 4/6 commits; recorded here.
+
+### Reviewed and intentionally not changed
+- **Success pairing treats absent `is_error` as success** (`outcome.rs`). Correct as written: the
+  Anthropic transcript format omits `is_error` on successful `tool_result` blocks and only sets it
+  on errors. Requiring a literal `is_error: false` would drop nearly every real MCP/Edit outcome.
+  Already disclosed in the Phase 3 notes; the design's "is_error: false" is shorthand for "not
+  errored."
+- **Zero totals rollup for unobservable months** (`report.rs` build_report). Intentional: `Some(0s)`
+  = "extractor ran, found nothing" vs `None` = "extractor did not run" (`--no-outcomes`). Preserves
+  a useful distinction and is consistent with per-session outcomes staying absent for pre-
+  `gitOperation` transcripts (D4). Disclosed in the Phase 4 notes.
