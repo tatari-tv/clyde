@@ -3,8 +3,10 @@
 #![deny(dead_code)]
 #![deny(unused_variables)]
 
+pub mod aggregate;
 pub mod cli;
 pub mod config;
+pub mod fmt;
 pub mod merge;
 pub mod persona;
 pub mod render;

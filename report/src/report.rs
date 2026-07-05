@@ -50,6 +50,14 @@ pub struct SessionEntry {
     pub models: BTreeMap<String, ModelTokens>,
 }
 
+impl SessionEntry {
+    /// Sum of `total` tokens across every model this session used. Shared by `aggregate` (row
+    /// rollups) and `render`'s built-in/custom template paths.
+    pub fn total_tokens(&self) -> u64 {
+        self.models.values().map(|m| m.total).sum()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct ModelTokens {

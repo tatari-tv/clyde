@@ -156,15 +156,74 @@ fn custom_template_substitutes_placeholders() {
 }
 
 #[test]
-fn build_context_block_includes_options_and_report() {
+fn build_context_block_includes_slim_shape() {
     let report = sample_report();
     let block = build_context_block(&report, true, None).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     assert_eq!(parsed.get("persona"), Some(&serde_json::json!({})));
     let opts = parsed.get("options").expect("options key");
     assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(true));
-    let report_obj = parsed.get("report").expect("report key");
-    assert_eq!(report_obj.get("schema-version").and_then(|v| v.as_u64()), Some(1));
+
+    // No raw `report` key anymore: persona/options/period/totals/aggregates/sessions only.
+    assert!(
+        parsed.get("report").is_none(),
+        "slim context must not embed the whole Report"
+    );
+
+    let period = parsed.get("period").expect("period key");
+    assert_eq!(period.get("since").and_then(|v| v.as_str()), Some("2026-04-01"));
+    assert_eq!(period.get("until").and_then(|v| v.as_str()), Some("2026-04-30"));
+    assert_eq!(period.get("generated").and_then(|v| v.as_str()), Some("2026-04-27"));
+    assert_eq!(period.get("active-days").and_then(|v| v.as_u64()), Some(2));
+    assert!(period.get("days").and_then(|v| v.as_i64()).is_some());
+
+    let totals = parsed.get("totals").expect("totals key");
+    assert_eq!(totals.get("sessions").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(totals.get("repo-count").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(totals.get("spend").and_then(|v| v.as_str()), Some("$0.60"));
+    let models = totals
+        .get("models")
+        .and_then(|v| v.as_array())
+        .expect("totals.models list");
+    assert_eq!(models.len(), 2);
+    // Pre-sorted by spend descending: opus ($0.50) before sonnet ($0.10).
+    assert_eq!(models[0].get("model").and_then(|v| v.as_str()), Some("claude-opus-4-7"));
+    assert_eq!(
+        models[1].get("model").and_then(|v| v.as_str()),
+        Some("claude-sonnet-4-6")
+    );
+    let total_row = totals.get("total-row").expect("totals.total-row key");
+    assert_eq!(total_row.get("sessions-using").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(total_row.get("spend").and_then(|v| v.as_str()), Some("$0.60"));
+
+    let aggregates = parsed.get("aggregates").expect("aggregates key");
+    assert!(aggregates.get("by-org").and_then(|v| v.as_array()).is_some());
+    assert!(aggregates.get("by-repo").and_then(|v| v.as_array()).is_some());
+    assert!(aggregates.get("by-day").and_then(|v| v.as_array()).is_some());
+    assert!(aggregates.get("outliers").and_then(|v| v.as_array()).is_some());
+
+    let sessions = parsed
+        .get("sessions")
+        .and_then(|v| v.as_array())
+        .expect("sessions list");
+    assert_eq!(sessions.len(), 2);
+    for s in sessions {
+        assert!(s.get("short-id").and_then(|v| v.as_str()).is_some());
+        assert!(
+            s.get("jsonl-paths").is_none(),
+            "slim session view must not carry jsonl-paths"
+        );
+        assert!(
+            s.get("spend-display").is_some(),
+            "slim session view keeps spend-display"
+        );
+    }
+
+    assert!(
+        !block.contains("jsonl-paths"),
+        "no jsonl-paths key anywhere in the slim context: {}",
+        block
+    );
 }
 
 #[test]

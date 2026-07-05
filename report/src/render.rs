@@ -1,9 +1,13 @@
+use crate::aggregate::{self, Aggregates, DEFAULT_OUTLIERS};
 use crate::config::RenderConfig;
+use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd};
 use crate::persona::{self, PersonaBlock};
 use crate::report::{Report, SessionEntry};
 use crate::{OutputDest, RunResult};
 use crate::{summarize, title};
+use chrono::{DateTime, Utc};
 use eyre::{Context, Result, bail};
+use log::debug;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -115,12 +119,19 @@ pub(crate) fn resolve_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> R
     Ok(DEFAULT_PROMPT.to_string())
 }
 
+/// Slim render context sent to Opus: `{persona, options, period, totals, aggregates, sessions}`.
+/// Deliberately NOT the whole [`Report`] (that leaked `jsonl-paths`, 44.8% of context bytes with
+/// zero model signal, plus full per-model token detail per session). `Report` itself is
+/// unchanged; these are render-only view structs (design "API Design" section).
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct ContextBlock<'a> {
     persona: &'a PersonaBlock,
     options: ContextOptions,
-    report: &'a Report,
+    period: PeriodView,
+    totals: TotalsView,
+    aggregates: &'a Aggregates,
+    sessions: Vec<SessionView<'a>>,
 }
 
 #[derive(Serialize)]
@@ -129,18 +140,174 @@ struct ContextOptions {
     include_tradeoffs: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct PeriodView {
+    since: String,
+    until: String,
+    /// Calendar days, `until` treated as the EXCLUSIVE next boundary (June 1 -> July 1 = 30),
+    /// distinct from the inclusive-both-ends record-matching bound (Definitions section).
+    days: i64,
+    active_days: usize,
+    generated: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct TotalsView {
+    sessions: usize,
+    repo_count: usize,
+    spend: String,
+    tokens: u64,
+    tokens_human: String,
+    untracked_models: Vec<String>,
+    /// Sorted by spend descending by this builder; `Report.totals.models` is a name-keyed
+    /// `BTreeMap` (alphabetical iteration) and cannot itself back the "pre-sorted, never
+    /// re-sort" promise the prompt makes.
+    models: Vec<ModelRow>,
+    total_row: TotalRow,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct ModelRow {
+    model: String,
+    sessions_using: usize,
+    tokens_human: String,
+    /// Raw, nullable: the OLD (interim) prompt's untracked-spend detection keys on
+    /// `spend-usd == null` on this models rollup. Kept through the interim phases per the
+    /// design's Rollout Plan.
+    spend_usd: Option<f64>,
+    spend: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct TotalRow {
+    /// `totals.sessions` (distinct sessions), NOT the column sum: a session using several
+    /// models appears in each model's `sessions-using`, so the column overlaps by design.
+    sessions_using: usize,
+    tokens_human: String,
+    spend: String,
+}
+
+/// Slim per-session view: `short-id`, `title`, `repo`, `begin`/`end`, `tokens-human`, a raw
+/// nullable `spend` alongside `spend-display`, and model NAMES only (no per-model token detail).
+/// No `jsonl-paths`. The raw `spend` and `short-id` fields are interim-compatibility: the OLD
+/// prompt's outlier-table math and untitled-session fallback read them directly from `sessions`
+/// during Phases 1-5 (design Rollout Plan).
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct SessionView<'a> {
+    short_id: String,
+    title: Option<&'a str>,
+    repo: Option<&'a str>,
+    begin: DateTime<Utc>,
+    end: DateTime<Utc>,
+    tokens_human: String,
+    spend: Option<f64>,
+    spend_display: String,
+    models: Vec<&'a str>,
+}
+
 pub(crate) fn build_context_block(
     report: &Report,
     include_tradeoffs: bool,
     persona: Option<&PersonaBlock>,
 ) -> Result<String> {
+    debug!(
+        "render::build_context_block: sessions={} include_tradeoffs={}",
+        report.sessions.len(),
+        include_tradeoffs
+    );
     let default_persona = PersonaBlock::default();
+    let aggregates = aggregate::compute(report, DEFAULT_OUTLIERS);
     let block = ContextBlock {
         persona: persona.unwrap_or(&default_persona),
         options: ContextOptions { include_tradeoffs },
-        report,
+        period: build_period_view(report, &aggregates),
+        totals: build_totals_view(report),
+        aggregates: &aggregates,
+        sessions: report
+            .sessions
+            .iter()
+            .map(|(sid, entry)| build_session_view(sid, entry))
+            .collect(),
     };
     serde_json::to_string(&block).context("failed to serialize context block to JSON")
+}
+
+fn build_period_view(report: &Report, aggregates: &Aggregates) -> PeriodView {
+    let days = (report.until.date_naive() - report.since.date_naive()).num_days();
+    PeriodView {
+        since: report.since.format("%Y-%m-%d").to_string(),
+        until: report.until.format("%Y-%m-%d").to_string(),
+        days,
+        active_days: aggregates.by_day.len(),
+        generated: report.generated.format("%Y-%m-%d").to_string(),
+    }
+}
+
+fn build_totals_view(report: &Report) -> TotalsView {
+    let repo_count = report
+        .sessions
+        .values()
+        .filter_map(|e| e.repo.as_deref())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
+
+    let mut models: Vec<ModelRow> = report
+        .totals
+        .models
+        .iter()
+        .map(|(model, mt)| ModelRow {
+            model: model.clone(),
+            sessions_using: report
+                .sessions
+                .values()
+                .filter(|e| e.models.contains_key(model))
+                .count(),
+            tokens_human: format_tokens_human(mt.total),
+            spend_usd: mt.spend_usd,
+            spend: format_optional_usd(mt.spend_usd),
+        })
+        .collect();
+    models.sort_by(|a, b| {
+        b.spend_usd
+            .unwrap_or(0.0)
+            .partial_cmp(&a.spend_usd.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    TotalsView {
+        sessions: report.totals.sessions,
+        repo_count,
+        spend: format_usd(report.totals.spend_usd),
+        tokens: total_tokens,
+        tokens_human: format_tokens_human(total_tokens),
+        untracked_models: report.totals.untracked_models.clone(),
+        models,
+        total_row: TotalRow {
+            sessions_using: report.totals.sessions,
+            tokens_human: format_tokens_human(total_tokens),
+            spend: format_usd(report.totals.spend_usd),
+        },
+    }
+}
+
+fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a> {
+    SessionView {
+        short_id: sid.get(..8).unwrap_or(sid).to_string(),
+        title: entry.title.as_deref(),
+        repo: entry.repo.as_deref(),
+        begin: entry.begin,
+        end: entry.end,
+        tokens_human: format_tokens_human(entry.total_tokens()),
+        spend: entry.spend_usd,
+        spend_display: format_optional_usd(entry.spend_usd),
+        models: entry.models.keys().map(String::as_str).collect(),
+    }
 }
 
 fn load_template(custom: Option<&Path>) -> Result<Template> {
@@ -205,27 +372,24 @@ fn render_built_in(report: &Report) -> String {
         out.push('\n');
     }
 
-    let by_repo = group_by_repo(&report.sessions);
+    // Sourced from `aggregate::compute` (design: "aggregate.rs subsumes and replaces
+    // render::group_by_repo"). Outliers are unused by this table, so 0 is passed rather than
+    // computing a table this renderer never shows.
+    let by_repo = aggregate::compute(report, 0).by_repo;
     out.push_str("## By repo\n\n");
     if by_repo.is_empty() {
         out.push_str("_no sessions with a detected repo_\n\n");
     } else {
         out.push_str("| repo | sessions | total tokens | spend | models |\n");
         out.push_str("|------|---------:|-------------:|------:|--------|\n");
-        for (repo, entries) in &by_repo {
-            let session_count = entries.len();
-            let tok: u64 = entries.iter().map(|e| session_total_tokens(e)).sum();
-            let spend: f64 = entries.iter().filter_map(|e| e.spend_usd).sum();
-            let mut models: Vec<String> = entries.iter().flat_map(|e| e.models.keys().cloned()).collect();
-            models.sort();
-            models.dedup();
+        for row in &by_repo {
             out.push_str(&format!(
                 "| {} | {} | {} | {} | {} |\n",
-                repo,
-                session_count,
-                format_int(tok),
-                format_usd(spend),
-                models.join(", "),
+                row.repo,
+                row.sessions,
+                row.tokens_human,
+                row.spend,
+                row.models.join(", "),
             ));
         }
         out.push('\n');
@@ -256,7 +420,7 @@ fn render_built_in(report: &Report) -> String {
                 entry.begin.format("%Y-%m-%d %H:%M"),
                 entry.end.format("%Y-%m-%d %H:%M"),
                 models_str.join(", "),
-                format_int(session_total_tokens(entry)),
+                format_int(entry.total_tokens()),
                 format_optional_usd(entry.spend_usd),
                 untracked_suffix,
             ));
@@ -275,55 +439,6 @@ fn render_custom(report: &Report, body: &str) -> String {
         .replace("{{session-count}}", &report.totals.sessions.to_string())
         .replace("{{total-tokens}}", &format_int(total_tokens))
         .replace("{{total-spend}}", &format_usd(report.totals.spend_usd))
-}
-
-fn session_total_tokens(entry: &SessionEntry) -> u64 {
-    entry.models.values().map(|m| m.total).sum()
-}
-
-fn group_by_repo<'a>(sessions: &'a BTreeMap<String, SessionEntry>) -> BTreeMap<String, Vec<&'a SessionEntry>> {
-    let mut out: BTreeMap<String, Vec<&'a SessionEntry>> = BTreeMap::new();
-    for entry in sessions.values() {
-        if let Some(repo) = entry.repo.as_deref() {
-            out.entry(repo.to_string()).or_default().push(entry);
-        }
-    }
-    out
-}
-
-fn format_int(n: u64) -> String {
-    let s = n.to_string();
-    let mut out = String::with_capacity(s.len() + s.len() / 3);
-    for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out.chars().rev().collect()
-}
-
-fn format_usd(n: f64) -> String {
-    let cents = (n * 100.0).round() as i64;
-    let dollars = cents / 100;
-    let frac = cents.rem_euclid(100);
-    let s = dollars.to_string();
-    let mut buf = String::with_capacity(s.len() + s.len() / 3);
-    for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            buf.push(',');
-        }
-        buf.push(ch);
-    }
-    let with_commas: String = buf.chars().rev().collect();
-    format!("${}.{:02}", with_commas, frac)
-}
-
-fn format_optional_usd(n: Option<f64>) -> String {
-    match n {
-        Some(v) => format_usd(v),
-        None => "(untracked)".to_string(),
-    }
 }
 
 fn write_pdf(markdown: &str, output: &Path, pdf_engine: &str) -> Result<()> {
