@@ -129,7 +129,7 @@ pub fn run_with_config(config: &Config) -> Result<RunResult> {
 pub(crate) fn run_with_pricing(config: &Config, pricing: &Pricing) -> Result<RunResult> {
     match &config.command {
         ResolvedCommand::Collect(cfg) => run_collect(cfg, pricing),
-        ResolvedCommand::Render(cfg) => render::run(cfg),
+        ResolvedCommand::Render(cfg) => render::run(cfg, pricing),
         ResolvedCommand::Merge(cfg) => merge::run(cfg),
     }
 }

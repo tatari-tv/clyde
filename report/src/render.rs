@@ -6,6 +6,7 @@ use crate::report::{Report, SessionEntry};
 use crate::{OutputDest, RunResult};
 use crate::{summarize, title};
 use chrono::{DateTime, Utc};
+use claude_pricing::Pricing;
 use eyre::{Context, Result, bail};
 use log::debug;
 use serde::Serialize;
@@ -20,7 +21,7 @@ const STDOUT_SIGIL: &str = "-";
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
 const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
 
-pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
+pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
         "render::run: input={} pdf={} prompt={:?}",
         cfg.input.display(),
@@ -48,11 +49,11 @@ pub fn run(cfg: &RenderConfig) -> Result<RunResult> {
 
     let markdown = if let Some(template_path) = cfg.template.as_deref() {
         let template = load_template(Some(template_path))?;
-        to_markdown(&report, &template)
+        to_markdown(&report, &template, pricing)
     } else {
         let prompt = resolve_prompt(cfg.prompt.as_deref(), Path::new("."))?;
         let persona_block = persona::whoami();
-        let context = build_context_block(&report, cfg.include_tradeoffs, persona_block.as_ref())?;
+        let context = build_context_block(&report, cfg.include_tradeoffs, persona_block.as_ref(), pricing)?;
         render_via_opus_text(&context, &prompt)?
     };
 
@@ -214,6 +215,7 @@ pub(crate) fn build_context_block(
     report: &Report,
     include_tradeoffs: bool,
     persona: Option<&PersonaBlock>,
+    pricing: &Pricing,
 ) -> Result<String> {
     debug!(
         "render::build_context_block: sessions={} include_tradeoffs={}",
@@ -221,7 +223,7 @@ pub(crate) fn build_context_block(
         include_tradeoffs
     );
     let default_persona = PersonaBlock::default();
-    let aggregates = aggregate::compute(report, DEFAULT_OUTLIERS);
+    let aggregates = aggregate::compute(report, DEFAULT_OUTLIERS, pricing);
     let block = ContextBlock {
         persona: persona.unwrap_or(&default_persona),
         options: ContextOptions { include_tradeoffs },
@@ -321,14 +323,14 @@ fn load_template(custom: Option<&Path>) -> Result<Template> {
     }
 }
 
-pub fn to_markdown(report: &Report, template: &Template) -> String {
+pub fn to_markdown(report: &Report, template: &Template, pricing: &Pricing) -> String {
     match template {
-        Template::BuiltIn => render_built_in(report),
+        Template::BuiltIn => render_built_in(report, pricing),
         Template::Custom(body) => render_custom(report, body),
     }
 }
 
-fn render_built_in(report: &Report) -> String {
+fn render_built_in(report: &Report, pricing: &Pricing) -> String {
     let mut out = String::new();
     out.push_str("# Claude Code session report\n\n");
     out.push_str(&format!("- **host:** {}\n", report.host));
@@ -375,7 +377,7 @@ fn render_built_in(report: &Report) -> String {
     // Sourced from `aggregate::compute` (design: "aggregate.rs subsumes and replaces
     // render::group_by_repo"). Outliers are unused by this table, so 0 is passed rather than
     // computing a table this renderer never shows.
-    let by_repo = aggregate::compute(report, 0).by_repo;
+    let by_repo = aggregate::compute(report, 0, pricing).by_repo;
     out.push_str("## By repo\n\n");
     if by_repo.is_empty() {
         out.push_str("_no sessions with a detected repo_\n\n");

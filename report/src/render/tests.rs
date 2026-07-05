@@ -4,11 +4,16 @@ use super::*;
 use crate::config::{Config, RenderConfig, ResolvedCommand};
 use crate::report::{ModelTokens, Report, SessionEntry, Totals};
 use chrono::{DateTime, Utc};
+use claude_pricing::Pricing;
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 
 fn ts(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
+}
+
+fn pricing() -> Pricing {
+    Pricing::embedded()
 }
 
 fn opus_tokens() -> ModelTokens {
@@ -92,7 +97,7 @@ fn sample_report() -> Report {
 #[test]
 fn built_in_template_renders_header_totals_repo_table_and_sessions() {
     let report = sample_report();
-    let md = to_markdown(&report, &Template::BuiltIn);
+    let md = to_markdown(&report, &Template::BuiltIn, &pricing());
 
     assert!(md.contains("# Claude Code session report"));
     assert!(md.contains("**host:** desk"));
@@ -136,7 +141,7 @@ fn empty_report_renders_safe_message() {
         },
         sessions: BTreeMap::new(),
     };
-    let md = to_markdown(&report, &Template::BuiltIn);
+    let md = to_markdown(&report, &Template::BuiltIn, &pricing());
     assert!(md.contains("**sessions:** 0"));
     assert!(md.contains("_no model usage_"));
     assert!(md.contains("_no sessions with a detected repo_"));
@@ -148,7 +153,7 @@ fn custom_template_substitutes_placeholders() {
     let custom = Template::Custom(
         "host={{host}} since={{since}} until={{until}} count={{session-count}} tot={{total-tokens}} spend={{total-spend}}".into(),
     );
-    let md = to_markdown(&report, &custom);
+    let md = to_markdown(&report, &custom, &pricing());
     assert_eq!(
         md,
         "host=desk since=2026-04-01 until=2026-04-30 count=2 tot=5,650 spend=$0.60"
@@ -158,7 +163,7 @@ fn custom_template_substitutes_placeholders() {
 #[test]
 fn build_context_block_includes_slim_shape() {
     let report = sample_report();
-    let block = build_context_block(&report, true, None).unwrap();
+    let block = build_context_block(&report, true, None, &pricing()).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     assert_eq!(parsed.get("persona"), Some(&serde_json::json!({})));
     let opts = parsed.get("options").expect("options key");
@@ -202,6 +207,16 @@ fn build_context_block_includes_slim_shape() {
     assert!(aggregates.get("by-day").and_then(|v| v.as_array()).is_some());
     assert!(aggregates.get("outliers").and_then(|v| v.as_array()).is_some());
 
+    // Cache block (Phase 2): the no-pricing fields are always present; the sample report's
+    // opus session (4,000 cache-read of 5,000 input-side tokens) is priced, so the counterfactual
+    // fields are present too.
+    let cache = aggregates.get("cache").expect("aggregates.cache key");
+    assert!(cache.get("cache-read-share").and_then(|v| v.as_str()).is_some());
+    assert!(cache.get("input-tokens-human").and_then(|v| v.as_str()).is_some());
+    assert!(cache.get("cache-read-tokens-human").and_then(|v| v.as_str()).is_some());
+    assert!(cache.get("list-price-equivalent").and_then(|v| v.as_str()).is_some());
+    assert!(cache.get("cache-savings").and_then(|v| v.as_str()).is_some());
+
     let sessions = parsed
         .get("sessions")
         .and_then(|v| v.as_array())
@@ -229,7 +244,7 @@ fn build_context_block_includes_slim_shape() {
 #[test]
 fn build_context_block_omits_tradeoffs_when_false() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None).unwrap();
+    let block = build_context_block(&report, false, None, &pricing()).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     let opts = parsed.get("options").expect("options key");
     assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(false));
@@ -244,7 +259,7 @@ fn build_context_block_embeds_persona_when_present() {
         email: Some("scott.idler@tatari.tv".into()),
         ..Default::default()
     };
-    let block = build_context_block(&report, false, Some(&persona)).unwrap();
+    let block = build_context_block(&report, false, Some(&persona), &pricing()).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let p = parsed.get("persona").expect("persona key");
     assert_eq!(p.get("name").and_then(|v| v.as_str()), Some("Scott Idler"));
@@ -255,7 +270,7 @@ fn build_context_block_embeds_persona_when_present() {
 #[test]
 fn build_context_block_uses_compact_json_not_pretty() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None).unwrap();
+    let block = build_context_block(&report, false, None, &pricing()).unwrap();
     assert!(
         !block.contains('\n'),
         "context block must be compact (no newlines) to minimize Opus token cost: {}",
