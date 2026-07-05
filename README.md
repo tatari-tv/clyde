@@ -50,7 +50,7 @@ the old binaries to `clyde`.
 
 ## Install
 
-```
+```bash
 ./install.sh        # installs the clyde umbrella binary
 clyde bootstrap     # migrate config/data under one clyde home; repoint statusline/hook/timer
 clyde doctor        # verify every integration now resolves to clyde
