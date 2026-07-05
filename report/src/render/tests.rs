@@ -55,6 +55,7 @@ fn sample_report() -> Report {
             untracked_models: Vec::new(),
             jsonl_paths: Vec::new(),
             models: s1_models,
+            outcomes: None,
         },
     );
 
@@ -71,6 +72,7 @@ fn sample_report() -> Report {
             untracked_models: Vec::new(),
             jsonl_paths: Vec::new(),
             models: s2_models,
+            outcomes: None,
         },
     );
 
@@ -84,11 +86,13 @@ fn sample_report() -> Report {
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
         until: ts("2026-04-30T00:00:00Z"),
+        outcomes_enabled: Some(true),
         totals: Totals {
             sessions: 2,
             spend_usd: 0.60,
             untracked_models: Vec::new(),
             models: totals_models,
+            outcomes: None,
         },
         sessions,
     }
@@ -133,11 +137,13 @@ fn empty_report_renders_safe_message() {
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
         until: ts("2026-04-30T00:00:00Z"),
+        outcomes_enabled: None,
         totals: Totals {
             sessions: 0,
             spend_usd: 0.0,
             untracked_models: Vec::new(),
             models: BTreeMap::new(),
+            outcomes: None,
         },
         sessions: BTreeMap::new(),
     };

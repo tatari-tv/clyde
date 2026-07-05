@@ -57,6 +57,77 @@ pub struct PrRef {
     pub repository: Option<String>,
 }
 
+/// Persisted deduped rollup across every session in a report, stored at `Totals.outcomes`
+/// (Phase 4). Built by [`rollup`] with GLOBAL dedupe (commits by sha, PRs by url) across ALL
+/// sessions in the set, not merely within one session.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct OutcomeTotals {
+    /// Count of sessions with at least one counted commit.
+    pub sessions_with_commits: u64,
+    /// Distinct commit shas across every session in the set.
+    pub commits: u64,
+    /// Distinct PR urls across every session in the set.
+    pub prs_opened: u64,
+    pub confluence_writes: u64,
+    pub jira_writes: u64,
+    pub slack_messages: u64,
+    /// Sum of each session's own distinct-file count (no cross-session identity to dedupe on).
+    pub files_edited: u64,
+}
+
+/// Roll up a set of per-session [`Outcomes`] into the persisted [`OutcomeTotals`], deduping
+/// commits and PRs GLOBALLY across every session (not just within one session — a PR opened from
+/// one host and referenced from another must count once, not twice). `None` entries (sessions
+/// with no observed outcome) contribute nothing. Confluence/Jira/Slack writes and `files-edited`
+/// are plain sums; they carry no cross-session identity to dedupe on.
+pub fn rollup<'a>(sessions: impl Iterator<Item = Option<&'a Outcomes>>) -> OutcomeTotals {
+    let mut commit_shas: BTreeSet<&str> = BTreeSet::new();
+    let mut pr_urls: HashSet<&str> = HashSet::new();
+    let mut sessions_with_commits: u64 = 0;
+    let mut confluence_writes: u64 = 0;
+    let mut jira_writes: u64 = 0;
+    let mut slack_messages: u64 = 0;
+    let mut files_edited: u64 = 0;
+    let mut session_count: u64 = 0;
+
+    for outcomes in sessions.flatten() {
+        session_count += 1;
+        if !outcomes.commits.is_empty() {
+            sessions_with_commits += 1;
+        }
+        commit_shas.extend(outcomes.commits.iter().map(String::as_str));
+        pr_urls.extend(outcomes.prs.iter().map(|pr| pr.url.as_str()));
+        confluence_writes += outcomes.confluence_writes;
+        jira_writes += outcomes.jira_writes;
+        slack_messages += outcomes.slack_messages;
+        files_edited += outcomes.files_edited;
+    }
+
+    let totals = OutcomeTotals {
+        sessions_with_commits,
+        commits: commit_shas.len() as u64,
+        prs_opened: pr_urls.len() as u64,
+        confluence_writes,
+        jira_writes,
+        slack_messages,
+        files_edited,
+    };
+    debug!(
+        "outcome::rollup: sessions-with-outcomes={} sessions-with-commits={} distinct-commits={} \
+         distinct-prs={} confluence={} jira={} slack={} files={}",
+        session_count,
+        totals.sessions_with_commits,
+        totals.commits,
+        totals.prs_opened,
+        totals.confluence_writes,
+        totals.jira_writes,
+        totals.slack_messages,
+        totals.files_edited
+    );
+    totals
+}
+
 /// Per-FILE extraction result. Carries the distinct sets (commit shas, edited file paths) and the
 /// url-deduped PR list so `session::fold` can UNION across a session group's parent + subagent
 /// files before collapsing `files_edited` to a distinct count. The MCP counts are plain sums (they

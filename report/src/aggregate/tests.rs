@@ -48,6 +48,7 @@ fn entry(
         },
         jsonl_paths: Vec::new(),
         models,
+        outcomes: None,
     }
 }
 
@@ -64,11 +65,13 @@ fn report_with(since: &str, until: &str, sessions: Vec<(&str, SessionEntry)>) ->
         host: "desk".into(),
         since: ts(since),
         until: ts(until),
+        outcomes_enabled: None,
         totals: Totals {
             sessions: map.len(),
             spend_usd: totals_spend,
             untracked_models: Vec::new(),
             models: BTreeMap::new(),
+            outcomes: None,
         },
         sessions: map,
     }
@@ -371,11 +374,13 @@ fn report_with_totals(models: Vec<(&str, ModelTokens)>, actual_spend: f64) -> Re
         host: "desk".into(),
         since: ts("2026-06-01T00:00:00Z"),
         until: ts("2026-07-01T00:00:00Z"),
+        outcomes_enabled: None,
         totals: Totals {
             sessions: 0,
             spend_usd: actual_spend,
             untracked_models: Vec::new(),
             models: totals_models,
+            outcomes: None,
         },
         sessions: BTreeMap::new(),
     }

@@ -542,3 +542,47 @@ fn fold_absent_outcomes_yields_none() {
     let summary = fold_single(&path);
     assert_eq!(summary.outcomes, None);
 }
+
+// ---- rollup (Phase 4: global dedupe across sessions) ----
+
+fn outcomes_with(commits: &[&str], pr: Option<(u64, &str)>, files_edited: u64) -> Outcomes {
+    Outcomes {
+        commits: commits.iter().map(|s| s.to_string()).collect(),
+        prs: pr
+            .into_iter()
+            .map(|(number, url)| PrRef {
+                number,
+                url: url.to_string(),
+                repository: derive_repository(url),
+            })
+            .collect(),
+        confluence_writes: 0,
+        jira_writes: 0,
+        slack_messages: 0,
+        files_edited,
+    }
+}
+
+#[test]
+fn rollup_dedupes_commits_and_prs_globally_across_sessions() {
+    let shared_pr = "https://github.com/tatari-tv/clyde/pull/10";
+    let s1 = outcomes_with(&["abc"], Some((10, shared_pr)), 2);
+    // s2 shares the commit sha and the PR url with s1 (e.g. two hosts' transcripts of the same
+    // work), and adds one new commit of its own.
+    let s2 = outcomes_with(&["abc", "def"], Some((10, shared_pr)), 3);
+    let none: Option<&Outcomes> = None;
+
+    let totals = rollup(vec![Some(&s1), Some(&s2), none].into_iter());
+
+    assert_eq!(totals.sessions_with_commits, 2);
+    assert_eq!(totals.commits, 2, "abc/def distinct across both sessions");
+    assert_eq!(totals.prs_opened, 1, "shared PR url counts once, globally");
+    assert_eq!(totals.files_edited, 5, "files-edited is a plain per-session sum");
+}
+
+#[test]
+fn rollup_of_no_outcomes_is_all_zero() {
+    let none: Option<&Outcomes> = None;
+    let totals = rollup(vec![none, none].into_iter());
+    assert_eq!(totals, OutcomeTotals::default());
+}

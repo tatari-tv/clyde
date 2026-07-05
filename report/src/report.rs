@@ -1,3 +1,4 @@
+use crate::outcome::{self, OutcomeTotals, Outcomes};
 use crate::session::{SessionSummary, TokenTotals};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
@@ -20,6 +21,12 @@ pub struct Report {
     pub host: String,
     pub since: DateTime<Utc>,
     pub until: DateTime<Utc>,
+    /// `Some(true)` when collect ran outcome extraction over every transcript in this report,
+    /// `Some(false)` for `--no-outcomes` (Phase 5), `None` on JSONs from a pre-Phase-4 binary.
+    /// The merge coverage rules (`merge::recompute_totals`) key on this flag, not on whether
+    /// `totals.outcomes` happens to be present, so a mixed-capability merge can't read as complete.
+    #[serde(default)]
+    pub outcomes_enabled: Option<bool>,
     pub totals: Totals,
     pub sessions: BTreeMap<String, SessionEntry>,
 }
@@ -32,6 +39,10 @@ pub struct Totals {
     #[serde(default)]
     pub untracked_models: Vec<String>,
     pub models: BTreeMap<String, ModelTokens>,
+    /// Deduped outcome rollup (global dedupe by sha / PR url across every session). Absent on
+    /// pre-Phase-4 JSONs and on a merge that mixes outcomes-capable and incapable inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcomes: Option<OutcomeTotals>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,6 +59,9 @@ pub struct SessionEntry {
     #[serde(default)]
     pub jsonl_paths: Vec<PathBuf>,
     pub models: BTreeMap<String, ModelTokens>,
+    /// Present only when at least one outcome was observed for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcomes: Option<Outcomes>,
 }
 
 impl SessionEntry {
@@ -210,11 +224,17 @@ fn build_report(
         .collect();
     let totals_spend: f64 = totals_model_entries.values().filter_map(|m| m.spend_usd).sum();
 
+    // Outcome rollup: global dedupe by sha / PR url across every session in this report. Collect
+    // always runs extraction today (the `--no-outcomes` escape hatch lands in Phase 5), so
+    // `outcomes-enabled` is unconditionally `Some(true)` here.
+    let outcomes_rollup = outcome::rollup(sessions.values().map(|e| e.outcomes.as_ref()));
+
     let totals = Totals {
         sessions: sessions.len(),
         spend_usd: round_cents(totals_spend),
         untracked_models: untracked.into_iter().collect(),
         models: totals_model_entries,
+        outcomes: Some(outcomes_rollup),
     };
 
     Report {
@@ -223,6 +243,7 @@ fn build_report(
         host: host.to_string(),
         since,
         until,
+        outcomes_enabled: Some(true),
         totals,
         sessions,
     }
@@ -260,6 +281,7 @@ fn to_entry(s: &SessionSummary, pricing: &Pricing) -> SessionEntry {
         untracked_models,
         jsonl_paths: s.jsonl_paths.clone(),
         models,
+        outcomes: s.outcomes.clone(),
     }
 }
 

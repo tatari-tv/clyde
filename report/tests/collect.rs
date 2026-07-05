@@ -59,6 +59,16 @@ fn stdout_mode_streams_valid_json_and_message_to_stderr() {
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be valid report JSON");
     assert_eq!(value["totals"]["sessions"], 1);
     assert!(value["sessions"].get(SID_A).is_some());
+
+    // Phase 4: a pre-v2.1.159-shaped transcript (no gitOperation/tool_use signals) still collects
+    // green, extraction still ran (outcomes-enabled true), the rollup is present but all-zero, and
+    // the session carries no `outcomes` key (none observed, per SessionEntry's skip-if-absent).
+    assert_eq!(value["outcomes-enabled"], true);
+    assert_eq!(value["totals"]["outcomes"]["commits"], 0);
+    assert!(
+        value["sessions"][SID_A].get("outcomes").is_none(),
+        "no outcome observed; the per-session key must be absent, not a zeroed object"
+    );
     assert!(
         !stdout.contains("wrote"),
         "the 'wrote N sessions' note must NOT appear on stdout (would corrupt the JSON stream)"
