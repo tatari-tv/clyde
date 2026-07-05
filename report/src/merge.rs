@@ -13,6 +13,7 @@
 //!    appears in more than one input; re-summing the actual entries is correct by construction.
 
 use crate::config::{MergeConfig, Output};
+use crate::outcome;
 use crate::report::{ModelTokens, Report, SessionEntry, Totals};
 use crate::{OutputDest, RunResult};
 use chrono::{DateTime, Utc};
@@ -125,6 +126,11 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
 
     let schema_version = assert_uniform_schema(&reports)?;
 
+    // Coverage rule (fail closed): the merged outcomes rollup is trustworthy only when EVERY
+    // input ran extraction. An absent flag (`None`, a pre-Phase-4 JSON) is treated the same as
+    // `Some(false)` — a mixed-capability merge must never read as complete.
+    let all_outcomes_enabled = reports.iter().all(|r| r.outcomes_enabled == Some(true));
+
     let mut sessions: BTreeMap<String, SessionEntry> = BTreeMap::new();
     let mut hosts: BTreeSet<String> = BTreeSet::new();
     let mut since: Option<DateTime<Utc>> = None;
@@ -142,12 +148,13 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
         });
         for (sid, entry) in report.sessions {
             // Keep-both: re-key by host so same-id-different-host sessions both survive.
+            // Per-session `outcomes` fields ride through untouched — only the rollup is gated.
             let key = format!("{}/{}", report.host, sid);
             sessions.insert(key, entry);
         }
     }
 
-    let totals = recompute_totals(&sessions);
+    let totals = recompute_totals(&sessions, all_outcomes_enabled);
     let host = multi_host_marker(&hosts);
 
     // since/until are always Some here: read_reports guarantees >= 1 input and the loop above sets
@@ -161,6 +168,7 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
         host,
         since,
         until,
+        outcomes_enabled: Some(all_outcomes_enabled),
         totals,
         sessions,
     })
@@ -189,8 +197,17 @@ fn assert_uniform_schema(reports: &[Report]) -> std::result::Result<u32, MergeEr
 /// `totals`, which double-counts overlap). Per-model token counts are summed; per-model and
 /// session-level spend is summed from the entries' own priced `spend-usd` fields (no re-pricing —
 /// each input was priced at collect time and we trust those figures).
-fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>) -> Totals {
-    log::debug!("merge::recompute_totals: sessions={}", sessions.len());
+///
+/// `outcomes_enabled` gates the outcomes rollup (fail closed, design D2): when `true` (every
+/// input ran extraction), the rollup is rebuilt from the merged sessions with GLOBAL dedupe by
+/// sha / PR url; when `false`, the rollup is absent entirely rather than a partial, misleadingly
+/// authoritative-looking count.
+fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>, outcomes_enabled: bool) -> Totals {
+    log::debug!(
+        "merge::recompute_totals: sessions={} outcomes-enabled={}",
+        sessions.len(),
+        outcomes_enabled
+    );
 
     let mut models: BTreeMap<String, ModelTokens> = BTreeMap::new();
     let mut untracked: BTreeSet<String> = BTreeSet::new();
@@ -216,11 +233,18 @@ fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>) -> Totals {
         }
     }
 
+    let outcomes = if outcomes_enabled {
+        Some(outcome::rollup(sessions.values().map(|e| e.outcomes.as_ref())))
+    } else {
+        None
+    };
+
     Totals {
         sessions: sessions.len(),
         spend_usd: round_cents(total_spend),
         untracked_models: untracked.into_iter().collect(),
         models,
+        outcomes,
     }
 }
 

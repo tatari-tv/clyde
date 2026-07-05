@@ -1,3 +1,4 @@
+use crate::outcome::{self, OutcomeTotals, Outcomes};
 use crate::session::{SessionSummary, TokenTotals};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
@@ -20,6 +21,12 @@ pub struct Report {
     pub host: String,
     pub since: DateTime<Utc>,
     pub until: DateTime<Utc>,
+    /// `Some(true)` when collect ran outcome extraction over every transcript in this report,
+    /// `Some(false)` for `--no-outcomes` (Phase 5), `None` on JSONs from a pre-Phase-4 binary.
+    /// The merge coverage rules (`merge::recompute_totals`) key on this flag, not on whether
+    /// `totals.outcomes` happens to be present, so a mixed-capability merge can't read as complete.
+    #[serde(default)]
+    pub outcomes_enabled: Option<bool>,
     pub totals: Totals,
     pub sessions: BTreeMap<String, SessionEntry>,
 }
@@ -32,6 +39,10 @@ pub struct Totals {
     #[serde(default)]
     pub untracked_models: Vec<String>,
     pub models: BTreeMap<String, ModelTokens>,
+    /// Deduped outcome rollup (global dedupe by sha / PR url across every session). Absent on
+    /// pre-Phase-4 JSONs and on a merge that mixes outcomes-capable and incapable inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcomes: Option<OutcomeTotals>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,6 +59,17 @@ pub struct SessionEntry {
     #[serde(default)]
     pub jsonl_paths: Vec<PathBuf>,
     pub models: BTreeMap<String, ModelTokens>,
+    /// Present only when at least one outcome was observed for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcomes: Option<Outcomes>,
+}
+
+impl SessionEntry {
+    /// Sum of `total` tokens across every model this session used. Shared by `aggregate` (row
+    /// rollups) and `render`'s built-in/custom template paths.
+    pub fn total_tokens(&self) -> u64 {
+        self.models.values().map(|m| m.total).sum()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -122,15 +144,17 @@ pub fn build_json(
     until: DateTime<Utc>,
     host: &str,
     pricing: &Pricing,
+    outcomes_enabled: bool,
 ) -> Result<(String, usize)> {
     debug!(
-        "report::build_json: sessions={} since={} until={} host={}",
+        "report::build_json: sessions={} since={} until={} host={} outcomes-enabled={}",
         summaries.len(),
         since,
         until,
-        host
+        host,
+        outcomes_enabled
     );
-    let report = build_report(summaries, since, until, host, pricing);
+    let report = build_report(summaries, since, until, host, pricing, outcomes_enabled);
     let json = serde_json::to_string_pretty(&report).context("failed to serialize report to JSON")?;
     Ok((json, report.totals.sessions))
 }
@@ -142,17 +166,19 @@ pub fn write_json(
     until: DateTime<Utc>,
     host: &str,
     pricing: &Pricing,
+    outcomes_enabled: bool,
 ) -> Result<usize> {
     debug!(
-        "report::write_json: path={} sessions={} since={} until={} host={}",
+        "report::write_json: path={} sessions={} since={} until={} host={} outcomes-enabled={}",
         path.display(),
         summaries.len(),
         since,
         until,
-        host
+        host,
+        outcomes_enabled
     );
 
-    let (json, count) = build_json(summaries, since, until, host, pricing)?;
+    let (json, count) = build_json(summaries, since, until, host, pricing, outcomes_enabled)?;
 
     let dir = path
         .parent()
@@ -180,13 +206,26 @@ fn build_report(
     until: DateTime<Utc>,
     host: &str,
     pricing: &Pricing,
+    outcomes_enabled: bool,
 ) -> Report {
+    debug!(
+        "report::build_report: sessions={} host={} outcomes-enabled={}",
+        summaries.len(),
+        host,
+        outcomes_enabled
+    );
     let mut sessions = BTreeMap::new();
     let mut totals_models: BTreeMap<String, TokenTotals> = BTreeMap::new();
     let mut untracked: BTreeSet<String> = BTreeSet::new();
 
     for s in summaries {
-        let entry = to_entry(s, pricing);
+        let mut entry = to_entry(s, pricing);
+        // `--no-outcomes` (Phase 5): the extraction pass never ran, so no session may carry an
+        // `outcomes` field regardless of what the caller's summaries happen to hold. Fail closed
+        // at the seam that persists the report, not just at the seam that populates it.
+        if !outcomes_enabled {
+            entry.outcomes = None;
+        }
         for name in &entry.untracked_models {
             untracked.insert(name.clone());
         }
@@ -202,11 +241,20 @@ fn build_report(
         .collect();
     let totals_spend: f64 = totals_model_entries.values().filter_map(|m| m.spend_usd).sum();
 
+    // Outcome rollup: global dedupe by sha / PR url across every session in this report. Absent
+    // entirely (not a zeroed rollup) when extraction did not run (`--no-outcomes`), per design.
+    let outcomes_rollup = if outcomes_enabled {
+        Some(outcome::rollup(sessions.values().map(|e| e.outcomes.as_ref())))
+    } else {
+        None
+    };
+
     let totals = Totals {
         sessions: sessions.len(),
         spend_usd: round_cents(totals_spend),
         untracked_models: untracked.into_iter().collect(),
         models: totals_model_entries,
+        outcomes: outcomes_rollup,
     };
 
     Report {
@@ -215,6 +263,7 @@ fn build_report(
         host: host.to_string(),
         since,
         until,
+        outcomes_enabled: Some(outcomes_enabled),
         totals,
         sessions,
     }
@@ -252,6 +301,7 @@ fn to_entry(s: &SessionSummary, pricing: &Pricing) -> SessionEntry {
         untracked_models,
         jsonl_paths: s.jsonl_paths.clone(),
         models,
+        outcomes: s.outcomes.clone(),
     }
 }
 

@@ -4,11 +4,16 @@ use super::*;
 use crate::config::{Config, RenderConfig, ResolvedCommand};
 use crate::report::{ModelTokens, Report, SessionEntry, Totals};
 use chrono::{DateTime, Utc};
+use claude_pricing::Pricing;
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 
 fn ts(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
+}
+
+fn pricing() -> Pricing {
+    Pricing::embedded()
 }
 
 fn opus_tokens() -> ModelTokens {
@@ -50,6 +55,7 @@ fn sample_report() -> Report {
             untracked_models: Vec::new(),
             jsonl_paths: Vec::new(),
             models: s1_models,
+            outcomes: None,
         },
     );
 
@@ -66,6 +72,7 @@ fn sample_report() -> Report {
             untracked_models: Vec::new(),
             jsonl_paths: Vec::new(),
             models: s2_models,
+            outcomes: None,
         },
     );
 
@@ -79,11 +86,13 @@ fn sample_report() -> Report {
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
         until: ts("2026-04-30T00:00:00Z"),
+        outcomes_enabled: Some(true),
         totals: Totals {
             sessions: 2,
             spend_usd: 0.60,
             untracked_models: Vec::new(),
             models: totals_models,
+            outcomes: None,
         },
         sessions,
     }
@@ -92,7 +101,7 @@ fn sample_report() -> Report {
 #[test]
 fn built_in_template_renders_header_totals_repo_table_and_sessions() {
     let report = sample_report();
-    let md = to_markdown(&report, &Template::BuiltIn);
+    let md = to_markdown(&report, &Template::BuiltIn, &pricing());
 
     assert!(md.contains("# Claude Code session report"));
     assert!(md.contains("**host:** desk"));
@@ -128,15 +137,17 @@ fn empty_report_renders_safe_message() {
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
         until: ts("2026-04-30T00:00:00Z"),
+        outcomes_enabled: None,
         totals: Totals {
             sessions: 0,
             spend_usd: 0.0,
             untracked_models: Vec::new(),
             models: BTreeMap::new(),
+            outcomes: None,
         },
         sessions: BTreeMap::new(),
     };
-    let md = to_markdown(&report, &Template::BuiltIn);
+    let md = to_markdown(&report, &Template::BuiltIn, &pricing());
     assert!(md.contains("**sessions:** 0"));
     assert!(md.contains("_no model usage_"));
     assert!(md.contains("_no sessions with a detected repo_"));
@@ -148,7 +159,7 @@ fn custom_template_substitutes_placeholders() {
     let custom = Template::Custom(
         "host={{host}} since={{since}} until={{until}} count={{session-count}} tot={{total-tokens}} spend={{total-spend}}".into(),
     );
-    let md = to_markdown(&report, &custom);
+    let md = to_markdown(&report, &custom, &pricing());
     assert_eq!(
         md,
         "host=desk since=2026-04-01 until=2026-04-30 count=2 tot=5,650 spend=$0.60"
@@ -156,21 +167,90 @@ fn custom_template_substitutes_placeholders() {
 }
 
 #[test]
-fn build_context_block_includes_options_and_report() {
+fn build_context_block_includes_slim_shape() {
     let report = sample_report();
-    let block = build_context_block(&report, true, None).unwrap();
+    let block = build_context_block(&report, true, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     assert_eq!(parsed.get("persona"), Some(&serde_json::json!({})));
     let opts = parsed.get("options").expect("options key");
     assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(true));
-    let report_obj = parsed.get("report").expect("report key");
-    assert_eq!(report_obj.get("schema-version").and_then(|v| v.as_u64()), Some(1));
+
+    // No raw `report` key anymore: persona/options/period/totals/aggregates/sessions only.
+    assert!(
+        parsed.get("report").is_none(),
+        "slim context must not embed the whole Report"
+    );
+
+    let period = parsed.get("period").expect("period key");
+    assert_eq!(period.get("since").and_then(|v| v.as_str()), Some("2026-04-01"));
+    assert_eq!(period.get("until").and_then(|v| v.as_str()), Some("2026-04-30"));
+    assert_eq!(period.get("generated").and_then(|v| v.as_str()), Some("2026-04-27"));
+    assert_eq!(period.get("active-days").and_then(|v| v.as_u64()), Some(2));
+    assert!(period.get("days").and_then(|v| v.as_i64()).is_some());
+
+    let totals = parsed.get("totals").expect("totals key");
+    assert_eq!(totals.get("sessions").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(totals.get("repo-count").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(totals.get("spend").and_then(|v| v.as_str()), Some("$0.60"));
+    let models = totals
+        .get("models")
+        .and_then(|v| v.as_array())
+        .expect("totals.models list");
+    assert_eq!(models.len(), 2);
+    // Pre-sorted by spend descending: opus ($0.50) before sonnet ($0.10).
+    assert_eq!(models[0].get("model").and_then(|v| v.as_str()), Some("claude-opus-4-7"));
+    assert_eq!(
+        models[1].get("model").and_then(|v| v.as_str()),
+        Some("claude-sonnet-4-6")
+    );
+    let total_row = totals.get("total-row").expect("totals.total-row key");
+    assert_eq!(total_row.get("sessions-using").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(total_row.get("spend").and_then(|v| v.as_str()), Some("$0.60"));
+
+    let aggregates = parsed.get("aggregates").expect("aggregates key");
+    assert!(aggregates.get("by-org").and_then(|v| v.as_array()).is_some());
+    assert!(aggregates.get("by-repo").and_then(|v| v.as_array()).is_some());
+    assert!(aggregates.get("by-day").and_then(|v| v.as_array()).is_some());
+    assert!(aggregates.get("outliers").and_then(|v| v.as_array()).is_some());
+
+    // Cache block (Phase 2): the no-pricing fields are always present; the sample report's
+    // opus session (4,000 cache-read of 5,000 input-side tokens) is priced, so the counterfactual
+    // fields are present too.
+    let cache = aggregates.get("cache").expect("aggregates.cache key");
+    assert!(cache.get("cache-read-share").and_then(|v| v.as_str()).is_some());
+    assert!(cache.get("input-tokens-human").and_then(|v| v.as_str()).is_some());
+    assert!(cache.get("cache-read-tokens-human").and_then(|v| v.as_str()).is_some());
+    assert!(cache.get("list-price-equivalent").and_then(|v| v.as_str()).is_some());
+    assert!(cache.get("cache-savings").and_then(|v| v.as_str()).is_some());
+
+    let sessions = parsed
+        .get("sessions")
+        .and_then(|v| v.as_array())
+        .expect("sessions list");
+    assert_eq!(sessions.len(), 2);
+    for s in sessions {
+        assert!(s.get("short-id").and_then(|v| v.as_str()).is_some());
+        assert!(
+            s.get("jsonl-paths").is_none(),
+            "slim session view must not carry jsonl-paths"
+        );
+        assert!(
+            s.get("spend-display").is_some(),
+            "slim session view keeps spend-display"
+        );
+    }
+
+    assert!(
+        !block.contains("jsonl-paths"),
+        "no jsonl-paths key anywhere in the slim context: {}",
+        block
+    );
 }
 
 #[test]
 fn build_context_block_omits_tradeoffs_when_false() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None).unwrap();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     let opts = parsed.get("options").expect("options key");
     assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(false));
@@ -185,7 +265,14 @@ fn build_context_block_embeds_persona_when_present() {
         email: Some("scott.idler@tatari.tv".into()),
         ..Default::default()
     };
-    let block = build_context_block(&report, false, Some(&persona)).unwrap();
+    let block = build_context_block(
+        &report,
+        false,
+        Some(&persona),
+        &pricing(),
+        crate::aggregate::DEFAULT_OUTLIERS,
+    )
+    .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let p = parsed.get("persona").expect("persona key");
     assert_eq!(p.get("name").and_then(|v| v.as_str()), Some("Scott Idler"));
@@ -196,12 +283,96 @@ fn build_context_block_embeds_persona_when_present() {
 #[test]
 fn build_context_block_uses_compact_json_not_pretty() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None).unwrap();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
     assert!(
         !block.contains('\n'),
         "context block must be compact (no newlines) to minimize Opus token cost: {}",
         block
     );
+}
+
+/// Phase 5 (`--outliers <N>`): a report with more sessions than the requested outlier count
+/// must yield exactly `N` rows in `aggregates.outliers` -- neither the full session list nor
+/// the `DEFAULT_OUTLIERS` default.
+fn report_with_n_sessions(n: usize) -> Report {
+    let mut sessions = BTreeMap::new();
+    for i in 0..n {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "claude-opus-4-7".into(),
+            ModelTokens {
+                input: 100,
+                output: 50,
+                cache_5m_write: 0,
+                cache_1h_write: 0,
+                cache_read: 0,
+                total: 150,
+                spend_usd: Some(1.0 + i as f64),
+            },
+        );
+        sessions.insert(
+            format!("session-{i:02}"),
+            SessionEntry {
+                title: Some(format!("session {i}")),
+                repo: Some("tatari-tv/claude-report".into()),
+                begin: ts("2026-04-10T10:00:00Z"),
+                end: ts("2026-04-10T11:00:00Z"),
+                spend_usd: Some(1.0 + i as f64),
+                untracked_models: Vec::new(),
+                jsonl_paths: Vec::new(),
+                models,
+                outcomes: None,
+            },
+        );
+    }
+    Report {
+        schema_version: 1,
+        generated: ts("2026-04-27T19:42:08Z"),
+        host: "desk".into(),
+        since: ts("2026-04-01T00:00:00Z"),
+        until: ts("2026-04-30T00:00:00Z"),
+        outcomes_enabled: None,
+        totals: Totals {
+            sessions: n,
+            spend_usd: (0..n).map(|i| 1.0 + i as f64).sum(),
+            untracked_models: Vec::new(),
+            models: BTreeMap::new(),
+            outcomes: None,
+        },
+        sessions,
+    }
+}
+
+#[test]
+fn build_context_block_outliers_n_caps_outlier_table_to_exactly_n() {
+    let report = report_with_n_sessions(5);
+    let block = build_context_block(&report, false, None, &pricing(), 3).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let outliers = parsed
+        .get("aggregates")
+        .and_then(|a| a.get("outliers"))
+        .and_then(|v| v.as_array())
+        .expect("aggregates.outliers array");
+    assert_eq!(
+        outliers.len(),
+        3,
+        "expected exactly 3 outlier rows, got: {:?}",
+        outliers
+    );
+}
+
+#[test]
+fn build_context_block_default_outliers_n_matches_default_outliers_const() {
+    // Defaults unchanged when `--outliers` is absent: DEFAULT_OUTLIERS caps the table.
+    let report = report_with_n_sessions(crate::aggregate::DEFAULT_OUTLIERS + 5);
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let outliers = parsed
+        .get("aggregates")
+        .and_then(|a| a.get("outliers"))
+        .and_then(|v| v.as_array())
+        .expect("aggregates.outliers array");
+    assert_eq!(outliers.len(), crate::aggregate::DEFAULT_OUTLIERS);
 }
 
 #[test]
@@ -224,6 +395,7 @@ fn render_run_writes_markdown_file_with_custom_template() {
             prompt: None,
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
+            outliers: crate::aggregate::DEFAULT_OUTLIERS,
         }),
     };
     let result = crate::run_with_config(&cfg).unwrap();
@@ -248,6 +420,7 @@ fn render_run_rejects_yaml_input_extension() {
             prompt: None,
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
+            outliers: crate::aggregate::DEFAULT_OUTLIERS,
         }),
     };
     let err = crate::run_with_config(&cfg).unwrap_err();
@@ -313,5 +486,109 @@ fn baked_in_default_matches_workspace_template() {
     assert_eq!(
         DEFAULT_PROMPT, on_disk,
         "DEFAULT_PROMPT (include_str!) must be byte-identical to templates/report.pmt"
+    );
+}
+
+/// Phase 6: `outcomes.totals` in the context re-exposes the persisted rollup with fields
+/// present-if-nonzero, per-session `outcomes` rides the slim session view, and outlier rows
+/// carry the session's outcome fields when available.
+fn report_with_outcomes() -> Report {
+    use crate::outcome::{OutcomeTotals, Outcomes, PrRef};
+    let mut report = sample_report();
+    report.totals.outcomes = Some(OutcomeTotals {
+        sessions_with_commits: 1,
+        commits: 2,
+        prs_opened: 1,
+        confluence_writes: 0,
+        jira_writes: 0,
+        slack_messages: 0,
+        files_edited: 7,
+    });
+    let entry = report.sessions.get_mut("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042").unwrap();
+    entry.outcomes = Some(Outcomes {
+        commits: vec!["abc123".into(), "def456".into()],
+        prs: vec![PrRef {
+            number: 42,
+            url: "https://github.com/tatari-tv/claude-report/pull/42".into(),
+            repository: Some("tatari-tv/claude-report".into()),
+        }],
+        confluence_writes: 0,
+        jira_writes: 0,
+        slack_messages: 0,
+        files_edited: 7,
+    });
+    report
+}
+
+#[test]
+fn build_context_block_carries_outcomes_totals_present_if_nonzero() {
+    let report = report_with_outcomes();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+
+    let totals = parsed
+        .get("outcomes")
+        .and_then(|o| o.get("totals"))
+        .expect("outcomes.totals key");
+    assert_eq!(totals.get("sessions-with-commits").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(totals.get("commits").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(totals.get("prs-opened").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(totals.get("files-edited").and_then(|v| v.as_u64()), Some(7));
+    for zero_field in ["confluence-writes", "jira-writes", "slack-messages"] {
+        assert!(
+            totals.get(zero_field).is_none(),
+            "zero rollup field `{}` must be absent (present-if-nonzero), got: {}",
+            zero_field,
+            totals
+        );
+    }
+
+    // Per-session outcomes ride the slim session view for themes/citations.
+    let sessions = parsed.get("sessions").and_then(|v| v.as_array()).expect("sessions");
+    let with = sessions
+        .iter()
+        .find(|s| s.get("outcomes").is_some())
+        .expect("one session carries outcomes");
+    let commits = with
+        .get("outcomes")
+        .and_then(|o| o.get("commits"))
+        .and_then(|v| v.as_array())
+        .expect("session outcomes.commits");
+    assert_eq!(commits.len(), 2);
+    assert!(
+        sessions.iter().any(|s| s.get("outcomes").is_none()),
+        "sessions without observed outcomes must omit the key"
+    );
+
+    // Outlier rows carry the session's outcome fields when available.
+    let outliers = parsed
+        .get("aggregates")
+        .and_then(|a| a.get("outliers"))
+        .and_then(|v| v.as_array())
+        .expect("aggregates.outliers");
+    let top = &outliers[0]; // opus session ($0.50) outranks sonnet ($0.10)
+    assert_eq!(top.get("short-id").and_then(|v| v.as_str()), Some("9d4c1f28"));
+    let pr = &top
+        .get("outcomes")
+        .and_then(|o| o.get("prs"))
+        .and_then(|v| v.as_array())
+        .expect("outlier outcomes.prs")[0];
+    assert_eq!(pr.get("number").and_then(|v| v.as_u64()), Some(42));
+}
+
+#[test]
+fn build_context_block_omits_outcomes_key_when_rollup_absent() {
+    let report = sample_report(); // totals.outcomes: None
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    assert!(
+        parsed.get("outcomes").is_none(),
+        "no rollup -> no outcomes key (absent, never null or zeroed): {}",
+        block
+    );
+    let sessions = parsed.get("sessions").and_then(|v| v.as_array()).expect("sessions");
+    assert!(
+        sessions.iter().all(|s| s.get("outcomes").is_none()),
+        "no session may carry an outcomes key when none were observed"
     );
 }
