@@ -32,7 +32,7 @@ mod table;
 use config::Config;
 use output::{DaySummary, SessionSummary};
 
-pub use cli::{Command, CostArgs, CostCli};
+pub use cli::{Command, CostArgs};
 
 /// Environment variable Claude Code exports identifying the live session.
 ///

@@ -14,9 +14,9 @@ clyde/      thin umbrella bin — top-level CLI, dispatch, bootstrap, doctor (th
 common/     the clyde-common surface — Globals passed from clyde down to each tool's run()
 session/    shared core — locate ~/.claude/projects, parse JSONL, path resolution
 sessions/   navigational layer — sessions.db (SQLite + dual FTS5): search / ls / resume / tag / reindex
-report/     was claude-report     — JSON/markdown session reporting (lib + compat bin `cr`)
-cost/       was claude-cost-usage  — cost/usage + statusline installer (lib + compat bin `ccu`)
-permit/     was claude-permit      — permission hygiene + PreToolUse hook (lib + compat bin `claude-permit`)
+report/     was claude-report     — JSON/markdown session reporting (lib)
+cost/       was claude-cost-usage  — cost/usage + statusline installer (lib)
+permit/     was claude-permit      — permission hygiene + PreToolUse hook (lib)
 pricing/    was claude-pricing     — pricing data, JSONL parsing, cost math (lib `claude_pricing`, no bin)
 ```
 
@@ -33,25 +33,25 @@ clyde doctor                                                             # healt
 
 `clyde` owns one common global, `--log-level`, and passes it down to each tool.
 
-## Compat shims
+## Log paths
 
-The old binary names survive as behavior-exact compat shims during the transition: `cr`, `ccu`,
-and `claude-permit` each parse their tool's `Parser` wrapper and call its `run()` in-process, so
-they behave identically to the pre-merge tools and don't depend on `clyde` being on PATH. There is
-no `klod` shim — `clyde bootstrap` repoints the one machine consumer (the enrich timer).
+`clyde report` / `clyde cost` / `clyde permit` all log to the unified
+`$XDG_DATA_HOME/clyde/logs/<tool>.log` location (see
+`docs/design/2026-07-03-deep-dive-remediations.md`, Decision D3), instead of the old per-tool
+legacy dirs (`claude-report/logs/`, `ccu/logs/`, `claude-permit/logs/`). Old log *content* is not
+migrated — logs are disposable diagnostics — so the legacy dirs are left in place; `clyde doctor`
+lists them informationally if present. Every `--help` renders the live path, never a hardcoded
+string.
 
-**Log paths are the one deliberate exception to "behavior-exact."** As of the release that ships
-the log-unification work (see `docs/design/2026-07-03-deep-dive-remediations.md`, Decision D3),
-`cr`/`ccu`/`claude-permit` (and `clyde report`/`clyde cost`/`clyde permit`) all log to the unified
-`$XDG_DATA_HOME/clyde/logs/<tool>.log` location instead of their old per-tool legacy dirs
-(`claude-report/logs/`, `ccu/logs/`, `claude-permit/logs/`). Old log *content* is not migrated —
-logs are disposable diagnostics — so the legacy dirs are left in place; `clyde doctor` lists them
-informationally if present. Every `--help` renders the live path, never a hardcoded string.
+The pre-merge standalone tools (`claude-report`/`cr`, `claude-cost-usage`/`ccu`, `claude-permit`)
+and their compat shims have been removed — everything is reached through `clyde` subcommands.
+`clyde bootstrap` repoints the live integrations (statusline, PreToolUse hook, enrich timer) from
+the old binaries to `clyde`.
 
 ## Install
 
 ```
-./install.sh        # installs clyde + the three shims (cr, ccu, claude-permit)
+./install.sh        # installs the clyde umbrella binary
 clyde bootstrap     # migrate config/data under one clyde home; repoint statusline/hook/timer
 clyde doctor        # verify every integration now resolves to clyde
 ```
