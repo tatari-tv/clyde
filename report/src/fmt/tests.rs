@@ -36,3 +36,16 @@ fn format_tokens_human_boundary_at_one_million_and_one_billion() {
     assert_eq!(format_tokens_human(999_999_999), "1000.0M");
     assert_eq!(format_tokens_human(1_000_000_000), "1.00B");
 }
+
+#[test]
+fn short_id_is_uuid_prefix_for_bare_and_merged_keys() {
+    // Normal report: bare UUID key -> first 8 chars.
+    assert_eq!(short_id("9d4c1f28-1234-5678-9abc-def012345678"), "9d4c1f28");
+    // Merged report: `host/uuid` key -> still the UUID prefix, never `laptop/9`.
+    assert_eq!(short_id("laptop/9d4c1f28-1234-5678-9abc-def012345678"), "9d4c1f28");
+    // A host containing hyphens or dots must not confuse the split on `/`.
+    assert_eq!(short_id("my-host.local/9d4c1f28-abcd"), "9d4c1f28");
+    // Shorter-than-8 UUID portion falls back to the whole portion, panic-free.
+    assert_eq!(short_id("host/abc"), "abc");
+    assert_eq!(short_id("abc"), "abc");
+}

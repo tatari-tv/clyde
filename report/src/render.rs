@@ -1,6 +1,6 @@
 use crate::aggregate::{self, Aggregates};
 use crate::config::RenderConfig;
-use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd};
+use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::persona::{self, PersonaBlock};
 use crate::report::{Report, SessionEntry};
 use crate::{OutputDest, RunResult};
@@ -366,7 +366,7 @@ fn build_outcomes_view(report: &Report) -> Option<OutcomesView> {
 
 fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a> {
     SessionView {
-        short_id: sid.get(..8).unwrap_or(sid).to_string(),
+        short_id: short_id(sid).to_string(),
         title: entry.title.as_deref(),
         repo: entry.repo.as_deref(),
         begin: entry.begin,
@@ -475,7 +475,7 @@ fn render_built_in(report: &Report, pricing: &Pricing) -> String {
         out.push_str(&format!("### {}\n\n", key));
         for (sid, entry) in entries {
             let title = entry.title.as_deref().unwrap_or("<untitled>");
-            let short = sid.get(..8).unwrap_or(&sid);
+            let short = short_id(&sid);
             let models_str: Vec<&str> = entry.models.keys().map(|s| s.as_str()).collect();
             let untracked_suffix = if entry.untracked_models.is_empty() {
                 String::new()

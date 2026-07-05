@@ -60,5 +60,17 @@ pub fn format_tokens_human(n: u64) -> String {
     }
 }
 
+/// The 8-char display id for a session: the first 8 chars of the session UUID.
+///
+/// Normal reports key sessions by the bare UUID, but `merge` re-keys them as `host/uuid` so
+/// same-id-different-host sessions both survive. Strip any host prefix (everything up to and
+/// including the last `/`) before truncating so a merged report's `short-id` stays the UUID
+/// prefix (`9d4c1f28`), never a composite like `laptop/9`. `get(..8)` (not byte-slicing) keeps
+/// this panic-free on a short or non-ASCII key.
+pub fn short_id(session_key: &str) -> &str {
+    let uuid = session_key.rsplit('/').next().unwrap_or(session_key);
+    uuid.get(..8).unwrap_or(uuid)
+}
+
 #[cfg(test)]
 mod tests;

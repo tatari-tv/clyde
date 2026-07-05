@@ -7,7 +7,7 @@
 //! `compute` takes one and [`Aggregates`] carries a `cache` field ([`CacheStats`]). `compute` is
 //! the single aggregate entry point; the counterfactual is the sole sanctioned computation.
 
-use crate::fmt::{format_optional_usd, format_tokens_human, format_usd};
+use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::outcome::Outcomes;
 use crate::report::Report;
 use chrono::NaiveDate;
@@ -354,7 +354,7 @@ fn compute_outliers(report: &Report, outliers_n: usize) -> Vec<OutlierRow> {
         .map(|(sid, entry)| {
             let tokens = entry.total_tokens();
             OutlierRow {
-                short_id: sid.get(..8).unwrap_or(sid).to_string(),
+                short_id: short_id(sid).to_string(),
                 title: entry.title.clone(),
                 repo: entry.repo.clone(),
                 tokens,
