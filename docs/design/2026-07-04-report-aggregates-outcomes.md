@@ -106,7 +106,7 @@ collect:
 
 render:
   read Report JSON -> aggregate::compute(&report, outliers_n, &pricing)
-                   -> context = { persona, options, period, totals, aggregates, sessions(slim) }
+                   -> context = { persona, options, period, totals, aggregates, outcomes, sessions(slim) }
                    -> Opus (report.pmt)                    [or --template offline path]
 
 merge:
@@ -482,6 +482,10 @@ Verified against live transcripts (research brief, 2026-07-04):
   shows 114 distinct `pr-link` URLs vs 85 `action:created` URLs, because `pr-link` fires on
   any PR association (review, babysit, reference), not creation. Counting it would overstate
   opened PRs by a third, in a report whose ethos is verifiability.
+- **D8 (2026-07-04): outcome records are period-filtered by their initiating timestamps,**
+  inclusive on both ends to exactly mirror the token-entry filter (`>= since && <= until`), so
+  boundary-straddling sessions never double-report across months. A confirming `tool_result`
+  landing after `until` still confirms an in-window `tool_use`.
 - **D9 (2026-07-04, consensus round): qualitative characterizations are licensed but must be
   grounded.** The panel showed a no-new-numbers shape claim can still be falsifiably wrong
   (calling month-end-heavy data "clustered in the first week"). Resolution is neither a bare
@@ -500,10 +504,6 @@ Verified against live transcripts (research brief, 2026-07-04):
   would otherwise either leak an out-of-period date into `by-day` (which a D9-grounded
   citation could then repeat) or be dropped and break `sum(by-day) == totals.spend`. The clamp
   keeps both invariants; tests pin them.
-- **D8 (2026-07-04): outcome records are period-filtered by their initiating timestamps,**
-  inclusive on both ends to exactly mirror the token-entry filter (`>= since && <= until`), so
-  boundary-straddling sessions never double-report across months. A confirming `tool_result`
-  landing after `until` still confirms an in-window `tool_use`.
 
 ## Alternatives Considered
 

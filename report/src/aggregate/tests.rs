@@ -456,6 +456,45 @@ fn cache_counterfactual_absent_when_a_cache_bearing_model_is_unpriced() {
 }
 
 #[test]
+fn cache_savings_renders_negative_when_actual_spend_exceeds_counterfactual() {
+    let p = pricing();
+    // Write-heavy, low-reuse profile: cache writes are priced above base input, so actual spend
+    // can exceed the "fold everything into fresh input" counterfactual and cache_savings goes
+    // negative. It must render "-$..." (sign before dollar), never a corrupted "$-..." figure the
+    // model copies verbatim into the report.
+    let input = 1_000u64;
+    let output = 500u64;
+    let cache_read = 0u64;
+    let cache_5m = 9_000u64;
+    let cache_1h = 0u64;
+
+    let rates = p
+        .lookup("claude-opus-4-7")
+        .expect("opus-4-7 is priced in the embedded feed");
+    let folded_input = input + cache_read + cache_5m + cache_1h;
+    let list_price =
+        folded_input as f64 * rates.input_per_mtok / 1_000_000.0 + output as f64 * rates.output_per_mtok / 1_000_000.0;
+
+    // Force actual spend above the counterfactual so savings is negative.
+    let actual_spend = list_price + 1.0;
+    let report = report_with_totals(
+        vec![(
+            "claude-opus-4-7",
+            model_tokens(input, output, cache_read, cache_5m, cache_1h, Some(actual_spend)),
+        )],
+        actual_spend,
+    );
+
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &p);
+    let savings = aggregates.cache.cache_savings.as_deref().unwrap();
+    assert_eq!(savings, format_usd(list_price - actual_spend).as_str());
+    assert!(
+        savings.starts_with("-$"),
+        "negative savings must render sign-before-dollar, got {savings}"
+    );
+}
+
+#[test]
 fn cache_counterfactual_present_when_unpriced_model_has_no_cache_tokens() {
     let p = pricing();
     // A priced cache-bearing model plus an unpriced model with ZERO cache tokens: the latter does

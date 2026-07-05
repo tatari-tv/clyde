@@ -19,11 +19,16 @@ pub fn format_int(n: u64) -> String {
     out.chars().rev().collect()
 }
 
-/// Comma-group a USD amount: `1234.5` -> `"$1,234.50"`.
+/// Comma-group a USD amount: `1234.5` -> `"$1,234.50"`. Negatives render sign-before-dollar with
+/// no stray comma: `-500.0` -> `"-$500.00"`, `-1.01` -> `"-$1.01"`. Sign and magnitude are split
+/// out first so the comma loop never sees the `-` and cents can't underflow (`cache_savings` can
+/// go negative when write-heavy spend exceeds the repriced counterfactual).
 pub fn format_usd(n: f64) -> String {
     let cents = (n * 100.0).round() as i64;
+    let negative = cents < 0;
+    let cents = cents.unsigned_abs();
     let dollars = cents / 100;
-    let frac = cents.rem_euclid(100);
+    let frac = cents % 100;
     let s = dollars.to_string();
     let mut buf = String::with_capacity(s.len() + s.len() / 3);
     for (i, ch) in s.chars().rev().enumerate() {
@@ -33,7 +38,8 @@ pub fn format_usd(n: f64) -> String {
         buf.push(ch);
     }
     let with_commas: String = buf.chars().rev().collect();
-    format!("${}.{:02}", with_commas, frac)
+    let sign = if negative { "-" } else { "" };
+    format!("{}${}.{:02}", sign, with_commas, frac)
 }
 
 /// `format_usd`, but `None` (an untracked/unpriced model) renders as `"(untracked)"` instead of

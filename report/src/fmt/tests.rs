@@ -16,6 +16,16 @@ fn format_usd_comma_groups_dollars_and_pads_cents() {
 }
 
 #[test]
+fn format_usd_handles_negatives_sign_before_dollar_no_stray_comma() {
+    // cache_savings can go negative; sign goes before the `$`, magnitude is comma-grouped.
+    assert_eq!(format_usd(-1.01), "-$1.01");
+    assert_eq!(format_usd(-500.0), "-$500.00");
+    assert_eq!(format_usd(-1_234.5), "-$1,234.50");
+    assert_eq!(format_usd(-0.01), "-$0.01");
+    assert_eq!(format_usd(-1_000_000.0), "-$1,000,000.00");
+}
+
+#[test]
 fn format_optional_usd_renders_untracked_for_none() {
     assert_eq!(format_optional_usd(Some(1.5)), "$1.50");
     assert_eq!(format_optional_usd(None), "(untracked)");
