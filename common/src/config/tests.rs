@@ -69,6 +69,14 @@ fn load_from_reads_render_format() {
 }
 
 #[test]
+fn load_from_reads_render_format_html() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  format: html\n").unwrap();
+    assert_eq!(load_from(&path).unwrap().render_format(), FormatConfig::Html);
+}
+
+#[test]
 fn load_from_rejects_unknown_render_field() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("clyde.yml");

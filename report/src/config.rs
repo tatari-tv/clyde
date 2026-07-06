@@ -119,6 +119,15 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                     format
                 );
             }
+            // `--template` produces markdown by plain string replacement; it has no meaning as an
+            // html-source input. Reject against the RESOLVED format (so a config-set html-source
+            // default plus a CLI `--template` still bails), mirroring the `-o` rejection above.
+            if format.is_html_source() && args.template.is_some() {
+                bail!(
+                    "--template is not valid with --format {:?}; the offline template produces markdown, not an HTML document",
+                    format
+                );
+            }
             let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_INPUT));
             ResolvedCommand::Render(RenderConfig {
                 input,

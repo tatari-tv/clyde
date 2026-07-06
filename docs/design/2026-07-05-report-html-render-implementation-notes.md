@@ -195,3 +195,51 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
 > tracks, identical left+right edge every row; single grid or fixed-width label/value columns;
 > never an `auto` per-row value column) to the Dashboard contract, and add the `include_str!`
 > baked-in/workspace parity test.
+
+## Phase 1: Format plumbing and validation
+
+### Design decisions
+- `Format::Html` and `FormatConfig::Html` added between `Pdf` and `MarqueeHtml` in both enums, so
+  the three local-write formats (markdown, pdf, html) sit together ahead of the two marquee
+  publish variants — reads as a grouping, not an arbitrary order (`report/src/cli.rs`,
+  `common/src/config.rs`).
+- `Format::is_html_source()` added next to `is_marquee` (`report/src/cli.rs`), returning true for
+  `Html | MarqueeHtml`. This is the predicate `resolve_command`'s new `--template` rejection uses,
+  and the one Phase 4's `run()` branch will use.
+- `resolve_command` (`report/src/config.rs`) gained a second format-gated bail, structurally
+  mirroring the existing `-o` + marquee rejection immediately above it: checks the RESOLVED format
+  (CLI `--format` > `clyde.yml render.format` > built-in markdown), so a config-set `html` default
+  plus a bare `--template` on the CLI still bails. Error text names both `--template` and the
+  `{:?}`-formatted format, e.g. `--template is not valid with --format Html; the offline template
+  produces markdown, not an HTML document`.
+- `default_output_path` (`report/src/render.rs`) changed from an `if format == Format::Pdf`
+  boolean to a `match` with a `Pdf => "pdf"`, `Html => "html"`, `_ => "md"` arms — reads cleanly as
+  "three known extensions, markdown-family formats default to md" and needs no further arm when
+  Phase 2+ adds no new extensions.
+
+### Deviations
+- The design doc's Phase 1 bullet list scopes render.rs to only the `default_output_path` html arm
+  and explicitly excludes "the run()-branch or any render/summarize wiring; that's Phase 4."
+  Adding the `Format::Html` enum variant, however, makes `run()`'s `match cfg.format { ... }`
+  non-exhaustive — Rust requires every variant to be covered, this is not optional. Added the
+  minimal possible arm: `Format::Html => bail!("--format html rendering is not implemented yet")`.
+  This is not the Phase 4 wiring (no `render_via_opus_html`, no `write_local_html`, no context-block
+  changes) — it is the smallest change that keeps the crate compiling with the new variant present,
+  and Phase 4 replaces this single line with the real dispatch. Same effect as leaving `run()`
+  untouched would have had if that were possible; the compiler forced a one-line placeholder.
+- Extended the CLI help text for `RenderArgs::format` and `RenderArgs::output` (and the `Render`
+  subcommand doc comment) beyond the doc's literal "help-text truth-sync where the enum is
+  documented" phrasing, to also enumerate `html` in the format list and note the new
+  `--template` + html-source incompatibility inline. Scoped to `report/src/cli.rs` doc comments
+  only (no README/tools.rs touch — that stays Phase 5) since leaving `--format html` completely
+  undocumented in `--help` while it parses successfully would be a worse truth-sync gap than the
+  doc anticipated.
+
+### Tradeoffs
+- Considered a `_ => bail!(...)` wildcard arm in `run()` instead of a named `Format::Html` arm, to
+  minimize the diff further. Rejected: a wildcard silently swallows any future variant someone adds
+  without updating `run()`, defeating the exhaustive-match safety net the codebase otherwise relies
+  on. The named arm costs one extra line and gives Phase 4 a single, obvious line to replace.
+
+### Open questions
+- None. All Phase 1 success criteria verified directly (see report to team-lead).

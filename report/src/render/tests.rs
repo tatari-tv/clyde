@@ -441,6 +441,8 @@ fn default_output_uses_since_yyyy_mm() {
     assert_eq!(md, std::path::PathBuf::from("./2026-04-claude-report.md"));
     let pdf = default_output_path(&report, crate::cli::Format::Pdf);
     assert_eq!(pdf, std::path::PathBuf::from("./2026-04-claude-report.pdf"));
+    let html = default_output_path(&report, crate::cli::Format::Html);
+    assert_eq!(html, std::path::PathBuf::from("./2026-04-claude-report.html"));
 }
 
 #[test]

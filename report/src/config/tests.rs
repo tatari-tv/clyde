@@ -323,6 +323,63 @@ fn resolve_command_render_allows_output_with_local_format() {
     assert!(resolve_command(crate::cli::Command::Render(args)).is_ok());
 }
 
+/// `-o` is meaningful for the new local `html` format (it writes a file, like markdown/pdf), so it
+/// must be accepted, unlike the marquee-* formats.
+#[test]
+fn resolve_command_render_allows_output_with_html_format() {
+    let args = render_args(Some(crate::cli::Format::Html), Some(PathBuf::from("out.html")));
+    assert!(resolve_command(crate::cli::Command::Render(args)).is_ok());
+}
+
+/// `--template` produces markdown and has no meaning as an html-source input; it must be rejected
+/// for both html-source formats (`html` and `marquee-html`), naming the flag and the format.
+#[test]
+fn resolve_command_render_rejects_template_with_html_source_formats() {
+    for format in [crate::cli::Format::Html, crate::cli::Format::MarqueeHtml] {
+        let mut args = render_args(Some(format), None);
+        args.template = Some(PathBuf::from("custom.md"));
+        let err = resolve_command(crate::cli::Command::Render(args)).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--template") && msg.to_lowercase().contains("html"),
+            "rejection for --format {format:?} must mention --template and html: {msg}"
+        );
+    }
+}
+
+/// `--template` is still valid for the markdown-source formats (unchanged behavior).
+#[test]
+fn resolve_command_render_allows_template_with_markdown_source_formats() {
+    for format in [
+        crate::cli::Format::Markdown,
+        crate::cli::Format::Pdf,
+        crate::cli::Format::MarqueeMarkdown,
+    ] {
+        let mut args = render_args(Some(format), None);
+        args.template = Some(PathBuf::from("custom.md"));
+        assert!(
+            resolve_command(crate::cli::Command::Render(args)).is_ok(),
+            "--format {format:?} with --template should still resolve"
+        );
+    }
+}
+
+/// A config-set html-source default combined with a CLI `--template` still bails, mirroring the
+/// existing config-set marquee + `-o` rejection.
+#[test]
+fn config_set_html_default_plus_template_is_rejected() {
+    let err = with_clyde_yml(Some("render:\n  format: html\n"), || {
+        let mut args = render_args(None, None);
+        args.template = Some(PathBuf::from("custom.md"));
+        resolve_command(crate::cli::Command::Render(args)).unwrap_err()
+    });
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("--template") && msg.to_lowercase().contains("html"),
+        "config-default html + --template must be rejected: {msg}"
+    );
+}
+
 /// Phase 5: `resolve_command` must thread `--no-outcomes` from `CollectArgs` into
 /// `CollectConfig.no_outcomes`.
 #[test]

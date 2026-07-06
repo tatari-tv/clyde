@@ -71,6 +71,11 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
         Format::Pdf => write_local_pdf(&markdown, &report, cfg)?,
         Format::MarqueeMarkdown => publish_marquee_markdown(&markdown, &report, cfg)?,
         Format::MarqueeHtml => publish_marquee_html(&markdown, &report, cfg)?,
+        // The html-source pipeline (context block -> report-html.pmt -> opus -> HTML document)
+        // lands in a later phase of this design; `resolve_command` already rejects `--template`
+        // for this format, but a plain `--format html` run reaches here until that phase wires
+        // `render_via_opus_html`/`write_local_html` into `run()`.
+        Format::Html => bail!("--format html rendering is not implemented yet"),
     };
 
     Ok(RunResult {
@@ -125,7 +130,11 @@ fn write_local_pdf(markdown: &str, report: &Report, cfg: &RenderConfig) -> Resul
 
 pub(crate) fn default_output_path(report: &Report, format: Format) -> std::path::PathBuf {
     let prefix = report.since.format("%Y-%m");
-    let ext = if format == Format::Pdf { "pdf" } else { "md" };
+    let ext = match format {
+        Format::Pdf => "pdf",
+        Format::Html => "html",
+        _ => "md",
+    };
     std::path::PathBuf::from(format!("./{}-claude-report.{}", prefix, ext))
 }
 

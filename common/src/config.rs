@@ -45,6 +45,7 @@ pub enum FormatConfig {
     #[default]
     Markdown,
     Pdf,
+    Html,
     MarqueeHtml,
     MarqueeMarkdown,
 }

@@ -108,6 +108,8 @@ fn format_flag_parses_all_variants_case_insensitively() {
         ("markdown", Format::Markdown),
         ("pdf", Format::Pdf),
         ("PDF", Format::Pdf),
+        ("html", Format::Html),
+        ("HTML", Format::Html),
         ("marquee-html", Format::MarqueeHtml),
         ("Marquee-Html", Format::MarqueeHtml),
         ("marquee-markdown", Format::MarqueeMarkdown),
@@ -139,6 +141,7 @@ fn format_maps_from_every_config_variant() {
     use common::config::FormatConfig;
     assert_eq!(Format::from(FormatConfig::Markdown), Format::Markdown);
     assert_eq!(Format::from(FormatConfig::Pdf), Format::Pdf);
+    assert_eq!(Format::from(FormatConfig::Html), Format::Html);
     assert_eq!(Format::from(FormatConfig::MarqueeHtml), Format::MarqueeHtml);
     assert_eq!(Format::from(FormatConfig::MarqueeMarkdown), Format::MarqueeMarkdown);
 }
@@ -147,6 +150,16 @@ fn format_maps_from_every_config_variant() {
 fn is_marquee_only_true_for_marquee_variants() {
     assert!(!Format::Markdown.is_marquee());
     assert!(!Format::Pdf.is_marquee());
+    assert!(!Format::Html.is_marquee());
     assert!(Format::MarqueeHtml.is_marquee());
     assert!(Format::MarqueeMarkdown.is_marquee());
+}
+
+#[test]
+fn is_html_source_only_true_for_html_and_marquee_html() {
+    assert!(!Format::Markdown.is_html_source());
+    assert!(!Format::Pdf.is_html_source());
+    assert!(!Format::MarqueeMarkdown.is_html_source());
+    assert!(Format::Html.is_html_source());
+    assert!(Format::MarqueeHtml.is_html_source());
 }
