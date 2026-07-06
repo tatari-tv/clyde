@@ -446,3 +446,66 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
   historical pre-existing doc from the old `cr` tool); `clyde report render --help` lists all five
   formats (`markdown`, `pdf`, `html`, `marquee-html`, `marquee-markdown`) with accurate
   source/dependency notes.
+
+## Phase 6: Live shakedown (opus, inline) - COMPLETE 2026-07-06
+
+Ran end-to-end on the real June 2026 block (530 sessions, host `desk`): `collect` ->
+`render --format html` (local eyeball, ~170s wall, ~44% margin under the 300s wall - streaming held)
+-> `render --format marquee-html` (published to
+https://marquee.internal.tatari.dev/p/~scott-idler/claude-report-2026-06-2). Numeric audit +
+self-containment run via a throwaway Python script (not shipped): it strips `<script>`/`<style>`,
+extracts every visible numeric token plus inline bar width/height percentages, and asserts each
+appears verbatim in the model's context block (dumped via a throwaway env-gated `DUMP_CONTEXT`
+dump-and-bail in `generate_html`, reverted after); it also greps for external `src`/`href`/`url(`/
+`@import`/`fetch`/`XHR`/`WebSocket`.
+
+### Design decisions
+- Numeric audit dumps the exact context block (not `claude-report.json`) because `*-percent-of-max`
+  and pre-formatted display strings are computed at render time in `build_context_block`, not at
+  collect time. The dump was a throwaway env-gated bail (`DUMP_CONTEXT=<path>` writes the context
+  and bails before the API call, no token cost), reverted before commit - same posture as Phase 0.
+- Model bump implemented as a per-mode split (`HTML_MODEL = claude-opus-4-8`,
+  `MARKDOWN_MODEL = claude-opus-4-7`) in `summarize.rs`, with `request()` taking a `model` param -
+  rather than bumping the one shared `OPUS_MODEL` const. This preserves the markdown path's
+  byte-identical AC (the model is part of that contract) while giving the html path 4-8's stronger
+  design sense. opus-4-8 confirmed (claude-api skill): 128K max output, 1M context, same
+  request surface as 4-7 - so `HTML_MAX_OUTPUT_TOKENS = 64_000` and the adaptive-thinking-free
+  request body are unchanged. Confirmed live in the render log: `calling ... (claude-opus-4-8) stream=true`.
+
+### Deviations
+- Two prompt-only correctness fixes to `report-html.pmt` beyond the Phase 3 artifact, both driven by
+  real-month audit failures (numbers-are-law is the invariant; the fixes close a whole class, not a
+  symptom):
+  1. Hard prohibition 3 gained an anti-re-normalization rule - a bar is always its own row's verbatim
+     global `*-percent-of-max`; a subset/org-grouping never re-scales so its local max is 100%. (The
+     model had drawn `gx` at 100% in the personal-org subsection vs its true global 41.9%.)
+  2. Hard prohibition 1 gained a concrete banned-patterns block - no "combined/total/across-N" group
+     sums, no self-counted quantities ("10 repos", "10 orgs"), no subset re-normalization. (The model
+     had summed a per-tier "108.4M tokens combined" figure absent from the context.)
+  These modify the Phase 0-validated draft; both were re-verified across 3 clean samples (v4, v5, and
+  the published marquee-html artifact) on the final prompt. Parity test still holds (baked-in is
+  `include_str!` of the same workspace file).
+- Em-dash ban added to the output/style contract (Scott's ruling): the model used 21 em-dashes
+  including in the `<title>`; the report publishes under Scott's name where his no-em-dash voice rule
+  applies. Referenced as Unicode U+2014 in the prompt (the literal char is itself banned in repo
+  output). Verified 0 em-dashes in the shipped artifact; title now uses a spaced double hyphen.
+
+### Tradeoffs
+- Prompt-discipline vs. deterministic data (Alternative 4) for numbers-are-law: two violations
+  surfaced in real-month runs, which is the exact "prompt-discipline proves unreliable" signal the
+  design flagged. Judged NOT to have crossed that threshold - both violations traced to the same
+  induced cause (the "organize by org tier" framing invites group aggregates the data doesn't carry),
+  closed by making the prohibitions concrete rather than by moving truthfulness into code. The numeric
+  audit remains the standing regression guard; revisit Alternative 4 only if violations recur on the
+  hardened prompt.
+- Reference-grade beauty deferred rather than chased in this PR: the reference look needs CDN web
+  fonts + Chart.js, which self-containment forbids; reversing that is a design-doc-level call. Ship
+  the correct self-contained path now; "beautiful-v2 + archetypes" gets its own design doc (Scott's
+  sequencing choice).
+
+### Open questions
+- None blocking this design. Two items belong to the follow-up "beautiful-v2 + archetypes" doc:
+  (a) permit marquee's allowlisted CDN sources (Google Fonts + Chart.js) and the self-containment /
+  Hard-prohibition-3 reconsideration that implies; (b) the archetype feature - derive 5-7 archetypes
+  from company-wide AI-spend data offline, bake the schema into the prompt, classify the individual
+  from their own usage with a label + explainer.

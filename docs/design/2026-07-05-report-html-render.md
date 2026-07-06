@@ -2,7 +2,8 @@
 
 **Author:** Scott A. Idler (drafted by Claude)
 **Date:** 2026-07-05
-**Status:** In Review
+**Status:** Implemented
+**Shipped in:** feat/report-html-render (Phases 1-6 complete; pending merge + tag)
 **Review Passes Completed:** 5/5
 
 ## Summary
@@ -104,7 +105,10 @@ Inline-SVG charts need geometry (bar widths, positions) derived from values - wh
 `summarize.rs` (only caller is `render.rs`):
 
 ```rust
-const MODEL: &str = "claude-opus-4-7";            // unchanged (Phase 0: 128K max output, 1M context)
+// Superseded 2026-07-06 (Phase 6): split per mode - MARKDOWN_MODEL = claude-opus-4-7 (byte-identical
+// AC), HTML_MODEL = claude-opus-4-8 (Scott's bump; same request surface + 128K/1M as 4-7).
+const MARKDOWN_MODEL: &str = "claude-opus-4-7";
+const HTML_MODEL: &str = "claude-opus-4-8";
 const MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 16_000;    // unchanged
 const HTML_MAX_OUTPUT_TOKENS: u32 = 64_000;        // Phase 0: observed max output 26.5K on the 5x block; half the 128K ceiling
 const MARKDOWN_SYSTEM_PROMPT: &str = /* existing SYSTEM_PROMPT, unchanged */;
@@ -233,14 +237,20 @@ Missing `ANTHROPIC_API_KEY` on an html-source format is its own error: "required
 - Automated numeric audit (panel finding 12 - "every number" verified by spot-check was a contradiction): a throwaway script extracts every numeric token from the rendered HTML and asserts each appears verbatim in the context block JSON; the same script greps for external `src`/`href`/`url(` as a second check on self-containment. Runs against the Phase 6 artifact; not shipped as product code.
 - Scott reviews the published artifact and rules on visual quality (subjective by design - the owner is the named arbiter); everything else in this phase runs directly.
 - **Success criteria:** published marquee URL renders the dashboard; the numeric audit passes (zero numbers in the HTML absent from the context block); Scott signs off on the aesthetic.
+- **Status: COMPLETE (2026-07-06).** Ran end-to-end on the real June 2026 block (530 sessions, host `desk`): `collect` -> `render --format html` (~170s, ~44% margin under the 300s wall; streaming held) -> `render --format marquee-html` (published to `~scott-idler/claude-report-2026-06-2`). The automated numeric-audit + self-containment script surfaced two real numbers-are-law violations, both the same class (the model computing a group aggregate the deterministic context does not provide), each fixed by a prompt-only change and re-verified across 3 clean samples (local + published) on the final prompt:
+  - **Per-org bar re-normalization** (found run 1): the model split "what this funded" into per-org charts and re-scaled each so that org's top repo hit 100% (`gx` drawn 100.0 vs true global `spend-percent-of-max` 41.9). Fixed by an explicit anti-re-normalization rule in the chart section (a bar is always its own row's verbatim global `*-percent-of-max`; only the single largest row in the whole series is 100%).
+  - **Computed group subtotal** (found run 3): the model summed third-party token counts into a "108.4M tokens combined" figure absent from the context. Fixed by making Hard prohibition 1 concrete with a banned-patterns block (no "combined/total across N" sums, no self-counted quantities, no subset re-normalization).
+  - Additionally, per Scott's ruling, an **em-dash ban** was added to the output/style contract (the model used 21 em-dashes including in the `<title>`; the report publishes under Scott's name, where his no-em-dash voice rule applies). Verified 0 em-dashes post-fix.
+  - **Model bump:** the html path model was bumped `claude-opus-4-7` -> `claude-opus-4-8` (Scott's ruling; the design parked this as a one-line follow-up). Implemented as a per-mode split (`HTML_MODEL` / `MARKDOWN_MODEL`) so the markdown path stays on 4-7 and its byte-identical AC is preserved. opus-4-8 has the same request surface (adaptive-thinking-only, no sampling params) and the same 128K output / 1M context, so `HTML_MAX_OUTPUT_TOKENS = 64_000` is unchanged. Re-verified: the 4-8 artifact passes the numeric audit + self-containment + em-dash checks; `otto ci` green.
+  - **Aesthetic verdict (Scott, 2026-07-06):** the report is good and content-rich but not yet "beautiful" HTML. The reference bar (an org-wide AI-spend report) achieves its look with CDN web fonts (DM Serif Display) + Chart.js - exactly the external resources this design forbids for self-containment. Reaching that bar means reversing the self-containment decision (permit marquee's allowlisted CDN sources) and is deferred to a follow-up "beautiful-v2 + archetypes" design doc (Scott chose: ship this correct render path now, design-doc the rest). Recorded so the road not taken is captured; this design's scope (correct, self-contained, numbers-are-law HTML) is met.
 
 ## Acceptance Criteria
 
-- [ ] `clyde report render --format marquee-html` publishes a model-authored HTML document; `pandoc` is not executed anywhere in that code path (assert: no `Command::new("pandoc")` reachable from html-source formats; `markdown_to_html` deleted).
-- [ ] `clyde report render --format html` writes a self-contained HTML file locally (default `./<YYYY-MM>-claude-report.html`), supports `-o <path>` and `-o -`.
-- [ ] Every numeric value visible in the HTML artifact is copied verbatim from the context block; chart geometry uses only precomputed `*-percent-of-max` fields (assert: prompt rules present; Phase 6 automated numeric audit passes).
-- [ ] `--template` combined with `html` or `marquee-html` fails with a clear error; `markdown`/`pdf`/`marquee-markdown` outputs are byte-identical to pre-change behavior for successful `end_turn` responses (existing tests untouched and green; the truncation unhappy path deliberately upgrades to a loud error).
-- [ ] `otto ci` green; the baked-in `report-html.pmt` is byte-identical to the workspace copy (parity test).
+- [x] `clyde report render --format marquee-html` publishes a model-authored HTML document; `pandoc` is not executed anywhere in that code path (assert: no `Command::new("pandoc")` reachable from html-source formats; `markdown_to_html` deleted).
+- [x] `clyde report render --format html` writes a self-contained HTML file locally (default `./<YYYY-MM>-claude-report.html`), supports `-o <path>` and `-o -`.
+- [x] Every numeric value visible in the HTML artifact is copied verbatim from the context block; chart geometry uses only precomputed `*-percent-of-max` fields (assert: prompt rules present; Phase 6 automated numeric audit passes).
+- [x] `--template` combined with `html` or `marquee-html` fails with a clear error; `markdown`/`pdf`/`marquee-markdown` outputs are byte-identical to pre-change behavior for successful `end_turn` responses (existing tests untouched and green; the truncation unhappy path deliberately upgrades to a loud error).
+- [x] `otto ci` green; the baked-in `report-html.pmt` is byte-identical to the workspace copy (parity test).
 
 ## Resolved Decisions
 
@@ -251,6 +261,10 @@ Missing `ANTHROPIC_API_KEY` on an html-source format is its own error: "required
 - 2026-07-06 (Scott): **streaming adopted** for the html-source path (Phase 0 showed output-bound generation reaches ~250s on a heavy month, eroding the 300s safe margin). Reverses the streaming Non-Goal. Markdown path stays non-streaming (byte-identical). Synchronous `ureq` SSE, no async.
 - 2026-07-06 (Scott): **chart bars must share consistent track geometry** (identical left and right edge on every row); explicit prompt requirement (see Chart truthfulness). Root cause of the Phase 0 misalignment: per-row grids with an `auto` value column.
 - 2026-07-06 (Phase 0 complete): `HTML_MAX_OUTPUT_TOKENS = 64_000`; opus-4-7 is 128K max output / 1M context; output ceiling never approached (max observed 26.5K).
+- 2026-07-06 (Scott, Phase 6): **html-path model bumped to `claude-opus-4-8`** (previously the parked one-line follow-up). Implemented as a per-mode split - `HTML_MODEL = claude-opus-4-8`, `MARKDOWN_MODEL = claude-opus-4-7` - so the markdown path's byte-identical AC is untouched. opus-4-8 shares 4-7's request surface (adaptive-thinking-only, no sampling params) and 128K output / 1M context, so `HTML_MAX_OUTPUT_TOKENS` is unchanged. This supersedes the API Design note that both paths share one `MODEL` constant.
+- 2026-07-06 (Phase 6 shakedown): **numbers-are-law hardened against computed group aggregates.** The real-month audit caught the model (a) re-normalizing bars per org subsection and (b) summing a per-tier "combined" token total - both absent from the context. Hard prohibition 3 gained an explicit no-subset-re-normalization rule and Hard prohibition 1 gained a concrete banned-patterns block (no combined/total/across-N sums, no self-counted quantities). Prompt-only fix; the numeric audit is the regression guard.
+- 2026-07-06 (Scott, Phase 6): **no em-dashes in the HTML artifact** - the report publishes under Scott's name (his no-em-dash voice rule applies). Added to the output/style contract; verified 0 in the shipped output.
+- 2026-07-06 (Scott, Phase 6): **reference-grade beauty deferred to a follow-up design doc.** Matching the org-wide reference report requires CDN web fonts + Chart.js, which this design forbids for self-containment; reversing that is a design-doc-level decision. Ship this correct, self-contained render path now; design-doc "beautiful-v2 + archetypes" (permit marquee's allowlisted CDN sources; classify a user against company-derived archetypes) separately.
 - 2026-07-05 (review panel consensus, all 12 findings dispositioned):
   - F1 (both): `html()` validation tightened - closing `</html>`, trailing-content rejection, external-resource static check. Architect's tolerate-preamble recovery rejected (fail-closed stands); his underlying weakness finding is satisfied by the stricter contract.
   - F2 (Staff, verified): CSP claim corrected in doc - marquee's HTML lane permits CDN sources; self-containment enforcement is prompt + static check.
