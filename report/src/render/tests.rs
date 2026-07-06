@@ -542,6 +542,16 @@ fn baked_in_default_matches_workspace_template() {
     );
 }
 
+#[test]
+fn baked_in_html_default_matches_workspace_template() {
+    let on_disk = fs::read_to_string("templates/report-html.pmt")
+        .expect("templates/report-html.pmt must exist relative to crate root");
+    assert_eq!(
+        DEFAULT_HTML_PROMPT, on_disk,
+        "DEFAULT_HTML_PROMPT (include_str!) must be byte-identical to templates/report-html.pmt"
+    );
+}
+
 /// Phase 6: `outcomes.totals` in the context re-exposes the persisted rollup with fields
 /// present-if-nonzero, per-session `outcomes` rides the slim session view, and outlier rows
 /// carry the session's outcome fields when available.

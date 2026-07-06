@@ -296,3 +296,51 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
   entirely; `sessions_percent_of_max_scales_against_max_daily_session_count` proves `DayRow`'s two
   independent percent fields (spend vs. session count) don't cross-contaminate; and the two
   `render/tests.rs` tests prove the same for `ModelRow` inside the full context block.
+
+## Phase 3: The HTML prompt
+
+### Design decisions
+- `report/templates/report-html.pmt` is the Phase 0 validated draft copied verbatim (Hard
+  prohibitions 1/2/3, Persona, Context block schema, Dashboard contract, Output contract), with
+  exactly one addition: the bar-alignment rule. The draft was Phase 0-verified against live model
+  output, so nothing else was rewritten.
+- Bar-alignment rule integrated as a new bullet inside the Dashboard contract, immediately after
+  the "CSS-proportion bar/column charts" bullet (its natural home — it constrains how those charts
+  are laid out). It states the requirement, prescribes the two acceptable layouts, forbids the
+  failure mode, and names the root cause so the model understands WHY, not just WHAT. Verbatim
+  wording:
+  > Bar alignment: within a single chart, every bar shares ONE set of column tracks - an identical
+  > left edge and an identical right edge on every row, no matter how long that row's label or value
+  > string is. Lay the whole chart out as a SINGLE CSS grid (rows as `display: contents`, or a
+  > subgrid) or with fixed-width label and value columns; the bar track is the one flexible column,
+  > and the label and value columns are fixed so the track's left and right edges stay constant down
+  > the chart. NEVER give each row its own grid, and NEVER size the value column `auto`: a wide value
+  > string in an `auto` column steals width from the shared space and slides that row's bar-track
+  > left edge, so the bars stop lining up. All bars must start and end on the same two vertical lines.
+- `DEFAULT_HTML_PROMPT` / `WORKSPACE_HTML_PROMPT_PATH` consts added in `report/src/render.rs`
+  directly beneath the existing `DEFAULT_PROMPT` / `WORKSPACE_PROMPT_PATH` pair, mirroring their
+  naming and placement exactly. Both carry `#[allow(dead_code)]` — they are unused until Phase 4
+  wires them into `resolve_html_prompt`; Phase 4 removes the allow when it does. `DEFAULT_HTML_PROMPT`
+  is `pub` to match `DEFAULT_PROMPT`.
+- Parity test `baked_in_html_default_matches_workspace_template` (`report/src/render/tests.rs`)
+  duplicates `baked_in_default_matches_workspace_template`, asserting the baked-in
+  `DEFAULT_HTML_PROMPT` is byte-identical to the on-disk `report/templates/report-html.pmt`, so the
+  two copies cannot drift. Confirmed present and green in the `otto ci` run.
+
+### Deviations
+- The validated draft contains a duplicated line `The JSON context block contains:` at the top of
+  the Context block schema section. Preserved verbatim rather than "cleaning it up" — the Phase 3
+  directive is to copy the Phase 0-verified draft and add only the bar-alignment rule, and the
+  parity test only enforces baked-in/workspace identity, not prose polish. Flagged here so a future
+  editor knows it is a known artifact, not a merge accident. Not worth a deviation from "do not
+  rewrite the validated draft."
+
+### Tradeoffs
+- Placed the bar-alignment rule in the Dashboard contract (per the directive) rather than in Hard
+  prohibition 3's "Rules for charts" list. Hard prohibition 3 governs chart *truthfulness* (geometry
+  is copied, never computed); bar alignment is a *layout/CSS* concern the model authors freely. The
+  Dashboard contract is where the other CSS/layout obligations (responsive, light/dark, KPI cards,
+  system fonts) live, so the alignment rule sits with its siblings.
+
+### Open questions
+- None.

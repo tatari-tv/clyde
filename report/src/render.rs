@@ -26,6 +26,11 @@ const STDOUT_SIGIL: &str = "-";
 const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
 const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
+// Wired into the html-source render path in Phase 4; unused until then.
+#[allow(dead_code)]
+pub const DEFAULT_HTML_PROMPT: &str = include_str!("../templates/report-html.pmt");
+#[allow(dead_code)]
+const WORKSPACE_HTML_PROMPT_PATH: &str = "templates/report-html.pmt";
 
 pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
