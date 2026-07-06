@@ -201,7 +201,7 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
 ### Design decisions
 - `Format::Html` and `FormatConfig::Html` added between `Pdf` and `MarqueeHtml` in both enums, so
   the three local-write formats (markdown, pdf, html) sit together ahead of the two marquee
-  publish variants — reads as a grouping, not an arbitrary order (`report/src/cli.rs`,
+  publish variants -- reads as a grouping, not an arbitrary order (`report/src/cli.rs`,
   `common/src/config.rs`).
 - `Format::is_html_source()` added next to `is_marquee` (`report/src/cli.rs`), returning true for
   `Html | MarqueeHtml`. This is the predicate `resolve_command`'s new `--template` rejection uses,
@@ -213,7 +213,7 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
   `{:?}`-formatted format, e.g. `--template is not valid with --format Html; the offline template
   produces markdown, not an HTML document`.
 - `default_output_path` (`report/src/render.rs`) changed from an `if format == Format::Pdf`
-  boolean to a `match` with a `Pdf => "pdf"`, `Html => "html"`, `_ => "md"` arms — reads cleanly as
+  boolean to a `match` with a `Pdf => "pdf"`, `Html => "html"`, `_ => "md"` arms -- reads cleanly as
   "three known extensions, markdown-family formats default to md" and needs no further arm when
   Phase 2+ adds no new extensions.
 
@@ -221,17 +221,17 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
 - The design doc's Phase 1 bullet list scopes render.rs to only the `default_output_path` html arm
   and explicitly excludes "the run()-branch or any render/summarize wiring; that's Phase 4."
   Adding the `Format::Html` enum variant, however, makes `run()`'s `match cfg.format { ... }`
-  non-exhaustive — Rust requires every variant to be covered, this is not optional. Added the
+  non-exhaustive -- Rust requires every variant to be covered, this is not optional. Added the
   minimal possible arm: `Format::Html => bail!("--format html rendering is not implemented yet")`.
   This is not the Phase 4 wiring (no `render_via_opus_html`, no `write_local_html`, no context-block
-  changes) — it is the smallest change that keeps the crate compiling with the new variant present,
+  changes) -- it is the smallest change that keeps the crate compiling with the new variant present,
   and Phase 4 replaces this single line with the real dispatch. Same effect as leaving `run()`
   untouched would have had if that were possible; the compiler forced a one-line placeholder.
 - Extended the CLI help text for `RenderArgs::format` and `RenderArgs::output` (and the `Render`
   subcommand doc comment) beyond the doc's literal "help-text truth-sync where the enum is
   documented" phrasing, to also enumerate `html` in the format list and note the new
   `--template` + html-source incompatibility inline. Scoped to `report/src/cli.rs` doc comments
-  only (no README/tools.rs touch — that stays Phase 5) since leaving `--format html` completely
+  only (no README/tools.rs touch -- that stays Phase 5) since leaving `--format html` completely
   undocumented in `--help` while it parses successfully would be a worse truth-sync gap than the
   doc anticipated.
 
@@ -265,7 +265,7 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
   interleaving two different kinds of arithmetic in one pass.
 - `ModelRow` is a render-only view (`build_totals_view`, `report/src/render.rs`), not an
   `aggregate.rs` struct, so its `spend_percent_of_max` is computed in `render.rs` directly against
-  `report.totals.models`, calling the same `aggregate::percent_of_max` helper — one formula, two
+  `report.totals.models`, calling the same `aggregate::percent_of_max` helper -- one formula, two
   call sites, per the design's explicit split between `aggregate::compute` rows and the render-only
   `ModelRow`.
 - Added DEBUG entry/exit logging to `compute_by_org`, `compute_by_repo`, `compute_by_day`, and
@@ -305,7 +305,7 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
   exactly one addition: the bar-alignment rule. The draft was Phase 0-verified against live model
   output, so nothing else was rewritten.
 - Bar-alignment rule integrated as a new bullet inside the Dashboard contract, immediately after
-  the "CSS-proportion bar/column charts" bullet (its natural home — it constrains how those charts
+  the "CSS-proportion bar/column charts" bullet (its natural home -- it constrains how those charts
   are laid out). It states the requirement, prescribes the two acceptable layouts, forbids the
   failure mode, and names the root cause so the model understands WHY, not just WHAT. Verbatim
   wording:
@@ -319,7 +319,7 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
   > left edge, so the bars stop lining up. All bars must start and end on the same two vertical lines.
 - `DEFAULT_HTML_PROMPT` / `WORKSPACE_HTML_PROMPT_PATH` consts added in `report/src/render.rs`
   directly beneath the existing `DEFAULT_PROMPT` / `WORKSPACE_PROMPT_PATH` pair, mirroring their
-  naming and placement exactly. Both carry `#[allow(dead_code)]` — they are unused until Phase 4
+  naming and placement exactly. Both carry `#[allow(dead_code)]` -- they are unused until Phase 4
   wires them into `resolve_html_prompt`; Phase 4 removes the allow when it does. `DEFAULT_HTML_PROMPT`
   is `pub` to match `DEFAULT_PROMPT`.
 - Parity test `baked_in_html_default_matches_workspace_template` (`report/src/render/tests.rs`)
@@ -329,7 +329,7 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
 
 ### Deviations
 - The validated draft contains a duplicated line `The JSON context block contains:` at the top of
-  the Context block schema section. Preserved verbatim rather than "cleaning it up" — the Phase 3
+  the Context block schema section. Preserved verbatim rather than "cleaning it up" -- the Phase 3
   directive is to copy the Phase 0-verified draft and add only the bar-alignment rule, and the
   parity test only enforces baked-in/workspace identity, not prose polish. Flagged here so a future
   editor knows it is a known artifact, not a merge accident. Not worth a deviation from "do not
@@ -348,29 +348,29 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
 ## Phase 4: Summarize + render wiring
 
 ### Design decisions
-- Shared `request(system, max_tokens, stream, prompt, json_body, api_key)` core — `summarize.rs` —
+- Shared `request(system, max_tokens, stream, prompt, json_body, api_key)` core -- `summarize.rs` --
   both wrappers funnel through it; the only per-mode inputs are the system prompt, the token ceiling,
   and the `stream` flag. `markdown()`/`html()` are thin wrappers so the byte-identical markdown
   contract is a one-line `stream=false` delta, not a forked code path.
-- `stream` is serialized only when true (`is_false` `skip_serializing_if`) — `summarize::MessagesRequest`
-  — so the markdown-source request body is byte-for-byte what it was pre-change (no `stream` key).
-- SSE parse factored into a PURE `parse_sse_stream(&str) -> StreamOutcome` — `summarize.rs` — plus a
+- `stream` is serialized only when true (`is_false` `skip_serializing_if`) -- `summarize::MessagesRequest`
+  -- so the markdown-source request body is byte-for-byte what it was pre-change (no `stream` key).
+- SSE parse factored into a PURE `parse_sse_stream(&str) -> StreamOutcome` -- `summarize.rs` -- plus a
   pure `check_stop_reason(Option<&str>)`. Unit-testable with injected fixtures; the streaming path in
   `request()` just reads the body to a string and calls it. Reading to a string still gets the
   streaming benefit: the socket receives SSE events continuously during the read, so no idle gap
   ever opens for a proxy to drop.
-- `stop_reason != end_turn` bail lives in `request()` (both paths, after the empty-check) — the
+- `stop_reason != end_turn` bail lives in `request()` (both paths, after the empty-check) -- the
   markdown path thereby upgrades silent 16K truncation to the same loud, named-exhaustion error the
   html path uses.
-- `postprocess_html` runs the four API-Design steps in order and is pure — fence strip (line-based,
+- `postprocess_html` runs the four API-Design steps in order and is pure -- fence strip (line-based,
   no byte slicing per `#![deny(clippy::string_slice)]`), doctype assert, `</html>` closing/trailing
   assert, external-resource static check. Returns the cleaned document string.
 - External-resource check (`check_self_contained`) uses a small char-based attribute tokenizer
-  (`parse_attrs`) rather than a regex dep — the crate adds no crates, and `clippy::string_slice`
+  (`parse_attrs`) rather than a regex dep -- the crate adds no crates, and `clippy::string_slice`
   forbids `&s[a..b]`. `<a href>` is the sole href exemption; `src=` on any element is rejected.
   `data:` URIs, `#anchors`, and relative paths are treated as self-contained (only external origins
   http/https/`//`/ftp are rejected), matching the design's "pointing at external origins" wording.
-- Source-family branch in `run()` — branches once on `Format::is_html_source()`; generation
+- Source-family branch in `run()` -- branches once on `Format::is_html_source()`; generation
   (`generate_markdown`/`generate_html`, live API) is separated from routing
   (`route_markdown_artifact`/`route_html_artifact`, injected-string testable) per the offline
   test-seam finding. Pandoc is unreachable from the html branch.
@@ -384,7 +384,7 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
   correct seam (the parse is pure and unit-testable; `request()` stays a thin transport shell). The
   design's "iterate `data:` lines" is realized inside `parse_sse_stream`.
 - Renamed the `render_via_opus_text` internal helper to `render_via_opus_markdown` (spec said so) and
-  its arg order is unchanged (`json_body, prompt`) — the html sibling takes `(context, prompt)` to
+  its arg order is unchanged (`json_body, prompt`) -- the html sibling takes `(context, prompt)` to
   read naturally; both are single-caller internals.
 
 ### Tradeoffs
