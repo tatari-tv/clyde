@@ -3,7 +3,13 @@ use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-pub const OPUS_MODEL: &str = "claude-opus-4-7";
+/// Markdown-path model, pinned. The markdown-source output is byte-identical to the pre-HTML
+/// behavior, and the model is part of that contract - it must not move without re-baselining.
+const MARKDOWN_MODEL: &str = "claude-opus-4-7";
+/// Html-path model. Bumped to opus-4-8 (Scott, Phase 6 shakedown 2026-07-06) for its stronger
+/// design/prose sense. Same request surface as 4-7 (adaptive-thinking-only, no sampling params)
+/// and the same 128K output ceiling / 1M context, so HTML_MAX_OUTPUT_TOKENS below is unchanged.
+const HTML_MODEL: &str = "claude-opus-4-8";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 /// Non-streaming markdown-source ceiling (unchanged from the pre-HTML design). The markdown path
@@ -26,6 +32,7 @@ const HTML_SYSTEM_PROMPT: &str = "You are producing a complete, self-contained H
 pub fn markdown(prompt: &str, json_body: &str, api_key: &str) -> Result<String> {
     debug!("summarize::markdown: json bytes={}", json_body.len());
     request(
+        MARKDOWN_MODEL,
         MARKDOWN_SYSTEM_PROMPT,
         MARKDOWN_MAX_OUTPUT_TOKENS,
         false,
@@ -41,6 +48,7 @@ pub fn markdown(prompt: &str, json_body: &str, api_key: &str) -> Result<String> 
 pub fn html(prompt: &str, json_body: &str, api_key: &str) -> Result<String> {
     debug!("summarize::html: json bytes={}", json_body.len());
     let raw = request(
+        HTML_MODEL,
         HTML_SYSTEM_PROMPT,
         HTML_MAX_OUTPUT_TOKENS,
         true,
@@ -57,6 +65,7 @@ pub fn html(prompt: &str, json_body: &str, api_key: &str) -> Result<String> {
 /// `stop_reason` is not `end_turn` (a max-tokens truncation is a loud, actionable error, never a
 /// silently clipped artifact).
 fn request(
+    model: &str,
     system: &str,
     max_tokens: u32,
     stream: bool,
@@ -74,7 +83,7 @@ fn request(
     );
 
     let body = MessagesRequest {
-        model: OPUS_MODEL.into(),
+        model: model.into(),
         max_tokens,
         stream,
         system: system.into(),
@@ -89,10 +98,7 @@ fn request(
         .build()
         .new_agent();
 
-    info!(
-        "summarize::request: calling {} ({}) stream={}",
-        ENDPOINT, OPUS_MODEL, stream
-    );
+    info!("summarize::request: calling {} ({}) stream={}", ENDPOINT, model, stream);
     let mut response = agent
         .post(ENDPOINT)
         .header("x-api-key", api_key)
