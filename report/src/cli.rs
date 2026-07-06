@@ -132,9 +132,11 @@ pub struct RenderArgs {
     /// Output format: `markdown`, `pdf`, `html`, `marquee-markdown`, or `marquee-html`. When
     /// omitted, falls back to the `render.format` value in `clyde.yml`, and to `markdown` if that
     /// too is unset. `markdown`/`pdf`/`html` write locally (see `-o`); the `marquee-*` variants
-    /// publish to marquee and print the URL. `pdf` and `marquee-html` require `pandoc`; the
-    /// `marquee-*` variants require the `marquee` CLI with an authenticated session. Not valid
-    /// with `--template` for `html`/`marquee-html` (the offline template produces markdown).
+    /// publish to marquee and print the URL. `pdf` requires `pandoc`; the `marquee-*` variants
+    /// require the `marquee` CLI with an authenticated session. `html`/`marquee-html` are
+    /// model-authored (no pandoc involved) and require `ANTHROPIC_API_KEY`; there is no offline
+    /// path for them. Not valid with `--template` for `html`/`marquee-html` (the offline template
+    /// produces markdown).
     #[arg(long, value_enum, ignore_case = true)]
     pub format: Option<Format>,
 
@@ -150,8 +152,9 @@ pub struct RenderArgs {
     #[arg(long)]
     pub template: Option<PathBuf>,
 
-    /// Path to a file containing the LLM prompt used when generating session summaries.
-    /// Overrides the built-in prompt.
+    /// Path to a file overriding the built-in LLM prompt. Dispatched by the resolved format's
+    /// source family: `markdown`/`pdf`/`marquee-markdown` get the markdown report prompt;
+    /// `html`/`marquee-html` get the HTML dashboard prompt.
     #[arg(long)]
     pub prompt: Option<PathBuf>,
 

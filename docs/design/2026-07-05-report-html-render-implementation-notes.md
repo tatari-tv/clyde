@@ -398,3 +398,51 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
 
 ### Open questions
 - None.
+
+## Phase 5: Help, tools, and docs truth-sync
+
+### Design decisions
+- `report/src/tools.rs`: `pandoc`'s REQUIRED TOOLS purpose narrowed from `"report render --format
+  pdf / marquee-html"` to `"report render --format pdf"` - Phase 4 already repointed
+  `marquee-html` at model-authored HTML with pandoc unreachable from that path; the help text was
+  the one remaining place still claiming otherwise.
+- `report/src/cli.rs` `RenderArgs::format` doc comment: dropped the `marquee-html` pandoc claim,
+  added that `html`/`marquee-html` are model-authored (no pandoc) and require
+  `ANTHROPIC_API_KEY` with no offline fallback - the concrete reason `--template` is rejected for
+  them, stated inline rather than left implicit.
+- `RenderArgs::prompt` doc comment rewritten to state the source-family dispatch (markdown-source
+  formats get the markdown report prompt, html-source formats get the HTML dashboard prompt) per
+  the design doc's `--prompt` semantics section - previously it only said "session summaries",
+  which predates the html path and didn't explain the dispatch. Left out the documented-breaking-
+  change note per the assignment's explicit instruction to keep `--help` concise.
+- `report/README.md`: format table expanded from four rows to five (added `html`), restructured to
+  match the design doc's CLI-surface table columns (source, `-o`, pandoc) so a reader can see the
+  two source families and that pandoc is `pdf`-only at a glance; `marquee-html`'s row no longer
+  claims `pandoc -s --embed-resources` (Phase 4 deleted `markdown_to_html` entirely). Added a
+  one-line summary of the source-family split above the table and updated the `clyde.yml` format
+  comment and the `clyde report render` example block to include `html`.
+- Root `README.md` was checked but not touched - its one pandoc mention (line 40) only lists
+  `pandoc` among `clyde report`'s external tools without claiming which format(s) use it, so it was
+  already accurate and out of scope for a truth-sync edit.
+- `marquee_spawn_err` (`report/src/render.rs`) was checked and left unchanged - its message
+  already names `marquee-html / marquee-markdown` accurately and makes no pandoc claim.
+
+### Deviations
+- None. Phase 1 had already extended `cli.rs`'s `--format`/`--output` help text and the `Render`
+  subcommand doc comment to cover the new `html` variant and the `--template` incompatibility; this
+  phase corrected the one stale claim left in that text (`marquee-html` + pandoc) rather than
+  rewriting text that was already accurate.
+
+### Tradeoffs
+- Considered leaving the `--prompt` help text as-is (only its literal wording was in scope, not
+  strictly required by the grep/`--help` success criteria) versus updating it to describe the
+  source-family dispatch. Chose to update: the design doc's Phase 5 scope explicitly calls out
+  `--prompt` help alongside `--format`/`--output`, and leaving it saying "session summaries" with
+  no mention of the html path would itself be a truth gap the assignment asked to close.
+
+### Open questions
+- None. Both success criteria verified directly: `grep -ri pandoc report/ clyde/ README.md` shows
+  no claim that pandoc serves an html format (every hit is pdf-only, a tool-name listing, or a
+  historical pre-existing doc from the old `cr` tool); `clyde report render --help` lists all five
+  formats (`markdown`, `pdf`, `html`, `marquee-html`, `marquee-markdown`) with accurate
+  source/dependency notes.

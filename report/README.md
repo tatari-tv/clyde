@@ -10,19 +10,28 @@ Library API: `report::{ReportArgs, ReportCli, run}`. See the top-level README an
 
 ## Render output formats
 
-`report render` turns a collected JSON report into one of four output formats, selected with
-`--format` (case-insensitive):
+`report render` turns a collected JSON report into one of five output formats, selected with
+`--format` (case-insensitive). The formats split into two source families: `markdown`/`pdf`/
+`marquee-markdown` render the report as Markdown first (template or LLM); `html`/`marquee-html`
+skip Markdown entirely and have the model author a complete, self-contained HTML dashboard
+directly from the same report data. Pandoc is only ever invoked for `pdf`.
 
-| `--format`         | what it does                                                             | requires            |
-|--------------------|--------------------------------------------------------------------------|---------------------|
-| `markdown` (default) | writes Markdown to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.md` | —                   |
-| `pdf`              | converts the Markdown to PDF via pandoc (`--pdf-engine`, default `wkhtmltopdf`) | `pandoc` + a PDF engine |
-| `marquee-markdown` | publishes the Markdown as `index.md` to [marquee](https://github.com/tatari-tv/marquee); marquee applies its house style | `marquee` CLI (authenticated) |
-| `marquee-html`     | converts the Markdown to self-contained HTML (`pandoc -s --embed-resources`) and publishes it as `index.html` | `pandoc` + `marquee` CLI (authenticated) |
+| `--format`         | source   | what it does                                                             | `-o`     | pandoc |
+|--------------------|----------|---------------------------------------------------------------------------|----------|--------|
+| `markdown` (default) | markdown | writes Markdown to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.md` | yes | no |
+| `pdf`              | markdown | converts the Markdown to PDF via pandoc (`--pdf-engine`, default `wkhtmltopdf`) | yes | **yes** |
+| `marquee-markdown` | markdown | publishes the Markdown as `index.md` to [marquee](https://github.com/tatari-tv/marquee); marquee applies its house style | rejected | no |
+| `html`             | html     | writes a self-contained, model-authored HTML dashboard to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.html` | yes | no |
+| `marquee-html`     | html     | publishes the same model-authored HTML dashboard as `index.html` to marquee | rejected | no |
+
+`pdf` requires `pandoc` on `PATH`; `marquee-*` require the `marquee` CLI with an authenticated
+session; `html`/`marquee-html` require `ANTHROPIC_API_KEY` (no offline path; `--template`
+is rejected for these two formats since it produces Markdown, not HTML).
 
 ```bash
 clyde report render                              # Markdown (default)
 clyde report render --format pdf -o report.pdf
+clyde report render --format html                # writes ./<YYYY-MM>-claude-report.html
 clyde report render --format marquee-markdown    # prints the published URL to stdout
 url=$(clyde report render --format marquee-html --space eng)
 ```
@@ -45,7 +54,7 @@ The default `--format` (used when the flag is omitted) can be set in
 ```yaml
 # ~/.config/clyde/clyde.yml
 render:
-  format: marquee-markdown   # markdown | pdf | marquee-html | marquee-markdown
+  format: marquee-markdown   # markdown | pdf | html | marquee-html | marquee-markdown
 ```
 
 With the above, a bare `clyde report render` publishes to marquee, while `--format markdown` still
