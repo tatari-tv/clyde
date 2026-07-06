@@ -3,7 +3,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// Output format for `report render`, selected via `--format` (case-insensitive, kebab-case).
-/// `markdown` (default) and `pdf` write locally (see `-o`); the two `marquee-*` variants publish
+/// `markdown`, `pdf`, and `html` write locally (see `-o`); the two `marquee-*` variants publish
 /// to marquee and print the resulting URL instead of writing a file.
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[clap(rename_all = "kebab-case")]
@@ -11,6 +11,7 @@ pub enum Format {
     #[default]
     Markdown,
     Pdf,
+    Html,
     MarqueeHtml,
     MarqueeMarkdown,
 }
@@ -19,6 +20,13 @@ impl Format {
     /// The two publishing variants, whose output is a marquee URL rather than a local path.
     pub fn is_marquee(self) -> bool {
         matches!(self, Format::MarqueeHtml | Format::MarqueeMarkdown)
+    }
+
+    /// The two model-authored-HTML variants, which share the html-source render pipeline (context
+    /// block -> `report-html.pmt` -> opus -> a complete HTML document; no pandoc) rather than the
+    /// markdown-source pipeline every other format uses.
+    pub fn is_html_source(self) -> bool {
+        matches!(self, Format::Html | Format::MarqueeHtml)
     }
 }
 
@@ -29,6 +37,7 @@ impl From<common::config::FormatConfig> for Format {
         match value {
             common::config::FormatConfig::Markdown => Format::Markdown,
             common::config::FormatConfig::Pdf => Format::Pdf,
+            common::config::FormatConfig::Html => Format::Html,
             common::config::FormatConfig::MarqueeHtml => Format::MarqueeHtml,
             common::config::FormatConfig::MarqueeMarkdown => Format::MarqueeMarkdown,
         }
@@ -53,12 +62,13 @@ pub enum Command {
     /// With `-o <path>`, writes the JSON report to that file; without `-o`, streams
     /// the JSON to stdout so `report collect | jq` works.
     Collect(CollectArgs),
-    /// Render a collected JSON report into Markdown, PDF, or a published marquee post (`--format`).
+    /// Render a collected JSON report into Markdown, PDF, HTML, or a published marquee post
+    /// (`--format`).
     ///
     /// Reads the JSON produced by `collect` (default: `./claude-report.json`) and writes a
     /// human-readable Markdown summary. `--format pdf` converts it with the configured
-    /// `--pdf-engine`; `--format marquee-markdown` / `marquee-html` publish it to marquee and
-    /// print the resulting URL.
+    /// `--pdf-engine`; `--format html` writes a self-contained HTML file locally; `--format
+    /// marquee-markdown` / `marquee-html` publish it to marquee and print the resulting URL.
     Render(RenderArgs),
     /// Merge two or more collected JSON reports into one.
     ///
@@ -113,17 +123,20 @@ pub struct RenderArgs {
     #[arg(short, long)]
     pub input: Option<PathBuf>,
 
-    /// Write rendered Markdown (or PDF) to this path. When omitted, the output defaults to
-    /// `./<YYYY-MM>-claude-report.{md,pdf}` in the current directory (month derived from the
+    /// Write rendered Markdown, PDF, or HTML to this path. When omitted, the output defaults to
+    /// `./<YYYY-MM>-claude-report.{md,pdf,html}` in the current directory (month derived from the
     /// report's `since`). Not valid with the `marquee-*` formats, whose output is a published URL.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Output format: `markdown`, `pdf`, `marquee-markdown`, or `marquee-html`. When omitted,
-    /// falls back to the `render.format` value in `clyde.yml`, and to `markdown` if that too is
-    /// unset. `markdown`/`pdf` write locally (see `-o`); the `marquee-*` variants publish to
-    /// marquee and print the URL. `pdf` and `marquee-html` require `pandoc`; the `marquee-*`
-    /// variants require the `marquee` CLI with an authenticated session.
+    /// Output format: `markdown`, `pdf`, `html`, `marquee-markdown`, or `marquee-html`. When
+    /// omitted, falls back to the `render.format` value in `clyde.yml`, and to `markdown` if that
+    /// too is unset. `markdown`/`pdf`/`html` write locally (see `-o`); the `marquee-*` variants
+    /// publish to marquee and print the URL. `pdf` requires `pandoc`; the `marquee-*` variants
+    /// require the `marquee` CLI with an authenticated session. `html`/`marquee-html` are
+    /// model-authored (no pandoc involved) and require `ANTHROPIC_API_KEY`; there is no offline
+    /// path for them. Not valid with `--template` for `html`/`marquee-html` (the offline template
+    /// produces markdown).
     #[arg(long, value_enum, ignore_case = true)]
     pub format: Option<Format>,
 
@@ -139,8 +152,9 @@ pub struct RenderArgs {
     #[arg(long)]
     pub template: Option<PathBuf>,
 
-    /// Path to a file containing the LLM prompt used when generating session summaries.
-    /// Overrides the built-in prompt.
+    /// Path to a file overriding the built-in LLM prompt. Dispatched by the resolved format's
+    /// source family: `markdown`/`pdf`/`marquee-markdown` get the markdown report prompt;
+    /// `html`/`marquee-html` get the HTML dashboard prompt.
     #[arg(long)]
     pub prompt: Option<PathBuf>,
 

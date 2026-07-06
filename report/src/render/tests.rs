@@ -247,6 +247,55 @@ fn build_context_block_includes_slim_shape() {
     );
 }
 
+/// `ModelRow` (render-only view) gets its own `spend-percent-of-max` (design "Chart truthfulness"):
+/// `sample_report`'s opus session spends $0.50 (the series max) and sonnet spends $0.10.
+#[test]
+fn totals_models_carry_spend_percent_of_max_scaled_to_series_max() {
+    let report = sample_report();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+    let models = parsed
+        .get("totals")
+        .and_then(|t| t.get("models"))
+        .and_then(|v| v.as_array())
+        .expect("totals.models list");
+
+    let opus = models
+        .iter()
+        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some("claude-opus-4-7"))
+        .expect("opus row");
+    assert_eq!(opus.get("spend-percent-of-max").and_then(|v| v.as_f64()), Some(100.0));
+
+    let sonnet = models
+        .iter()
+        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some("claude-sonnet-4-6"))
+        .expect("sonnet row");
+    assert_eq!(sonnet.get("spend-percent-of-max").and_then(|v| v.as_f64()), Some(20.0));
+}
+
+/// All-unpriced models -> zero series max -> the field is `None` in Rust and ABSENT from the
+/// serialized JSON, never a fabricated `0.0`.
+#[test]
+fn totals_models_omit_spend_percent_of_max_when_all_unpriced() {
+    let mut report = sample_report();
+    for mt in report.totals.models.values_mut() {
+        mt.spend_usd = None;
+    }
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+    let models = parsed
+        .get("totals")
+        .and_then(|t| t.get("models"))
+        .and_then(|v| v.as_array())
+        .expect("totals.models list");
+    for m in models {
+        assert!(
+            m.get("spend-percent-of-max").is_none(),
+            "zero-max model series must omit spend-percent-of-max, got: {m}"
+        );
+    }
+}
+
 #[test]
 fn build_context_block_omits_tradeoffs_when_false() {
     let report = sample_report();
@@ -441,6 +490,8 @@ fn default_output_uses_since_yyyy_mm() {
     assert_eq!(md, std::path::PathBuf::from("./2026-04-claude-report.md"));
     let pdf = default_output_path(&report, crate::cli::Format::Pdf);
     assert_eq!(pdf, std::path::PathBuf::from("./2026-04-claude-report.pdf"));
+    let html = default_output_path(&report, crate::cli::Format::Html);
+    assert_eq!(html, std::path::PathBuf::from("./2026-04-claude-report.html"));
 }
 
 #[test]
@@ -482,12 +533,94 @@ fn resolve_prompt_workspace_edits_propagate_at_runtime() {
 }
 
 #[test]
+fn resolve_html_prompt_uses_explicit_path() {
+    let tmp = TempDir::new().unwrap();
+    let pmt = tmp.path().join("custom-html.pmt");
+    fs::write(&pmt, "EXPLICIT-HTML-PROMPT").unwrap();
+    let resolved = resolve_html_prompt(Some(&pmt), tmp.path()).unwrap();
+    assert_eq!(resolved, "EXPLICIT-HTML-PROMPT");
+}
+
+#[test]
+fn resolve_html_prompt_uses_workspace_file_when_no_explicit() {
+    let tmp = TempDir::new().unwrap();
+    let templates = tmp.path().join("templates");
+    fs::create_dir_all(&templates).unwrap();
+    fs::write(templates.join("report-html.pmt"), "WORKSPACE-HTML-PROMPT").unwrap();
+    let resolved = resolve_html_prompt(None, tmp.path()).unwrap();
+    assert_eq!(resolved, "WORKSPACE-HTML-PROMPT");
+}
+
+#[test]
+fn resolve_html_prompt_falls_back_to_baked_in_default() {
+    let tmp = TempDir::new().unwrap();
+    let resolved = resolve_html_prompt(None, tmp.path()).unwrap();
+    assert_eq!(resolved, DEFAULT_HTML_PROMPT);
+}
+
+/// Offline routing seam: `route_html_artifact` takes an already-generated HTML string and writes it
+/// locally for `Format::Html`, so it is testable without the live API. `-o <path>` writes that file.
+#[test]
+fn route_html_artifact_writes_local_file() {
+    let tmp = TempDir::new().unwrap();
+    let out = tmp.path().join("report.html");
+    let report = sample_report();
+    let cfg = RenderConfig {
+        input: tmp.path().join("claude-report.json"),
+        output: Some(out.clone()),
+        format: crate::cli::Format::Html,
+        space: None,
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+    };
+    let html = "<!doctype html><html><body>injected</body></html>";
+    let dest = route_html_artifact(html, &report, &cfg).unwrap();
+    match dest {
+        OutputDest::File(p) => assert_eq!(p, out),
+        other => panic!("expected a File dest, got {other:?}"),
+    }
+    assert_eq!(fs::read_to_string(&out).unwrap(), html);
+}
+
+/// `route_html_artifact` honors the `-o -` stdout sigil (html is text, so stdout is legal).
+#[test]
+fn route_html_artifact_honors_stdout_sigil() {
+    let report = sample_report();
+    let cfg = RenderConfig {
+        input: std::path::PathBuf::from("./claude-report.json"),
+        output: Some(std::path::PathBuf::from("-")),
+        format: crate::cli::Format::Html,
+        space: None,
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+    };
+    let dest = route_html_artifact("<!doctype html><html></html>", &report, &cfg).unwrap();
+    assert!(matches!(dest, OutputDest::Stdout), "expected Stdout dest, got {dest:?}");
+}
+
+#[test]
 fn baked_in_default_matches_workspace_template() {
     let on_disk =
         fs::read_to_string("templates/report.pmt").expect("templates/report.pmt must exist relative to crate root");
     assert_eq!(
         DEFAULT_PROMPT, on_disk,
         "DEFAULT_PROMPT (include_str!) must be byte-identical to templates/report.pmt"
+    );
+}
+
+#[test]
+fn baked_in_html_default_matches_workspace_template() {
+    let on_disk = fs::read_to_string("templates/report-html.pmt")
+        .expect("templates/report-html.pmt must exist relative to crate root");
+    assert_eq!(
+        DEFAULT_HTML_PROMPT, on_disk,
+        "DEFAULT_HTML_PROMPT (include_str!) must be byte-identical to templates/report-html.pmt"
     );
 }
 

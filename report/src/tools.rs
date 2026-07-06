@@ -15,7 +15,7 @@ pub fn tool_validation_help() -> String {
         },
         Tool {
             name: "pandoc",
-            purpose: "report render --format pdf / marquee-html",
+            purpose: "report render --format pdf",
         },
         Tool {
             name: "marquee",

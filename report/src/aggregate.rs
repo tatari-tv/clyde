@@ -66,6 +66,11 @@ pub struct OrgRow {
     #[serde(skip)]
     pub spend_raw: f64,
     pub spend: String,
+    /// Bar-chart geometry (design "Chart truthfulness"): `spend-raw / max(spend-raw across this
+    /// series) * 100`, one decimal, `None` (and absent from JSON) when the whole series is $0 - a
+    /// series with no scale field renders as a table, never a chart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend_percent_of_max: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -80,6 +85,9 @@ pub struct RepoRow {
     #[serde(skip)]
     pub spend_raw: f64,
     pub spend: String,
+    /// See [`OrgRow::spend_percent_of_max`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend_percent_of_max: Option<f64>,
     pub models: Vec<String>,
 }
 
@@ -91,6 +99,25 @@ pub struct DayRow {
     #[serde(skip)]
     pub spend_raw: f64,
     pub spend: String,
+    /// See [`OrgRow::spend_percent_of_max`], scaled against the max daily spend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend_percent_of_max: Option<f64>,
+    /// Same formula as `spend-percent-of-max`, scaled against the max daily session count instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions_percent_of_max: Option<f64>,
+}
+
+/// Bar-chart geometry shared by every chartable aggregate row (design "Chart truthfulness"):
+/// `round(value / max * 1000) / 10` - one-decimal percent-of-series-max, 0-100. `None` when `max`
+/// is zero (an all-zero series has no meaningful proportion), which callers propagate straight
+/// into `skip_serializing_if` so the field is ABSENT from the context JSON - the render prompt's
+/// "no scale field -> table" rule then applies with no special-casing.
+pub fn percent_of_max(value: f64, max: f64) -> Option<f64> {
+    if max == 0.0 {
+        None
+    } else {
+        Some((value / max * 1000.0).round() / 10.0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -247,6 +274,7 @@ struct OrgAcc {
 }
 
 fn compute_by_org(report: &Report) -> Vec<OrgRow> {
+    debug!("aggregate::compute_by_org: sessions={}", report.sessions.len());
     let mut orgs: BTreeMap<String, OrgAcc> = BTreeMap::new();
     for entry in report.sessions.values() {
         let org = org_of(entry.repo.as_deref());
@@ -268,9 +296,15 @@ fn compute_by_org(report: &Report) -> Vec<OrgRow> {
             tokens_human: format_tokens_human(acc.tokens),
             spend_raw: acc.spend,
             spend: format_usd(acc.spend),
+            spend_percent_of_max: None,
         })
         .collect();
+    let max_spend = rows.iter().map(|r| r.spend_raw).fold(0.0_f64, f64::max);
+    for row in &mut rows {
+        row.spend_percent_of_max = percent_of_max(row.spend_raw, max_spend);
+    }
     sort_by_spend_desc(&mut rows, |r| r.spend_raw);
+    debug!("aggregate::compute_by_org: rows={} max-spend={}", rows.len(), max_spend);
     rows
 }
 
@@ -283,6 +317,7 @@ struct RepoAcc {
 }
 
 fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
+    debug!("aggregate::compute_by_repo: sessions={}", report.sessions.len());
     let mut repos: BTreeMap<String, RepoAcc> = BTreeMap::new();
     for entry in report.sessions.values() {
         let Some(repo) = entry.repo.as_deref() else {
@@ -306,11 +341,21 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
                 tokens_human: format_tokens_human(acc.tokens),
                 spend_raw: acc.spend,
                 spend: format_usd(acc.spend),
+                spend_percent_of_max: None,
                 models: acc.models.into_iter().collect(),
             }
         })
         .collect();
+    let max_spend = rows.iter().map(|r| r.spend_raw).fold(0.0_f64, f64::max);
+    for row in &mut rows {
+        row.spend_percent_of_max = percent_of_max(row.spend_raw, max_spend);
+    }
     sort_by_spend_desc(&mut rows, |r| r.spend_raw);
+    debug!(
+        "aggregate::compute_by_repo: rows={} max-spend={}",
+        rows.len(),
+        max_spend
+    );
     rows
 }
 
@@ -326,6 +371,7 @@ struct DayAcc {
 /// otherwise a session begun before `since` with in-period tokens would leak an out-of-period
 /// date into a citation-bearing table. Only active days (>= 1 session) appear.
 fn compute_by_day(report: &Report) -> Vec<DayRow> {
+    debug!("aggregate::compute_by_day: sessions={}", report.sessions.len());
     let since_date = report.since.date_naive();
     let until_date = report.until.date_naive();
     let mut days: BTreeMap<NaiveDate, DayAcc> = BTreeMap::new();
@@ -335,14 +381,30 @@ fn compute_by_day(report: &Report) -> Vec<DayRow> {
         acc.sessions += 1;
         acc.spend += entry.spend_usd.unwrap_or(0.0);
     }
-    days.into_iter()
+    let mut rows: Vec<DayRow> = days
+        .into_iter()
         .map(|(date, acc)| DayRow {
             date: date.format("%Y-%m-%d").to_string(),
             sessions: acc.sessions,
             spend_raw: acc.spend,
             spend: format_usd(acc.spend),
+            spend_percent_of_max: None,
+            sessions_percent_of_max: None,
         })
-        .collect()
+        .collect();
+    let max_spend = rows.iter().map(|r| r.spend_raw).fold(0.0_f64, f64::max);
+    let max_sessions = rows.iter().map(|r| r.sessions).max().unwrap_or(0);
+    for row in &mut rows {
+        row.spend_percent_of_max = percent_of_max(row.spend_raw, max_spend);
+        row.sessions_percent_of_max = percent_of_max(row.sessions as f64, max_sessions as f64);
+    }
+    debug!(
+        "aggregate::compute_by_day: rows={} max-spend={} max-sessions={}",
+        rows.len(),
+        max_spend,
+        max_sessions
+    );
+    rows
 }
 
 /// Top-`outliers_n` sessions by spend (untracked/unpriced sessions rank as $0, ties broken by
