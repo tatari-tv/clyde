@@ -247,6 +247,55 @@ fn build_context_block_includes_slim_shape() {
     );
 }
 
+/// `ModelRow` (render-only view) gets its own `spend-percent-of-max` (design "Chart truthfulness"):
+/// `sample_report`'s opus session spends $0.50 (the series max) and sonnet spends $0.10.
+#[test]
+fn totals_models_carry_spend_percent_of_max_scaled_to_series_max() {
+    let report = sample_report();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+    let models = parsed
+        .get("totals")
+        .and_then(|t| t.get("models"))
+        .and_then(|v| v.as_array())
+        .expect("totals.models list");
+
+    let opus = models
+        .iter()
+        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some("claude-opus-4-7"))
+        .expect("opus row");
+    assert_eq!(opus.get("spend-percent-of-max").and_then(|v| v.as_f64()), Some(100.0));
+
+    let sonnet = models
+        .iter()
+        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some("claude-sonnet-4-6"))
+        .expect("sonnet row");
+    assert_eq!(sonnet.get("spend-percent-of-max").and_then(|v| v.as_f64()), Some(20.0));
+}
+
+/// All-unpriced models -> zero series max -> the field is `None` in Rust and ABSENT from the
+/// serialized JSON, never a fabricated `0.0`.
+#[test]
+fn totals_models_omit_spend_percent_of_max_when_all_unpriced() {
+    let mut report = sample_report();
+    for mt in report.totals.models.values_mut() {
+        mt.spend_usd = None;
+    }
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+    let models = parsed
+        .get("totals")
+        .and_then(|t| t.get("models"))
+        .and_then(|v| v.as_array())
+        .expect("totals.models list");
+    for m in models {
+        assert!(
+            m.get("spend-percent-of-max").is_none(),
+            "zero-max model series must omit spend-percent-of-max, got: {m}"
+        );
+    }
+}
+
 #[test]
 fn build_context_block_omits_tradeoffs_when_false() {
     let report = sample_report();

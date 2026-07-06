@@ -494,6 +494,152 @@ fn cache_savings_renders_negative_when_actual_spend_exceeds_counterfactual() {
     );
 }
 
+/// Design "Chart truthfulness" success criterion: a `[200, 100, 50]` spend series must yield
+/// `spend-percent-of-max` `[100.0, 50.0, 25.0]`, one decimal, and the kebab-case JSON key.
+/// One repo per org keeps `by-org` and `by-repo` numerically identical so both series are checked
+/// from a single fixture.
+#[test]
+fn spend_percent_of_max_known_values_fixture() {
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-07-01T00:00:00Z",
+        vec![
+            (
+                "s1",
+                entry(
+                    Some("high"),
+                    Some("org-a/x"),
+                    ts("2026-06-05T10:00:00Z"),
+                    "claude-opus-4-7",
+                    100,
+                    Some(200.0),
+                ),
+            ),
+            (
+                "s2",
+                entry(
+                    Some("mid"),
+                    Some("org-b/y"),
+                    ts("2026-06-06T10:00:00Z"),
+                    "claude-opus-4-7",
+                    100,
+                    Some(100.0),
+                ),
+            ),
+            (
+                "s3",
+                entry(
+                    Some("low"),
+                    Some("org-c/z"),
+                    ts("2026-06-07T10:00:00Z"),
+                    "claude-opus-4-7",
+                    100,
+                    Some(50.0),
+                ),
+            ),
+        ],
+    );
+
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+
+    let by_org: Vec<Option<f64>> = aggregates.by_org.iter().map(|r| r.spend_percent_of_max).collect();
+    assert_eq!(by_org, vec![Some(100.0), Some(50.0), Some(25.0)]);
+
+    let by_repo: Vec<Option<f64>> = aggregates.by_repo.iter().map(|r| r.spend_percent_of_max).collect();
+    assert_eq!(by_repo, vec![Some(100.0), Some(50.0), Some(25.0)]);
+
+    // Serialized JSON uses the kebab-case key.
+    let json = serde_json::to_value(&aggregates.by_org[0]).unwrap();
+    assert_eq!(json.get("spend-percent-of-max").and_then(|v| v.as_f64()), Some(100.0));
+}
+
+/// A zero-spend series (every session untracked) has no meaningful proportion: the field must be
+/// `None` in Rust and ABSENT from the serialized JSON, never a fabricated `0.0`.
+#[test]
+fn spend_percent_of_max_absent_when_series_max_is_zero() {
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-07-01T00:00:00Z",
+        vec![(
+            "s1",
+            entry(
+                Some("untracked"),
+                Some("org-a/x"),
+                ts("2026-06-05T10:00:00Z"),
+                "claude-does-not-exist-9",
+                100,
+                None,
+            ),
+        )],
+    );
+
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+    assert_eq!(aggregates.by_org[0].spend_percent_of_max, None);
+    assert_eq!(aggregates.by_repo[0].spend_percent_of_max, None);
+    assert_eq!(aggregates.by_day[0].spend_percent_of_max, None);
+
+    let json = serde_json::to_value(&aggregates.by_org[0]).unwrap();
+    assert!(
+        json.get("spend-percent-of-max").is_none(),
+        "zero-max series must omit spend-percent-of-max entirely, got: {json}"
+    );
+}
+
+/// `sessions-percent-of-max` on `DayRow` scales against the max daily session COUNT, independent
+/// of spend: a heavier-spend day with fewer sessions must not out-rank a cheaper, busier day.
+#[test]
+fn sessions_percent_of_max_scales_against_max_daily_session_count() {
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-07-01T00:00:00Z",
+        vec![
+            (
+                "s1",
+                entry(
+                    Some("busy day, one session"),
+                    Some("org-a/x"),
+                    ts("2026-06-01T10:00:00Z"),
+                    "claude-opus-4-7",
+                    100,
+                    Some(1.0),
+                ),
+            ),
+            (
+                "s2",
+                entry(
+                    Some("quiet day, two sessions a"),
+                    Some("org-a/x"),
+                    ts("2026-06-02T10:00:00Z"),
+                    "claude-opus-4-7",
+                    100,
+                    Some(0.1),
+                ),
+            ),
+            (
+                "s3",
+                entry(
+                    Some("quiet day, two sessions b"),
+                    Some("org-a/x"),
+                    ts("2026-06-02T14:00:00Z"),
+                    "claude-opus-4-7",
+                    100,
+                    Some(0.1),
+                ),
+            ),
+        ],
+    );
+
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+    let day1 = aggregates.by_day.iter().find(|r| r.date == "2026-06-01").unwrap();
+    let day2 = aggregates.by_day.iter().find(|r| r.date == "2026-06-02").unwrap();
+    // day1: 1 session vs max 2 -> 50.0%. day2: 2 sessions == max -> 100.0%.
+    assert_eq!(day1.sessions_percent_of_max, Some(50.0));
+    assert_eq!(day2.sessions_percent_of_max, Some(100.0));
+    // day1 has the higher spend but fewer sessions: spend-percent-of-max must not track sessions.
+    assert_eq!(day1.spend_percent_of_max, Some(100.0));
+    assert_eq!(day2.spend_percent_of_max, Some(20.0));
+}
+
 #[test]
 fn cache_counterfactual_present_when_unpriced_model_has_no_cache_tokens() {
     let p = pricing();

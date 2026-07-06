@@ -258,6 +258,11 @@ struct ModelRow {
     /// context-block schema alongside the `(untracked)` display string.
     spend_usd: Option<f64>,
     spend: String,
+    /// Bar-chart geometry (design "Chart truthfulness"): see [`aggregate::percent_of_max`],
+    /// scaled against the max `spend-usd` across `totals.models`. Absent when every model is
+    /// unpriced/$0 - render-only view, so this is computed here rather than in `aggregate.rs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spend_percent_of_max: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -337,6 +342,7 @@ fn build_period_view(report: &Report, aggregates: &Aggregates) -> PeriodView {
 }
 
 fn build_totals_view(report: &Report) -> TotalsView {
+    debug!("render::build_totals_view: models={}", report.totals.models.len());
     let repo_count = report
         .sessions
         .values()
@@ -359,14 +365,24 @@ fn build_totals_view(report: &Report) -> TotalsView {
             tokens_human: format_tokens_human(mt.total),
             spend_usd: mt.spend_usd,
             spend: format_optional_usd(mt.spend_usd),
+            spend_percent_of_max: None,
         })
         .collect();
+    let max_spend = models.iter().filter_map(|r| r.spend_usd).fold(0.0_f64, f64::max);
+    for row in &mut models {
+        row.spend_percent_of_max = aggregate::percent_of_max(row.spend_usd.unwrap_or(0.0), max_spend);
+    }
     models.sort_by(|a, b| {
         b.spend_usd
             .unwrap_or(0.0)
             .partial_cmp(&a.spend_usd.unwrap_or(0.0))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    debug!(
+        "render::build_totals_view: rows={} max-spend={}",
+        models.len(),
+        max_spend
+    );
 
     TotalsView {
         sessions: report.totals.sessions,

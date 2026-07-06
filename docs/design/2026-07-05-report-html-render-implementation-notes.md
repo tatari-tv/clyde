@@ -243,3 +243,56 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
 
 ### Open questions
 - None. All Phase 1 success criteria verified directly (see report to team-lead).
+
+## Phase 2: Aggregate scale fields
+
+### Design decisions
+- Added one shared helper, `aggregate::percent_of_max(value: f64, max: f64) -> Option<f64>`
+  (`report/src/aggregate.rs`), computing `round(value / max * 1000) / 10` and returning `None`
+  when `max == 0.0`. Every chartable row (`OrgRow`, `RepoRow`, `DayRow` in `aggregate.rs`, and
+  `ModelRow` in `render.rs`) calls this one function rather than reimplementing the formula, so
+  the design doc's exact arithmetic and its zero-max edge case live in exactly one place.
+- `OrgRow`/`RepoRow` gained `spend_percent_of_max: Option<f64>`; `DayRow` gained both
+  `spend_percent_of_max` and `sessions_percent_of_max: Option<f64>`, each
+  `#[serde(skip_serializing_if = "Option::is_none")]` so a zero-max series is genuinely ABSENT
+  from the context JSON, not a fabricated `0.0` (design "Chart truthfulness": "no scale field ->
+  table").
+- `compute_by_org`/`compute_by_repo`/`compute_by_day` (`aggregate.rs`) now build rows in two
+  passes: construct with the percent field `None`, compute the series max over the just-built
+  rows, then backfill each row's percent field from that max. This keeps the max computation a
+  single `fold`/`.max()` over the finished `Vec` rather than tracking a running max alongside the
+  existing `BTreeMap` accumulation, and reads as "rows, then scale the rows" rather than
+  interleaving two different kinds of arithmetic in one pass.
+- `ModelRow` is a render-only view (`build_totals_view`, `report/src/render.rs`), not an
+  `aggregate.rs` struct, so its `spend_percent_of_max` is computed in `render.rs` directly against
+  `report.totals.models`, calling the same `aggregate::percent_of_max` helper — one formula, two
+  call sites, per the design's explicit split between `aggregate::compute` rows and the render-only
+  `ModelRow`.
+- Added DEBUG entry/exit logging to `compute_by_org`, `compute_by_repo`, `compute_by_day`, and
+  `build_totals_view` (none of the four logged previously) since Phase 2 changes their internals
+  substantively: entry logs the input session/model count, exit logs the row count and the
+  computed series max(es), per the function-level logging convention. The per-row percent-backfill
+  loop is a two-line transformer over an already-small `Vec` and is not separately logged.
+
+### Deviations
+- None. The doc's line-number citations (`aggregate.rs:59,73,88`, `render.rs:244`) had drifted
+  slightly by the time this phase started (Phase 1 landed in between), but the named structs
+  (`OrgRow`, `RepoRow`, `DayRow`, `ModelRow`) and the fields/formula are exactly as specified.
+
+### Tradeoffs
+- Two-pass (build rows, then backfill percent from the finished `Vec`'s max) vs. a single pass
+  that tracks a running max in the existing accumulator structs (`OrgAcc`/`RepoAcc`/`DayAcc`) and
+  backfills after: chose two-pass over the finished rows. The running-max variant saves one
+  `Vec` traversal but forces every accumulator struct to carry an extra field used only once, and
+  splits "how a max is computed" across four different struct definitions instead of one `.fold`/
+  `.max()` call per function; the aggregates here are at most hundreds of rows, so the extra
+  traversal is inert.
+
+### Open questions
+- None. Success criteria verified directly: `spend_percent_of_max_known_values_fixture`
+  (`report/src/aggregate/tests.rs`) proves the `[200, 100, 50]` -> `[100.0, 50.0, 25.0]` fixture
+  for both `by-org` and `by-repo`, and asserts the serialized JSON key is `spend-percent-of-max`;
+  `spend_percent_of_max_absent_when_series_max_is_zero` proves a zero-max series omits the key
+  entirely; `sessions_percent_of_max_scales_against_max_daily_session_count` proves `DayRow`'s two
+  independent percent fields (spend vs. session count) don't cross-contaminate; and the two
+  `render/tests.rs` tests prove the same for `ModelRow` inside the full context block.
