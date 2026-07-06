@@ -533,6 +533,78 @@ fn resolve_prompt_workspace_edits_propagate_at_runtime() {
 }
 
 #[test]
+fn resolve_html_prompt_uses_explicit_path() {
+    let tmp = TempDir::new().unwrap();
+    let pmt = tmp.path().join("custom-html.pmt");
+    fs::write(&pmt, "EXPLICIT-HTML-PROMPT").unwrap();
+    let resolved = resolve_html_prompt(Some(&pmt), tmp.path()).unwrap();
+    assert_eq!(resolved, "EXPLICIT-HTML-PROMPT");
+}
+
+#[test]
+fn resolve_html_prompt_uses_workspace_file_when_no_explicit() {
+    let tmp = TempDir::new().unwrap();
+    let templates = tmp.path().join("templates");
+    fs::create_dir_all(&templates).unwrap();
+    fs::write(templates.join("report-html.pmt"), "WORKSPACE-HTML-PROMPT").unwrap();
+    let resolved = resolve_html_prompt(None, tmp.path()).unwrap();
+    assert_eq!(resolved, "WORKSPACE-HTML-PROMPT");
+}
+
+#[test]
+fn resolve_html_prompt_falls_back_to_baked_in_default() {
+    let tmp = TempDir::new().unwrap();
+    let resolved = resolve_html_prompt(None, tmp.path()).unwrap();
+    assert_eq!(resolved, DEFAULT_HTML_PROMPT);
+}
+
+/// Offline routing seam: `route_html_artifact` takes an already-generated HTML string and writes it
+/// locally for `Format::Html`, so it is testable without the live API. `-o <path>` writes that file.
+#[test]
+fn route_html_artifact_writes_local_file() {
+    let tmp = TempDir::new().unwrap();
+    let out = tmp.path().join("report.html");
+    let report = sample_report();
+    let cfg = RenderConfig {
+        input: tmp.path().join("claude-report.json"),
+        output: Some(out.clone()),
+        format: crate::cli::Format::Html,
+        space: None,
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+    };
+    let html = "<!doctype html><html><body>injected</body></html>";
+    let dest = route_html_artifact(html, &report, &cfg).unwrap();
+    match dest {
+        OutputDest::File(p) => assert_eq!(p, out),
+        other => panic!("expected a File dest, got {other:?}"),
+    }
+    assert_eq!(fs::read_to_string(&out).unwrap(), html);
+}
+
+/// `route_html_artifact` honors the `-o -` stdout sigil (html is text, so stdout is legal).
+#[test]
+fn route_html_artifact_honors_stdout_sigil() {
+    let report = sample_report();
+    let cfg = RenderConfig {
+        input: std::path::PathBuf::from("./claude-report.json"),
+        output: Some(std::path::PathBuf::from("-")),
+        format: crate::cli::Format::Html,
+        space: None,
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+    };
+    let dest = route_html_artifact("<!doctype html><html></html>", &report, &cfg).unwrap();
+    assert!(matches!(dest, OutputDest::Stdout), "expected Stdout dest, got {dest:?}");
+}
+
+#[test]
 fn baked_in_default_matches_workspace_template() {
     let on_disk =
         fs::read_to_string("templates/report.pmt").expect("templates/report.pmt must exist relative to crate root");

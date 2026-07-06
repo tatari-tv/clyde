@@ -344,3 +344,57 @@ markdown fences, no preamble, no trailing prose. The document ends with `</html>
 
 ### Open questions
 - None.
+
+## Phase 4: Summarize + render wiring
+
+### Design decisions
+- Shared `request(system, max_tokens, stream, prompt, json_body, api_key)` core — `summarize.rs` —
+  both wrappers funnel through it; the only per-mode inputs are the system prompt, the token ceiling,
+  and the `stream` flag. `markdown()`/`html()` are thin wrappers so the byte-identical markdown
+  contract is a one-line `stream=false` delta, not a forked code path.
+- `stream` is serialized only when true (`is_false` `skip_serializing_if`) — `summarize::MessagesRequest`
+  — so the markdown-source request body is byte-for-byte what it was pre-change (no `stream` key).
+- SSE parse factored into a PURE `parse_sse_stream(&str) -> StreamOutcome` — `summarize.rs` — plus a
+  pure `check_stop_reason(Option<&str>)`. Unit-testable with injected fixtures; the streaming path in
+  `request()` just reads the body to a string and calls it. Reading to a string still gets the
+  streaming benefit: the socket receives SSE events continuously during the read, so no idle gap
+  ever opens for a proxy to drop.
+- `stop_reason != end_turn` bail lives in `request()` (both paths, after the empty-check) — the
+  markdown path thereby upgrades silent 16K truncation to the same loud, named-exhaustion error the
+  html path uses.
+- `postprocess_html` runs the four API-Design steps in order and is pure — fence strip (line-based,
+  no byte slicing per `#![deny(clippy::string_slice)]`), doctype assert, `</html>` closing/trailing
+  assert, external-resource static check. Returns the cleaned document string.
+- External-resource check (`check_self_contained`) uses a small char-based attribute tokenizer
+  (`parse_attrs`) rather than a regex dep — the crate adds no crates, and `clippy::string_slice`
+  forbids `&s[a..b]`. `<a href>` is the sole href exemption; `src=` on any element is rejected.
+  `data:` URIs, `#anchors`, and relative paths are treated as self-contained (only external origins
+  http/https/`//`/ftp are rejected), matching the design's "pointing at external origins" wording.
+- Source-family branch in `run()` — branches once on `Format::is_html_source()`; generation
+  (`generate_markdown`/`generate_html`, live API) is separated from routing
+  (`route_markdown_artifact`/`route_html_artifact`, injected-string testable) per the offline
+  test-seam finding. Pandoc is unreachable from the html branch.
+- `render_via_opus_html` uses the html-specific missing-key error ("there is no offline HTML path"),
+  NOT the markdown error that recommends `--template` (false for html-source).
+
+### Deviations
+- `request()` reads the streaming body via `Body::read_to_string()` and hands the whole SSE string to
+  the pure parser, rather than incrementally draining `data:` lines inside `request()` itself. Same
+  effect (bytes flow continuously off the socket during the read, so the idle wall never fires),
+  correct seam (the parse is pure and unit-testable; `request()` stays a thin transport shell). The
+  design's "iterate `data:` lines" is realized inside `parse_sse_stream`.
+- Renamed the `render_via_opus_text` internal helper to `render_via_opus_markdown` (spec said so) and
+  its arg order is unchanged (`json_body, prompt`) — the html sibling takes `(context, prompt)` to
+  read naturally; both are single-caller internals.
+
+### Tradeoffs
+- Read the full SSE body then parse vs. a streaming line reader wired into `request()`: chose
+  read-then-parse-pure. The pure function is trivially testable with fixtures (no fake socket), and
+  the streaming benefit is unaffected because the read itself blocks on a continuously-fed socket.
+  A line-by-line reader would push I/O into the parse and make it untestable without a fake reader.
+- Hand-rolled attribute tokenizer vs. pulling a parser crate: chose hand-rolled. The design forbids
+  new crates, the check is a belt (Phase 0 already proved the prompt produces self-contained HTML),
+  and a full HTML parser is overkill for "find external src/href/url()/@import/fetch".
+
+### Open questions
+- None.

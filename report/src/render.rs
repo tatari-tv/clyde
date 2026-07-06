@@ -26,10 +26,7 @@ const STDOUT_SIGIL: &str = "-";
 const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
 const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
-// Wired into the html-source render path in Phase 4; unused until then.
-#[allow(dead_code)]
 pub const DEFAULT_HTML_PROMPT: &str = include_str!("../templates/report-html.pmt");
-#[allow(dead_code)]
 const WORKSPACE_HTML_PROMPT_PATH: &str = "templates/report-html.pmt";
 
 pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
@@ -55,38 +52,90 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     let report: Report =
         serde_json::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
 
-    let markdown = if let Some(template_path) = cfg.template.as_deref() {
-        let template = load_template(Some(template_path))?;
-        to_markdown(&report, &template, pricing)
+    // Branch once at the source: the html-source family (`Html`, `MarqueeHtml`) never touches
+    // pandoc; the markdown-source family is the unchanged template-or-opus pipeline. Generation
+    // (live API) and routing (write/publish an already-generated artifact string) are separated so
+    // routing is unit-testable with injected strings — see `route_html_artifact` /
+    // `route_markdown_artifact` and their tests.
+    let dest = if cfg.format.is_html_source() {
+        let html = generate_html(cfg, &report, pricing)?;
+        route_html_artifact(&html, &report, cfg)?
     } else {
-        let prompt = resolve_prompt(cfg.prompt.as_deref(), Path::new("."))?;
-        let persona_block = persona::whoami();
-        let context = build_context_block(
-            &report,
-            cfg.include_tradeoffs,
-            persona_block.as_ref(),
-            pricing,
-            cfg.outliers,
-        )?;
-        render_via_opus_text(&context, &prompt)?
-    };
-
-    let dest = match cfg.format {
-        Format::Markdown => write_local_markdown(&markdown, &report, cfg)?,
-        Format::Pdf => write_local_pdf(&markdown, &report, cfg)?,
-        Format::MarqueeMarkdown => publish_marquee_markdown(&markdown, &report, cfg)?,
-        Format::MarqueeHtml => publish_marquee_html(&markdown, &report, cfg)?,
-        // The html-source pipeline (context block -> report-html.pmt -> opus -> HTML document)
-        // lands in a later phase of this design; `resolve_command` already rejects `--template`
-        // for this format, but a plain `--format html` run reaches here until that phase wires
-        // `render_via_opus_html`/`write_local_html` into `run()`.
-        Format::Html => bail!("--format html rendering is not implemented yet"),
+        let markdown = generate_markdown(cfg, &report, pricing)?;
+        route_markdown_artifact(&markdown, &report, cfg)?
     };
 
     Ok(RunResult {
         sessions_emitted: report.totals.sessions,
         output: dest,
     })
+}
+
+/// Produce the markdown-source artifact: the offline `--template` path, or the `report.pmt` -> opus
+/// path. Unchanged from the pre-HTML pipeline (only extracted out of `run` for the source-family
+/// branch and the generation/routing split).
+fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<String> {
+    if let Some(template_path) = cfg.template.as_deref() {
+        let template = load_template(Some(template_path))?;
+        Ok(to_markdown(report, &template, pricing))
+    } else {
+        let prompt = resolve_prompt(cfg.prompt.as_deref(), Path::new("."))?;
+        let persona_block = persona::whoami();
+        let context = build_context_block(
+            report,
+            cfg.include_tradeoffs,
+            persona_block.as_ref(),
+            pricing,
+            cfg.outliers,
+        )?;
+        render_via_opus_markdown(&context, &prompt)
+    }
+}
+
+/// Produce the html-source artifact: context block -> `report-html.pmt` -> opus (streaming) -> a
+/// validated, self-contained HTML document. Pandoc is never invoked; there is no offline path.
+fn generate_html(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<String> {
+    let prompt = resolve_html_prompt(cfg.prompt.as_deref(), Path::new("."))?;
+    let persona_block = persona::whoami();
+    let context = build_context_block(
+        report,
+        cfg.include_tradeoffs,
+        persona_block.as_ref(),
+        pricing,
+        cfg.outliers,
+    )?;
+    render_via_opus_html(&context, &prompt)
+}
+
+/// Route an already-generated markdown artifact to its destination (local file / stdout / PDF /
+/// marquee). Takes the artifact string so it is unit-testable without the live API.
+fn route_markdown_artifact(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!(
+        "render::route_markdown_artifact: format={:?} bytes={}",
+        cfg.format,
+        markdown.len()
+    );
+    match cfg.format {
+        Format::Markdown => write_local_markdown(markdown, report, cfg),
+        Format::Pdf => write_local_pdf(markdown, report, cfg),
+        Format::MarqueeMarkdown => publish_marquee_markdown(markdown, report, cfg),
+        other => bail!("route_markdown_artifact called with a non-markdown-source format: {other:?}"),
+    }
+}
+
+/// Route an already-generated, validated HTML artifact to its destination (local file / stdout, or
+/// marquee publish). Takes the artifact string so it is unit-testable without the live API.
+fn route_html_artifact(html: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!(
+        "render::route_html_artifact: format={:?} bytes={}",
+        cfg.format,
+        html.len()
+    );
+    match cfg.format {
+        Format::Html => write_local_html(html, report, cfg),
+        Format::MarqueeHtml => publish_marquee_html(html, report, cfg),
+        other => bail!("route_html_artifact called with a non-html-source format: {other:?}"),
+    }
 }
 
 /// Write the rendered markdown to `-o <path>`, to stdout (`-o -`), or to the default
@@ -110,6 +159,36 @@ fn write_local_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> 
         .unwrap_or(Path::new("."));
     fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
     fs::write(&output, markdown).with_context(|| format!("failed to write markdown to {}", output.display()))?;
+    Ok(OutputDest::File(output))
+}
+
+/// Write the validated HTML document to `-o <path>`, to stdout (`-o -`), or to the default
+/// `./<YYYY-MM>-claude-report.html` when `-o` is omitted. Mirrors [`write_local_markdown`]
+/// (including the `-o -` stdout sigil); the html artifact is text, so stdout is legal here (unlike
+/// the binary PDF path).
+fn write_local_html(html: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    let output = match cfg.output.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => default_output_path(report, Format::Html),
+    };
+    debug!(
+        "render::write_local_html: output={} bytes={}",
+        output.display(),
+        html.len()
+    );
+
+    if output.as_os_str() == STDOUT_SIGIL {
+        std::io::stdout()
+            .write_all(html.as_bytes())
+            .context("failed to write HTML to stdout")?;
+        return Ok(OutputDest::Stdout);
+    }
+    let dir = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
+    fs::write(&output, html).with_context(|| format!("failed to write HTML to {}", output.display()))?;
     Ok(OutputDest::File(output))
 }
 
@@ -149,13 +228,33 @@ pub enum Template {
     Custom(String),
 }
 
-fn render_via_opus_text(json_body: &str, prompt: &str) -> Result<String> {
+fn render_via_opus_markdown(json_body: &str, prompt: &str) -> Result<String> {
+    debug!(
+        "render::render_via_opus_markdown: context bytes={} prompt bytes={}",
+        json_body.len(),
+        prompt.len()
+    );
     let api_key = title::api_key_from_env().ok_or_else(|| {
         eyre::eyre!(
             "ANTHROPIC_API_KEY is required for Opus rendering; pass --template <path> for the offline markdown path"
         )
     })?;
-    summarize::opus(prompt, json_body, &api_key)
+    summarize::markdown(prompt, json_body, &api_key)
+}
+
+/// The html-source counterpart to [`render_via_opus_markdown`]. There is NO offline HTML path, so
+/// the missing-key error deliberately does NOT recommend `--template` (which produces markdown and
+/// is rejected for html-source formats).
+fn render_via_opus_html(context: &str, prompt: &str) -> Result<String> {
+    debug!(
+        "render::render_via_opus_html: context bytes={} prompt bytes={}",
+        context.len(),
+        prompt.len()
+    );
+    let api_key = title::api_key_from_env().ok_or_else(|| {
+        eyre::eyre!("ANTHROPIC_API_KEY is required for --format html/marquee-html; there is no offline HTML path")
+    })?;
+    summarize::html(prompt, context, &api_key)
 }
 
 pub(crate) fn resolve_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> Result<String> {
@@ -169,6 +268,22 @@ pub(crate) fn resolve_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> R
             .with_context(|| format!("failed to read workspace prompt at {}", workspace_pmt.display()));
     }
     Ok(DEFAULT_PROMPT.to_string())
+}
+
+/// Resolve the html-source prompt with the identical 3-tier precedence as [`resolve_prompt`]:
+/// `--prompt` path > workspace `templates/report-html.pmt` > baked-in [`DEFAULT_HTML_PROMPT`].
+/// `--prompt` is one flag dispatched by the resolved format's source family.
+pub(crate) fn resolve_html_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> Result<String> {
+    if let Some(path) = explicit {
+        return fs::read_to_string(path)
+            .with_context(|| format!("failed to read prompt template at {}", path.display()));
+    }
+    let workspace_pmt = workspace_dir.join(WORKSPACE_HTML_PROMPT_PATH);
+    if workspace_pmt.exists() {
+        return fs::read_to_string(&workspace_pmt)
+            .with_context(|| format!("failed to read workspace prompt at {}", workspace_pmt.display()));
+    }
+    Ok(DEFAULT_HTML_PROMPT.to_string())
 }
 
 /// Slim render context sent to Opus: `{persona, options, period, totals, aggregates, outcomes,
@@ -605,7 +720,7 @@ fn run_bounded(
     // `wait_timeout` has already reaped the child, so `wait_with_output()` (a second wait on the
     // same PID) would fail with ECHILD. Read the piped handles directly instead — the process has
     // exited, and callers only route commands whose output stays well under the pipe buffer here
-    // (large output, e.g. pandoc HTML, goes to a file), so a post-exit drain cannot deadlock.
+    // (large output, e.g. the pandoc PDF, goes to a file), so a post-exit drain cannot deadlock.
     // Mirrors `persona::whoami_via`.
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -670,59 +785,20 @@ fn publish_marquee_markdown(markdown: &str, report: &Report, cfg: &RenderConfig)
     Ok(OutputDest::Marquee(url))
 }
 
-/// Convert the rendered markdown to standalone HTML via pandoc, write it as `index.html` in a temp
-/// dir, and publish it to marquee (which hosts our HTML as-is). Returns the published URL.
-fn publish_marquee_html(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
-    debug!("render::publish_marquee_html: space={:?}", cfg.space);
-    let html = markdown_to_html(markdown, report)?;
+/// Write the model-authored, validated HTML document as `index.html` in a temp dir and publish it
+/// to marquee (which hosts our HTML as-is under its Okta-gated HTML lane). Pandoc is NOT involved:
+/// the artifact arrives already complete and self-contained from `summarize::html`. Returns the URL.
+fn publish_marquee_html(html: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!(
+        "render::publish_marquee_html: space={:?} bytes={}",
+        cfg.space,
+        html.len()
+    );
     let dir = tempfile::tempdir().context("failed to create temp dir for marquee publish")?;
     let index = dir.path().join("index.html");
-    fs::write(&index, &html).with_context(|| format!("failed to write {}", index.display()))?;
+    fs::write(&index, html).with_context(|| format!("failed to write {}", index.display()))?;
     let url = marquee_publish(dir.path(), report, cfg)?;
     Ok(OutputDest::Marquee(url))
-}
-
-/// Render markdown to a self-contained, styled HTML document via pandoc (`-s --embed-resources`),
-/// so the published `index.html` needs no external assets. pandoc writes to a temp FILE (not a
-/// pipe) because the HTML can exceed the OS pipe buffer, which would deadlock a piped read.
-/// Returns the HTML as a string.
-fn markdown_to_html(markdown: &str, report: &Report) -> Result<String> {
-    debug!("render::markdown_to_html: bytes={}", markdown.len());
-    let mut tmp = tempfile::NamedTempFile::new().context("failed to create temp markdown for pandoc")?;
-    tmp.write_all(markdown.as_bytes())
-        .context("failed to write temp markdown for pandoc")?;
-    tmp.flush().context("failed to flush temp markdown")?;
-    let out = tempfile::NamedTempFile::new().context("failed to create temp HTML for pandoc")?;
-
-    let mut cmd = Command::new("pandoc");
-    cmd.arg(tmp.path())
-        .arg("-f")
-        .arg("markdown")
-        .arg("-t")
-        .arg("html")
-        .arg("-s")
-        .arg("--embed-resources")
-        .arg("--metadata")
-        .arg(format!("title={}", marquee_title(report)))
-        .arg("-o")
-        .arg(out.path());
-    let result = run_bounded("pandoc (--format marquee-html)", &mut cmd, |e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            eyre::eyre!(
-                "pandoc is required for --format marquee-html but was not found on PATH; install pandoc and try again"
-            )
-        } else {
-            eyre::eyre!("failed to invoke pandoc: {}", e)
-        }
-    })?;
-    if !result.status.success() {
-        bail!(
-            "pandoc exited with {} converting markdown to HTML: {}",
-            result.status,
-            String::from_utf8_lossy(&result.stderr).trim()
-        );
-    }
-    fs::read_to_string(out.path()).context("failed to read pandoc HTML output (non-UTF-8 or missing)")
 }
 
 /// Publish a prepared directory (containing `index.md` or `index.html`) to marquee, ensuring an
