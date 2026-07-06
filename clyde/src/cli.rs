@@ -76,6 +76,8 @@ pub enum Command {
     Bootstrap(crate::bootstrap::BootstrapArgs),
     /// Health-check the migration and integrations.
     Doctor,
+    /// Check for, install, or revert a newer released version of clyde.
+    Update(renew::UpdateCmd),
 }
 
 #[derive(Subcommand, Debug)]

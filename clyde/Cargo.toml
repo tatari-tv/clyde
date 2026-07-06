@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 description = "Catalog, search, and resume Claude Code sessions"
 build = "build.rs"
+repository = "https://github.com/tatari-tv/clyde"
 
 [[bin]]
 name = "clyde"
@@ -25,6 +26,7 @@ eyre = { workspace = true }
 libc = "0.2.186"
 log = { workspace = true }
 permit = { path = "../permit" }
+renew = { git = "https://github.com/tatari-tv/renew", tag = "v0.3.2" }
 report = { path = "../report" }
 rusqlite = { workspace = true, features = ["bundled"] }
 serde = { workspace = true }

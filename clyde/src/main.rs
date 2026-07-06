@@ -85,9 +85,31 @@ fn main() -> Result<()> {
         // instead of env_logger.
         setup_serve_tracing(&level, &log_path)?;
     } else {
-        // Every clyde-native arm (sessions non-serve, bootstrap, doctor) uses env_logger.
+        // Every clyde-native arm (sessions non-serve, bootstrap, doctor, update) uses env_logger.
         setup_logging(&level, &log_path)?;
     }
+
+    // `update check|install|revert` needs none of clyde's own setup (db, config, …), so intercept
+    // it here, before that setup runs. A renew!() construction failure (unparseable version,
+    // missing repo metadata) maps to renew's documented exit 2.
+    if let Command::Update(cmd) = &cli.command {
+        match renew::renew!() {
+            Ok(r) => std::process::exit(cmd.run(&r)),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    // Passive "a newer version is out" notice (TTY-gated, cached) for every other command.
+    // Degrade to a debug log on a construction failure - never abort the command the user
+    // actually ran.
+    match renew::renew!() {
+        Ok(r) => r.notify_if_outdated(),
+        Err(e) => log::debug!("renew unavailable: {e}"),
+    }
+
     run(cli)
 }
 
@@ -166,6 +188,8 @@ fn run(cli: Cli) -> Result<()> {
         // clyde-native migration/health commands.
         Command::Bootstrap(args) => bootstrap::run(&args),
         Command::Doctor => std::process::exit(doctor::run()?),
+        // Handled by the early intercept in `main`, which exits the process.
+        Command::Update(_) => unreachable!("Update is intercepted before this dispatch"),
         // Serve owns its own catalog handle (inside the async server) and needs a Tokio runtime,
         // so it is handled before opening the synchronous `Db` the other arms share.
         Command::Sessions {
