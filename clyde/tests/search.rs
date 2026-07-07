@@ -81,8 +81,10 @@ fn piped_search_emits_search_results_object_not_a_bare_array() {
     seed_projects(&projects);
 
     // A normal AND query that a single session satisfies: the shape is the `SearchResults`
-    // object (NOT a bare JSON array — the disclosed breaking change), `fallback` is absent, and
-    // `unenriched` is present (Phase 4 populates real counts; Phase 2 leaves it zeroed).
+    // object (NOT a bare JSON array -- the disclosed breaking change), `fallback` is absent, and
+    // `unenriched` carries the real gap counts (Phase 4). Neither seeded session was ever
+    // enriched (reindex alone never sets `summary`), so the one returned hit is un-enriched
+    // (`in-results: 1`) and so is the whole two-session catalog (`in-catalog: 2`).
     let v = run_search(&db_path, &projects, &["kubernetes"]);
     assert!(v.is_object(), "piped output must be an object, not a bare array: {v}");
     assert_eq!(v["count"], 1);
@@ -92,8 +94,11 @@ fn piped_search_emits_search_results_object_not_a_bare_array() {
         v.get("fallback").is_none(),
         "an AND-satisfied query must carry no fallback key: {v}"
     );
-    assert_eq!(v["unenriched"]["in-results"], 0);
-    assert_eq!(v["unenriched"]["in-catalog"], 0);
+    assert_eq!(v["unenriched"]["in-results"], 1, "the one hit is un-enriched: {v}");
+    assert_eq!(
+        v["unenriched"]["in-catalog"], 2,
+        "both seeded sessions are un-enriched: {v}"
+    );
 }
 
 #[test]

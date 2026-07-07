@@ -104,9 +104,8 @@ pub enum Fallback {
     Or,
 }
 
-/// Roll-up of enrichment gaps touching a search response. Phase 2 always reports zero counts here
-/// (the field exists so the response shape is stable); Phase 4 populates the real counts from the
-/// catalog.
+/// Roll-up of enrichment gaps touching a search response, populated by
+/// [`crate::db::Db::unenriched_counts`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Unenriched {

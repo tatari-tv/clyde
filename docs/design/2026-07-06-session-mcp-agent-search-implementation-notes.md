@@ -153,3 +153,53 @@
 
 ### Open questions
 - None.
+
+## Phase 4: Enrichment-gap surfacing
+
+### Design decisions
+- `Db::search` now computes the real `Unenriched` counts instead of returning
+  `Unenriched::default()` -- `sessions/src/db.rs:Db::search` / new private helper
+  `Db::unenriched_counts` -- called once per pass (after the AND pass short-circuits, and again
+  after the OR fallback pass) so the counts always describe the hits actually being returned,
+  matching the design doc's data model (`unenriched: { in-results, in-catalog }`,
+  lines 89, 120-124). This **supersedes Phase 2's zero-stub**: Phase 2 deliberately locked in the
+  response shape (`Unenriched` struct, kebab-case field names, always-present-never-skipped) with
+  both counts hardcoded to zero and an explicit comment marking Phase 4 as the phase that would
+  populate real values; that comment and the zero-stub are now gone.
+- `in_results` computed Rust-side over the already-fetched hits -- `Db::unenriched_counts` --
+  `summary` is already in `COLS` (`sessions/src/db.rs:100-102`) and therefore already on every
+  `SearchHit.record`, so this is a plain `hits.iter().filter(|h| h.record.summary.is_none()).count()`
+  with no extra query, exactly as the design doc specifies ("Rust-side `summary.is_none()` count").
+- `in_catalog` reuses `Db::enrich_summary`'s existing `never_enriched` count (`enriched_at IS
+  NULL`, `sessions/src/db.rs:449-469`) rather than a new `summary IS NULL` catalog-wide query --
+  the design doc explicitly says "via the existing `enrich_summary` query
+  (`db.rs:421-441`)". `summary` and `enriched_at` are written together in the same
+  `set_enrichment` `UPDATE` (`sessions/src/db.rs:342-345`) and nowhere else in the codebase sets
+  `summary` outside that one call site, so the two predicates are equivalent for every row in
+  practice; reusing `never_enriched` is a literal instance of "reuse the query path", not just an
+  equivalent recomputation.
+- `model.rs`'s doc comment on `Unenriched` updated to point at the new
+  `Db::unenriched_counts` instead of describing the Phase 2 zero-stub it replaces --
+  `sessions/src/model.rs`.
+
+### Deviations
+- None. Implemented at the seam the design doc specified: a private helper inside `Db::search`
+  populating the already-shaped `Unenriched` struct, reusing `enrich_summary` for the catalog-wide
+  count as instructed.
+
+### Tradeoffs
+- Computing `unenriched_counts` per-pass (once for the AND-hit early return, once for the OR
+  fallback) rather than hoisting one shared call after a unified return path -- `Db::search`
+  already has two separate `return`/final-`Ok` points from Phase 2's AND->OR structure; adding one
+  `unenriched_counts(&hits)` call at each site is a two-line diff versus restructuring the
+  control flow, and `enrich_summary` is cheap (a handful of `COUNT(*)` queries) so calling it from
+  either branch (never both) has no meaningful cost difference.
+- `unenriched_counts` re-runs `enrich_summary`'s five `COUNT(*)` queries on every `search` call
+  rather than caching the catalog-wide count -- the design doc gives no caching directive and the
+  MCP server already runs every tool call behind a single-writer `Mutex<Db>` on a local SQLite
+  file (`sessions/src/mcp.rs`), so an extra handful of indexed `COUNT(*)` scans per search is not a
+  latency concern worth a cache-invalidation mechanism; revisit only if observed latency says
+  otherwise (matching the doc's own "measure first" posture on the coverage-MATCH perf question).
+
+### Open questions
+- None.

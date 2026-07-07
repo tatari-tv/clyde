@@ -610,7 +610,11 @@ impl Db {
     /// and fusion second, and each body hit carries `terms-matched`/`terms-total`. Recency sort
     /// dissolves both the tiering and the re-rank (the caller asked for date order).
     ///
-    /// `unenriched` is always zero-valued here; Phase 4 populates the real gap counts.
+    /// `unenriched` surfaces the enrichment gap alongside the ranking: `in_results` is a Rust-side
+    /// count of returned hits with `summary IS NULL` (degraded-ranking candidates the agent is
+    /// actually looking at), `in_catalog` reuses [`Self::enrich_summary`]'s `never_enriched` count
+    /// (every un-enriched row, whether or not it surfaced here) so the agent can tell "this result
+    /// set is degraded" from "the whole catalog still has a backlog".
     pub fn search(
         &self,
         query: &str,
@@ -630,11 +634,12 @@ impl Db {
         };
         if !and_hits.is_empty() {
             debug!("Db::search: AND pass returned {} hits", and_hits.len());
+            let unenriched = self.unenriched_counts(&and_hits)?;
             return Ok(SearchResults {
                 count: and_hits.len(),
                 results: and_hits,
                 fallback: None,
-                unenriched: Unenriched::default(),
+                unenriched,
             });
         }
 
@@ -648,12 +653,24 @@ impl Db {
             or_hits.len(),
             fallback
         );
+        let unenriched = self.unenriched_counts(&or_hits)?;
         Ok(SearchResults {
             count: or_hits.len(),
             results: or_hits,
             fallback,
-            unenriched: Unenriched::default(),
+            unenriched,
         })
+    }
+
+    /// The enrichment-gap counts for a `search` response: `in_results` counts `hits` with
+    /// `summary IS NULL` (Rust-side, since `summary` is already in [`COLS`]); `in_catalog` reuses
+    /// [`Self::enrich_summary`]'s `never_enriched` (`enriched_at IS NULL`) count across the whole
+    /// catalog, not just the returned hits.
+    fn unenriched_counts(&self, hits: &[SearchHit]) -> Result<Unenriched> {
+        let in_results = hits.iter().filter(|h| h.record.summary.is_none()).count();
+        let in_catalog = self.enrich_summary()?.never_enriched;
+        debug!("Db::unenriched_counts: in_results={in_results} in_catalog={in_catalog}");
+        Ok(Unenriched { in_results, in_catalog })
     }
 
     /// Run one FTS pass (`fts` already token-quoted and joined AND/OR by [`fts_query`]) across

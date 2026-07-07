@@ -586,6 +586,58 @@ fn search_no_hits_on_either_pass_has_no_fallback() {
     );
 }
 
+/// Phase 4 success criterion: `unenriched.in_results` counts un-enriched hits within the returned
+/// set; `unenriched.in_catalog` counts un-enriched rows across the whole catalog (including ones
+/// outside this query's results), via the same definition [`Db::enrich_summary`] uses.
+#[test]
+fn search_reports_unenriched_gap_counts() {
+    let db = Db::open_memory().unwrap();
+
+    // A: matches the query, enriched (summary set).
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+    db.set_enrichment(
+        UUID_A,
+        &EnrichSuccess {
+            summary: "set up the Marquee S3 bucket",
+            tags: None,
+            scope: "work",
+            enriched_modified: dt("2026-06-21T10:00:00Z"),
+            enrich_model: "claude-opus-4-8",
+            prompt_version: 1,
+            redaction_count: 0,
+            tokens_in: 100,
+            tokens_out: 50,
+        },
+        dt("2026-06-22T10:00:00Z"),
+    )
+    .unwrap();
+
+    // B: matches the query, un-enriched.
+    let mut b = parsed(UUID_B, "/tmp/b.jsonl");
+    b.first_prompt = Some("unrelated".into());
+    b.body = "another Marquee bucket discussion".into();
+    db.upsert_session(&b, "desk").unwrap();
+
+    // C: does NOT match the query, un-enriched -- proves in_catalog counts the whole catalog, not
+    // just the returned hits.
+    let mut c = parsed(UUID_C, "/tmp/c.jsonl");
+    c.ai_title = Some("totally unrelated session".into());
+    c.first_prompt = Some("unrelated".into());
+    c.body = "a pipeline refactor with no bucket mention".into();
+    db.upsert_session(&c, "desk").unwrap();
+
+    let results = db.search("Marquee", None, false, SortBy::Relevance).unwrap();
+    assert_eq!(results.count, 2, "A and B both match 'Marquee': {results:?}");
+    assert_eq!(
+        results.unenriched.in_results, 1,
+        "only B among the two hits is un-enriched: {results:?}"
+    );
+    assert_eq!(
+        results.unenriched.in_catalog, 2,
+        "B and C are un-enriched across the whole catalog: {results:?}"
+    );
+}
+
 #[test]
 fn tags_source_exposed_in_session_record() {
     // Verify that tags_source is populated into SessionRecord from the DB (regression guard for

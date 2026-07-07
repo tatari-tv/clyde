@@ -7,7 +7,7 @@ use serde_json::json;
 use session::ParsedSession;
 
 use super::*;
-use crate::db::Db;
+use crate::db::{Db, EnrichSuccess};
 
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
@@ -132,6 +132,72 @@ async fn sessions_search_normal_query_carries_no_fallback_key() {
     assert!(
         v.get("fallback").is_none(),
         "an AND-satisfied query must carry no fallback key at all: {v}"
+    );
+}
+
+/// Phase 4 success criterion: a seeded mix of enriched/un-enriched rows yields the exact
+/// `unenriched: { in-results, in-catalog }` counts in the MCP response.
+#[tokio::test]
+async fn sessions_search_reports_unenriched_gap_counts() {
+    let db = Db::open_memory().unwrap();
+
+    // A: matches the query, enriched.
+    db.upsert_session(
+        &parsed(UUID_A, "/tmp/a.jsonl", "marquee", "the marquee s3 bucket"),
+        "desk",
+    )
+    .unwrap();
+    db.set_enrichment(
+        UUID_A,
+        &EnrichSuccess {
+            summary: "set up the marquee S3 bucket",
+            tags: None,
+            scope: "work",
+            enriched_modified: dt("2026-06-21T10:00:00Z"),
+            enrich_model: "claude-opus-4-8",
+            prompt_version: 1,
+            redaction_count: 0,
+            tokens_in: 100,
+            tokens_out: 50,
+        },
+        Utc::now(),
+    )
+    .unwrap();
+
+    // B: matches the query, un-enriched.
+    db.upsert_session(
+        &parsed(UUID_B, "/tmp/b.jsonl", "loopr", "migrated the terraform state bucket"),
+        "desk",
+    )
+    .unwrap();
+
+    // C: does NOT match the query, un-enriched -- proves in-catalog counts the whole catalog, not
+    // just the returned hits.
+    db.upsert_session(
+        &parsed(
+            UUID_DEAD_1,
+            "/tmp/c.jsonl",
+            "otto",
+            "a pipeline refactor with no matching term",
+        ),
+        "desk",
+    )
+    .unwrap();
+
+    let server = SessionsMcpServer::new(db);
+    let result = server
+        .dispatch("sessions_search", json!({"query": "bucket"}))
+        .await
+        .expect("dispatch");
+    let v = first_content_as_json(&result);
+    assert_eq!(v["count"], 2, "A and B both match 'bucket': {v}");
+    assert_eq!(
+        v["unenriched"]["in-results"], 1,
+        "only B among the two hits is un-enriched: {v}"
+    );
+    assert_eq!(
+        v["unenriched"]["in-catalog"], 2,
+        "B and C are un-enriched across the whole catalog: {v}"
     );
 }
 
