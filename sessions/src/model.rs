@@ -79,6 +79,18 @@ pub struct SearchHit {
     /// (or a human reading `clyde session search` output) see *why* a hit matched without opening
     /// the session.
     pub snippet: String,
+    /// Distinct query terms this body-tier hit matched, out of [`Self::terms_total`]. Present ONLY
+    /// under OR fallback for body-tier hits: coverage is meaningless for an AND pass (every AND hit
+    /// matched every term by construction) and the high-signal tier keeps pure bm25, so it is
+    /// `None` there. Drives coverage-first ordering under OR fallback (a hit covering more of the
+    /// query sorts above one covering less) and lets an agent see which candidates were the
+    /// broadest matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms_matched: Option<usize>,
+    /// Total distinct query terms, the denominator for [`Self::terms_matched`]. Present under the
+    /// same condition (OR fallback, body tier); `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms_total: Option<usize>,
 }
 
 /// How a search response degraded from strict AND matching. Only one variant exists today

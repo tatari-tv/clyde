@@ -90,3 +90,66 @@
 
 ### Open questions
 - None.
+
+## Phase 3: Body-tier ranking (RRF + candidate pool)
+
+### Design decisions
+- Body tier overfetches a candidate pool then re-ranks; high-signal tier is untouched --
+  `sessions/src/db.rs:Db::search_pass` -- the high-signal query still fetches `limit` rows in pure
+  bm25 order, but the body query now fetches `RERANK_POOL = max(RERANK_POOL_FACTOR * limit,
+  RERANK_POOL_MIN)` rows (`10 * limit`, floor 200) before any trimming. Only the body tier is
+  re-ranked, matching the doc ("high-signal keeps pure bm25 ... Only the BODY tier is re-ranked").
+- Weighted RRF in a free function over the pool -- `sessions/src/db.rs:rerank_body` -- `score =
+  RRF_W_REL/(RRF_K + rank_bm25) + RRF_W_MSGS/(RRF_K + rank_n_msgs) + RRF_W_REC/(RRF_K +
+  rank_recency)` with named consts `RRF_K = 60.0`, `RRF_W_REL = 2.0`, `RRF_W_MSGS = 1.0`,
+  `RRF_W_REC = 0.5`. Ranks are 1-based ordinal positions per axis (bm25 ascending, n_msgs
+  descending, `modified` descending), so the fusion is scale-free -- a session contributes its RANK
+  per axis, never a magnitude. `id ASC` is the deterministic tiebreak on every axis and on the fused
+  score, so ordering is stable run to run.
+- Coverage-first ordering only under OR fallback -- `sessions/src/db.rs:Db::annotate_body_coverage`
+  + the `coverage_first` arg of `rerank_body` -- distinct-term coverage is the primary sort key
+  (fusion secondary) only when the pass is OR. For an AND pass every hit matched every term by
+  construction, so coverage carries no information and stays `None`. Coverage is computed exactly by
+  re-running each quoted token's `MATCH` restricted to the candidate-pool rowids (`WHERE rowid IN
+  (...)`), token and every rowid bound via `params![]`.
+- `terms_matched` / `terms_total` are `Option<usize>` on `SearchHit`, kebab-case + skip-if-none --
+  `sessions/src/model.rs` -- present only for body-tier hits under OR fallback (the only place
+  coverage is meaningful), absent everywhere else, so the response shape does not carry meaningless
+  `0/N` noise on AND hits or high-signal hits.
+- Recency sort dissolves both the tiering and the re-rank -- `sessions/src/db.rs:Db::search_pass`
+  `SortBy::Recency` arm -- the caller asked for date order, so the overfetched body pool is merged
+  with the high-signal hits and re-sorted globally by `(modified DESC, score ASC, id DESC)` exactly
+  as before Phase 3. Overfetching a larger body pool under recency is strictly safe: it is a
+  superset of the most-recent `limit` body rows, so the global re-sort + truncate cannot drop a row
+  that belongs in the window (the existing `search_recency_limit_keeps_most_recent` guard still
+  passes).
+- `n-msgs` / `score` / `tier` stay prominent: no field was removed. `sessions_search` still
+  serializes the whole `SearchResults` (`mcp.rs`), so `matched` (tier), `score`, and the record's
+  `n-msgs` remain in every hit; the new coverage fields are additive.
+
+### Deviations
+- Coverage annotation (`terms-matched`/`terms-total`) is scoped to the BODY tier only, not literally
+  every hit. The doc phrases it as "per-hit"; the mechanism it specifies (per-term MATCH restricted
+  to the candidate-pool rowids) is body-tier-specific, and the phase's own framing is "Only the BODY
+  tier is re-ranked" with the high-signal tier keeping pure bm25. High-signal hits under OR therefore
+  carry no coverage field. Same effect the doc intends (coverage drives the body re-rank an agent
+  triages), implemented at the correct seam.
+
+### Tradeoffs
+- Applied the permutation in `rerank_body` by draining into `Vec<Option<SearchHit>>` and `take()`ing
+  each index once, rather than cloning every `SearchHit` -- avoids cloning up-to-`RERANK_POOL`
+  records (each carrying a possibly-large `first_prompt`) on every body-tier search; the `expect` is
+  sound because `final_order` is a permutation of `0..n` so each slot is taken exactly once.
+- Ranks are ordinal (1,2,3,...) with an `id` tiebreak rather than dense/competition ranks for ties.
+  With `K = 60` the marginal value of one rank step is tiny, so the tie scheme is immaterial to
+  ordering; ordinal + stable tiebreak is the simplest deterministic choice. This does mean a session
+  that is dead-last on bm25 among the matches cannot be rescued to first by n_msgs+recency alone
+  (the bm25 weight dominates rank-for-rank) -- which is correct behavior, not a bug: the fix rescues
+  a strong-but-not-top match that the raw `LIMIT` truncated, not an arbitrarily weak one. The
+  positive fixture is built accordingly (deep dive is raw-bm25 rank 2, outside the raw top-1).
+- Kept `fts_query` and added `quoted_tokens` as the shared tokenizer rather than threading a
+  pre-split token list through every call -- one source of truth for tokenization (join for the FTS
+  query, per-token for coverage), minimal churn to the Phase 2 call sites.
+
+### Open questions
+- None.

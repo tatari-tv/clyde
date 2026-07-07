@@ -602,3 +602,203 @@ fn tags_source_exposed_in_session_record() {
     let rec = db.get(UUID_A).unwrap().unwrap();
     assert_eq!(rec.tags_source.as_deref(), Some("manual"));
 }
+
+// UUIDs for the ranking fixtures. `L_ID` is the long all-terms deep dive; `S_TOP_ID` the short
+// single-term repeater with the best raw bm25.
+const L_ID: &str = "00000000-0000-4000-8000-0000000000ff";
+const S_TOP_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+/// Seed the evidence shape into `db`: one long all-terms deep dive (`L_ID`, 300 msgs, most recent),
+/// one short single-term repeater (`S_TOP_ID`, best raw bm25), and `fillers` weak all-terms sessions
+/// whose terms sit buried in a long body (worse raw bm25 than the deep dive). Every session matches
+/// BOTH terms, so an AND query returns all of them. Returns nothing; query with "dictate transcribe".
+fn seed_ranking_fixture(db: &Db, fillers: usize) {
+    // Short single-term repeater: "dictate" repeated in a tiny body -> strongest raw bm25, few msgs.
+    let mut s_top = parsed(S_TOP_ID, "/tmp/x.jsonl");
+    s_top.ai_title = Some("unrelated repeater".into());
+    s_top.first_prompt = Some("unrelated".into());
+    s_top.body = "dictate dictate dictate dictate transcribe".into();
+    s_top.n_msgs = 4;
+    s_top.modified = dt("2026-01-01T00:00:00Z");
+    db.upsert_session(&s_top, "desk").unwrap();
+
+    // Long all-terms deep dive: both terms twice in a medium body -> mid-pack raw bm25, most msgs,
+    // most recent. This is the session the re-rank must rescue.
+    let mut l = parsed(L_ID, "/tmp/l.jsonl");
+    l.ai_title = Some("unrelated deep dive".into());
+    l.first_prompt = Some("unrelated".into());
+    let mid = "alpha beta gamma delta epsilon zeta eta theta ".repeat(6);
+    l.body = format!("{mid} dictate transcribe {mid} dictate transcribe {mid}");
+    l.n_msgs = 300;
+    l.modified = dt("2026-06-30T00:00:00Z");
+    db.upsert_session(&l, "desk").unwrap();
+
+    // Weak all-terms fillers: both terms appear once, buried in a long body -> worst raw bm25.
+    let big = "alpha beta gamma delta epsilon zeta eta theta iota kappa ".repeat(30);
+    for i in 0..fillers {
+        let mut s = parsed(
+            &format!("00000000-0000-4000-8000-0000000000{:02x}", 0x10 + i),
+            "/tmp/x.jsonl",
+        );
+        s.ai_title = Some("unrelated filler".into());
+        s.first_prompt = Some("unrelated".into());
+        s.body = format!("{big} dictate {big} transcribe {big}");
+        s.n_msgs = 5 + i;
+        s.modified = dt("2026-02-01T00:00:00Z");
+        db.upsert_session(&s, "desk").unwrap();
+    }
+}
+
+/// Phase 3 POSITIVE fixture (candidate-pool proof). The long all-terms deep dive ranks FIRST under
+/// the body-tier weighted RRF even though its raw bm25 puts it OUTSIDE the raw-bm25 top-`limit` — so
+/// only the overfetched candidate pool could have surfaced it. Break the overfetch (revert the body
+/// tier to `LIMIT limit`) or the RRF (fall back to raw bm25 order) and the `limit=1` assertion
+/// below fails: raw bm25 at `LIMIT 1` returns the short repeater, never the deep dive.
+#[test]
+fn body_rerank_promotes_long_all_terms_session_from_outside_bm25_top_limit() {
+    let db = Db::open_memory().unwrap();
+    seed_ranking_fixture(&db, 6);
+
+    // Full result set: the weighted RRF ranks the long deep dive first (n_msgs + recency lift it
+    // past the short repeater's raw-bm25 edge).
+    let all = db
+        .search("dictate transcribe", Some(100), false, SortBy::Relevance)
+        .unwrap()
+        .results;
+    assert_eq!(
+        all[0].record.session_id, L_ID,
+        "weighted RRF must promote the long all-terms deep dive to first"
+    );
+    assert!(
+        all[0].terms_matched.is_none() && all[0].terms_total.is_none(),
+        "an AND pass carries no distinct-term coverage (every hit matched every term)"
+    );
+
+    // Raw bm25 order: the short repeater is first and the deep dive is strictly below it, i.e. the
+    // deep dive is OUTSIDE the raw-bm25 top-1. This is what makes the rescue non-trivial.
+    let mut by_bm25 = all.clone();
+    by_bm25.sort_by(|a, b| a.score.total_cmp(&b.score));
+    assert_eq!(
+        by_bm25[0].record.session_id, S_TOP_ID,
+        "raw bm25 ranks the short single-term repeater first"
+    );
+    let l_bm25_rank = by_bm25.iter().position(|h| h.record.session_id == L_ID).unwrap();
+    assert!(
+        l_bm25_rank >= 1,
+        "the long deep dive must sit outside the raw-bm25 top-1 (got raw rank {l_bm25_rank})"
+    );
+
+    // Candidate-pool proof: even at limit=1 the overfetch + re-rank surfaces the deep dive. Without
+    // the RERANK_POOL overfetch the SQL `LIMIT 1` on the body tier truncates by raw bm25 and returns
+    // the short repeater instead, so this is the assertion that bites on the whole Phase 3 fix.
+    let top1 = db
+        .search("dictate transcribe", Some(1), false, SortBy::Relevance)
+        .unwrap()
+        .results;
+    assert_eq!(top1.len(), 1);
+    assert_eq!(
+        top1[0].record.session_id, L_ID,
+        "candidate-pool overfetch must rescue the long deep dive even into a limit=1 window"
+    );
+}
+
+/// Phase 3 NEGATIVE fixture (anti-popularity proof). A concise all-terms session is NOT outranked by
+/// a long, weakly-matching session that has a vastly larger message count. Because the fusion is
+/// scale-free (n_msgs contributes a RANK, not a magnitude) and relevance carries the largest weight,
+/// the concise better match wins. A value blend on the raw n_msgs magnitude would invert this — that
+/// is exactly the regression this pins.
+#[test]
+fn body_rerank_does_not_let_message_count_swamp_relevance() {
+    let db = Db::open_memory().unwrap();
+
+    // Concise session: both terms in a tiny body -> best bm25; modest message count.
+    let mut concise = parsed(UUID_A, "/tmp/c.jsonl");
+    concise.ai_title = Some("unrelated concise".into());
+    concise.first_prompt = Some("unrelated".into());
+    concise.body = "kubernetes helm chart".into();
+    concise.n_msgs = 8;
+    concise.modified = dt("2026-03-01T00:00:00Z");
+    db.upsert_session(&concise, "desk").unwrap();
+
+    // Long weakly-matching session: both terms buried once in a huge body -> worse bm25; but a
+    // massive message count. Under a value blend this popularity would swamp the concise match.
+    let mut popular = parsed(UUID_B, "/tmp/w.jsonl");
+    popular.ai_title = Some("unrelated popular".into());
+    popular.first_prompt = Some("unrelated".into());
+    let big = "alpha beta gamma delta epsilon zeta eta theta iota kappa ".repeat(40);
+    popular.body = format!("{big} kubernetes {big} helm {big}");
+    popular.n_msgs = 5000;
+    popular.modified = dt("2026-03-01T00:00:00Z"); // same recency: isolate popularity vs relevance
+    db.upsert_session(&popular, "desk").unwrap();
+
+    let hits = db
+        .search("kubernetes helm", None, false, SortBy::Relevance)
+        .unwrap()
+        .results;
+    assert_eq!(hits.len(), 2);
+    let concise_rank = hits.iter().position(|h| h.record.session_id == UUID_A).unwrap();
+    let popular_rank = hits.iter().position(|h| h.record.session_id == UUID_B).unwrap();
+    assert!(
+        concise_rank < popular_rank,
+        "the concise all-terms match must outrank the long weakly-matching high-msg-count session; \
+         got concise@{concise_rank} popular@{popular_rank} (n_msgs {} vs {})",
+        hits[concise_rank].record.n_msgs,
+        hits[popular_rank].record.n_msgs
+    );
+}
+
+/// Phase 3: under OR fallback the body tier is ordered coverage-first (distinct query terms matched)
+/// and fusion second, and every body hit carries `terms-matched`/`terms-total`. The broader match
+/// (2 of 3 terms) ranks above the narrower one (1 of 3) even though the narrow hit has the stronger
+/// bm25, higher message count, and more recent mtime — so coverage, not fusion, decides here.
+#[test]
+fn or_fallback_orders_body_by_distinct_term_coverage_first() {
+    let db = Db::open_memory().unwrap();
+
+    // Broad match: alpha + beta (2 of 3 terms), otherwise unremarkable.
+    let mut broad = parsed(UUID_A, "/tmp/broad.jsonl");
+    broad.ai_title = Some("unrelated broad".into());
+    broad.first_prompt = Some("unrelated".into());
+    broad.body = "notes about alpha and beta among other things".into();
+    broad.n_msgs = 5;
+    broad.modified = dt("2026-01-01T00:00:00Z");
+    db.upsert_session(&broad, "desk").unwrap();
+
+    // Narrow match: gamma repeated (1 of 3 terms) -> strong bm25, high msgs, most recent. Fusion
+    // alone would rank this first; coverage-first must override.
+    let mut narrow = parsed(UUID_B, "/tmp/narrow.jsonl");
+    narrow.ai_title = Some("unrelated narrow".into());
+    narrow.first_prompt = Some("unrelated".into());
+    narrow.body = "gamma gamma gamma gamma gamma".into();
+    narrow.n_msgs = 400;
+    narrow.modified = dt("2026-06-30T00:00:00Z");
+    db.upsert_session(&narrow, "desk").unwrap();
+
+    // No session contains all three terms, so the AND pass is empty and the OR fallback fires.
+    let results = db.search("alpha beta gamma", None, false, SortBy::Relevance).unwrap();
+    assert_eq!(results.fallback, Some(Fallback::Or), "no all-terms hit -> OR fallback");
+    assert_eq!(results.count, 2);
+
+    let broad_hit = results.results.iter().find(|h| h.record.session_id == UUID_A).unwrap();
+    let narrow_hit = results.results.iter().find(|h| h.record.session_id == UUID_B).unwrap();
+    assert_eq!(broad_hit.terms_matched, Some(2), "broad hit matched alpha + beta");
+    assert_eq!(broad_hit.terms_total, Some(3));
+    assert_eq!(narrow_hit.terms_matched, Some(1), "narrow hit matched only gamma");
+    assert_eq!(narrow_hit.terms_total, Some(3));
+
+    let broad_rank = results
+        .results
+        .iter()
+        .position(|h| h.record.session_id == UUID_A)
+        .unwrap();
+    let narrow_rank = results
+        .results
+        .iter()
+        .position(|h| h.record.session_id == UUID_B)
+        .unwrap();
+    assert!(
+        broad_rank < narrow_rank,
+        "coverage-first: the 2-of-3-term hit must outrank the 1-of-3-term hit despite the latter's \
+         stronger bm25/msgs/recency; got broad@{broad_rank} narrow@{narrow_rank}"
+    );
+}

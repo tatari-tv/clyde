@@ -38,6 +38,24 @@ const SNIPPET_HIGHLIGHT_START: &str = "**";
 const SNIPPET_HIGHLIGHT_END: &str = "**";
 /// `snippet()` ellipsis marking elided text around the excerpt.
 const SNIPPET_ELLIPSIS: &str = "...";
+/// Body-tier re-rank candidate pool: overfetch `max(RERANK_POOL_FACTOR * limit, RERANK_POOL_MIN)`
+/// body rows before the Rust-side weighted-RRF re-rank, then trim to `limit`. The SQL
+/// `ORDER BY score ... LIMIT` truncates by RAW bm25 — which would hide exactly the sessions the
+/// re-rank exists to rescue (a long all-terms deep-dive whose bm25 loses to a short term-repeater).
+/// Overfetching a bounded pool first is what lets the fusion see those sessions.
+const RERANK_POOL_MIN: usize = 200;
+const RERANK_POOL_FACTOR: usize = 10;
+/// Weighted Reciprocal Rank Fusion for the body tier (the proven in-house mechanism: the oracle MCP
+/// fuses BM25 + vector via RRF). `score = W_REL/(K + rank_bm25) + W_MSGS/(K + rank_n_msgs) +
+/// W_REC/(K + rank_recency)`, higher is better. Fusion is scale-free — each session contributes its
+/// RANK per axis, never its magnitude — so a 1000-msg session cannot swamp relevance the way a
+/// value blend can. `K` is the standard RRF damping constant. `W_REL` dominates (relevance is the
+/// point), `W_MSGS` is the popularity signal, and `W_REC` is deliberately smallest: agents
+/// frequently hunt OLD sessions, so recency is a tiebreaker, never a driver.
+const RRF_K: f64 = 60.0;
+const RRF_W_REL: f64 = 2.0;
+const RRF_W_MSGS: f64 = 1.0;
+const RRF_W_REC: f64 = 0.5;
 
 const SCHEMA_SQL: &str = "\
 CREATE TABLE IF NOT EXISTS sessions (
@@ -583,9 +601,14 @@ impl Db {
     /// that pass returns zero hits across BOTH tiers combined, the same tokens are rerun OR-joined
     /// and `fallback` is set on the response so the caller knows the results are the degraded
     /// (any-token) match rather than a strict one. Tiering (high-signal first, deduped body
-    /// second) applies identically to the OR pass. OR results are NOT re-ranked in this phase —
-    /// they keep the same tiered-bm25 ordering as an AND pass; distinct-term-coverage ordering is
-    /// the next phase's job.
+    /// second) applies identically to the OR pass.
+    ///
+    /// Body-tier ranking (relevance sort): the high-signal tier keeps pure bm25 (title/tags/summary
+    /// matches are short and bm25 behaves), but the body tier is re-ranked in Rust via weighted
+    /// Reciprocal Rank Fusion over an overfetched [`RERANK_POOL_MIN`]-bounded candidate pool (see
+    /// [`Self::rerank_body`]). Under OR fallback, distinct-term coverage sorts the body tier first
+    /// and fusion second, and each body hit carries `terms-matched`/`terms-total`. Recency sort
+    /// dissolves both the tiering and the re-rank (the caller asked for date order).
     ///
     /// `unenriched` is always zero-valued here; Phase 4 populates the real gap counts.
     pub fn search(
@@ -597,9 +620,12 @@ impl Db {
     ) -> Result<SearchResults> {
         debug!("Db::search: query={:?} limit={:?} sort={:?}", query, limit, sort);
         let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
+        // The per-term quoted tokens drive distinct-term coverage under OR fallback; identical
+        // tokenization to `fts_query`, computed once here so both passes reuse it.
+        let tokens = quoted_tokens(query);
 
         let and_hits = match fts_query(query, QueryMode::And) {
-            Some(fts) => self.search_pass(&fts, include_archived, limit, sort)?,
+            Some(fts) => self.search_pass(&fts, include_archived, limit, sort, QueryMode::And, &tokens)?,
             None => Vec::new(),
         };
         if !and_hits.is_empty() {
@@ -613,7 +639,7 @@ impl Db {
         }
 
         let or_hits = match fts_query(query, QueryMode::Or) {
-            Some(fts) => self.search_pass(&fts, include_archived, limit, sort)?,
+            Some(fts) => self.search_pass(&fts, include_archived, limit, sort, QueryMode::Or, &tokens)?,
             None => Vec::new(),
         };
         let fallback = if or_hits.is_empty() { None } else { Some(Fallback::Or) };
@@ -631,18 +657,23 @@ impl Db {
     }
 
     /// Run one FTS pass (`fts` already token-quoted and joined AND/OR by [`fts_query`]) across
-    /// both tiers, dedupe, order, and truncate to `limit`. Shared by the AND pass and the OR
-    /// fallback pass in [`Self::search`] — the only difference between them is which joiner built
-    /// `fts`.
-    fn search_pass(&self, fts: &str, include_archived: bool, limit: usize, sort: SortBy) -> Result<Vec<SearchHit>> {
-        // Bound each table query with the combined `limit` so the intermediate result set never
-        // grows past what the final `truncate` keeps — neither table can contribute more than
-        // `limit` rows to the merge, so the SQL `LIMIT` is sound and caps query work/memory. In
-        // recency mode this LIMIT is sound only because each table's per-table `ORDER BY
-        // s.modified DESC` makes it contribute its most-recent `limit` rows: the union of each
-        // table's most-recent-`limit` is therefore a superset of the true global most-recent
-        // `limit`, so the post-merge global re-sort + `truncate(limit)` below cannot drop a row
-        // that belongs in the final window.
+    /// both tiers, dedupe, re-rank the body tier, and truncate to `limit`. Shared by the AND pass
+    /// and the OR fallback pass in [`Self::search`]; `mode` selects whether distinct-term coverage
+    /// applies (OR only), and `tokens` (the per-term quoted forms) feed that coverage.
+    ///
+    /// The high-signal tier is bounded by `limit` and keeps pure bm25. The body tier overfetches a
+    /// [`RERANK_POOL_MIN`]-bounded candidate pool so the re-rank sees the sessions the raw-bm25 SQL
+    /// `LIMIT` would otherwise truncate, then (under relevance) fuses via weighted RRF before the
+    /// combined list is trimmed to `limit`.
+    fn search_pass(
+        &self,
+        fts: &str,
+        include_archived: bool,
+        limit: usize,
+        sort: SortBy,
+        mode: QueryMode,
+        tokens: &[String],
+    ) -> Result<Vec<SearchHit>> {
         let high = self.search_table(
             "sessions_fts",
             fts,
@@ -651,31 +682,56 @@ impl Db {
             limit,
             sort,
         )?;
-        let mut seen: std::collections::HashSet<String> = high.iter().map(|h| h.record.session_id.clone()).collect();
-        let mut hits = high;
-        for hit in self.search_table(
-            "sessions_body_fts",
-            fts,
-            include_archived,
-            MatchSource::Body,
-            limit,
+        let seen: std::collections::HashSet<String> = high.iter().map(|h| h.record.session_id.clone()).collect();
+
+        // Body tier: overfetch the candidate pool (RERANK_POOL) so the Rust-side re-rank can rescue
+        // a session the raw-bm25 `LIMIT` would have truncated, then dedupe against the high-signal
+        // hits already surfaced. In recency mode the pool is a strict superset of the most-recent
+        // `limit` body rows (each table is `ORDER BY s.modified DESC`), so the global recency
+        // re-sort + `truncate` below cannot drop a row that belongs in the final window.
+        let pool_size = (RERANK_POOL_FACTOR * limit).max(RERANK_POOL_MIN);
+        let mut body: Vec<SearchHit> = self
+            .search_table(
+                "sessions_body_fts",
+                fts,
+                include_archived,
+                MatchSource::Body,
+                pool_size,
+                sort,
+            )?
+            .into_iter()
+            .filter(|h| !seen.contains(&h.record.session_id))
+            .collect();
+        debug!(
+            "Db::search_pass: mode={:?} sort={:?} high={} body_pool={}",
+            mode,
             sort,
-        )? {
-            if seen.insert(hit.record.session_id.clone()) {
-                hits.push(hit);
-            }
-        }
+            high.len(),
+            body.len()
+        );
+
         match sort {
-            // Relevance keeps the tiered concatenation (high-signal hits first, then deduped body
-            // hits), each table already ordered by `score, modified DESC, id DESC` in SQL — no
-            // global re-sort.
-            SortBy::Relevance => {}
-            // Recency dissolves the tiering: re-sort the merged, deduped hits globally by
-            // (modified DESC, score ASC, id DESC). `f64::total_cmp` gives a total order on the
-            // score (NaN-safe). `id` (the integer rowid) is the stable tertiary key and MUST match
-            // the SQL `s.id DESC` clause so the per-table preselection and this global sort agree
-            // on which rows survive an all-equal (modified, score) overflow within one table.
+            SortBy::Relevance => {
+                // Distinct-term coverage only under OR fallback: for an AND pass every hit matched
+                // every term by construction, so coverage carries no information and stays `None`.
+                if mode == QueryMode::Or {
+                    self.annotate_body_coverage(&mut body, tokens)?;
+                }
+                // Body tier re-ranked in Rust (high-signal keeps pure bm25). Weighted RRF, with
+                // distinct-term coverage as the primary key under OR fallback.
+                rerank_body(&mut body, mode == QueryMode::Or);
+                let mut hits = high;
+                hits.extend(body);
+                hits.truncate(limit);
+                Ok(hits)
+            }
+            // Recency dissolves the tiering AND the relevance re-rank: the caller asked for date
+            // order, so merge, re-sort globally by (modified DESC, score ASC, id DESC), and
+            // truncate. `f64::total_cmp` gives a NaN-safe total order on the score; `id` (the
+            // integer rowid) is the stable tertiary key matching the SQL `s.id DESC` clause.
             SortBy::Recency => {
+                let mut hits = high;
+                hits.extend(body);
                 hits.sort_by(|a, b| {
                     b.record
                         .modified
@@ -683,10 +739,53 @@ impl Db {
                         .then_with(|| a.score.total_cmp(&b.score))
                         .then_with(|| b.record.id.cmp(&a.record.id))
                 });
+                hits.truncate(limit);
+                Ok(hits)
             }
         }
-        hits.truncate(limit);
-        Ok(hits)
+    }
+
+    /// Annotate each body-tier hit with distinct-term coverage: how many of the query `tokens` its
+    /// body matched (`terms_matched`), out of the total (`terms_total`). Computed exactly by
+    /// re-running each token's `MATCH` restricted to the candidate-pool rowids (`WHERE rowid IN
+    /// (...)`), so it is bounded by token count x pool size and never undercounts. No-op when the
+    /// pool is empty. Only called under OR fallback (see [`Self::search_pass`]).
+    fn annotate_body_coverage(&self, body: &mut [SearchHit], tokens: &[String]) -> Result<()> {
+        if body.is_empty() || tokens.is_empty() {
+            return Ok(());
+        }
+        let total = tokens.len();
+        let rowids: Vec<i64> = body.iter().map(|h| h.record.id).collect();
+        let placeholders = vec!["?"; rowids.len()].join(",");
+        // `sessions_body_fts` is a hardcoded identifier; the token and every rowid are bound.
+        let sql = format!(
+            "SELECT sessions_body_fts.rowid FROM sessions_body_fts \
+             WHERE sessions_body_fts MATCH ? AND sessions_body_fts.rowid IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+
+        let mut matched_counts: std::collections::HashMap<i64, usize> = rowids.iter().map(|&r| (r, 0)).collect();
+        for token in tokens {
+            let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(1 + rowids.len());
+            binds.push(Box::new(token.clone()));
+            for &r in &rowids {
+                binds.push(Box::new(r));
+            }
+            let bind_refs: Vec<&dyn rusqlite::types::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+            let matched: Vec<i64> = stmt
+                .query_map(bind_refs.as_slice(), |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for id in matched {
+                if let Some(c) = matched_counts.get_mut(&id) {
+                    *c += 1;
+                }
+            }
+        }
+        for hit in body.iter_mut() {
+            hit.terms_matched = Some(matched_counts.get(&hit.record.id).copied().unwrap_or(0));
+            hit.terms_total = Some(total);
+        }
+        Ok(())
     }
 
     fn search_table(
@@ -735,6 +834,10 @@ impl Db {
                         // 19, and the snippet() excerpt at index 20.
                         score: row.get(19)?,
                         snippet: row.get(20)?,
+                        // Coverage is filled in later, only for the body tier under OR fallback
+                        // (see `Db::annotate_body_coverage`); `None` on every raw hit.
+                        terms_matched: None,
+                        terms_total: None,
                     })
                 },
             )?
@@ -887,15 +990,21 @@ enum QueryMode {
     Or,
 }
 
+/// Split `user` into whitespace tokens and double-quote each one (embedded `"` doubled) so user
+/// input can never inject an FTS5 operator. The single source of tokenization shared by
+/// [`fts_query`] (which joins these) and distinct-term coverage (which `MATCH`es each one alone).
+fn quoted_tokens(user: &str) -> Vec<String> {
+    user.split_whitespace()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect()
+}
+
 /// Build a safe FTS5 query: each whitespace token is double-quoted (so user input can't inject
 /// FTS operators), joined per `mode` (AND: FTS5's implicit default; OR: explicit `OR` keyword —
 /// safe because the tokens themselves are quoted, so `OR` can only ever be interpreted as the
 /// join operator, never smuggled in from user input). Returns `None` when there are no tokens.
 fn fts_query(user: &str, mode: QueryMode) -> Option<String> {
-    let quoted: Vec<String> = user
-        .split_whitespace()
-        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
-        .collect();
+    let quoted = quoted_tokens(user);
     if quoted.is_empty() {
         return None;
     }
@@ -904,6 +1013,69 @@ fn fts_query(user: &str, mode: QueryMode) -> Option<String> {
         QueryMode::Or => " OR ",
     };
     Some(quoted.join(sep))
+}
+
+/// Re-rank the body-tier candidate pool in place via weighted Reciprocal Rank Fusion. Each hit is
+/// scored `RRF_W_REL/(K + rank_bm25) + RRF_W_MSGS/(K + rank_n_msgs) + RRF_W_REC/(K + rank_recency)`
+/// where the ranks are 1-based positions on each axis: bm25 ascending (lower score is a better
+/// match), `n_msgs` descending, and `modified` descending (most-recent = rank 1). The fusion is
+/// scale-free — every axis contributes a RANK, never a magnitude — so a high message count cannot
+/// swamp relevance. Ties on every axis and on the fused score fall back to `id ASC` for a
+/// deterministic order.
+///
+/// When `coverage_first`, distinct-term coverage (`terms_matched`, set by
+/// [`Db::annotate_body_coverage`] under OR fallback) is the primary sort key and the fused score is
+/// the secondary key; otherwise (AND pass) fusion alone orders the tier.
+fn rerank_body(body: &mut Vec<SearchHit>, coverage_first: bool) {
+    let n = body.len();
+    if n <= 1 {
+        return;
+    }
+
+    // 1-based rank on each axis, indexed by the hit's current position. `id ASC` is the stable
+    // tiebreak on every axis so the ranks (and the final order) are deterministic.
+    let ranks_for = |cmp: &dyn Fn(usize, usize) -> std::cmp::Ordering| -> Vec<usize> {
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| cmp(a, b).then_with(|| body[a].record.id.cmp(&body[b].record.id)));
+        let mut ranks = vec![0usize; n];
+        for (rank, &idx) in order.iter().enumerate() {
+            ranks[idx] = rank + 1;
+        }
+        ranks
+    };
+    let rank_bm25 = ranks_for(&|a, b| body[a].score.total_cmp(&body[b].score));
+    let rank_msgs = ranks_for(&|a, b| body[b].record.n_msgs.cmp(&body[a].record.n_msgs));
+    let rank_rec = ranks_for(&|a, b| body[b].record.modified.cmp(&body[a].record.modified));
+
+    let fusion: Vec<f64> = (0..n)
+        .map(|i| {
+            RRF_W_REL / (RRF_K + rank_bm25[i] as f64)
+                + RRF_W_MSGS / (RRF_K + rank_msgs[i] as f64)
+                + RRF_W_REC / (RRF_K + rank_rec[i] as f64)
+        })
+        .collect();
+
+    let mut final_order: Vec<usize> = (0..n).collect();
+    final_order.sort_by(|&a, &b| {
+        let coverage = if coverage_first {
+            let ca = body[a].terms_matched.unwrap_or(0);
+            let cb = body[b].terms_matched.unwrap_or(0);
+            cb.cmp(&ca)
+        } else {
+            std::cmp::Ordering::Equal
+        };
+        coverage
+            .then_with(|| fusion[b].total_cmp(&fusion[a]))
+            .then_with(|| body[a].record.id.cmp(&body[b].record.id))
+    });
+
+    // Apply the permutation without cloning the records: each index is taken exactly once.
+    let mut slots: Vec<Option<SearchHit>> = body.drain(..).map(Some).collect();
+    let reordered: Vec<SearchHit> = final_order
+        .into_iter()
+        .map(|i| slots[i].take().expect("rerank permutation index taken exactly once"))
+        .collect();
+    *body = reordered;
 }
 
 #[cfg(test)]
