@@ -31,11 +31,13 @@ use serde_json::json;
 use crate::db::Db;
 use crate::model::{Filters, SearchResults, SessionRecord};
 
+pub mod grep;
 pub mod tools;
 
 use tools::{
-    LS_LIMIT_DEFAULT, LS_LIMIT_MAX, OpenResult, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, SessionRef, SessionsLsRequest,
-    SessionsSearchRequest,
+    GREP_CONTEXT_DEFAULT, GREP_CONTEXT_MAX, GREP_LIMIT_DEFAULT, GREP_LIMIT_MAX, GrepResult, LS_LIMIT_DEFAULT,
+    LS_LIMIT_MAX, OpenResult, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, SessionGrepRequest, SessionRef,
+    SessionsLsRequest, SessionsSearchRequest,
 };
 
 /// Options controlling serve bring-up.
@@ -80,6 +82,10 @@ impl SessionsMcpServer {
             "session_open" => {
                 let req: SessionRef = serde_json::from_value(args).map_err(|e| Self::deser_err(name, &e))?;
                 self.session_open(Parameters(req)).await
+            }
+            "session_grep" => {
+                let req: SessionGrepRequest = serde_json::from_value(args).map_err(|e| Self::deser_err(name, &e))?;
+                self.session_grep(Parameters(req)).await
             }
             _ => Err(McpError::invalid_params(format!("unknown tool: {name}"), None)),
         }
@@ -134,6 +140,26 @@ impl SessionsMcpServer {
             }
         }
         Self::err(e)
+    }
+
+    /// Resolve an id-or-unique-prefix to its `SessionRecord`, mapping an ambiguous prefix or an
+    /// unknown id to `invalid_params` (caller error) exactly as `session_open` does. Runs under a
+    /// held DB lock; shared by `session_open` and `session_grep` so id resolution is identical.
+    fn resolve_record(db: &Db, id_arg: &str) -> Result<SessionRecord, McpError> {
+        let ids = db.resolve_id(id_arg).map_err(Self::db_err)?;
+        let id = match ids.as_slice() {
+            [id] => id.clone(),
+            [] => return Err(Self::invalid(format!("no session matches {id_arg:?}"))),
+            many => {
+                return Err(Self::invalid(format!(
+                    "{id_arg:?} is ambiguous; candidates: {}",
+                    many.join(", ")
+                )));
+            }
+        };
+        db.get(&id)
+            .map_err(Self::db_err)?
+            .ok_or_else(|| Self::err(format!("session {id} vanished between resolve and fetch")))
     }
 
     /// Map a resolved record to the 3-state open result by **existence**, not the `archived`
@@ -254,23 +280,68 @@ impl SessionsMcpServer {
         debug!("session_open: id={:?}", req.id);
         let result = Self::block_in_place_compat(|| -> Result<OpenResult, McpError> {
             let db = self.db.lock().map_err(Self::err)?;
-            let ids = db.resolve_id(&req.id).map_err(Self::db_err)?;
-            let id = match ids.as_slice() {
-                [id] => id.clone(),
-                [] => return Err(Self::invalid(format!("no session matches {:?}", req.id))),
-                many => {
-                    return Err(Self::invalid(format!(
-                        "{:?} is ambiguous; candidates: {}",
-                        req.id,
-                        many.join(", ")
-                    )));
-                }
-            };
-            let rec = db
-                .get(&id)
-                .map_err(Self::db_err)?
-                .ok_or_else(|| Self::err(format!("session {id} vanished between resolve and fetch")))?;
+            let rec = Self::resolve_record(&db, &req.id)?;
             Ok(Self::open_result_for(rec))
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::json(&result)?]))
+    }
+
+    /// Search within one session's transcript for a plain (non-FTS) case-insensitive substring,
+    /// returning role-labeled excerpts with context.
+    #[tool(
+        description = "Search WITHIN one session's transcript for a plain case-insensitive substring \
+                       (NOT FTS syntax), returning role-labeled excerpts with surrounding context lines. \
+                       Resolve the session by id or unique prefix (ambiguous/unknown = invalid_params). \
+                       Each match reports its role (user/assistant), whether it came from a subagent, the \
+                       excerpt, and the message index (usable as session_read's offset to window around \
+                       the hit). truncated: true means the match limit cut off further hits. Works on live \
+                       and staged (archived) sessions; a reaped session with no staged copy returns \
+                       state: \"unavailable\". Because grep reads the whole transcript, it may find matches \
+                       sessions_search missed in very long sessions."
+    )]
+    async fn session_grep(&self, params: Parameters<SessionGrepRequest>) -> Result<CallToolResult, McpError> {
+        let req = params.0;
+        debug!(
+            "session_grep: id={:?} query={:?} context_lines={:?} limit={:?}",
+            req.id, req.query, req.context_lines, req.limit
+        );
+        if req.query.trim().is_empty() {
+            return Err(Self::invalid("query is empty"));
+        }
+        let limit = req.limit.unwrap_or(GREP_LIMIT_DEFAULT).min(GREP_LIMIT_MAX) as usize;
+        let context_lines = req.context_lines.unwrap_or(GREP_CONTEXT_DEFAULT).min(GREP_CONTEXT_MAX) as usize;
+
+        let result = Self::block_in_place_compat(|| -> Result<GrepResult, McpError> {
+            // Resolve the record under the lock, then RELEASE it before the (potentially large)
+            // transcript parse -- never hold the catalog mutex across blocking filesystem work.
+            let rec = {
+                let db = self.db.lock().map_err(Self::err)?;
+                Self::resolve_record(&db, &req.id)?
+            };
+            // Resolve the transcript layout by existence (live, else staged). Neither present is a
+            // SUCCESS `unavailable` payload, not an error: the id is valid, the content is gone.
+            let Some((parent, subagents)) = crate::transcript_layout(&rec) else {
+                debug!(
+                    "session_grep: {} unavailable (no live or staged transcript)",
+                    rec.session_id
+                );
+                return Ok(GrepResult::Unavailable { record: Box::new(rec) });
+            };
+            let messages = session::parse::parse_messages(&rec.session_id, &parent, &subagents);
+            let (matches, truncated) = grep::grep_messages(&messages, &req.query, context_lines, limit);
+            debug!(
+                "session_grep: {} messages={} matches={} truncated={}",
+                rec.session_id,
+                messages.len(),
+                matches.len(),
+                truncated
+            );
+            Ok(GrepResult::Matched {
+                session_id: rec.session_id,
+                matches,
+                truncated,
+            })
         })?;
 
         Ok(CallToolResult::success(vec![Content::json(&result)?]))
@@ -285,11 +356,12 @@ impl ServerHandler for SessionsMcpServer {
         info.instructions = Some(
             "clyde session - read-only navigation over the Claude Code session catalog. \
              Find and resume past sessions conversationally instead of shelling out to the CLI. \
-             Exposes session metadata (titles, tags, summaries, repo/branch, dates, paths, counts) \
-             plus short highlighted snippets on search hits; full transcript content is not returned. \
-             Tools: sessions_search (ranked full-text search, snippet per hit), sessions_ls (filtered \
-             listing by repo/date/tag/model), session_open (resolve an id or unique prefix to a resume \
-             command or a staged copy)."
+             Exposes session metadata (titles, tags, summaries, repo/branch, dates, paths, counts), \
+             short highlighted snippets on search hits, and role-labeled transcript excerpts via \
+             session_grep. Tools: sessions_search (ranked full-text search, snippet per hit), sessions_ls \
+             (filtered listing by repo/date/tag/model), session_open (resolve an id or unique prefix to a \
+             resume command or a staged copy), session_grep (plain case-insensitive substring search \
+             within one session's transcript, role-labeled excerpts with context, live or staged)."
                 .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();

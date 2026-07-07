@@ -263,3 +263,78 @@
 
 ### Open questions
 - None.
+
+## Phase 6: session_grep
+
+### Design decisions
+- New `session_grep` MCP tool registered in both `dispatch` (the in-process/test path) and the
+  `#[tool_router]` `#[tool]` surface -- `sessions/src/mcp.rs:session_grep` -- request
+  `{ id, query, context_lines?, limit? }` (snake_case fields), response tagged union serialized
+  kebab-case, matching the design doc's data model (lines 126-127) exactly.
+- Match logic lives in a pure, separately-tested free function `grep_messages(messages, query,
+  context_lines, limit) -> (Vec<GrepMatch>, bool)` -- `sessions/src/mcp/grep.rs` -- so the MCP
+  handler stays a thin shell (resolve id -> resolve layout -> parse -> grep -> serialize) and the
+  match/context/cap/truncation semantics are unit-testable without a Db or the transport. Consumes
+  the Phase 5 `session::parse::parse_messages` served sequence and the shared
+  `sessions::transcript_layout` resolver; reinvents neither.
+- Match semantics are PLAIN substring, case-insensitive (`line.to_lowercase().contains(&query.
+  to_lowercase())`), per LINE within one message's text -- NOT FTS syntax -- per the doc (lines
+  178-185). A match's excerpt is the matched line plus `context_lines` before and after WITHIN the
+  same message (clamped at message boundaries), then capped at `GREP_EXCERPT_MAX_CHARS`.
+- `msg-index` is the served-index-space position (the enumerate index over
+  `parse_messages`' output), so `session_read` (Phase 7) can window around a hit. Subagent messages
+  are included and each excerpt carries `subagent: true/false` per the doc (lines 336, 105).
+- Caps are named consts in `tools.rs` next to `SEARCH_LIMIT_MAX`: `GREP_LIMIT_DEFAULT = 10`,
+  `GREP_LIMIT_MAX = 20`, `GREP_CONTEXT_DEFAULT = 2`, `GREP_CONTEXT_MAX = 5`,
+  `GREP_EXCERPT_MAX_CHARS = 500`. Top-level `truncated: true` is set only when a further hit exists
+  past the limit (checked before the (limit+1)th push, then `break`), never merely because the
+  limit was reached exactly. ALL truncation is on char boundaries via `chars().take(...)`, never a
+  byte slice (the crate denies `clippy::string_slice`).
+- Reaped-no-staged returns a SUCCESS payload `{ state: "unavailable", record }`, modeled as an
+  explicit serde tagged union `GrepResult` (tag = `state`, mirroring `OpenResult`) --
+  `sessions/src/mcp/tools.rs:GrepResult`. The `Matched` variant has no `record`/the `Unavailable`
+  variant has no `matches`, so the "no matches key on unavailable" invariant is structural, not a
+  runtime branch; a test asserts it (and that no `truncated` key appears either).
+- Id resolution factored into a shared `Self::resolve_record(db, id_arg)` helper --
+  `sessions/src/mcp.rs` -- and `session_open` refactored onto it, so `session_grep` and
+  `session_open` resolve ids (unique prefix; ambiguous/unknown -> `invalid_params`) through ONE
+  code path rather than two copies that could drift.
+- The DB lock is taken only to resolve the record and is RELEASED (scoped block) before the
+  potentially-large transcript parse, so the catalog mutex is never held across blocking filesystem
+  work (rust rules: never hold a lock across blocking I/O). The whole resolve+parse+grep runs inside
+  `block_in_place_compat` like the sibling tools.
+- Server instructions (`get_info`) updated to advertise `session_grep` as a content tool, in the
+  same phase that makes the tool exist (the doc's "describe the content tools" acceptance criterion,
+  progressively satisfied across Phases 6/7).
+
+### Deviations
+- The success (`Matched`) payload carries a `state: "matched"` tag in addition to the doc's stated
+  `{ session-id, matches, truncated }` shape. This is a direct consequence of the doc's own
+  instruction to model the union "like `OpenResult` (tag = state)": a serde internally-tagged enum
+  tags EVERY variant, so the available variant gets a tag too. Same effect the doc intends
+  (discriminated union, no `matches` key on unavailable), correct seam (one tagged enum). Agents
+  already branch on `state` from `session_open`.
+- `GrepResult::Unavailable`'s `record` is `Box<SessionRecord>` rather than a bare `SessionRecord`.
+  Required to satisfy `clippy::large_enum_variant` (`-D warnings`): the `Matched` variant is small,
+  so an unboxed 376-byte record in `Unavailable` unbalances the enum. `Box<SessionRecord>`
+  serializes transparently, so the wire shape (`{ state: "unavailable", record: {...} }`) is
+  unchanged. (`OpenResult` avoids the lint only because all three of its variants carry a full
+  record.)
+- An empty/whitespace `query` is rejected as `invalid_params` ("query is empty"), matching
+  `sessions_search`. The doc does not explicitly call for this, but an empty substring matches every
+  line, which is nonsensical; failing loudly is the house posture. Pinned by a test.
+
+### Tradeoffs
+- Excerpt built from `str::lines()` (splits on `\n`, strips the terminator) and re-joined with
+  `\n` -- chosen over preserving original line terminators because grep excerpts are for human/agent
+  reading, not byte-exact reconstruction, and `lines()` gives clean context windows. A CRLF
+  transcript would lose its `\r` in the excerpt; acceptable for a display excerpt.
+- `truncated` is computed by scanning until one hit past the limit then breaking, rather than
+  counting all matches -- bounds work at `limit + 1` matches even on a transcript with thousands of
+  hits, and the flag's contract ("more hits exist") only needs to know whether a (limit+1)th exists.
+- Match logic put in its own `grep.rs` submodule (with `grep/tests.rs`) rather than inline in
+  `mcp.rs` -- keeps `mcp.rs` a thin transport shell and lets the semantics be tested as a pure
+  function over a hand-built `Vec<Message>` with no Db/tempdir/transport scaffolding.
+
+### Open questions
+- None.
