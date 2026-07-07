@@ -32,12 +32,13 @@ use crate::db::Db;
 use crate::model::{Filters, SearchResults, SessionRecord};
 
 pub mod grep;
+pub mod read;
 pub mod tools;
 
 use tools::{
     GREP_CONTEXT_DEFAULT, GREP_CONTEXT_MAX, GREP_LIMIT_DEFAULT, GREP_LIMIT_MAX, GrepResult, LS_LIMIT_DEFAULT,
-    LS_LIMIT_MAX, OpenResult, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, SessionGrepRequest, SessionRef,
-    SessionsLsRequest, SessionsSearchRequest,
+    LS_LIMIT_MAX, OpenResult, READ_LIMIT_DEFAULT, READ_LIMIT_MAX, ReadResult, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX,
+    SessionGrepRequest, SessionReadRequest, SessionRef, SessionsLsRequest, SessionsSearchRequest,
 };
 
 /// Options controlling serve bring-up.
@@ -86,6 +87,10 @@ impl SessionsMcpServer {
             "session_grep" => {
                 let req: SessionGrepRequest = serde_json::from_value(args).map_err(|e| Self::deser_err(name, &e))?;
                 self.session_grep(Parameters(req)).await
+            }
+            "session_read" => {
+                let req: SessionReadRequest = serde_json::from_value(args).map_err(|e| Self::deser_err(name, &e))?;
+                self.session_read(Parameters(req)).await
             }
             _ => Err(McpError::invalid_params(format!("unknown tool: {name}"), None)),
         }
@@ -235,7 +240,9 @@ impl SessionsMcpServer {
     #[tool(
         description = "List sessions filtered by repo (substring of cwd/project), since (a span like \
                        7d/24h or a YYYY-MM-DD date), tag, and/or model - most-recent first. Unlike \
-                       sessions_search this needs no query; use it to browse recent work. Metadata only."
+                       sessions_search this needs no query; use it to browse recent work. Returns session \
+                       records (titles, tags, summaries, repo/branch, dates, paths, counts); use \
+                       session_grep or session_read for transcript content."
     )]
     async fn sessions_ls(&self, params: Parameters<SessionsLsRequest>) -> Result<CallToolResult, McpError> {
         let req = params.0;
@@ -346,6 +353,67 @@ impl SessionsMcpServer {
 
         Ok(CallToolResult::success(vec![Content::json(&result)?]))
     }
+
+    /// Read a window of one session's transcript as role-labeled messages, paged over the served
+    /// index space (`session_grep`'s `msg-index` space), returning `total` so the agent can page.
+    #[tool(
+        description = "Read a window of one session's transcript as role-labeled messages (user/assistant, \
+                       subagent-flagged), paged by offset/limit over the SAME message index space \
+                       session_grep's msg-index reports - so grep a term, then read around that msg-index \
+                       directly. Resolve the session by id or unique prefix (ambiguous/unknown = \
+                       invalid_params). Returns total (the served message count, distinct from the \
+                       record's raw n-msgs); advance offset by the number of messages returned to tile the \
+                       transcript with no gaps or overlap. An offset past the end returns empty messages \
+                       plus total, not an error. Long messages are truncated per-message (truncated: true) \
+                       and a very large window is cut short (top-level truncated: true) to stay within the \
+                       tool-result budget. Works on live and staged (archived) sessions; a reaped session \
+                       with no staged copy returns state: \"unavailable\"."
+    )]
+    async fn session_read(&self, params: Parameters<SessionReadRequest>) -> Result<CallToolResult, McpError> {
+        let req = params.0;
+        debug!(
+            "session_read: id={:?} offset={:?} limit={:?}",
+            req.id, req.offset, req.limit
+        );
+        let offset = req.offset.unwrap_or(0) as usize;
+        let limit = req.limit.unwrap_or(READ_LIMIT_DEFAULT).min(READ_LIMIT_MAX) as usize;
+
+        let result = Self::block_in_place_compat(|| -> Result<ReadResult, McpError> {
+            // Resolve the record under the lock, then RELEASE it before the (potentially large)
+            // transcript parse -- never hold the catalog mutex across blocking filesystem work.
+            let rec = {
+                let db = self.db.lock().map_err(Self::err)?;
+                Self::resolve_record(&db, &req.id)?
+            };
+            // Resolve the transcript layout by existence (live, else staged). Neither present is a
+            // SUCCESS `unavailable` payload, not an error: the id is valid, the content is gone.
+            let Some((parent, subagents)) = crate::transcript_layout(&rec) else {
+                debug!(
+                    "session_read: {} unavailable (no live or staged transcript)",
+                    rec.session_id
+                );
+                return Ok(ReadResult::Unavailable { record: Box::new(rec) });
+            };
+            let messages = session::parse::parse_messages(&rec.session_id, &parent, &subagents);
+            let (window, total, truncated) = read::read_messages(&messages, offset, limit);
+            debug!(
+                "session_read: {} total={} offset={} returned={} truncated={}",
+                rec.session_id,
+                total,
+                offset,
+                window.len(),
+                truncated
+            );
+            Ok(ReadResult::Read {
+                session_id: rec.session_id,
+                total,
+                messages: window,
+                truncated,
+            })
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::json(&result)?]))
+    }
 }
 
 #[tool_handler]
@@ -355,13 +423,15 @@ impl ServerHandler for SessionsMcpServer {
         let mut info = ServerInfo::default();
         info.instructions = Some(
             "clyde session - read-only navigation over the Claude Code session catalog. \
-             Find and resume past sessions conversationally instead of shelling out to the CLI. \
-             Exposes session metadata (titles, tags, summaries, repo/branch, dates, paths, counts), \
-             short highlighted snippets on search hits, and role-labeled transcript excerpts via \
-             session_grep. Tools: sessions_search (ranked full-text search, snippet per hit), sessions_ls \
-             (filtered listing by repo/date/tag/model), session_open (resolve an id or unique prefix to a \
-             resume command or a staged copy), session_grep (plain case-insensitive substring search \
-             within one session's transcript, role-labeled excerpts with context, live or staged)."
+             Find, search inside, and read past sessions conversationally instead of shelling out to the \
+             CLI. Exposes session metadata (titles, tags, summaries, repo/branch, dates, paths, counts), \
+             short highlighted snippets on search hits, and role-labeled transcript content via \
+             session_grep and session_read. Tools: sessions_search (ranked full-text search, snippet per \
+             hit), sessions_ls (filtered listing by repo/date/tag/model), session_open (resolve an id or \
+             unique prefix to a resume command or a staged copy), session_grep (plain case-insensitive \
+             substring search within one session's transcript, role-labeled excerpts with context), \
+             session_read (paged role-labeled transcript messages over the same index space grep reports, \
+             for reading around a hit). grep and read work on live and staged (archived) sessions."
                 .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();

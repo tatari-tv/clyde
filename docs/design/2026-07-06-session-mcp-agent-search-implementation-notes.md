@@ -338,3 +338,89 @@
 
 ### Open questions
 - None.
+
+## Phase 7: session_read
+
+### Design decisions
+- New `session_read` MCP tool registered in both `dispatch` (in-process/test path) and the
+  `#[tool_router]` `#[tool]` surface -- `sessions/src/mcp.rs:session_read` -- request
+  `{ id, offset?, limit? }` (snake_case fields), response the tagged-union `ReadResult` serialized
+  kebab-case, matching the design doc's data model (lines 129-130) plus the caps-driven top-level
+  `truncated` flag.
+- Windowing logic lives in a pure, separately-tested free function `read_messages(messages, offset,
+  limit) -> (Vec<ReadMessage>, total, truncated)` -- `sessions/src/mcp/read.rs` -- so the MCP handler
+  stays a thin shell (resolve id -> resolve layout -> parse -> window -> serialize) and the
+  window/cap/tiling semantics are unit-testable without a Db or the transport. Consumes the Phase 5
+  `session::parse::parse_messages` served sequence and the shared `sessions::transcript_layout`
+  resolver; reinvents neither -- the SAME index space `session_grep`'s `msg-index` reports, so an
+  agent greps a term then reads around that index directly.
+- `total` = `messages.len()` (the served-sequence length), returned in every `Read` payload,
+  DISTINCT from `SessionRecord.n-msgs` (raw pre-noise-filter count). The `ReadResult::Read` variant's
+  `total` doc comment says so explicitly.
+- Windows tile with no gaps or overlap: `read_messages` returns indices `[offset, offset+limit)`
+  clamped by `total`, via `iter().enumerate().skip(offset).take(limit)`. The tool description and the
+  `limit` schemars text instruct the agent to advance `offset` by the number of messages RETURNED
+  (not the requested `limit`) so tiling holds even when the total-response cap cuts a window short.
+  Pinned by `consecutive_windows_tile_the_sequence`.
+- `offset` at/past `total` returns an empty window plus `total` (never an error), so paging loops
+  terminate naturally -- pinned by `offset_past_end_returns_empty_plus_total`,
+  `offset_at_total_returns_empty`, and the MCP-level
+  `session_read_offset_past_end_returns_empty_plus_total` (asserts NOT `is_error`).
+- Caps are named consts in `tools.rs` next to `SEARCH_LIMIT_MAX`/the grep caps: `READ_LIMIT_DEFAULT =
+  20`, `READ_LIMIT_MAX = 50`, `READ_MESSAGE_MAX_CHARS = 2_000`, `READ_RESPONSE_MAX_CHARS = 60_000`,
+  `READ_TRUNCATION_MARKER`. A message over the per-message cap is cut on a char boundary
+  (`chars().take`), the marker appended, and the message's `truncated: true` set. The total-response
+  cap cuts the window short (top-level `truncated: true`) once accumulated text would exceed 60k,
+  BUT always emits at least the first message (a single message can never exceed the per-message cap
+  + marker), so an agent paging by returned count can never stall on a zero-length window. ALL
+  truncation on char boundaries, never a byte slice (the crate denies `clippy::string_slice`).
+- Reaped-no-staged returns a SUCCESS payload `{ state: "unavailable", record }`, modeled as an
+  explicit serde tagged union `ReadResult` (tag = `state`, mirroring `OpenResult`/`GrepResult`) --
+  `sessions/src/mcp/tools.rs:ReadResult`. The `Read` variant has no `record`/the `Unavailable`
+  variant has no `messages`, so the "no messages key on unavailable" invariant is structural, not a
+  runtime branch; `session_read_unavailable_when_reaped_and_unstaged` asserts no `messages`, `total`,
+  or `truncated` key appears.
+- Id resolution, DB-lock scoping, and the live-then-staged existence resolution reuse the exact
+  Phase 6 seams: `Self::resolve_record` (unique prefix; ambiguous/unknown -> `invalid_params`),
+  `crate::transcript_layout`, the scoped-lock-then-parse pattern, and `block_in_place_compat`. No new
+  resolution code.
+- Final acceptance criterion (line 300) closed: `grep -r "metadata only" sessions/src/` returns
+  nothing (verified both case-sensitive and case-insensitive). `sessions_ls`'s trailing "Metadata
+  only." was reworded to describe the records it returns and point at `session_grep`/`session_read`
+  for content, and the server `get_info` instructions now describe BOTH content tools.
+
+### Deviations
+- The success (`Read`) payload carries a `state: "read"` tag in addition to the doc's stated
+  `{ session-id, total, messages }` shape. Direct consequence of modeling the union "like
+  `OpenResult` (tag = state)": a serde internally-tagged enum tags EVERY variant. Same effect the
+  doc intends (discriminated union, no `messages` key on unavailable), correct seam (one tagged
+  enum). Agents already branch on `state` from `session_open`/`session_grep`.
+- Added a top-level `truncated` field to the `Read` payload. The doc's data-model line 130 lists
+  only `{ session-id, total, messages }`, but the Caps section (lines 169-170) explicitly requires
+  "total response cap ... enforced by cutting the window short with `truncated: true`". Implemented
+  the caps requirement; mirrors `session_grep`'s top-level `truncated`.
+- `ReadResult::Unavailable`'s `record` is `Box<SessionRecord>` rather than a bare `SessionRecord`,
+  to satisfy `clippy::large_enum_variant` (`-D warnings`) now that `Read` is the small variant --
+  identical to the `GrepResult` deviation. `Box<SessionRecord>` serializes transparently, so the
+  wire shape is unchanged.
+- The per-message truncation marker (`READ_TRUNCATION_MARKER`) is appended AFTER the
+  `READ_MESSAGE_MAX_CHARS` content chars, so a truncated message's `text` is slightly longer than
+  the cap (cap chars of content + the fixed marker). The cap governs preserved CONTENT; the marker
+  is a clearly-delimited addition. This is the doc's "per-message cap ... with a truncation marker"
+  read literally (both a cap AND a marker).
+
+### Tradeoffs
+- Window logic put in its own `read.rs` submodule (with `read/tests.rs`) rather than inline in
+  `mcp.rs` -- same rationale as Phase 6's `grep.rs`: keeps `mcp.rs` a thin transport shell and lets
+  tiling/cap semantics be tested as a pure function over a hand-built `Vec<Message>`.
+- A private `role_str` helper duplicated in `read.rs` (grep.rs has its own) rather than sharing one
+  -- it is a 4-line total mapping of a 2-variant enum to two fixed strings that cannot meaningfully
+  drift; keeping each content module self-contained was preferred over a cross-module coupling for
+  a trivial helper.
+- The total-response cap is enforced by accumulating already-per-message-capped char counts and
+  breaking before the first message that would exceed the remaining budget (never mid-message) --
+  simpler and more predictable than splitting a message across the budget boundary, and it keeps the
+  emitted set a clean prefix of the requested window so paging-by-returned-count tiles exactly.
+
+### Open questions
+- None.

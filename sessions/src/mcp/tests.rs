@@ -617,6 +617,182 @@ async fn session_grep_truncates_over_limit() {
     assert_eq!(v["truncated"], true, "further hits were cut off: {v}");
 }
 
+// --- Phase 7: session_read ---
+
+/// A live session reads back as role-labeled messages with the served total, over the same index
+/// space session_grep reports.
+#[tokio::test]
+async fn session_read_returns_role_labeled_window_with_total() {
+    let proj = tempfile::tempdir().unwrap();
+    let parent = proj.path().join(format!("{UUID_A}.jsonl"));
+    std::fs::write(&parent, transcript_jsonl("user question here", "assistant answer here")).unwrap();
+
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed_at(UUID_A, proj.path(), &parent), "desk")
+        .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("session_read", json!({"id": UUID_A}))
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true));
+    let v = first_content_as_json(&result);
+    assert_eq!(v["state"], "read", "{v}");
+    assert_eq!(v["session-id"], UUID_A);
+    assert_eq!(v["total"], 2, "two served messages: {v}");
+    assert_eq!(v["truncated"], false);
+    let messages = v["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["subagent"], false);
+    assert_eq!(messages[0]["text"], "user question here");
+    assert_eq!(messages[0]["truncated"], false);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["text"], "assistant answer here");
+}
+
+/// Success criterion: session_read works on an ARCHIVED session via its staged copy.
+#[tokio::test]
+async fn session_read_works_on_archived_session_via_staged_copy() {
+    let staged = tempfile::tempdir().unwrap();
+    let staged_parent = staged.path().join(format!("{UUID_A}.jsonl"));
+    std::fs::write(
+        &staged_parent,
+        transcript_jsonl("staged user turn", "staged assistant turn"),
+    )
+    .unwrap();
+
+    let db = Db::open_memory().unwrap();
+    // Live transcript path does not exist on disk; only the staged copy does.
+    db.upsert_session(&parsed(UUID_A, "/tmp/reaped-by-ttl.jsonl", "marquee", "x"), "desk")
+        .unwrap();
+    db.set_staged_path(UUID_A, staged.path()).unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("session_read", json!({"id": UUID_A}))
+        .await
+        .expect("dispatch");
+    let v = first_content_as_json(&result);
+    assert_eq!(v["state"], "read", "staged transcript must be readable: {v}");
+    assert_eq!(v["total"], 2, "{v}");
+    let messages = v["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["text"], "staged user turn");
+}
+
+/// Success criterion: a reaped session with no staged copy returns a SUCCESS `unavailable` payload
+/// carrying the record and, deliberately, NO `messages` key.
+#[tokio::test]
+async fn session_read_unavailable_when_reaped_and_unstaged() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/reaped-by-ttl.jsonl", "marquee", "x"), "desk")
+        .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("session_read", json!({"id": UUID_A}))
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true));
+    let v = first_content_as_json(&result);
+    assert_eq!(v["state"], "unavailable", "{v}");
+    assert_eq!(v["record"]["session-id"], UUID_A);
+    assert!(
+        v.get("messages").is_none(),
+        "an unavailable payload must carry NO messages key: {v}"
+    );
+    assert!(v.get("total").is_none(), "no total key on unavailable: {v}");
+    assert!(v.get("truncated").is_none(), "no truncated key on unavailable: {v}");
+}
+
+/// Success criterion: an offset past the end returns empty messages plus total (NOT an error), so
+/// an agent's paging loop terminates naturally.
+#[tokio::test]
+async fn session_read_offset_past_end_returns_empty_plus_total() {
+    let proj = tempfile::tempdir().unwrap();
+    let parent = proj.path().join(format!("{UUID_A}.jsonl"));
+    std::fs::write(&parent, transcript_jsonl("only user", "only assistant")).unwrap();
+
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed_at(UUID_A, proj.path(), &parent), "desk")
+        .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("session_read", json!({"id": UUID_A, "offset": 99}))
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true), "offset past end must NOT be an error");
+    let v = first_content_as_json(&result);
+    assert_eq!(v["state"], "read", "{v}");
+    assert_eq!(v["total"], 2, "total is still reported: {v}");
+    assert_eq!(
+        v["messages"].as_array().unwrap().len(),
+        0,
+        "an offset past the end yields no messages: {v}"
+    );
+}
+
+/// The window size clamps to READ_LIMIT_MAX (a caller asking for far more is capped, not honored).
+#[tokio::test]
+async fn session_read_clamps_limit_to_hard_max() {
+    let proj = tempfile::tempdir().unwrap();
+    let parent = proj.path().join(format!("{UUID_A}.jsonl"));
+    // Build a transcript with more served messages than the hard cap (one user + one assistant per
+    // pair), so a huge requested limit must clamp to READ_LIMIT_MAX.
+    let pairs = tools::READ_LIMIT_MAX as usize + 10;
+    let mut lines = String::new();
+    for i in 0..pairs {
+        let u = json!({"type": "user", "message": {"content": format!("u{i}")}}).to_string();
+        let a = json!({"type": "assistant", "message": {"content": format!("a{i}")}}).to_string();
+        lines.push_str(&u);
+        lines.push('\n');
+        lines.push_str(&a);
+        lines.push('\n');
+    }
+    std::fs::write(&parent, lines).unwrap();
+
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed_at(UUID_A, proj.path(), &parent), "desk")
+        .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("session_read", json!({"id": UUID_A, "limit": 100000}))
+        .await
+        .expect("dispatch");
+    let v = first_content_as_json(&result);
+    assert_eq!(
+        v["messages"].as_array().unwrap().len(),
+        tools::READ_LIMIT_MAX as usize,
+        "read window must clamp to READ_LIMIT_MAX: {v}"
+    );
+    assert_eq!(v["total"], (pairs * 2) as u64, "total counts every served message: {v}");
+}
+
+/// An ambiguous prefix is a caller error (invalid_params), identical to session_open/session_grep.
+#[tokio::test]
+async fn session_read_ambiguous_prefix_is_invalid() {
+    let live = tempfile::NamedTempFile::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed(UUID_DEAD_1, live.path().to_str().unwrap(), "marquee", "x"),
+        "desk",
+    )
+    .unwrap();
+    db.upsert_session(&parsed(UUID_DEAD_2, "/tmp/other.jsonl", "loopr", "y"), "desk")
+        .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let err = server
+        .dispatch("session_read", json!({"id": "deadbeef"}))
+        .await
+        .expect_err("ambiguous prefix must be invalid_params");
+    assert!(err.message.contains("is ambiguous"), "got: {}", err.message);
+}
+
 #[tokio::test]
 async fn dispatch_unknown_tool_is_invalid() {
     let db = Db::open_memory().unwrap();

@@ -34,6 +34,22 @@ pub const GREP_CONTEXT_MAX: u32 = 5;
 /// a byte slice (house UTF-8 rule).
 pub const GREP_EXCERPT_MAX_CHARS: usize = 500;
 
+/// Default window size (messages per page) for `session_read` when the caller omits `limit`.
+pub const READ_LIMIT_DEFAULT: u32 = 20;
+/// Hard cap on `session_read` window size — values above this are clamped, never honored.
+pub const READ_LIMIT_MAX: u32 = 50;
+/// Hard cap on a single message's returned text, enforced on a char boundary (`chars().take`),
+/// never a byte slice (house UTF-8 rule). When a message exceeds this the text is cut here, the
+/// [`READ_TRUNCATION_MARKER`] is appended, and the message's `truncated` flag is set.
+pub const READ_MESSAGE_MAX_CHARS: usize = 2_000;
+/// Hard cap on the total text across a `session_read` window (comfortably under the ~25k-token
+/// tool-result limit). When the accumulated per-message text would exceed this, the window is cut
+/// short and the top-level `truncated: true` is set.
+pub const READ_RESPONSE_MAX_CHARS: usize = 60_000;
+/// Appended to a message's text when it was cut at [`READ_MESSAGE_MAX_CHARS`], so a reader sees the
+/// text is incomplete beyond the structured per-message `truncated` flag.
+pub const READ_TRUNCATION_MARKER: &str = "\n[... message truncated ...]";
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionsSearchRequest {
     /// Full-text query across title, tags, summary, and transcript body.
@@ -157,6 +173,67 @@ pub enum GrepResult {
     /// Transcript reaped with no staged copy: the id is valid but the content is gone. Carries the
     /// record and, deliberately, no `matches` key. The record is boxed so the enum's two variants
     /// stay size-balanced (the `Matched` variant is small); `Box<SessionRecord>` serializes
+    /// transparently, so the wire shape is unchanged.
+    Unavailable { record: Box<SessionRecord> },
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SessionReadRequest {
+    /// Session id or any unique prefix of it (resolved exactly like `session_open`).
+    #[schemars(description = "Session id or any unique prefix of it (resolved exactly like session_open)")]
+    pub id: String,
+    /// Zero-based message index to start the window at, in the same served index space
+    /// `session_grep`'s `msg-index` reports (default 0; past the end returns an empty window).
+    #[schemars(
+        description = "Zero-based message index to start at, in the same index space session_grep's \
+                       msg-index reports (default 0). An offset past the end returns empty messages plus \
+                       total, not an error, so paging loops terminate naturally."
+    )]
+    pub offset: Option<u32>,
+    /// Max messages in the window (default 20, hard max 50; clamped). Advance `offset` by the number
+    /// of messages RETURNED to page with no gaps or overlap.
+    #[schemars(
+        description = "Max messages in this window (default 20, hard max 50; values above the max are \
+                       clamped). Advance offset by the number of messages returned to tile the transcript \
+                       with no gaps or overlap."
+    )]
+    pub limit: Option<u32>,
+}
+
+/// One message in a `session_read` window, from the served index space.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ReadMessage {
+    /// Who spoke this message: `user` or `assistant`.
+    pub role: String,
+    /// `true` when this message came from a subagent transcript rather than the parent.
+    pub subagent: bool,
+    /// The message text, capped at [`READ_MESSAGE_MAX_CHARS`] chars on a char boundary; when the cap
+    /// fired the [`READ_TRUNCATION_MARKER`] is appended and `truncated` is `true`.
+    pub text: String,
+    /// `true` when this message's text was cut at the per-message char cap.
+    pub truncated: bool,
+}
+
+/// The outcome of `session_read`, modeled as an explicit tagged union (tag = `state`, mirroring
+/// [`OpenResult`]/[`GrepResult`]) so a reaped-no-staged session returns a SUCCESS payload with NO
+/// `messages` key.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case", tag = "state")]
+pub enum ReadResult {
+    /// Transcript resolved (live or staged) and windowed: the messages, the total message count in
+    /// the served sequence, and whether the total-response char cap cut the window short.
+    Read {
+        session_id: String,
+        /// Length of the served message sequence (distinct from `SessionRecord.n-msgs`, which counts
+        /// raw pre-noise-filter messages). Page against this to know when to stop.
+        total: usize,
+        messages: Vec<ReadMessage>,
+        truncated: bool,
+    },
+    /// Transcript reaped with no staged copy: the id is valid but the content is gone. Carries the
+    /// record and, deliberately, no `messages` key. The record is boxed so the enum's two variants
+    /// stay size-balanced (the `Read` variant is small); `Box<SessionRecord>` serializes
     /// transparently, so the wire shape is unchanged.
     Unavailable { record: Box<SessionRecord> },
 }
