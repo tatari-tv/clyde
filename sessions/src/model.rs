@@ -74,6 +74,11 @@ pub struct SearchHit {
     pub matched: MatchSource,
     /// FTS5 bm25 score (lower is a better match).
     pub score: f64,
+    /// FTS5 `snippet()` excerpt from the best-matching column, with the matched term(s) wrapped in
+    /// `**...**` highlight markers and long excerpts truncated with a `...` ellipsis. Lets an agent
+    /// (or a human reading `clyde session search` output) see *why* a hit matched without opening
+    /// the session.
+    pub snippet: String,
 }
 
 /// Metadata filters for `ls` (no full-text component). All fields optional / additive.

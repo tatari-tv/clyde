@@ -171,10 +171,11 @@ impl SessionsMcpServer {
     /// Full-text search over the session catalog, ranked (high-signal fields first).
     #[tool(
         description = "Full-text search over the Claude Code session catalog, ranked with high-signal \
-                       (title/tags/summary) matches before body-only matches. Returns ranked hits \
-                       (each: the session record, where it matched, and the bm25 score). Use this to \
-                       find a past session by what it was about (\"which session set up the S3 bucket?\"). \
-                       Metadata only - no transcript content."
+                       (title/tags/summary) matches before body-only matches. Returns ranked hits (each: \
+                       the session record, where it matched, the bm25 score, and a short highlighted \
+                       snippet of the matching text). Use this to find a past session by what it was \
+                       about (\"which session set up the S3 bucket?\"). Snippets are excerpts only, not \
+                       the full transcript."
     )]
     async fn sessions_search(&self, params: Parameters<SessionsSearchRequest>) -> Result<CallToolResult, McpError> {
         let req = params.0;
@@ -282,10 +283,11 @@ impl ServerHandler for SessionsMcpServer {
         info.instructions = Some(
             "clyde session - read-only navigation over the Claude Code session catalog. \
              Find and resume past sessions conversationally instead of shelling out to the CLI. \
-             v1 exposes metadata only (titles, tags, summaries, repo/branch, dates, paths, counts); \
-             transcript content is not returned. Tools: sessions_search (ranked full-text search), \
-             sessions_ls (filtered listing by repo/date/tag/model), session_open (resolve an id or \
-             unique prefix to a resume command or a staged copy)."
+             Exposes session metadata (titles, tags, summaries, repo/branch, dates, paths, counts) \
+             plus short highlighted snippets on search hits; full transcript content is not returned. \
+             Tools: sessions_search (ranked full-text search, snippet per hit), sessions_ls (filtered \
+             listing by repo/date/tag/model), session_open (resolve an id or unique prefix to a resume \
+             command or a staged copy)."
                 .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();

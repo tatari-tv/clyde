@@ -104,6 +104,47 @@ fn search_ranks_high_signal_above_body() {
     assert_eq!(hits[1].matched, MatchSource::Body);
 }
 
+/// Phase 1 success criterion: a body-tier hit's snippet contains the matched term inside
+/// `**...**` highlight markers.
+#[test]
+fn snippet_highlights_matched_term_for_body_tier_hit() {
+    let db = Db::open_memory().unwrap();
+    let mut a = parsed(UUID_A, "/tmp/a.jsonl");
+    a.ai_title = Some("unrelated title".into());
+    a.first_prompt = Some("unrelated prompt".into());
+    a.body = "we spent the whole session debugging kubernetes networking issues".into();
+    db.upsert_session(&a, "desk").unwrap();
+
+    let hits = db.search("kubernetes", None, false, SortBy::Relevance).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].matched, MatchSource::Body, "term appears only in the body");
+    assert!(
+        hits[0].snippet.contains("**kubernetes**"),
+        "body-tier snippet must highlight the matched term inside ** markers: {:?}",
+        hits[0].snippet
+    );
+}
+
+/// Phase 1 success criterion: a high-signal hit's snippet comes from title/tags/summary (not the
+/// body), still with the matched term highlighted.
+#[test]
+fn snippet_comes_from_title_tags_summary_for_high_signal_hit() {
+    let db = Db::open_memory().unwrap();
+    // `parsed()`'s title is "Terraform Marquee bucket setup"; its body also mentions "Marquee",
+    // but `Db::search` dedups by session id and keeps the high-signal tier first, so this proves
+    // the snippet came from the high-signal projection, not the body.
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    let hits = db.search("Marquee", None, false, SortBy::Relevance).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].matched, MatchSource::HighSignal);
+    assert!(
+        hits[0].snippet.to_lowercase().contains("**marquee**"),
+        "high-signal snippet must highlight the matched term: {:?}",
+        hits[0].snippet
+    );
+}
+
 #[test]
 fn search_finds_body_only_terms() {
     let db = Db::open_memory().unwrap();

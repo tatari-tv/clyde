@@ -28,6 +28,14 @@ const SCHEMA_VERSION: i64 = 4;
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
 const DEFAULT_SEARCH_LIMIT: usize = 50;
+/// Max tokens `snippet()` keeps around a match before truncating with an ellipsis. Bounds the
+/// per-hit snippet size so `SEARCH_LIMIT_MAX` hits x snippet cannot blow the MCP response budget.
+const SNIPPET_MAX_TOKENS: i32 = 24;
+/// `snippet()` highlight markers wrapping the matched term(s) inside the excerpt.
+const SNIPPET_HIGHLIGHT_START: &str = "**";
+const SNIPPET_HIGHLIGHT_END: &str = "**";
+/// `snippet()` ellipsis marking elided text around the excerpt.
+const SNIPPET_ELLIPSIS: &str = "...";
 
 const SCHEMA_SQL: &str = "\
 CREATE TABLE IF NOT EXISTS sessions (
@@ -565,7 +573,9 @@ impl Db {
     }
 
     /// Full-text search. Ranks high-signal (title/tags/summary) matches first, then appends
-    /// body-only matches not already surfaced. `limit` caps the combined result.
+    /// body-only matches not already surfaced. `limit` caps the combined result. Each hit carries
+    /// a `snippet()` excerpt (highlight markers `**...**`, ellipsis `...`) from whichever indexed
+    /// column matched.
     pub fn search(
         &self,
         query: &str,
@@ -649,22 +659,39 @@ impl Db {
             SortBy::Relevance => "score, s.modified DESC, s.id DESC",
             SortBy::Recency => "s.modified DESC, score, s.id DESC",
         };
+        // `snippet()`'s column argument (-1) picks whichever indexed column of `fts_table`
+        // contains the match ("best column"), so one call covers both the high-signal table
+        // (title/tags/summary) and the body table without per-table branching.
         let sql = format!(
-            "SELECT {COLS}, bm25({fts_table}) AS score FROM {fts_table} \
+            "SELECT {COLS}, bm25({fts_table}) AS score, \
+             snippet({fts_table}, -1, ?4, ?5, ?6, ?7) AS snippet FROM {fts_table} \
              JOIN sessions s ON s.id = {fts_table}.rowid \
              WHERE {fts_table} MATCH ?1 AND (?2 = 1 OR s.archived = 0) \
              ORDER BY {order_by} LIMIT ?3"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let hits = stmt
-            .query_map(params![fts_query, include_archived as i64, limit as i64], |row| {
-                Ok(SearchHit {
-                    record: map_record(row)?,
-                    matched,
-                    // COLS has 19 columns (indices 0..=18); bm25 score is appended at index 19.
-                    score: row.get(19)?,
-                })
-            })?
+            .query_map(
+                params![
+                    fts_query,
+                    include_archived as i64,
+                    limit as i64,
+                    SNIPPET_HIGHLIGHT_START,
+                    SNIPPET_HIGHLIGHT_END,
+                    SNIPPET_ELLIPSIS,
+                    SNIPPET_MAX_TOKENS,
+                ],
+                |row| {
+                    Ok(SearchHit {
+                        record: map_record(row)?,
+                        matched,
+                        // COLS has 19 columns (indices 0..=18); bm25 score is appended at index
+                        // 19, and the snippet() excerpt at index 20.
+                        score: row.get(19)?,
+                        snippet: row.get(20)?,
+                    })
+                },
+            )?
             .collect::<rusqlite::Result<_>>()?;
         Ok(hits)
     }

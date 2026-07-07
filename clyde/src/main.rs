@@ -633,6 +633,9 @@ fn print_hits(hits: &[SearchHit]) {
         };
         print!("{marker} ");
         print_record_line(&hit.record, msgs_width);
+        if !hit.snippet.is_empty() {
+            println!("{RECORD_INDENT}{}", hit.snippet.as_str().dimmed());
+        }
     }
 }
 
