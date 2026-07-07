@@ -37,13 +37,13 @@ fn reindex_ingests_then_skips_unchanged() {
     assert_eq!(
         db.search("terraform", None, false, crate::SortBy::Relevance)
             .unwrap()
-            .len(),
+            .count,
         1
     );
     assert_eq!(
         db.search("us-east-1", None, false, crate::SortBy::Relevance)
             .unwrap()
-            .len(),
+            .count,
         1
     );
 

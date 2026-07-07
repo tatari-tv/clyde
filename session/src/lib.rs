@@ -19,5 +19,5 @@ pub mod scan;
 pub mod scope;
 pub mod stage;
 
-pub use model::{ParsedSession, SessionFile, SessionFileKind};
+pub use model::{Message, ParsedSession, Role, SessionFile, SessionFileKind};
 pub use scope::{Scope, classify};

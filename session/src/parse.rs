@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use log::{debug, trace, warn};
 use serde_json::Value;
 
-use crate::model::{ParsedSession, SessionFile, SessionFileKind};
+use crate::model::{Message, ParsedSession, Role, SessionFile, SessionFileKind};
 
 /// Cap on the stored first-prompt (some first prompts paste whole files).
 const MAX_FIRST_PROMPT_CHARS: usize = 2_000;
@@ -60,7 +60,7 @@ pub fn parse_sessions(files: &[SessionFile]) -> Vec<ParsedSession> {
 
 /// Parse a single, already-identified session from an explicit transcript layout: a `parent`
 /// JSONL plus an optional `subagents_dir`. This is the read path enrichment uses to recover a
-/// session's high-signal `body` on demand — either live (parent under `~/.claude/projects`,
+/// session's high-signal `body` on demand -- either live (parent under `~/.claude/projects`,
 /// subagents at `<project>/<id>/subagents`) or archived (both under the Phase 1.5 staged copy).
 /// Returns `None` when no readable transcript file exists for the session.
 pub fn parse_one(session_id: &str, parent: &Path, subagents_dir: &Path) -> Option<ParsedSession> {
@@ -70,6 +70,49 @@ pub fn parse_one(session_id: &str, parent: &Path, subagents_dir: &Path) -> Optio
         parent.display(),
         subagents_dir.display()
     );
+    let files = discover_layout_files(session_id, parent, subagents_dir);
+    if files.is_empty() {
+        warn!("parse::parse_one: no transcript files for {session_id}");
+        return None;
+    }
+    parse_sessions(&files).into_iter().next()
+}
+
+/// Role-labeled per-message iteration over an explicit transcript layout -- the served index
+/// space `session_grep`/`session_read` (Phases 6/7) page over. Reuses [`extract_text`] and the
+/// [`NOISE_PREFIXES`] filter (via `is_command_noise`) so the yielded messages are EXACTLY what
+/// `Acc::append_body` folds into the body-FTS index: noise-wrapped user messages are excluded,
+/// empty assistant messages are excluded. Subagent transcripts are included and flagged
+/// `subagent: true` (their text is already rolled into the parent's body FTS; excluding them
+/// here would make FTS hits grep to zero). Order: parent transcript in file order first, then
+/// each subagent file in path order -- the same ordering [`parse_group`] uses for the body
+/// roll-up, so a `msg-index` computed here lines up with what search already matched.
+pub fn parse_messages(session_id: &str, parent: &Path, subagents_dir: &Path) -> Vec<Message> {
+    debug!(
+        "parse::parse_messages: session_id={} parent={} subagents_dir={}",
+        session_id,
+        parent.display(),
+        subagents_dir.display()
+    );
+    let mut files = discover_layout_files(session_id, parent, subagents_dir);
+    files.sort_by_key(file_order_key);
+
+    let mut messages = Vec::new();
+    for f in &files {
+        ingest_file_messages(f, &mut messages);
+    }
+    debug!(
+        "parse::parse_messages: session_id={} messages={}",
+        session_id,
+        messages.len()
+    );
+    messages
+}
+
+/// Discover the transcript files for an explicit `(parent, subagents_dir)` layout, unordered.
+/// Shared by [`parse_one`] (which re-derives order via [`parse_group`]'s roll-up) and
+/// [`parse_messages`] (which orders explicitly via [`file_order_key`]).
+fn discover_layout_files(session_id: &str, parent: &Path, subagents_dir: &Path) -> Vec<SessionFile> {
     let mut files: Vec<SessionFile> = Vec::new();
     if parent.is_file() {
         files.push(SessionFile {
@@ -92,14 +135,88 @@ pub fn parse_one(session_id: &str, parent: &Path, subagents_dir: &Path) -> Optio
                     }
                 }
             }
-            Err(e) => warn!("parse::parse_one: failed to read {}: {}", subagents_dir.display(), e),
+            Err(e) => warn!(
+                "parse::discover_layout_files: failed to read {}: {}",
+                subagents_dir.display(),
+                e
+            ),
         }
     }
-    if files.is_empty() {
-        warn!("parse::parse_one: no transcript files for {session_id}");
-        return None;
+    files
+}
+
+/// Sort key placing the parent transcript before subagents, subagents ordered by path -- the
+/// canonical transcript ordering shared by [`parse_group`]'s body roll-up and [`parse_messages`].
+fn file_order_key(f: &SessionFile) -> (bool, PathBuf) {
+    (matches!(f.kind, SessionFileKind::Subagent), f.path.clone())
+}
+
+/// Extract role-labeled messages from one transcript file, appending to `out` in file line order.
+/// Tight per-line loop: TRACE, not DEBUG (the call-site iteration entry already logs at DEBUG).
+fn ingest_file_messages(file: &SessionFile, out: &mut Vec<Message>) {
+    let subagent = matches!(file.kind, SessionFileKind::Subagent);
+    let bytes = match fs::read(&file.path) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                "parse::ingest_file_messages: failed to read {}: {}",
+                file.path.display(),
+                e
+            );
+            return;
+        }
+    };
+    for line in bytes.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let v: Value = match serde_json::from_slice(line) {
+            Ok(v) => v,
+            Err(e) => {
+                trace!(
+                    "parse::ingest_file_messages: skipping malformed line in {}: {}",
+                    file.path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        match v.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                let text = extract_text(v.get("message").and_then(|m| m.get("content")));
+                let trimmed = text.trim();
+                if !is_command_noise(trimmed) {
+                    trace!(
+                        "parse::ingest_file_messages: role=user subagent={} len={}",
+                        subagent,
+                        trimmed.len()
+                    );
+                    out.push(Message {
+                        role: Role::User,
+                        text: trimmed.to_string(),
+                        subagent,
+                    });
+                }
+            }
+            Some("assistant") => {
+                let text = extract_text(v.get("message").and_then(|m| m.get("content")));
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    trace!(
+                        "parse::ingest_file_messages: role=assistant subagent={} len={}",
+                        subagent,
+                        trimmed.len()
+                    );
+                    out.push(Message {
+                        role: Role::Assistant,
+                        text: trimmed.to_string(),
+                        subagent,
+                    });
+                }
+            }
+            _ => {}
+        }
     }
-    parse_sessions(&files).into_iter().next()
 }
 
 fn parse_group(group_id: &str, files: &[&SessionFile]) -> Option<ParsedSession> {
@@ -107,10 +224,7 @@ fn parse_group(group_id: &str, files: &[&SessionFile]) -> Option<ParsedSession> 
     let mut acc = Acc::new(group_id);
     // Parents before subagents so project_dir is derived from the canonical location.
     let mut ordered: Vec<&SessionFile> = files.to_vec();
-    ordered.sort_by(|a, b| {
-        let key = |f: &&SessionFile| (matches!(f.kind, SessionFileKind::Subagent), f.path.clone());
-        key(a).cmp(&key(b))
-    });
+    ordered.sort_by_key(|f| file_order_key(f));
     for f in &ordered {
         acc.ingest_file(f);
     }

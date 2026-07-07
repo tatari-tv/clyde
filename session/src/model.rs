@@ -68,3 +68,26 @@ impl ParsedSession {
             .or(self.command_name.as_deref())
     }
 }
+
+/// Who spoke a [`Message`]: a Claude Code transcript carries only user and assistant turns
+/// (tool-result/system lines are not surfaced as messages).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    User,
+    Assistant,
+}
+
+/// One role-labeled message from the served index space: the noise-excluded user + assistant
+/// sequence -- parent transcript in order first, then each subagent file in path order -- that
+/// `session::parse::parse_messages` yields. This is EXACTLY what `ParsedSession.body` folded into
+/// the body-FTS index (same `extract_text` + `NOISE_PREFIXES` filter), so grep/read (Phases 6/7)
+/// see what search already matched on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Message {
+    pub role: Role,
+    pub text: String,
+    /// `true` when this message came from a subagent transcript rather than the parent. Subagent
+    /// text is included (it is already rolled into the parent's body FTS) and flagged so callers
+    /// can label it distinctly.
+    pub subagent: bool,
+}
