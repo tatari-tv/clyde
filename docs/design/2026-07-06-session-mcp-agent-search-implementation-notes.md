@@ -203,3 +203,63 @@
 
 ### Open questions
 - None.
+
+## Phase 5: Per-message parse API + shared transcript resolution
+
+### Design decisions
+- New `session::parse::parse_messages(session_id, parent, subagents_dir) -> Vec<Message>` --
+  `session/src/parse.rs` -- mirrors `parse_one`'s explicit-layout signature so a future
+  `session_grep`/`session_read` call site resolves a transcript layout once and can hand it to
+  either function. Reuses the same private `extract_text` and `is_command_noise` (NOISE_PREFIXES)
+  helpers `Acc::ingest_line` already uses for `body`, so a served message is EXACTLY what body-FTS
+  indexed: a noise-wrapped user turn or an empty assistant turn is excluded from both.
+- `Message { role: Role, text: String, subagent: bool }` and `Role { User, Assistant }` added to
+  `session::model` and re-exported from the crate root (`session::{Message, Role}`) -- matches how
+  `ParsedSession`/`SessionFile` are already exposed, so callers never reach into `session::model`
+  directly.
+- Subagent transcripts are included and flagged `subagent: true`, never excluded -- per the design
+  doc, their text is already rolled into the parent's body FTS (`parse.rs:47-59` rollup), so
+  omitting them from the served sequence would make an FTS hit unfindable by grep/read.
+- Served-sequence ordering (parent transcript in file order first, then each subagent file in path
+  order) is produced by a new shared `file_order_key` comparator, and `parse_group`'s existing
+  body-roll-up sort was refactored to call the same comparator instead of a duplicated closure --
+  one sort key for both the body-FTS roll-up and the served message sequence, so a future
+  `msg-index` can never drift from what search already matched against.
+- `transcript_layout` promoted from a private `enrich.rs` function into a new
+  `sessions::transcript` module (`sessions/src/transcript.rs`), re-exported as
+  `sessions::transcript_layout`, and `enrich.rs` now imports it instead of defining its own copy.
+  `enrich`'s call site (`enrich.rs:enrich`) is otherwise unchanged.
+- Promoting `transcript_layout` also changed *how* it resolves: the pre-Phase-5 version branched
+  on the `archived` boolean column (archived -> staged only, else -> live only). The promoted
+  version resolves live-then-staged by **existence** -- `rec.transcript_path.exists()` first, else
+  a `staged_path` that exists, else `None` -- exactly mirroring `mcp.rs`'s `open_result_for`
+  (`mcp.rs:142-157`), per the design doc's explicit instruction ("resolve live-then-staged by
+  existence, exactly like `open_result_for`"). This is strictly more robust than the `archived`
+  flag (which can be stale between a reap and the next reconcile sweep) and is covered by a
+  dedicated regression test
+  (`transcript::tests::falls_back_to_staged_when_the_live_transcript_is_gone`) proving the staged
+  fallback fires the moment the live file disappears, independent of the `archived` column's
+  value.
+
+### Deviations
+- None against the phase's own scope. The one behavior change (existence-based resolution
+  replacing the `archived`-flag branch inside the promoted `transcript_layout`) is not a deviation
+  from the design doc -- it is the doc's literal instruction for the promoted function -- but is
+  called out here because it changes an existing `enrich.rs` code path's resolution rule, not just
+  its location. All pre-existing `enrich` tests pass unchanged against the new resolver (none of
+  them exercise an archived-with-live-file-present edge case, so no test needed inverting).
+
+### Tradeoffs
+- Factored file discovery (`discover_layout_files`) and ordering (`file_order_key`) out of
+  `parse_one`/`parse_group` into shared helpers that both the existing roll-up path and the new
+  `parse_messages` call, rather than writing `parse_messages` as a fully independent code path --
+  chosen so the served index space (Phase 5's contract: "exactly what body FTS indexed") cannot
+  silently drift from the roll-up's own file discovery/ordering as either evolves later; the cost
+  is a slightly larger diff to `parse.rs` for this phase.
+- Per-message loop logs at `trace!` (role/subagent/length only, never full text); the
+  `parse_messages` call itself logs at `debug!` (entry with session_id/parent/subagents_dir, exit
+  with message count) -- per the logging convention (tight loops demoted to TRACE, the iteration
+  entry stays DEBUG).
+
+### Open questions
+- None.

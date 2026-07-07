@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod model;
 pub mod since;
 pub mod stage;
+pub mod transcript;
 
 pub use db::{Db, EnrichSuccess, Upsert};
 pub use enrich::{EnrichOptions, enrich};
@@ -29,3 +30,4 @@ pub use model::{
 };
 pub use since::{DateTz, parse_since};
 pub use stage::stage_dormant;
+pub use transcript::transcript_layout;

@@ -16,6 +16,7 @@ use log::{debug, info, warn};
 use crate::db::{Db, EnrichSuccess};
 use crate::llm::{Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION};
 use crate::model::{EnrichDetail, EnrichStats, SessionRecord};
+use crate::transcript::transcript_layout;
 
 /// Default cap on per-session enrichment attempts before the selection predicate stops retrying.
 pub const DEFAULT_MAX_ATTEMPTS: i64 = 5;
@@ -226,23 +227,6 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         stats.dry_run,
     );
     Ok(stats)
-}
-
-/// The (parent, subagents-dir) transcript layout for a record: live under `~/.claude/projects`,
-/// or the Phase 1.5 staged copy for an archived session. `None` when an archived session has no
-/// staged copy to read.
-fn transcript_layout(rec: &SessionRecord) -> Option<(PathBuf, PathBuf)> {
-    if rec.archived {
-        let staged = rec.staged_path.as_ref()?;
-        let parent = staged.join(format!("{}.jsonl", rec.session_id));
-        let subagents = staged.join("subagents");
-        Some((parent, subagents))
-    } else {
-        let project_dir = PathBuf::from(&rec.project_dir);
-        let parent = project_dir.join(format!("{}.jsonl", rec.session_id));
-        let subagents = project_dir.join(&rec.session_id).join("subagents");
-        Some((parent, subagents))
-    }
 }
 
 /// Truncate `s` to `cap` chars by keeping a head and a tail (char-safe), flagging when truncation
