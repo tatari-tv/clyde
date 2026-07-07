@@ -17,7 +17,9 @@ use log::{debug, trace, warn};
 use rusqlite::{Connection, OptionalExtension, params};
 use session::ParsedSession;
 
-use crate::model::{EnrichSummary, Filters, MatchSource, SearchHit, SessionRecord, SortBy};
+use crate::model::{
+    EnrichSummary, Fallback, Filters, MatchSource, SearchHit, SearchResults, SessionRecord, SortBy, Unenriched,
+};
 
 /// Bumped whenever the schema changes; drives `PRAGMA user_version` migrations.
 /// v2 added `staged_path` (Phase 1.5 transcript staging).
@@ -576,19 +578,63 @@ impl Db {
     /// body-only matches not already surfaced. `limit` caps the combined result. Each hit carries
     /// a `snippet()` excerpt (highlight markers `**...**`, ellipsis `...`) from whichever indexed
     /// column matched.
+    ///
+    /// AND->OR fallback: the query first runs with FTS5's implicit AND (every token required). If
+    /// that pass returns zero hits across BOTH tiers combined, the same tokens are rerun OR-joined
+    /// and `fallback` is set on the response so the caller knows the results are the degraded
+    /// (any-token) match rather than a strict one. Tiering (high-signal first, deduped body
+    /// second) applies identically to the OR pass. OR results are NOT re-ranked in this phase —
+    /// they keep the same tiered-bm25 ordering as an AND pass; distinct-term-coverage ordering is
+    /// the next phase's job.
+    ///
+    /// `unenriched` is always zero-valued here; Phase 4 populates the real gap counts.
     pub fn search(
         &self,
         query: &str,
         limit: Option<usize>,
         include_archived: bool,
         sort: SortBy,
-    ) -> Result<Vec<SearchHit>> {
+    ) -> Result<SearchResults> {
         debug!("Db::search: query={:?} limit={:?} sort={:?}", query, limit, sort);
-        let Some(fts) = fts_query(query) else {
-            return Ok(Vec::new());
-        };
         let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
 
+        let and_hits = match fts_query(query, QueryMode::And) {
+            Some(fts) => self.search_pass(&fts, include_archived, limit, sort)?,
+            None => Vec::new(),
+        };
+        if !and_hits.is_empty() {
+            debug!("Db::search: AND pass returned {} hits", and_hits.len());
+            return Ok(SearchResults {
+                count: and_hits.len(),
+                results: and_hits,
+                fallback: None,
+                unenriched: Unenriched::default(),
+            });
+        }
+
+        let or_hits = match fts_query(query, QueryMode::Or) {
+            Some(fts) => self.search_pass(&fts, include_archived, limit, sort)?,
+            None => Vec::new(),
+        };
+        let fallback = if or_hits.is_empty() { None } else { Some(Fallback::Or) };
+        debug!(
+            "Db::search: AND pass empty, OR fallback returned {} hits (fallback={:?})",
+            or_hits.len(),
+            fallback
+        );
+        Ok(SearchResults {
+            count: or_hits.len(),
+            results: or_hits,
+            fallback,
+            unenriched: Unenriched::default(),
+        })
+    }
+
+    /// Run one FTS pass (`fts` already token-quoted and joined AND/OR by [`fts_query`]) across
+    /// both tiers, dedupe, order, and truncate to `limit`. Shared by the AND pass and the OR
+    /// fallback pass in [`Self::search`] — the only difference between them is which joiner built
+    /// `fts`.
+    fn search_pass(&self, fts: &str, include_archived: bool, limit: usize, sort: SortBy) -> Result<Vec<SearchHit>> {
         // Bound each table query with the combined `limit` so the intermediate result set never
         // grows past what the final `truncate` keeps — neither table can contribute more than
         // `limit` rows to the merge, so the SQL `LIMIT` is sound and caps query work/memory. In
@@ -599,7 +645,7 @@ impl Db {
         // that belongs in the final window.
         let high = self.search_table(
             "sessions_fts",
-            &fts,
+            fts,
             include_archived,
             MatchSource::HighSignal,
             limit,
@@ -609,7 +655,7 @@ impl Db {
         let mut hits = high;
         for hit in self.search_table(
             "sessions_body_fts",
-            &fts,
+            fts,
             include_archived,
             MatchSource::Body,
             limit,
@@ -831,14 +877,33 @@ fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
     }
 }
 
+/// How [`fts_query`] joins quoted tokens: FTS5's implicit AND (space-joined, every token
+/// required) or an explicit `OR` (any token matches). Both are equally injection-safe because
+/// every token is double-quoted before joining — the joiner itself is always one of these two
+/// compile-time literals, never user input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryMode {
+    And,
+    Or,
+}
+
 /// Build a safe FTS5 query: each whitespace token is double-quoted (so user input can't inject
-/// FTS operators), joined by space (FTS5 default AND). Returns `None` when there are no tokens.
-fn fts_query(user: &str) -> Option<String> {
+/// FTS operators), joined per `mode` (AND: FTS5's implicit default; OR: explicit `OR` keyword —
+/// safe because the tokens themselves are quoted, so `OR` can only ever be interpreted as the
+/// join operator, never smuggled in from user input). Returns `None` when there are no tokens.
+fn fts_query(user: &str, mode: QueryMode) -> Option<String> {
     let quoted: Vec<String> = user
         .split_whitespace()
         .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
         .collect();
-    if quoted.is_empty() { None } else { Some(quoted.join(" ")) }
+    if quoted.is_empty() {
+        return None;
+    }
+    let sep = match mode {
+        QueryMode::And => " ",
+        QueryMode::Or => " OR ",
+    };
+    Some(quoted.join(sep))
 }
 
 #[cfg(test)]

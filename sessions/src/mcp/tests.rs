@@ -77,6 +77,64 @@ async fn sessions_search_returns_ranked_results() {
     assert_eq!(v["results"][0]["record"]["session-id"], UUID_A);
 }
 
+/// Phase 2 success criterion: a multi-term query whose terms never co-occur in any one session
+/// falls back to OR-joined matching and the response is flagged `fallback: "or"`.
+#[tokio::test]
+async fn sessions_search_falls_back_to_or_when_terms_never_co_occur() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "marquee",
+            "debugging kubernetes networking issues",
+        ),
+        "desk",
+    )
+    .unwrap();
+    db.upsert_session(
+        &parsed(UUID_B, "/tmp/b.jsonl", "loopr", "migrated the terraform state bucket"),
+        "desk",
+    )
+    .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    // Neither session mentions BOTH terms, so the strict AND pass must find zero hits.
+    let result = server
+        .dispatch("sessions_search", json!({"query": "kubernetes terraform"}))
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true));
+    let v = first_content_as_json(&result);
+    assert_eq!(v["fallback"], "or", "OR fallback must be flagged: {v}");
+    assert_eq!(v["count"], 2, "both sessions match on OR (one term each): {v}");
+    assert_eq!(v["results"].as_array().unwrap().len(), 2);
+}
+
+/// Phase 2 success criterion (negative half): a query that matches on a strict AND pass carries
+/// no `fallback` key at all.
+#[tokio::test]
+async fn sessions_search_normal_query_carries_no_fallback_key() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed(UUID_A, "/tmp/a.jsonl", "marquee", "the marquee s3 bucket"),
+        "desk",
+    )
+    .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("sessions_search", json!({"query": "bucket"}))
+        .await
+        .expect("dispatch");
+    let v = first_content_as_json(&result);
+    assert_eq!(v["count"], 1);
+    assert!(
+        v.get("fallback").is_none(),
+        "an AND-satisfied query must carry no fallback key at all: {v}"
+    );
+}
+
 #[tokio::test]
 async fn sessions_search_empty_query_is_invalid() {
     let db = Db::open_memory().unwrap();

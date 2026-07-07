@@ -80,6 +80,7 @@ fn update_preserves_tags_but_refreshes_parse_fields() {
     assert!(
         db.search("terraform", None, false, SortBy::Relevance)
             .unwrap()
+            .results
             .iter()
             .any(|h| h.matched == MatchSource::HighSignal)
     );
@@ -96,7 +97,7 @@ fn search_ranks_high_signal_above_body() {
     b.body = "we discussed the Marquee deployment at length".into();
     db.upsert_session(&b, "desk").unwrap();
 
-    let hits = db.search("Marquee", None, false, SortBy::Relevance).unwrap();
+    let hits = db.search("Marquee", None, false, SortBy::Relevance).unwrap().results;
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].record.session_id, UUID_A, "title match ranks first");
     assert_eq!(hits[0].matched, MatchSource::HighSignal);
@@ -115,7 +116,7 @@ fn snippet_highlights_matched_term_for_body_tier_hit() {
     a.body = "we spent the whole session debugging kubernetes networking issues".into();
     db.upsert_session(&a, "desk").unwrap();
 
-    let hits = db.search("kubernetes", None, false, SortBy::Relevance).unwrap();
+    let hits = db.search("kubernetes", None, false, SortBy::Relevance).unwrap().results;
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].matched, MatchSource::Body, "term appears only in the body");
     assert!(
@@ -135,7 +136,7 @@ fn snippet_comes_from_title_tags_summary_for_high_signal_hit() {
     // the snippet came from the high-signal projection, not the body.
     db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
 
-    let hits = db.search("Marquee", None, false, SortBy::Relevance).unwrap();
+    let hits = db.search("Marquee", None, false, SortBy::Relevance).unwrap().results;
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].matched, MatchSource::HighSignal);
     assert!(
@@ -150,7 +151,7 @@ fn search_finds_body_only_terms() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
     // "us-east-1" appears only in the body, never the title.
-    let hits = db.search("us-east-1", None, false, SortBy::Relevance).unwrap();
+    let hits = db.search("us-east-1", None, false, SortBy::Relevance).unwrap().results;
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].matched, MatchSource::Body);
 }
@@ -161,7 +162,12 @@ fn search_is_injection_safe_and_empty_query_returns_nothing() {
     db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
     // FTS operators in user input must not blow up; quoting neutralizes them.
     assert!(db.search("\" OR 1=1 --", None, false, SortBy::Relevance).is_ok());
-    assert!(db.search("   ", None, false, SortBy::Relevance).unwrap().is_empty());
+    assert!(
+        db.search("   ", None, false, SortBy::Relevance)
+            .unwrap()
+            .results
+            .is_empty()
+    );
 }
 
 #[test]
@@ -175,7 +181,7 @@ fn set_tags_updates_and_is_searchable() {
     assert_eq!(rec.tags, vec!["terraform".to_string(), "s3".to_string()]);
 
     // Tag is a high-signal field, so a tag term ranks as HighSignal.
-    let hits = db.search("terraform", None, false, SortBy::Relevance).unwrap();
+    let hits = db.search("terraform", None, false, SortBy::Relevance).unwrap().results;
     assert!(hits.iter().any(|h| h.matched == MatchSource::HighSignal));
 
     // And the ls tag filter finds it.
@@ -374,7 +380,7 @@ fn search_relevance_breaks_ties_by_recency() {
     db.upsert_session(&older, "desk").unwrap();
     db.upsert_session(&newer, "desk").unwrap();
 
-    let hits = db.search("loopr", None, false, SortBy::Relevance).unwrap();
+    let hits = db.search("loopr", None, false, SortBy::Relevance).unwrap().results;
     assert_eq!(hits.len(), 2);
     // The two scores must actually be equal, or this isn't testing the tiebreak.
     assert_eq!(
@@ -413,7 +419,7 @@ fn search_recency_orders_globally_by_modified() {
     db.upsert_session(&body_recent, "desk").unwrap();
 
     // Verify that under relevance the high-signal old session ranks first (control).
-    let relevance_hits = db.search("loopr", None, false, SortBy::Relevance).unwrap();
+    let relevance_hits = db.search("loopr", None, false, SortBy::Relevance).unwrap().results;
     assert_eq!(relevance_hits.len(), 2);
     assert_eq!(
         relevance_hits[0].record.session_id, UUID_A,
@@ -421,7 +427,7 @@ fn search_recency_orders_globally_by_modified() {
     );
 
     // Under recency the body-only recent session must rank first (tiering dissolved).
-    let recency_hits = db.search("loopr", None, false, SortBy::Recency).unwrap();
+    let recency_hits = db.search("loopr", None, false, SortBy::Recency).unwrap().results;
     assert_eq!(recency_hits.len(), 2);
     assert_eq!(
         recency_hits[0].record.session_id, UUID_B,
@@ -469,7 +475,7 @@ fn search_recency_limit_keeps_most_recent() {
     }
 
     // With limit=2 under recency, the two most-recent sessions must be returned.
-    let hits = db.search("workspace", Some(2), false, SortBy::Recency).unwrap();
+    let hits = db.search("workspace", Some(2), false, SortBy::Recency).unwrap().results;
     assert_eq!(hits.len(), 2, "exactly limit rows returned");
 
     let ids: Vec<&str> = hits.iter().map(|h| h.record.session_id.as_str()).collect();
@@ -513,6 +519,70 @@ fn set_tags_writes_manual_source_and_clear_resets_to_null() {
         rec.tags_source.is_none(),
         "tags_source must be NULL after clear; got {:?}",
         rec.tags_source
+    );
+}
+
+/// Phase 2 success criterion: a multi-term query whose terms never co-occur in any single
+/// session falls back to OR-joined matching, returning >0 hits flagged `fallback: Or`.
+#[test]
+fn search_falls_back_to_or_when_terms_never_co_occur() {
+    let db = Db::open_memory().unwrap();
+    let mut a = parsed(UUID_A, "/tmp/a.jsonl");
+    a.ai_title = Some("unrelated title".into());
+    a.first_prompt = Some("unrelated prompt".into());
+    a.body = "we spent the session debugging kubernetes networking".into();
+    db.upsert_session(&a, "desk").unwrap();
+
+    let mut b = parsed(UUID_B, "/tmp/b.jsonl");
+    b.ai_title = Some("another unrelated title".into());
+    b.first_prompt = Some("another unrelated prompt".into());
+    b.body = "we migrated the terraform state bucket".into();
+    db.upsert_session(&b, "desk").unwrap();
+
+    // Neither session mentions BOTH "kubernetes" and "terraform", so the strict AND pass across
+    // both tiers must be empty, which is what triggers the OR fallback.
+    let results = db
+        .search("kubernetes terraform", None, false, SortBy::Relevance)
+        .unwrap();
+    assert_eq!(
+        results.fallback,
+        Some(Fallback::Or),
+        "AND pass must be empty here, triggering the OR fallback"
+    );
+    assert_eq!(results.count, 2, "both sessions match on OR (one term each)");
+    let ids: std::collections::HashSet<&str> = results.results.iter().map(|h| h.record.session_id.as_str()).collect();
+    assert!(ids.contains(UUID_A));
+    assert!(ids.contains(UUID_B));
+}
+
+/// Phase 2 success criterion (negative half): a normal query that the strict AND pass satisfies
+/// carries no fallback flag.
+#[test]
+fn search_and_hit_carries_no_fallback_flag() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    let results = db.search("Marquee", None, false, SortBy::Relevance).unwrap();
+    assert_eq!(
+        results.fallback, None,
+        "an AND-satisfied query must carry no fallback flag"
+    );
+    assert_eq!(results.count, 1);
+}
+
+/// When neither the AND pass nor the OR pass finds anything, the response is a genuine empty
+/// result with no fallback flag set (fallback only marks OR results that actually matched).
+#[test]
+fn search_no_hits_on_either_pass_has_no_fallback() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    let results = db.search("nonexistentterm", None, false, SortBy::Relevance).unwrap();
+    assert_eq!(results.count, 0);
+    assert!(results.results.is_empty());
+    assert_eq!(
+        results.fallback, None,
+        "a genuinely empty OR pass must not be flagged as a fallback"
     );
 }
 

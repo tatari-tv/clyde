@@ -81,6 +81,44 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
+/// How a search response degraded from strict AND matching. Only one variant exists today
+/// (`Or`); modeled as an enum rather than a bare bool so a future degradation mode (e.g. a stemmed
+/// retry) has a place to land without renaming the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Fallback {
+    /// The AND pass (all terms required) returned zero hits across both tiers, so the same
+    /// tokens were rerun OR-joined and these are the OR results instead.
+    Or,
+}
+
+/// Roll-up of enrichment gaps touching a search response. Phase 2 always reports zero counts here
+/// (the field exists so the response shape is stable); Phase 4 populates the real counts from the
+/// catalog.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Unenriched {
+    /// Un-enriched (`summary IS NULL`) rows among the returned hits.
+    pub in_results: usize,
+    /// Un-enriched rows across the whole catalog, regardless of whether they appear in this
+    /// response.
+    pub in_catalog: usize,
+}
+
+/// The full response of [`crate::db::Db::search`]: ranked hits plus the AND->OR fallback flag and
+/// the enrichment-gap counts. Replaces a bare `Vec<SearchHit>` so both signals have somewhere to
+/// live in the response (see the design doc's Data Model section).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct SearchResults {
+    pub count: usize,
+    pub results: Vec<SearchHit>,
+    /// Present only when the AND pass found nothing and these are OR-fallback results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<Fallback>,
+    pub unenriched: Unenriched,
+}
+
 /// Metadata filters for `ls` (no full-text component). All fields optional / additive.
 #[derive(Debug, Clone, Default)]
 pub struct Filters {

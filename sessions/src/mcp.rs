@@ -29,7 +29,7 @@ use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler,
 use serde_json::json;
 
 use crate::db::Db;
-use crate::model::{Filters, SearchHit, SessionRecord};
+use crate::model::{Filters, SearchResults, SessionRecord};
 
 pub mod tools;
 
@@ -173,9 +173,11 @@ impl SessionsMcpServer {
         description = "Full-text search over the Claude Code session catalog, ranked with high-signal \
                        (title/tags/summary) matches before body-only matches. Returns ranked hits (each: \
                        the session record, where it matched, the bm25 score, and a short highlighted \
-                       snippet of the matching text). Use this to find a past session by what it was \
-                       about (\"which session set up the S3 bucket?\"). Snippets are excerpts only, not \
-                       the full transcript."
+                       snippet of the matching text). If no session matches every term, the same terms \
+                       are automatically retried OR-joined (any term matches) and the response is flagged \
+                       `fallback: \"or\"` so you know the results are looser than a strict match. Use this \
+                       to find a past session by what it was about (\"which session set up the S3 \
+                       bucket?\"). Snippets are excerpts only, not the full transcript."
     )]
     async fn sessions_search(&self, params: Parameters<SessionsSearchRequest>) -> Result<CallToolResult, McpError> {
         let req = params.0;
@@ -190,17 +192,17 @@ impl SessionsMcpServer {
         let include_archived = req.include_archived.unwrap_or(false);
         let sort_by = parse_sort_by(req.sort.as_deref());
 
-        let hits = Self::block_in_place_compat(|| -> Result<Vec<SearchHit>, McpError> {
+        let results = Self::block_in_place_compat(|| -> Result<SearchResults, McpError> {
             let db = self.db.lock().map_err(Self::err)?;
             db.search(&req.query, Some(limit), include_archived, sort_by)
                 .map_err(Self::db_err)
         })?;
 
-        debug!("sessions_search: returning {} hits", hits.len());
-        Ok(CallToolResult::success(vec![Content::json(json!({
-            "count": hits.len(),
-            "results": hits,
-        }))?]))
+        debug!(
+            "sessions_search: returning {} hits (fallback={:?})",
+            results.count, results.fallback
+        );
+        Ok(CallToolResult::success(vec![Content::json(&results)?]))
     }
 
     /// List sessions by metadata filters (repo / since / tag / model), most-recent first.

@@ -28,8 +28,8 @@ use cli::{
 /// only to the sessions arm.
 const DEFAULT_LOG_LEVEL: &str = "info";
 use sessions::{
-    AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, Filters, MatchSource, ReindexStats, SearchHit,
-    ServeOpts, SessionRecord, StageStats,
+    AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, Fallback, Filters, MatchSource, ReindexStats,
+    SearchResults, ServeOpts, SessionRecord, StageStats,
 };
 
 /// Max width of a title in the human (terminal) listing before it is truncated with an ellipsis.
@@ -267,8 +267,8 @@ fn cmd_serve(db_path: &std::path::Path, args: ServeArgs) -> Result<()> {
 fn cmd_search(db: &Db, args: SearchArgs) -> Result<()> {
     lazy_reindex(db, args.no_reindex);
     let query = args.query.join(" ");
-    let hits = db.search(&query, args.limit, args.include_archived, args.sort.into())?;
-    print_hits(&hits);
+    let results = db.search(&query, args.limit, args.include_archived, args.sort.into())?;
+    print_hits(&results);
     Ok(())
 }
 
@@ -616,17 +616,28 @@ fn lazy_reindex(db: &Db, skip: bool) {
     }
 }
 
-fn print_hits(hits: &[SearchHit]) {
+/// Renders a search response. Piped output is the whole `SearchResults` object (`count`,
+/// `results`, `fallback`, `unenriched`) — a disclosed breaking change from the prior bare-array
+/// JSON shape, needed so `fallback`/`unenriched` have somewhere to land (design doc, Resolved
+/// Decisions). TTY output stays the existing per-hit listing, plus a one-line notice when the
+/// results are an AND->OR fallback.
+fn print_hits(results: &SearchResults) {
     if !std::io::stdout().is_terminal() {
-        print_json(hits);
+        print_json(results);
         return;
     }
-    if hits.is_empty() {
+    if results.fallback == Some(Fallback::Or) {
+        println!(
+            "{}",
+            "no exact match for all terms; showing results for any term (OR fallback)".dimmed()
+        );
+    }
+    if results.results.is_empty() {
         println!("{}", "no matching sessions".dimmed());
         return;
     }
-    let msgs_width = msgs_column_width(hits.iter().map(|h| h.record.n_msgs));
-    for hit in hits {
+    let msgs_width = msgs_column_width(results.results.iter().map(|h| h.record.n_msgs));
+    for hit in &results.results {
         let marker = match hit.matched {
             MatchSource::HighSignal => "●".green(),
             MatchSource::Body => "○".dimmed(),
