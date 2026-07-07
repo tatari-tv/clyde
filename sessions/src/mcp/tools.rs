@@ -13,8 +13,10 @@ use crate::model::SessionRecord;
 
 /// Default result cap for `sessions_search` when the caller omits `limit`.
 pub const SEARCH_LIMIT_DEFAULT: u32 = 20;
-/// Hard cap on `sessions_search` results — values above this are clamped, never honored.
-pub const SEARCH_LIMIT_MAX: u32 = 100;
+/// Hard cap on `sessions_search` results — values above this are clamped, never honored. Derived
+/// from [`crate::db::SEARCH_LIMIT_MAX`], the single source of truth also enforced inside `Db::search`
+/// for the CLI path, so the two surfaces can never diverge.
+pub const SEARCH_LIMIT_MAX: u32 = crate::db::SEARCH_LIMIT_MAX as u32;
 /// Default row cap for `sessions_ls` when the caller omits `limit`.
 pub const LS_LIMIT_DEFAULT: u32 = 50;
 /// Hard cap on `sessions_ls` rows — values above this are clamped, never honored.

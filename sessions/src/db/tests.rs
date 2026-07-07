@@ -927,6 +927,65 @@ fn search_small_result_is_not_truncated() {
     assert!(response_chars(&results) <= SEARCH_RESPONSE_MAX_CHARS);
 }
 
+/// CodeRabbit finding: `Db::search` clamps `limit` to `SEARCH_LIMIT_MAX` for every caller (the CLI
+/// forwards `--limit` unclamped), so an enormous limit can never grow the re-rank pool
+/// (`RERANK_POOL_FACTOR * limit`) and its `rowid IN (...)` coverage bind list past SQLite's
+/// host-parameter cap. BITES: drop the `.min(SEARCH_LIMIT_MAX)` clamp and a huge limit returns more
+/// than 100 hits (all 130 seeded), so the equality below fails.
+#[test]
+fn search_clamps_limit_to_max_bounding_the_rerank_pool() {
+    let db = Db::open_memory().unwrap();
+    let n = 130usize;
+    let base = dt("2026-01-01T00:00:00Z");
+    for i in 0..n {
+        let mut s = parsed(&format!("00000000-0000-4000-8000-{i:012x}"), "/tmp/x.jsonl");
+        s.ai_title = Some("t".into());
+        s.first_prompt = Some("p".into());
+        s.body = "needle".into();
+        s.modified = base + chrono::Duration::seconds(i as i64);
+        db.upsert_session(&s, "desk").unwrap();
+    }
+
+    // A limit far above the cap returns exactly the same count as the cap itself: both are clamped
+    // to SEARCH_LIMIT_MAX, and that is strictly fewer than the 130 matching sessions.
+    let huge = db.search("needle", Some(100_000), false, SortBy::Recency).unwrap();
+    let capped = db.search("needle", Some(100), false, SortBy::Recency).unwrap();
+    assert_eq!(huge.count, capped.count, "limit above the cap must clamp to the cap");
+    assert_eq!(huge.count, 100, "clamp is SEARCH_LIMIT_MAX (100)");
+    assert!(huge.count < n, "the clamp must bind below the {n} matching sessions");
+}
+
+/// CodeRabbit finding: `cap_search_response` keeps `unenriched.in_results` aligned with the SURVIVING
+/// hits. `unenriched_counts` runs before the char-cap drops trailing hits, so without the fix
+/// `in_results` still counts dropped un-enriched rows. All seeded sessions are un-enriched, so after
+/// capping `in_results` must equal the surviving `count` (not the pre-drop total). BITES: remove the
+/// decrement in `cap_search_response` and `in_results` stays at the full seeded count, breaking the
+/// `in_results == count` assertion.
+#[test]
+fn cap_search_response_keeps_unenriched_in_results_in_sync() {
+    let db = Db::open_memory().unwrap();
+    let n = 60usize;
+    let fat = "x".repeat(2_000);
+    let base = dt("2026-01-01T00:00:00Z");
+    for i in 0..n {
+        // No set_enrichment call -> summary is NULL -> every session is un-enriched.
+        let mut s = parsed(&format!("00000000-0000-4000-8000-{i:012x}"), "/tmp/x.jsonl");
+        s.ai_title = Some("unrelated".into());
+        s.first_prompt = Some(fat.clone());
+        s.body = "needle in the body".into();
+        s.modified = base + chrono::Duration::seconds(i as i64);
+        db.upsert_session(&s, "desk").unwrap();
+    }
+
+    let results = db.search("needle", Some(100), false, SortBy::Recency).unwrap();
+    assert!(results.truncated, "the fat response must exceed the cap and drop hits");
+    assert!(results.count < n, "some hits must be dropped");
+    assert_eq!(
+        results.unenriched.in_results, results.count,
+        "every surviving hit is un-enriched, so in_results must track the survivors, not the pre-drop total: {results:?}"
+    );
+}
+
 /// Audit finding 2: distinct-term coverage counts each DISTINCT query term once. A repeated term in
 /// the query (`alpha alpha beta`) reports `terms_total = 2`, not 3, and a body matching both distinct
 /// terms reports `terms_matched = 2`. BITES: drop the dedup in `quoted_tokens` and `terms_total`

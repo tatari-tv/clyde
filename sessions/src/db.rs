@@ -30,6 +30,13 @@ const SCHEMA_VERSION: i64 = 4;
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
 const DEFAULT_SEARCH_LIMIT: usize = 50;
+/// Hard cap on `search` results honored by [`Db::search`] for EVERY caller. The MCP request layer
+/// clamps its `u32` limit to this same value (`mcp::tools::SEARCH_LIMIT_MAX` derives from this
+/// const), but the CLI (`clyde session search`) forwards `--limit` straight through, so the cap is
+/// enforced here at the shared chokepoint. Bounding `limit` also bounds the body re-rank pool
+/// (`RERANK_POOL_FACTOR * limit`) and therefore the `rowid IN (...)` coverage bind list, keeping it
+/// well under SQLite's host-parameter cap (`SQLITE_MAX_VARIABLE_NUMBER`, 32,766 on 3.32+).
+pub(crate) const SEARCH_LIMIT_MAX: usize = 100;
 /// Total-response char cap for a `search` result. Even at `SEARCH_LIMIT_MAX` (100) hits, each hit
 /// carries a full `SessionRecord` (including the up-to-2,000-char `first_prompt`) plus a snippet, so
 /// an uncapped response can approach ~100k tokens and blow the MCP tool-result budget. When the
@@ -632,7 +639,10 @@ impl Db {
         sort: SortBy,
     ) -> Result<SearchResults> {
         debug!("Db::search: query={:?} limit={:?} sort={:?}", query, limit, sort);
-        let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
+        // Clamp at this shared chokepoint so no caller (the CLI forwards --limit unclamped) can grow
+        // the re-rank pool -- and thus the coverage `rowid IN (...)` bind list -- past SQLite's
+        // host-parameter cap.
+        let limit = limit.unwrap_or(DEFAULT_SEARCH_LIMIT).min(SEARCH_LIMIT_MAX);
         // The per-term quoted tokens drive distinct-term coverage under OR fallback; identical
         // tokenization to `fts_query`, computed once here so both passes reuse it.
         let tokens = quoted_tokens(query);
@@ -1023,6 +1033,8 @@ enum QueryMode {
 /// with the surviving hits, and set `truncated`. Dropping from the end preserves the ranked order,
 /// so the hits that survive are the top-ranked ones. Measures on `char` count (not bytes) to stay on
 /// UTF-8 boundaries. A small result set is well under the cap and returns with `truncated == false`.
+/// Keeps `unenriched.in_results` aligned with the surviving hits by decrementing it whenever a
+/// dropped hit had no summary (`in_catalog` is catalog-wide and unaffected).
 fn cap_search_response(mut results: SearchResults) -> Result<SearchResults> {
     debug!(
         "cap_search_response: count={} cap={} fallback={:?}",
@@ -1040,7 +1052,14 @@ fn cap_search_response(mut results: SearchResults) -> Result<SearchResults> {
             );
             return Ok(results);
         }
-        results.results.pop();
+        if let Some(dropped) = results.results.pop() {
+            // `unenriched.in_results` was computed over the full hit set before capping; a dropped
+            // hit that had no summary must no longer be counted, or the field over-reports the
+            // gap among the RETURNED results.
+            if dropped.record.summary.is_none() {
+                results.unenriched.in_results = results.unenriched.in_results.saturating_sub(1);
+            }
+        }
         results.count = results.results.len();
         results.truncated = true;
     }
