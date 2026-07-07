@@ -74,6 +74,66 @@ pub struct SearchHit {
     pub matched: MatchSource,
     /// FTS5 bm25 score (lower is a better match).
     pub score: f64,
+    /// FTS5 `snippet()` excerpt from the best-matching column, with the matched term(s) wrapped in
+    /// `**...**` highlight markers and long excerpts truncated with a `...` ellipsis. Lets an agent
+    /// (or a human reading `clyde session search` output) see *why* a hit matched without opening
+    /// the session.
+    pub snippet: String,
+    /// Distinct query terms this body-tier hit matched, out of [`Self::terms_total`]. Present ONLY
+    /// under OR fallback for body-tier hits: coverage is meaningless for an AND pass (every AND hit
+    /// matched every term by construction) and the high-signal tier keeps pure bm25, so it is
+    /// `None` there. Drives coverage-first ordering under OR fallback (a hit covering more of the
+    /// query sorts above one covering less) and lets an agent see which candidates were the
+    /// broadest matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms_matched: Option<usize>,
+    /// Total distinct query terms, the denominator for [`Self::terms_matched`]. Present under the
+    /// same condition (OR fallback, body tier); `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms_total: Option<usize>,
+}
+
+/// How a search response degraded from strict AND matching. Only one variant exists today
+/// (`Or`); modeled as an enum rather than a bare bool so a future degradation mode (e.g. a stemmed
+/// retry) has a place to land without renaming the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Fallback {
+    /// The AND pass (all terms required) returned zero hits across both tiers, so the same
+    /// tokens were rerun OR-joined and these are the OR results instead.
+    Or,
+}
+
+/// Roll-up of enrichment gaps touching a search response, populated by
+/// [`crate::db::Db::unenriched_counts`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Unenriched {
+    /// Un-enriched (`summary IS NULL`) rows among the returned hits.
+    pub in_results: usize,
+    /// Un-enriched rows across the whole catalog, regardless of whether they appear in this
+    /// response.
+    pub in_catalog: usize,
+}
+
+/// The full response of [`crate::db::Db::search`]: ranked hits plus the AND->OR fallback flag and
+/// the enrichment-gap counts. Replaces a bare `Vec<SearchHit>` so both signals have somewhere to
+/// live in the response (see the design doc's Data Model section).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct SearchResults {
+    pub count: usize,
+    pub results: Vec<SearchHit>,
+    /// Present only when the AND pass found nothing and these are OR-fallback results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<Fallback>,
+    pub unenriched: Unenriched,
+    /// True when the hit list was cut short to keep the serialized response under the search
+    /// response char cap (`SEARCH_RESPONSE_MAX_CHARS` in `db.rs`). Whole hits are dropped from the
+    /// END of the list, never split, so `count` and `results` always agree. Always present (a plain
+    /// `bool`, matching the sibling `session_grep` / `session_read` top-level `truncated` flag)
+    /// rather than an Option-and-skipped field, so a reader never has to infer completeness.
+    pub truncated: bool,
 }
 
 /// Metadata filters for `ls` (no full-text component). All fields optional / additive.

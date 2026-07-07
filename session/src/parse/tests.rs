@@ -195,6 +195,87 @@ fn extract_command_name_edges() {
 }
 
 #[test]
+fn parse_messages_excludes_noise_and_labels_roles() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("proj");
+    let parent = proj.join(format!("{UUID_A}.jsonl"));
+    write(
+        &parent,
+        &[
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:00Z","message":{"content":"<command-name>/clear</command-name>"}}"#,
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:01Z","message":{"content":"set up the terraform marquee bucket"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:02Z","message":{"model":"claude-opus-4-8","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Creating the S3 bucket now"}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:03Z","message":{"model":"claude-opus-4-8","content":[]}}"#,
+        ],
+    );
+    let subagents_dir = proj.join(UUID_A).join("subagents");
+
+    let messages = parse_messages(UUID_A, &parent, &subagents_dir);
+
+    // The noise-wrapped `/clear` and the empty assistant turn are excluded; exactly the two
+    // real turns remain, in file order, with correct roles and `subagent: false`.
+    assert_eq!(
+        messages.len(),
+        2,
+        "noise-wrapped user msg and empty assistant msg excluded"
+    );
+    assert_eq!(messages[0].role, Role::User);
+    assert_eq!(messages[0].text, "set up the terraform marquee bucket");
+    assert!(!messages[0].subagent);
+    assert_eq!(messages[1].role, Role::Assistant);
+    assert_eq!(messages[1].text, "Creating the S3 bucket now");
+    assert!(!messages[1].subagent);
+}
+
+#[test]
+fn parse_messages_includes_subagent_turns_flagged_and_ordered_after_parent() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("proj");
+    let parent = proj.join(format!("{UUID_A}.jsonl"));
+    let subagents_dir = proj.join(UUID_A).join("subagents");
+    let sub_a = subagents_dir.join("agent-a.jsonl");
+    let sub_b = subagents_dir.join("agent-b.jsonl");
+    write(
+        &parent,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:00Z","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"parent says hi"}]}}"#,
+        ],
+    );
+    // Written out of alphabetical order -- the served sequence must still sort subagents by path.
+    write(
+        &sub_b,
+        &[r#"{"type":"user","timestamp":"2026-06-21T10:01:00Z","message":{"content":"agent b prompt"}}"#],
+    );
+    write(
+        &sub_a,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:30Z","message":{"model":"claude-haiku-4-5","content":[{"type":"text","text":"agent a result"}]}}"#,
+        ],
+    );
+
+    let messages = parse_messages(UUID_A, &parent, &subagents_dir);
+
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].text, "parent says hi");
+    assert!(!messages[0].subagent, "parent transcript comes first");
+    assert_eq!(
+        messages[1].text, "agent a result",
+        "subagents ordered by path (agent-a before agent-b)"
+    );
+    assert!(messages[1].subagent);
+    assert_eq!(messages[2].text, "agent b prompt");
+    assert!(messages[2].subagent);
+}
+
+#[test]
+fn parse_messages_returns_empty_for_a_missing_transcript() {
+    let tmp = TempDir::new().unwrap();
+    let parent = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    let subagents_dir = tmp.path().join("proj").join(UUID_A).join("subagents");
+    assert!(parse_messages(UUID_A, &parent, &subagents_dir).is_empty());
+}
+
+#[test]
 fn helpers_handle_edges() {
     assert!(is_command_noise("   "));
     assert!(is_command_noise("<system-reminder>foo"));
