@@ -378,15 +378,22 @@ Phase 1's first test asserts it anyway.
   direct deps of `sessions`.
 
 ### Performance
-- Snippets: computed by SQLite per returned row (<= 100 rows); no new storage (the 500k
-  body is already in the FTS index).
+- Snippets: computed by SQLite in-query; no new storage (the 500k body is already in the
+  FTS index). The high-signal tier computes them for its `limit` rows; the body tier
+  computes them across the overfetched candidate pool (see Overfetch below).
 - OR fallback: at most one extra query, only on zero-hit.
 - Coverage under OR fallback: one MATCH per token restricted to candidate-pool rowids,
   bounded by token count x pool size; runs only on zero-AND-hit. Measured before any
   further mitigation (see Resolved Decisions).
-- Overfetch: `RERANK_POOL = max(10 * limit, 200)` rows carried briefly in memory per
-  body-tier query; records are small, snippets computed only for the final trimmed
-  `limit` rows.
+- Overfetch: the body tier fetches `RERANK_POOL = max(10 * limit, 200)` rows (records are
+  small) and SQLite computes each row's `snippet()` in that same query; the pool is then
+  re-ranked in Rust (weighted RRF) and trimmed to `limit`. Snippets are therefore computed
+  over the whole overfetched candidate pool (~200 rows), not only the final trimmed rows --
+  the extra cost (~200 vs 100 `snippet()` calls) is negligible and not worth reworking the
+  query to defer.
+- Response cap: `SEARCH_RESPONSE_MAX_CHARS` (60,000) is enforced in `Db::search` (the seam
+  shared by CLI and MCP) by dropping whole hits from the END of the ranked list until the
+  serialized response fits, setting the top-level `truncated` flag.
 - grep/read: single-transcript streaming parse, same cost enrich already pays.
 
 ### Security

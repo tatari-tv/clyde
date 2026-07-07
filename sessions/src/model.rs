@@ -128,6 +128,12 @@ pub struct SearchResults {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<Fallback>,
     pub unenriched: Unenriched,
+    /// True when the hit list was cut short to keep the serialized response under the search
+    /// response char cap (`SEARCH_RESPONSE_MAX_CHARS` in `db.rs`). Whole hits are dropped from the
+    /// END of the list, never split, so `count` and `results` always agree. Always present (a plain
+    /// `bool`, matching the sibling `session_grep` / `session_read` top-level `truncated` flag)
+    /// rather than an Option-and-skipped field, so a reader never has to infer completeness.
+    pub truncated: bool,
 }
 
 /// Metadata filters for `ls` (no full-text component). All fields optional / additive.

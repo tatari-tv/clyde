@@ -854,3 +854,118 @@ fn or_fallback_orders_body_by_distinct_term_coverage_first() {
          stronger bm25/msgs/recency; got broad@{broad_rank} narrow@{narrow_rank}"
     );
 }
+
+/// The serialized char count of a `SearchResults` -- the exact quantity the response cap bounds.
+fn response_chars(results: &SearchResults) -> usize {
+    serde_json::to_string(results).unwrap().chars().count()
+}
+
+/// Audit finding 1: the total-response cap drops WHOLE hits from the END of the ranked list until
+/// the serialized response fits `SEARCH_RESPONSE_MAX_CHARS`, and flags `truncated`. Seeded under
+/// Recency sort with strictly-increasing mtimes so the ranked order is fully determined (most-recent
+/// first): the surviving hits must be exactly the top-K by recency, proving the DROPPED hits are the
+/// trailing (least-recent) ones. Each session carries a ~2,000-char `first_prompt` that rides in the
+/// serialized `SessionRecord`, so a full 60-session response far exceeds the cap. BITES: remove the
+/// truncation (stop popping) and the response blows past 60,000 chars AND `truncated` stays false.
+#[test]
+fn search_response_cap_drops_trailing_hits_and_flags_truncated() {
+    let db = Db::open_memory().unwrap();
+    let n = 60usize;
+    let fat = "x".repeat(2_000);
+    let base = dt("2026-01-01T00:00:00Z");
+    for i in 0..n {
+        let mut s = parsed(&format!("00000000-0000-4000-8000-{i:012x}"), "/tmp/x.jsonl");
+        s.ai_title = Some("unrelated".into());
+        s.first_prompt = Some(fat.clone());
+        s.body = "needle in the body".into();
+        // Strictly increasing mtime: higher i == more recent, so Recency order is deterministic.
+        s.modified = base + chrono::Duration::seconds(i as i64);
+        db.upsert_session(&s, "desk").unwrap();
+    }
+
+    let results = db.search("needle", Some(100), false, SortBy::Recency).unwrap();
+
+    assert!(
+        response_chars(&results) <= SEARCH_RESPONSE_MAX_CHARS,
+        "capped response must fit under {SEARCH_RESPONSE_MAX_CHARS} chars, got {}",
+        response_chars(&results)
+    );
+    assert!(results.truncated, "dropping hits to fit the cap must flag truncated");
+    assert_eq!(
+        results.count,
+        results.results.len(),
+        "count must track the surviving hits"
+    );
+    assert!(
+        results.count < n,
+        "the full {n}-session response exceeds the cap, so some hits must be dropped (kept {})",
+        results.count
+    );
+
+    // The surviving hits are the top-`count` by recency: session i's mtime rises with i, so the most
+    // recent are ids n-1, n-2, ... . That the survivors are exactly this prefix proves the trailing
+    // (least-recent) hits were the ones dropped, and in ranked order.
+    let expected: Vec<String> = (0..results.count)
+        .map(|j| format!("00000000-0000-4000-8000-{:012x}", n - 1 - j))
+        .collect();
+    let got: Vec<String> = results.results.iter().map(|h| h.record.session_id.clone()).collect();
+    assert_eq!(got, expected, "survivors must be the top-K most-recent, in order");
+}
+
+/// Audit finding 1 (negative half): a small result set is well under the cap, so `truncated` is
+/// false and nothing is dropped.
+#[test]
+fn search_small_result_is_not_truncated() {
+    let db = Db::open_memory().unwrap();
+    let mut s = parsed(UUID_A, "/tmp/x.jsonl");
+    s.body = "needle in the body".into();
+    db.upsert_session(&s, "desk").unwrap();
+
+    let results = db.search("needle", None, false, SortBy::Relevance).unwrap();
+    assert_eq!(results.count, 1);
+    assert!(!results.truncated, "a small result set must not be flagged truncated");
+    assert!(response_chars(&results) <= SEARCH_RESPONSE_MAX_CHARS);
+}
+
+/// Audit finding 2: distinct-term coverage counts each DISTINCT query term once. A repeated term in
+/// the query (`alpha alpha beta`) reports `terms_total = 2`, not 3, and a body matching both distinct
+/// terms reports `terms_matched = 2`. BITES: drop the dedup in `quoted_tokens` and `terms_total`
+/// becomes 3 while `terms_matched` double-counts `alpha`.
+#[test]
+fn coverage_counts_distinct_terms_only() {
+    let db = Db::open_memory().unwrap();
+
+    // Matches alpha + beta (both distinct terms), so under OR fallback coverage is 2 of 2.
+    let mut both = parsed(UUID_A, "/tmp/both.jsonl");
+    both.ai_title = Some("unrelated both".into());
+    both.first_prompt = Some("unrelated".into());
+    both.body = "notes about alpha and beta together".into();
+    db.upsert_session(&both, "desk").unwrap();
+
+    // A second session matching only gamma, so no session holds all query terms and the OR fallback
+    // fires (coverage is annotated only under OR fallback).
+    let mut other = parsed(UUID_B, "/tmp/other.jsonl");
+    other.ai_title = Some("unrelated other".into());
+    other.first_prompt = Some("unrelated".into());
+    other.body = "gamma only here".into();
+    db.upsert_session(&other, "desk").unwrap();
+
+    // Query repeats `alpha`; distinct terms are {alpha, beta, gamma} -> terms_total = 3, and the
+    // repeat must NOT inflate it to 4.
+    let results = db
+        .search("alpha alpha beta gamma", None, false, SortBy::Relevance)
+        .unwrap();
+    assert_eq!(results.fallback, Some(Fallback::Or), "no all-terms hit -> OR fallback");
+
+    let both_hit = results.results.iter().find(|h| h.record.session_id == UUID_A).unwrap();
+    assert_eq!(
+        both_hit.terms_total,
+        Some(3),
+        "distinct terms are alpha/beta/gamma; the repeated alpha must not inflate the denominator"
+    );
+    assert_eq!(
+        both_hit.terms_matched,
+        Some(2),
+        "the body matches the two distinct terms alpha + beta, counted once each"
+    );
+}

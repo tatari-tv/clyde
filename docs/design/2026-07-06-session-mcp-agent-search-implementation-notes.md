@@ -424,3 +424,56 @@
 
 ### Open questions
 - None.
+
+## Audit fixes (post-implementation)
+
+Follow-up cleanup folding in four implementation-audit findings against the already-implemented
+design. Not a new phase -- one commit on `session-mcp-agent-search`.
+
+### Design decisions
+- Finding 1 (search total-response cap): added `SEARCH_RESPONSE_MAX_CHARS = 60_000` and a
+  `cap_search_response` helper in `db.rs`, called at the end of `Db::search`. The doc requires a
+  60k-char total-response cap enforced by truncating the hit list with `truncated: true`; previously
+  only the hit COUNT was clamped (`SEARCH_LIMIT_MAX`). The helper serializes the response, and while
+  its char count exceeds the cap drops WHOLE hits from the END of the ranked list (never a partial
+  hit -- the snippet's own 24-token cap bounds per-hit size), keeping `count` in step and setting
+  `truncated`. Measured on `chars().count()`, not bytes (UTF-8 rule).
+- Finding 1 (serde form of `truncated`): added `pub truncated: bool` to `SearchResults` -- a plain
+  always-present bool, NOT an Option-and-skipped field. Chosen to match the sibling `session_grep` /
+  `session_read` top-level `truncated: bool` (taste: siblings behave identically), so a reader never
+  has to infer completeness. A small result set returns `truncated == false`.
+- Finding 1 (TTY): `print_hits` in `clyde/src/main.rs` prints a one-line dimmed notice when
+  `truncated`, mirroring the existing OR-fallback notice (degrade visibly). Piped JSON carries the
+  field verbatim.
+- Finding 2 (distinct-term coverage): `quoted_tokens` (`db.rs`) now de-duplicates tokens by exact
+  string, first-occurrence order preserved, at the single tokenization source. Both consumers (the
+  FTS `MATCH` join and `annotate_body_coverage`) therefore see DISTINCT terms, so `foo foo bar`
+  reports `terms_total = 2`. Deduping is harmless for the FTS `MATCH` (a term matched twice == once)
+  and correct for coverage.
+- Finding 4 (doc correction): corrected the Performance section. The code computes `snippet()` in SQL
+  over the whole overfetched `RERANK_POOL` candidate pool before the Rust re-rank/trim, not "only the
+  final trimmed `limit` rows" as the doc claimed. Reworded to reality (snippets computed over the
+  ~200-row pool, then re-ranked and trimmed; extra cost negligible), and reconciled the adjacent
+  "Snippets" bullet; added a bullet documenting the new response cap.
+
+### Deviations
+- Finding 1: the finding suggested placing `SEARCH_RESPONSE_MAX_CHARS` in `mcp/tools.rs` next to
+  `SEARCH_LIMIT_MAX` and the grep/read caps. Placed it in `db.rs` instead, next to the other
+  search-specific caps that already live there (`DEFAULT_SEARCH_LIMIT`, `SNIPPET_MAX_TOKENS`,
+  `RERANK_POOL_*`), and enforced in `Db::search`. Same effect, correct seam: `Db::search` is the ONE
+  seam shared by the CLI and the MCP tool, so enforcing there makes both surfaces behave identically
+  (the explicit ask), whereas the grep/read caps live in the MCP layer only because those responses
+  are built only there. Importing an `mcp::tools` const into the lower-level `db` module would also
+  invert the module dependency direction (`mcp` depends on `db`, not the reverse).
+- Finding 2: dedup is by EXACT token string, not case-folded. `foo Foo` counts as two distinct terms
+  even though FTS matches them identically. The finding's example (`foo foo bar -> 2`) is exact-string
+  dedup; case-folding was not raised and is left out to keep the fix minimal.
+
+### Tradeoffs
+- Finding 1: `cap_search_response` re-serializes the response after each dropped hit (a linear
+  pop-and-measure loop) rather than estimating per-hit sizes. Bounded by `SEARCH_LIMIT_MAX` (100)
+  serializations of a shrinking list; simplest and exactly correct against the serialized size the
+  cap actually governs, versus a faster-but-approximate size estimate.
+
+### Open questions
+- None.

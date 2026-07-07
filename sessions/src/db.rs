@@ -30,6 +30,15 @@ const SCHEMA_VERSION: i64 = 4;
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
 const DEFAULT_SEARCH_LIMIT: usize = 50;
+/// Total-response char cap for a `search` result. Even at `SEARCH_LIMIT_MAX` (100) hits, each hit
+/// carries a full `SessionRecord` (including the up-to-2,000-char `first_prompt`) plus a snippet, so
+/// an uncapped response can approach ~100k tokens and blow the MCP tool-result budget. When the
+/// serialized response would exceed this, whole hits are dropped from the END of the list (the
+/// snippet's own 24-token cap already bounds per-hit size) and `truncated` is set. Enforced in
+/// [`Db::search`] -- the seam shared by the CLI (`clyde session search`) and the MCP tool -- so both
+/// surfaces behave identically. (The sibling grep/read response caps live in `mcp::tools`, but those
+/// responses are built only in the MCP layer; search's response is built here and consumed by both.)
+const SEARCH_RESPONSE_MAX_CHARS: usize = 60_000;
 /// Max tokens `snippet()` keeps around a match before truncating with an ellipsis. Bounds the
 /// per-hit snippet size so `SEARCH_LIMIT_MAX` hits x snippet cannot blow the MCP response budget.
 const SNIPPET_MAX_TOKENS: i32 = 24;
@@ -635,11 +644,12 @@ impl Db {
         if !and_hits.is_empty() {
             debug!("Db::search: AND pass returned {} hits", and_hits.len());
             let unenriched = self.unenriched_counts(&and_hits)?;
-            return Ok(SearchResults {
+            return cap_search_response(SearchResults {
                 count: and_hits.len(),
                 results: and_hits,
                 fallback: None,
                 unenriched,
+                truncated: false,
             });
         }
 
@@ -654,11 +664,12 @@ impl Db {
             fallback
         );
         let unenriched = self.unenriched_counts(&or_hits)?;
-        Ok(SearchResults {
+        cap_search_response(SearchResults {
             count: or_hits.len(),
             results: or_hits,
             fallback,
             unenriched,
+            truncated: false,
         })
     }
 
@@ -1007,11 +1018,47 @@ enum QueryMode {
     Or,
 }
 
+/// Enforce [`SEARCH_RESPONSE_MAX_CHARS`] on a fully-built `SearchResults`: while the serialized JSON
+/// would exceed the cap, drop the LAST hit (whole hits only, never a partial), keep `count` in step
+/// with the surviving hits, and set `truncated`. Dropping from the end preserves the ranked order,
+/// so the hits that survive are the top-ranked ones. Measures on `char` count (not bytes) to stay on
+/// UTF-8 boundaries. A small result set is well under the cap and returns with `truncated == false`.
+fn cap_search_response(mut results: SearchResults) -> Result<SearchResults> {
+    debug!(
+        "cap_search_response: count={} cap={} fallback={:?}",
+        results.count, SEARCH_RESPONSE_MAX_CHARS, results.fallback
+    );
+    loop {
+        let chars = serde_json::to_string(&results)
+            .context("serializing search response to enforce the response char cap")?
+            .chars()
+            .count();
+        if chars <= SEARCH_RESPONSE_MAX_CHARS || results.results.is_empty() {
+            debug!(
+                "cap_search_response: final chars={} count={} truncated={}",
+                chars, results.count, results.truncated
+            );
+            return Ok(results);
+        }
+        results.results.pop();
+        results.count = results.results.len();
+        results.truncated = true;
+    }
+}
+
 /// Split `user` into whitespace tokens and double-quote each one (embedded `"` doubled) so user
 /// input can never inject an FTS5 operator. The single source of tokenization shared by
 /// [`fts_query`] (which joins these) and distinct-term coverage (which `MATCH`es each one alone).
+///
+/// Tokens are de-duplicated by exact string, preserving first-occurrence order, so both consumers
+/// see DISTINCT terms: `foo foo bar` yields two tokens, not three. Deduping is harmless for the FTS
+/// `MATCH` (matching a term twice is the same as once) and correct for coverage, whose `terms_total`
+/// is meant to be the distinct-term count -- without it a repeated term double-counts the
+/// denominator (`foo foo bar` -> `terms_total=3`).
 fn quoted_tokens(user: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
     user.split_whitespace()
+        .filter(|t| seen.insert(*t))
         .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
         .collect()
 }

@@ -617,10 +617,11 @@ fn lazy_reindex(db: &Db, skip: bool) {
 }
 
 /// Renders a search response. Piped output is the whole `SearchResults` object (`count`,
-/// `results`, `fallback`, `unenriched`) — a disclosed breaking change from the prior bare-array
-/// JSON shape, needed so `fallback`/`unenriched` have somewhere to land (design doc, Resolved
-/// Decisions). TTY output stays the existing per-hit listing, plus a one-line notice when the
-/// results are an AND->OR fallback.
+/// `results`, `fallback`, `unenriched`, `truncated`) — a disclosed breaking change from the prior
+/// bare-array JSON shape, needed so `fallback`/`unenriched` have somewhere to land (design doc,
+/// Resolved Decisions). TTY output stays the existing per-hit listing, plus a one-line notice when
+/// the results are an AND->OR fallback and another when the hit list was truncated to fit the
+/// response size cap.
 fn print_hits(results: &SearchResults) {
     if !std::io::stdout().is_terminal() {
         print_json(results);
@@ -647,6 +648,12 @@ fn print_hits(results: &SearchResults) {
         if !hit.snippet.is_empty() {
             println!("{RECORD_INDENT}{}", hit.snippet.as_str().dimmed());
         }
+    }
+    if results.truncated {
+        println!(
+            "{}",
+            "results truncated to fit the response size cap; narrow the query for more".dimmed()
+        );
     }
 }
 

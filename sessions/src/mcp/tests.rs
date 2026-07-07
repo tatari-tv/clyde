@@ -11,6 +11,7 @@ use crate::db::{Db, EnrichSuccess};
 
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
+const UUID_C: &str = "7c19b25e-0d11-4e4b-a82d-2345678901bc";
 // Two ids sharing the `dead` prefix, for the ambiguous-resolution path.
 const UUID_DEAD_1: &str = "deadbeef-1111-4111-8111-111111111111";
 const UUID_DEAD_2: &str = "deadbeef-2222-4222-8222-222222222222";
@@ -109,6 +110,52 @@ async fn sessions_search_falls_back_to_or_when_terms_never_co_occur() {
     assert_eq!(v["fallback"], "or", "OR fallback must be flagged: {v}");
     assert_eq!(v["count"], 2, "both sessions match on OR (one term each): {v}");
     assert_eq!(v["results"].as_array().unwrap().len(), 2);
+}
+
+/// Acceptance criterion (design doc, "A 7-term query with no AND match returns >0 hits with
+/// `fallback: "or"`"): seven distinct terms are split across three sessions so that NO single
+/// session carries all seven -- the strict AND pass is empty across BOTH the high-signal and body
+/// tiers -- yet each session carries a subset, so the OR fallback recovers them. Exercised at the
+/// MCP dispatch level so it pins the real serialized response shape, not just the Db return type.
+#[tokio::test]
+async fn sessions_search_seven_term_query_with_no_and_match_falls_back_to_or() {
+    let db = Db::open_memory().unwrap();
+    // The 7 query terms (alpha..eta) never all co-occur; each session holds only a subset, and none
+    // appear in any title/first_prompt (the high-signal tier), so the AND pass finds nothing.
+    db.upsert_session(
+        &parsed(UUID_A, "/tmp/a.jsonl", "marquee", "alpha beta gamma notes"),
+        "desk",
+    )
+    .unwrap();
+    db.upsert_session(
+        &parsed(UUID_B, "/tmp/b.jsonl", "loopr", "delta epsilon rollout"),
+        "desk",
+    )
+    .unwrap();
+    db.upsert_session(&parsed(UUID_C, "/tmp/c.jsonl", "philo", "zeta eta cleanup"), "desk")
+        .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch(
+            "sessions_search",
+            json!({"query": "alpha beta gamma delta epsilon zeta eta"}),
+        )
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true));
+    let v = first_content_as_json(&result);
+    assert_eq!(
+        v["fallback"], "or",
+        "no session holds all 7 terms, so the AND pass is empty and OR fallback must fire: {v}"
+    );
+    let count = v["count"].as_u64().expect("count is a number");
+    assert!(count > 0, "the 7-term OR fallback must return >0 hits: {v}");
+    assert_eq!(
+        count as usize,
+        v["results"].as_array().unwrap().len(),
+        "count must equal the number of returned hits: {v}"
+    );
 }
 
 /// Phase 2 success criterion (negative half): a query that matches on a strict AND pass carries
