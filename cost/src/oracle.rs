@@ -436,6 +436,12 @@ fn assert_manifest(o: &OracleResult, m: &Manifest, label: &str) {
     );
 }
 
+/// Valid UUID-v4 for the on-disk parent file stem AND session directory. Phase 5's shared scanner
+/// fail-loud guard requires both to be UUID-v4; the entry `sessionId` FIELD inside the JSONL stays
+/// "session-parent" (unchanged), so the hand-authored manifest costs/counts below are unaffected --
+/// only the physical file/dir names move to a UUID.
+const ORACLE_UUID: &str = "22222222-2222-4222-8222-222222222222";
+
 // The parent session file, main-only. m1/r1 is a streaming partial + final pair (dedups to 1);
 // m2/r2 is a distinct message.
 //   m1 final (opus-4-7): 1000*5/1e6 + 500*25/1e6 = 0.005 + 0.0125 = 0.0175
@@ -469,7 +475,7 @@ fn oracle_equals_clyde_and_manifest_main_only_and_with_subagents() {
     let tmp = TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
     let proj = projects.join("proj");
-    write_jsonl(&proj.join("session-parent.jsonl"), PARENT_LINES);
+    write_jsonl(&proj.join(format!("{ORACLE_UUID}.jsonl")), PARENT_LINES);
 
     let manifest_main = Manifest {
         files: 1,
@@ -498,7 +504,7 @@ fn oracle_equals_clyde_and_manifest_main_only_and_with_subagents() {
 
     // ----- main + subagents (fold into the ONE parent session) -----
     write_jsonl(
-        &proj.join("session-parent").join("subagents").join("agent.jsonl"),
+        &proj.join(ORACLE_UUID).join("subagents").join("agent.jsonl"),
         SUBAGENT_LINES,
     );
 
@@ -539,9 +545,9 @@ fn injected_scanner_omission_is_flagged_at_file_level_and_missed_by_arithmetic()
     let tmp = TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
     let proj = projects.join("proj");
-    write_jsonl(&proj.join("session-parent.jsonl"), PARENT_LINES);
+    write_jsonl(&proj.join(format!("{ORACLE_UUID}.jsonl")), PARENT_LINES);
     write_jsonl(
-        &proj.join("session-parent").join("subagents").join("agent.jsonl"),
+        &proj.join(ORACLE_UUID).join("subagents").join("agent.jsonl"),
         SUBAGENT_LINES,
     );
 
@@ -550,7 +556,7 @@ fn injected_scanner_omission_is_flagged_at_file_level_and_missed_by_arithmetic()
     // structurally skips this file; the oracle's recursive discovery finds it.
     //   m4 (sonnet-4-6): 1000*3/1e6 + 1000*15/1e6 = 0.003 + 0.015 = 0.018
     write_jsonl(
-        &proj.join("session-parent").join("stray.jsonl"),
+        &proj.join(ORACLE_UUID).join("stray.jsonl"),
         &[
             r#"{"type":"assistant","sessionId":"session-parent","timestamp":"2026-06-15T12:00:00Z","requestId":"r4","message":{"id":"m4","model":"claude-sonnet-4-6","usage":{"input_tokens":1000,"output_tokens":1000}}}"#,
         ],

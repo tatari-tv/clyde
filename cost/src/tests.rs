@@ -422,6 +422,13 @@ fn statusline_segment_glyph_prepends_only_when_sidecar_exists() {
 //
 // Every branch listed in the design doc's mutation-check is exercised: see the
 // implementation notes for the mutate-observe-revert table.
+//
+// Phase 5: the shared `common::scan` scanner's fail-loud guard requires every parent JSONL stem
+// and every session directory to be a UUID-v4. Cost aggregates by the entry `sessionId` FIELD (not
+// the file name), so the on-disk names below use `FIXTURE_UUID` while the readable `sessionId`
+// values INSIDE each JSONL entry are unchanged -- every hand-computed cost/entry assertion and the
+// lower-`session_id` tie-break still hold; only the physical path names moved to a UUID.
+const FIXTURE_UUID: &str = "11111111-1111-4111-8111-111111111111";
 
 /// Write inline JSONL lines to `path`, creating parent dirs as needed (harvested verbatim
 /// from `report/src/tests.rs::write_jsonl`).
@@ -462,7 +469,7 @@ fn dedup_keeps_max_cost_copy_of_streaming_partial() {
     let projects = tmp.path().join("projects");
 
     write_jsonl(
-        &projects.join("proj-a").join("session-a.jsonl"),
+        &projects.join("proj-a").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             // Partial: input 1000, output 200 (opus-4-7 $5 in / $25 out per Mtok):
             //   input  1000 * 5  / 1e6 = 0.005
@@ -505,7 +512,7 @@ fn dedup_equal_cost_cross_session_attributes_to_lower_session_id() {
     let projects = tmp.path().join("projects");
 
     write_jsonl(
-        &projects.join("proj-1").join("session-bbb.jsonl"),
+        &projects.join("proj-1").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             // sonnet-4-6 ($3 in / $15 out per Mtok): input 2000*3/1e6=0.006; output
             // 400*15/1e6=0.006 -> total 0.012
@@ -513,7 +520,7 @@ fn dedup_equal_cost_cross_session_attributes_to_lower_session_id() {
         ],
     );
     write_jsonl(
-        &projects.join("proj-2").join("session-aaa.jsonl"),
+        &projects.join("proj-2").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             // Identical usage -> identical cost (0.012), different session_id.
             r#"{"type":"assistant","sessionId":"session-aaa","timestamp":"2026-06-15T09:05:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":400}}}"#,
@@ -550,7 +557,7 @@ fn synthetic_model_entry_is_skipped() {
     let projects = tmp.path().join("projects");
 
     write_jsonl(
-        &projects.join("proj-syn").join("session-syn.jsonl"),
+        &projects.join("proj-syn").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             // Huge token counts on purpose: if the skip were broken this would dominate cost.
             r#"{"type":"assistant","sessionId":"session-syn","timestamp":"2026-06-15T08:00:00Z","requestId":"r3","message":{"id":"m3","model":"<synthetic>","usage":{"input_tokens":999999,"output_tokens":999999}}}"#,
@@ -587,14 +594,14 @@ fn subagent_file_folds_into_parent_session_total() {
     let project = projects.join("proj-b");
 
     write_jsonl(
-        &project.join("session-parent.jsonl"),
+        &project.join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             // opus-4-7: input 100*5/1e6=0.0005; output 50*25/1e6=0.00125 -> total 0.00175
             r#"{"type":"assistant","sessionId":"session-parent","timestamp":"2026-06-15T11:00:00Z","requestId":"r5","message":{"id":"m5","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":50}}}"#,
         ],
     );
     write_jsonl(
-        &project.join("session-parent").join("subagents").join("agent-1.jsonl"),
+        &project.join(FIXTURE_UUID).join("subagents").join("agent-1.jsonl"),
         &[
             // sonnet-4-6: input 500*3/1e6=0.0015; output 100*15/1e6=0.0015 -> total 0.003
             // Carries the PARENT's sessionId, not its own.
@@ -637,7 +644,7 @@ fn multi_day_entries_roll_into_correct_day_buckets() {
     let ts_day2 = "2026-06-20T12:00:00Z";
 
     write_jsonl(
-        &projects.join("proj-c").join("session-day1.jsonl"),
+        &projects.join("proj-c").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             // opus-4-7: input 200*5/1e6=0.001; output 100*25/1e6=0.0025 -> total 0.0035
             &format!(
@@ -647,7 +654,7 @@ fn multi_day_entries_roll_into_correct_day_buckets() {
         ],
     );
     write_jsonl(
-        &projects.join("proj-d").join("session-day2.jsonl"),
+        &projects.join("proj-d").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             // sonnet-4-6: input 300*3/1e6=0.0009; output 50*15/1e6=0.00075 -> total 0.00165
             &format!(
@@ -710,7 +717,7 @@ fn unknown_model_entry_is_skipped_without_crashing() {
     let projects = tmp.path().join("projects");
 
     write_jsonl(
-        &projects.join("proj-e").join("session-unknown.jsonl"),
+        &projects.join("proj-e").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             r#"{"type":"assistant","sessionId":"session-unknown","timestamp":"2026-06-15T06:00:00Z","requestId":"r9","message":{"id":"m9","model":"definitely-not-a-real-model-xyz","usage":{"input_tokens":100000,"output_tokens":100000}}}"#,
             // opus-4-7: input 10*5/1e6=0.00005; output 10*25/1e6=0.00025 -> total 0.0003
@@ -746,7 +753,7 @@ fn missing_message_id_bypasses_dedup_and_counts_as_is() {
     let projects = tmp.path().join("projects");
 
     write_jsonl(
-        &projects.join("proj-f").join("session-nomid.jsonl"),
+        &projects.join("proj-f").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             // opus-4-7: input 10*5/1e6=0.00005; output 10*25/1e6=0.00025 -> total 0.0003 (x2)
             r#"{"type":"assistant","sessionId":"session-nomid","timestamp":"2026-06-15T07:00:00Z","requestId":"r11","message":{"model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":10}}}"#,
@@ -781,7 +788,7 @@ fn in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped() {
     // dollars -- mutation-checked below by restoring that upper bound.
     let tmp = TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
-    let file = projects.join("proj-g").join("session-stale.jsonl");
+    let file = projects.join("proj-g").join(format!("{FIXTURE_UUID}.jsonl"));
 
     write_jsonl(
         &file,
@@ -826,19 +833,19 @@ fn compute_summaries_is_deterministic_across_repeated_runs() {
     let projects = tmp.path().join("projects");
 
     write_jsonl(
-        &projects.join("proj-1").join("session-bbb.jsonl"),
+        &projects.join("proj-1").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             r#"{"type":"assistant","sessionId":"session-bbb","timestamp":"2026-06-15T09:00:00Z","requestId":"r13","message":{"id":"m13","model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":400}}}"#,
         ],
     );
     write_jsonl(
-        &projects.join("proj-2").join("session-aaa.jsonl"),
+        &projects.join("proj-2").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             r#"{"type":"assistant","sessionId":"session-aaa","timestamp":"2026-06-15T09:05:00Z","requestId":"r13","message":{"id":"m13","model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":400}}}"#,
         ],
     );
     write_jsonl(
-        &projects.join("proj-0").join("session-extra.jsonl"),
+        &projects.join("proj-0").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             r#"{"type":"assistant","sessionId":"session-extra","timestamp":"2026-06-15T09:10:00Z","requestId":"r14","message":{"id":"m14","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":10}}}"#,
         ],
@@ -921,7 +928,7 @@ fn trace_writes_per_entry_fate_lines_for_the_target_session() {
     let sid = "session-trace-tgt";
 
     write_jsonl(
-        &projects.join("proj-trace").join("session-trace.jsonl"),
+        &projects.join("proj-trace").join(format!("{FIXTURE_UUID}.jsonl")),
         &[
             // m1/r1 streaming partial then final: the first copy is COUNTED, the second
             // DEDUPED-COLLAPSED into it (opus-4-7; exact cost is irrelevant to the fate trace).

@@ -345,6 +345,7 @@ dependencies = [
  "dirs",
  "eyre",
  "log",
+ "regex",
  "serde",
  "serde_yaml",
  "tempfile",

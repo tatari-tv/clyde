@@ -17,6 +17,7 @@ chrono.workspace = true
 dirs.workspace = true
 eyre.workspace = true
 log.workspace = true
+regex = "1.12.4"
 serde = { workspace = true, features = ["derive"] }
 serde_yaml.workspace = true
 tempfile.workspace = true

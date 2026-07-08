@@ -310,3 +310,84 @@ ci` is green with the reverted tree.
 
 ### Open questions
 - None.
+
+## Phase 5: Kill the sibling scanner divergence
+
+### Design decisions
+- One shared scanner lives in `common::scan` (`common/src/scan.rs`, declared `pub mod scan;` in
+  `common/src/lib.rs`, with `SessionFile`/`SessionFileKind` re-exported at the crate root). Both
+  `cost` and `report` already depend on `common`, so this is the smallest shared home; no new
+  crate.
+- Unified `SessionFile` carries the UNION of both crates' fields:
+  `{ path: PathBuf, group_id: String, kind: SessionFileKind, mtime: SystemTime, size: u64 }` with
+  `enum SessionFileKind { Parent, Subagent }`. `group_id`/`kind` drive report's parent+subagent
+  grouping; `mtime`/`size` drive cost's date prefilter and cache-invalidation hash. `mtime` and
+  `size` are read from the SAME `fs::metadata` call the empty-file check already makes
+  (`common::scan::file_stat`), so there is no extra stat per file.
+- `find_session_files` is report's fail-loud version (UUID-v4 `bail!` on a non-UUID parent JSONL
+  stem or a non-UUID session directory that carries `subagents/`), PLUS cost's path-sort at the
+  end (`files.sort_by(|a, b| a.path.cmp(&b.path))`) — the precondition cost's deterministic dedup
+  tie-break depends on. report's grouping is order-independent, so the sort is a pure add for it.
+- `filter_by_date_range` moved (semantics-preserving) into `common::scan`, operating on the unified
+  `SessionFile`: lower-bound only (`file_date >= start`, NO upper bound), so an in-window entry in
+  a file touched after the window end is never dropped (the Phase 1 fix, unchanged).
+- `default_projects_dir` (`~/.claude/projects`) also lives in `common::scan` for cost's use;
+  report keeps its own private `config::default_projects_dir` (out of scope, untouched).
+- `cost/src/scanner.rs` and `report/src/scan.rs` are now thin re-export shims
+  (`pub use common::scan::{...}`) so every existing `crate::scanner::…` / `crate::scan::…`
+  reference keeps resolving with zero call-site churn in `cost/src/lib.rs`, `cost/src/cache.rs`,
+  `cost/src/oracle.rs` (clyde side only), `report/src/session.rs`, `report/src/lib.rs`.
+- `regex` added to `common` via `cargo add -p common regex` (resolved 1.12.4) for the UUID-v4
+  guard.
+
+### Deviations
+- `SessionFileKind` is NOT re-exported from `cost/src/scanner.rs`: cost's production code never
+  references the kind (only the cache tests do), and a `pub use` of it in cost's private `scanner`
+  module tripped `-D warnings` as an unused import in the non-test build. Cost's cache tests import
+  it from `common::SessionFileKind` instead. report's shim re-exports it (report's `session.rs`
+  matches on it in production).
+- Report's scan tests (`report/src/scan/tests.rs`) and cost's scanner tests
+  (`cost/src/scanner/tests.rs`) were relocated/merged into `common/src/scan/tests.rs` (14 tests):
+  report's discovery/grouping/UUID-guard cases + cost's path-sort and `filter_by_date_range`
+  cases, with a new assertion that `mtime`/`size` are populated on the unified type. The two source
+  test files (and their now-empty module dirs) were archived via `rkvr rmrf`. Net: no scanner
+  coverage lost; both bail! cases (`non_uuid_parent_stem_fails_loud`,
+  `non_uuid_subagent_dir_fails_loud`) live in the shared module.
+- Behavior change (intended, per the doc's "adopt report's fail-loud"): `cost` now `bail!`s on a
+  non-UUID parent stem / session dir where it previously tolerated any name. Real Claude Code
+  session files are always UUID-v4, so this only fires on a corrupt/foreign layout — the fail-loud
+  outcome the phase wants. Noted because it is a semantic change to cost's discovery.
+
+### Cross-phase fixture migration (the UUID trap)
+- Every earlier-phase fixture's ON-DISK layout was migrated to UUID-v4 names so the new guard does
+  not `bail!` on them, while the `sessionId` FIELD VALUES inside the JSONL, token counts, and every
+  hand-computed cost/entry assertion were left UNCHANGED (cost aggregates by the entry `sessionId`
+  field, not the file stem):
+  - `cost/src/tests.rs` (Phase 3): all parent JSONL stems and the one subagent session dir now use
+    `FIXTURE_UUID = 11111111-1111-4111-8111-111111111111` (project-dir names like `proj-a` are NOT
+    UUID-guarded and stay readable; sort order across `proj-*` dirs is preserved, so the
+    lower-`session_id` tie-break fixture and the determinism fixture still assert on the readable
+    `session-aaa`/`session-bbb`/… field values).
+  - `cost/src/oracle.rs` (Phase 4): parent stem + session dir + the injected stray file's dir now
+    use `ORACLE_UUID = 22222222-2222-4222-8222-222222222222`; the hand-authored manifest
+    (`files`/`counted_entries`/`total_cost`) is unchanged because oracle discovery is recursive and
+    name-agnostic.
+  - Phase 1's `test_find_session_files_subagents_no_parent_jsonl` (the old `orphan-uuid` tolerance
+    case) is superseded by common's `subagent_without_sibling_parent_is_kept` (UUID dir, tests
+    discovery) plus the two `*_fails_loud` tests (the bail! behavior). The old lenient-name
+    expectation is gone by design — the guard now rejects it.
+
+### Tradeoffs
+- Thin re-export shims vs. deleting `cost/src/scanner.rs` / `report/src/scan.rs` and repointing
+  every call site to `common::scan::…` — kept the shims. They localize the "the scanner moved"
+  fact to one line per crate, keep the diff small and legible, and preserve the module names the
+  rest of each crate already reads (`scanner::`, `scan::`). No behavior rides on the indirection.
+- Cache-hash tests kept in `cost/src/cache.rs` (adapted to the unified type via a local `sf(...)`
+  helper that fills the two new fields once) rather than moved — they exercise `compute_mtime_hash`,
+  which is cost's, not the scanner's. The pinned hash vector (`0x9207_5a54_a049_57ce`) is unchanged
+  because the hash still folds only `path`/`mtime`/`size`.
+
+### Open questions
+- None. The Phase 1 note flagged whether to runtime-assert the append-only invariant during
+  unification; decision on reflection: leave it documented-not-asserted (asserting per file would
+  require reading entries, defeating the prefilter). No blocker.
