@@ -8,4 +8,6 @@ so the user pricing override resolves to `~/.config/clyde/pricing.json`.
 No binary. Public API unchanged: `claude_pricing::...`. The crate version stays locked to the feed
 `schema_version` (see `CLAUDE.md`), so it does NOT inherit the workspace version line.
 
-This crate is also the publishing point for the JSON pricing feed the tools fetch at runtime.
+This crate is also the publishing point for the JSON pricing feed the tools fetch at runtime,
+served from clyde's own GitHub Pages at `https://tatari-tv.github.io/clyde/pricing.json`
+(`.github/workflows/pages.yml` at the repo root).

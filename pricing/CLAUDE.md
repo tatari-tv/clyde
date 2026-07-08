@@ -6,10 +6,10 @@ Shared Claude pricing data + JSONL parsing + cost math for Tatari tools (`ccu`, 
 
 `data/pricing.json` is a **generated artifact kept current by automation**, not a hand-maintained file. Before editing it by hand, know the pipeline:
 
-- **Runtime feed (what consumers actually read):** `ccu`, `cr`, and clyde's `pricing/` crate fetch the live feed at runtime from `https://tatari-tv.github.io/claude-pricing/pricing.json` (GitHub Pages). A data refresh reaches consumers within ~24h with no crate bump or re-pin. (In-flight: the default URL is being repointed to `https://tatari-tv.github.io/clyde/pricing.json`; see clyde `docs/design/2026-06-29-move-pricing-feed-publishing-to-clyde.md`.)
-- **Daily refresh (`.github/workflows/refresh-pricing.yml`):** cron `17 6 * * *` runs `bin/update`, which scrapes Anthropic's `https://platform.claude.com/docs/en/about-claude/pricing.md`, regenerates `pricing.json`, and opens a `refresh-pricing` PR when data changed.
-- **Publish (`.github/workflows/pages.yml`):** merging a `pricing.json` change to `main` deploys it to GitHub Pages.
-- **These workflows are LIVE only in `tatari-tv/claude-pricing`.** The byte-identical copies vendored into clyde at `pricing/.github/workflows/` are **dormant**; GitHub runs workflows only from the repo root, never from a subdirectory.
+- **Runtime feed (what clyde's `pricing/` crate reads):** `https://tatari-tv.github.io/clyde/pricing.json` (GitHub Pages, served from this repo). A data refresh reaches clyde consumers within ~24h with no crate bump or re-pin. The standalone `ccu`/`cr` tools (`tatari-tv/claude-cost-usage`, `tatari-tv/claude-report`) still pin the old `tatari-tv/claude-pricing` crate by git tag and read `https://tatari-tv.github.io/claude-pricing/pricing.json` instead - that feed is kept alive as their source and as clyde's rollback target; see `docs/design/2026-06-29-move-pricing-feed-publishing-to-clyde.md`.
+- **Daily refresh (`.github/workflows/refresh-pricing.yml`, repo root):** cron `17 6 * * *` runs `pricing/bin/update`, which scrapes Anthropic's `https://platform.claude.com/docs/en/about-claude/pricing.md`, regenerates `pricing/data/pricing.json`, and opens a `refresh-pricing` PR when data changed.
+- **Publish (`.github/workflows/pages.yml`, repo root):** merging a `pricing/data/pricing.json` change to `main` deploys it to GitHub Pages at the URL above.
+- Both workflows are now LIVE in `tatari-tv/clyde` (moved from the standalone `claude-pricing` repo). `tatari-tv/claude-pricing` keeps running its own copy of these until its cron is deliberately disabled (Phase 6 of the design doc above), so don't be surprised to see refresh PRs in both repos during the overlap window.
 
 ### New-model launches are NOT fully hands-off
 
