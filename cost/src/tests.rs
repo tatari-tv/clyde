@@ -1,6 +1,9 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use std::io::Write;
+use std::path::Path;
+use tempfile::TempDir;
 
 #[test]
 fn test_subtract_months_same_year() {
@@ -39,22 +42,26 @@ fn test_subtract_months_twelve() {
 
 #[test]
 fn test_resolve_log_filter_cli_level() {
+    // Phase 4 log-target fix: the filter targets this crate (`cost`) AND the shared parse crate
+    // (`claude_pricing`), NOT the pre-merge `ccu` target that matched neither -- so the crate's
+    // own debug/trace records (and the parse-drop trace) actually emit.
     let (filter, explicit) = resolve_log_filter(Some("debug"), None);
-    assert_eq!(filter, "ccu=debug");
+    assert_eq!(filter, "cost=debug,claude_pricing=debug");
+    assert!(!filter.contains("ccu="), "the wrong `ccu` target must be gone");
     assert!(explicit);
 }
 
 #[test]
 fn test_resolve_log_filter_cli_level_trace() {
     let (filter, explicit) = resolve_log_filter(Some("trace"), None);
-    assert_eq!(filter, "ccu=trace");
+    assert_eq!(filter, "cost=trace,claude_pricing=trace");
     assert!(explicit);
 }
 
 #[test]
 fn test_resolve_log_filter_config_level() {
     let (filter, explicit) = resolve_log_filter(None, Some("info"));
-    assert_eq!(filter, "ccu=info");
+    assert_eq!(filter, "cost=info,claude_pricing=info");
     assert!(explicit);
 }
 
@@ -84,6 +91,70 @@ fn test_wants_json_autodetects_pipe() {
     // `cost today | jq` case: piped output gets machine-readable JSON automatically.
     assert!(!std::io::stdout().is_terminal());
     assert!(wants_json(false));
+}
+
+// --- Phase 1 (cost-accuracy): deterministic dedup tie-break (`candidate_wins`) ---
+
+fn ts(rfc3339: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(rfc3339).unwrap().with_timezone(&Utc)
+}
+
+#[test]
+fn candidate_wins_prefers_higher_cost() {
+    // Higher cost always wins, whatever the session id / timestamp.
+    let t = ts("2026-07-01T10:00:00Z");
+    assert!(
+        candidate_wins(1.0, "zzz", t, 2.0, "aaa", t),
+        "higher-cost candidate must win"
+    );
+    assert!(
+        !candidate_wins(2.0, "aaa", t, 1.0, "zzz", t),
+        "lower-cost candidate must lose"
+    );
+}
+
+#[test]
+fn candidate_wins_equal_cost_breaks_on_lower_session_id() {
+    // Equal cost: the lexicographically lower session_id wins, deterministically.
+    let t = ts("2026-07-01T10:00:00Z");
+    // candidate session "aaa" < existing "bbb" -> candidate wins.
+    assert!(candidate_wins(5.0, "bbb", t, 5.0, "aaa", t));
+    // candidate session "ccc" > existing "bbb" -> candidate loses.
+    assert!(!candidate_wins(5.0, "bbb", t, 5.0, "ccc", t));
+}
+
+#[test]
+fn candidate_wins_equal_cost_and_session_breaks_on_earlier_timestamp() {
+    // Equal cost AND equal session_id: the earlier timestamp wins.
+    let earlier = ts("2026-07-01T10:00:00Z");
+    let later = ts("2026-07-01T11:00:00Z");
+    assert!(
+        candidate_wins(5.0, "sess", later, 5.0, "sess", earlier),
+        "earlier timestamp must win"
+    );
+    assert!(
+        !candidate_wins(5.0, "sess", earlier, 5.0, "sess", later),
+        "later timestamp must lose"
+    );
+}
+
+#[test]
+fn candidate_wins_is_a_stable_total_order() {
+    // For a fully-equal pair, neither replaces the other (no oscillation), and the order is
+    // antisymmetric: exactly one direction wins for any distinct pair.
+    let t = ts("2026-07-01T10:00:00Z");
+    assert!(
+        !candidate_wins(5.0, "sess", t, 5.0, "sess", t),
+        "identical entries: keep first, no replace"
+    );
+
+    // Distinct pair: exactly one direction is true (antisymmetry).
+    let a_wins = candidate_wins(5.0, "bbb", t, 5.0, "aaa", t);
+    let b_wins = candidate_wins(5.0, "aaa", t, 5.0, "bbb", t);
+    assert_ne!(
+        a_wins, b_wins,
+        "a distinct pair must have exactly one winner regardless of order"
+    );
 }
 
 // --- Phase 9 (#13): `cost session current` resolves the live session ---
@@ -335,4 +406,578 @@ fn statusline_segment_glyph_prepends_only_when_sidecar_exists() {
             "segment '{name}' must emit a glyph once the sidecar exists"
         );
     }
+}
+
+// --- Phase 3 (cost-accuracy): fixture-JSONL aggregation regression tests ---
+//
+// Harvested from `report/src/tests.rs`'s inline-JSONL pattern. Each test writes a
+// hand-authored projects tree under a `TempDir`, drives it through the REAL
+// `compute_summaries`/`scanner` path (no mocking), and asserts a HAND-COMPUTED cost and
+// entry count -- never a golden snapshot. Rates are read verbatim from the embedded
+// `pricing/data/pricing.json` (input/output per million tokens; every fixture avoids cache
+// tokens so the cache multipliers never enter the arithmetic):
+//   claude-opus-4-7:   $5  in / $25 out per Mtok
+//   claude-sonnet-4-6: $3  in / $15 out per Mtok
+//   claude-haiku-4-5:  $1  in / $5  out per Mtok
+//
+// Every branch listed in the design doc's mutation-check is exercised: see the
+// implementation notes for the mutate-observe-revert table.
+//
+// Phase 5: the shared `common::scan` scanner's fail-loud guard requires every parent JSONL stem
+// and every session directory to be a UUID-v4. Cost aggregates by the entry `sessionId` FIELD (not
+// the file name), so the on-disk names below use `FIXTURE_UUID` while the readable `sessionId`
+// values INSIDE each JSONL entry are unchanged -- every hand-computed cost/entry assertion and the
+// lower-`session_id` tie-break still hold; only the physical path names moved to a UUID.
+const FIXTURE_UUID: &str = "11111111-1111-4111-8111-111111111111";
+
+/// Write inline JSONL lines to `path`, creating parent dirs as needed (harvested verbatim
+/// from `report/src/tests.rs::write_jsonl`).
+fn write_jsonl(path: &Path, lines: &[&str]) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    let mut f = fs::File::create(path).unwrap();
+    for line in lines {
+        writeln!(f, "{}", line).unwrap();
+    }
+}
+
+/// `CostArgs` pointed at a fixture tree, with caching disabled so tests never read or write
+/// the real `~/.cache`/XDG cost cache.
+fn fixture_args(projects_dir: &Path) -> CostArgs {
+    CostArgs {
+        config: None,
+        path: Some(projects_dir.to_path_buf()),
+        model: None,
+        no_cache: true,
+        offline: false,
+        command: None,
+    }
+}
+
+fn parse_ts(s: &str) -> DateTime<Utc> {
+    s.parse::<DateTime<Utc>>().unwrap()
+}
+
+#[test]
+fn dedup_keeps_max_cost_copy_of_streaming_partial() {
+    // Claude Code emits a streaming-partial copy of an assistant message (small
+    // output_tokens), then a final complete copy (larger output_tokens), sharing the same
+    // (message.id, requestId). The dedup pass must keep the higher-cost (final) copy --
+    // mutation-checked below by flipping `candidate_wins`'s cost comparison.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+
+    write_jsonl(
+        &projects.join("proj-a").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            // Partial: input 1000, output 200 (opus-4-7 $5 in / $25 out per Mtok):
+            //   input  1000 * 5  / 1e6 = 0.005
+            //   output  200 * 25 / 1e6 = 0.005   -> total 0.01
+            r#"{"type":"assistant","sessionId":"session-a","timestamp":"2026-06-15T10:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000,"output_tokens":200}}}"#,
+            // Final: input 1000, output 800:
+            //   input  1000 * 5  / 1e6 = 0.005
+            //   output  800 * 25 / 1e6 = 0.02    -> total 0.025 (the max-cost copy)
+            r#"{"type":"assistant","sessionId":"session-a","timestamp":"2026-06-15T10:00:05Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000,"output_tokens":800}}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+
+    assert_eq!(sessions.len(), 1, "both copies dedup into a single session");
+    let s = &sessions[0];
+    assert_eq!(s.entries, 1, "dedup must collapse both copies into ONE counted entry");
+    assert!(
+        (s.cost - 0.025).abs() < 1e-9,
+        "expected max-cost copy ($0.025) to win, got {}",
+        s.cost
+    );
+}
+
+#[test]
+fn dedup_equal_cost_cross_session_attributes_to_lower_session_id() {
+    // Same (message.id, requestId) duplicated verbatim across two sessions (a resume/fork)
+    // with EQUAL cost. The survivor is chosen by `candidate_wins`'s deterministic total
+    // order: on equal cost, the lexicographically LOWER session_id wins. The fixture
+    // deliberately inserts "session-bbb" first (proj-1 sorts before proj-2) so a naive
+    // "first-inserted wins" implementation would keep "session-bbb" -- proving the winner
+    // is the documented tie-break, not accidental insertion order.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+
+    write_jsonl(
+        &projects.join("proj-1").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            // sonnet-4-6 ($3 in / $15 out per Mtok): input 2000*3/1e6=0.006; output
+            // 400*15/1e6=0.006 -> total 0.012
+            r#"{"type":"assistant","sessionId":"session-bbb","timestamp":"2026-06-15T09:00:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":400}}}"#,
+        ],
+    );
+    write_jsonl(
+        &projects.join("proj-2").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            // Identical usage -> identical cost (0.012), different session_id.
+            r#"{"type":"assistant","sessionId":"session-aaa","timestamp":"2026-06-15T09:05:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":400}}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+
+    assert_eq!(
+        sessions.len(),
+        1,
+        "the equal-cost duplicate must dedup into ONE session"
+    );
+    let s = &sessions[0];
+    assert_eq!(
+        s.session_id, "session-aaa",
+        "the lower session_id must win the tie-break"
+    );
+    assert_eq!(s.entries, 1);
+    assert!((s.cost - 0.012).abs() < 1e-9, "expected 0.012, got {}", s.cost);
+}
+
+#[test]
+fn synthetic_model_entry_is_skipped() {
+    // `model == "<synthetic>"` is an internal Claude Code artifact, not a real API call, and
+    // must never be priced -- regardless of how large its token counts are.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+
+    write_jsonl(
+        &projects.join("proj-syn").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            // Huge token counts on purpose: if the skip were broken this would dominate cost.
+            r#"{"type":"assistant","sessionId":"session-syn","timestamp":"2026-06-15T08:00:00Z","requestId":"r3","message":{"id":"m3","model":"<synthetic>","usage":{"input_tokens":999999,"output_tokens":999999}}}"#,
+            // haiku-4-5 ($1 in / $5 out per Mtok): input 1000*1/1e6=0.001; output
+            // 1000*5/1e6=0.005 -> total 0.006
+            r#"{"type":"assistant","sessionId":"session-syn","timestamp":"2026-06-15T08:05:00Z","requestId":"r4","message":{"id":"m4","model":"claude-haiku-4-5","usage":{"input_tokens":1000,"output_tokens":1000}}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+
+    assert_eq!(sessions.len(), 1);
+    let s = &sessions[0];
+    assert_eq!(s.entries, 1, "only the non-synthetic entry counts");
+    assert!(
+        (s.cost - 0.006).abs() < 1e-9,
+        "synthetic entry must contribute $0, got total {}",
+        s.cost
+    );
+}
+
+#[test]
+fn subagent_file_folds_into_parent_session_total() {
+    // `<session-uuid>/subagents/*.jsonl` carries the PARENT sessionId, so its spend folds
+    // into the parent session's total (Scott-ratified contract).
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let project = projects.join("proj-b");
+
+    write_jsonl(
+        &project.join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            // opus-4-7: input 100*5/1e6=0.0005; output 50*25/1e6=0.00125 -> total 0.00175
+            r#"{"type":"assistant","sessionId":"session-parent","timestamp":"2026-06-15T11:00:00Z","requestId":"r5","message":{"id":"m5","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":50}}}"#,
+        ],
+    );
+    write_jsonl(
+        &project.join(FIXTURE_UUID).join("subagents").join("agent-1.jsonl"),
+        &[
+            // sonnet-4-6: input 500*3/1e6=0.0015; output 100*15/1e6=0.0015 -> total 0.003
+            // Carries the PARENT's sessionId, not its own.
+            r#"{"type":"assistant","sessionId":"session-parent","timestamp":"2026-06-15T11:05:00Z","requestId":"r6","message":{"id":"m6","model":"claude-sonnet-4-6","usage":{"input_tokens":500,"output_tokens":100}}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+
+    assert_eq!(
+        sessions.len(),
+        1,
+        "subagent spend must fold into the ONE parent session"
+    );
+    let s = &sessions[0];
+    assert_eq!(s.session_id, "session-parent");
+    assert_eq!(s.entries, 2, "parent entry + subagent entry");
+    // Hand-computed: 0.00175 (parent) + 0.003 (subagent) = 0.00475
+    assert!(
+        (s.cost - 0.00475).abs() < 1e-9,
+        "expected parent+subagent fold to total 0.00475, got {}",
+        s.cost
+    );
+}
+
+#[test]
+fn multi_day_entries_roll_into_correct_day_buckets() {
+    // Two entries on different (local) days must land in two distinct DaySummary buckets
+    // with independently correct costs, not merged or misattributed.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+
+    let ts_day1 = "2026-06-10T12:00:00Z";
+    let ts_day2 = "2026-06-20T12:00:00Z";
+
+    write_jsonl(
+        &projects.join("proj-c").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            // opus-4-7: input 200*5/1e6=0.001; output 100*25/1e6=0.0025 -> total 0.0035
+            &format!(
+                r#"{{"type":"assistant","sessionId":"session-day1","timestamp":"{}","requestId":"r7","message":{{"id":"m7","model":"claude-opus-4-7","usage":{{"input_tokens":200,"output_tokens":100}}}}}}"#,
+                ts_day1
+            ),
+        ],
+    );
+    write_jsonl(
+        &projects.join("proj-d").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            // sonnet-4-6: input 300*3/1e6=0.0009; output 50*15/1e6=0.00075 -> total 0.00165
+            &format!(
+                r#"{{"type":"assistant","sessionId":"session-day2","timestamp":"{}","requestId":"r8","message":{{"id":"m8","model":"claude-sonnet-4-6","usage":{{"input_tokens":300,"output_tokens":50}}}}}}"#,
+                ts_day2
+            ),
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    // Wide window so both entries land inside regardless of the host's local timezone.
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let (days, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+
+    // Compute the expected LOCAL bucket for each UTC timestamp the same way `compute_summaries`
+    // does, so this test is robust to the CI host's timezone while still pinning day-split
+    // behavior for the actual dates involved.
+    let expected_day1 = dates::local_date(&parse_ts(ts_day1));
+    let expected_day2 = dates::local_date(&parse_ts(ts_day2));
+    assert_ne!(
+        expected_day1, expected_day2,
+        "fixture must exercise two distinct day buckets"
+    );
+
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(days.len(), 2, "two distinct days must produce two DaySummary buckets");
+
+    let day1 = days
+        .iter()
+        .find(|d| d.date == expected_day1)
+        .expect("day1 bucket present");
+    assert_eq!(day1.sessions, 1);
+    assert!(
+        (day1.cost - 0.0035).abs() < 1e-9,
+        "day1 expected 0.0035, got {}",
+        day1.cost
+    );
+
+    let day2 = days
+        .iter()
+        .find(|d| d.date == expected_day2)
+        .expect("day2 bucket present");
+    assert_eq!(day2.sessions, 1);
+    assert!(
+        (day2.cost - 0.00165).abs() < 1e-9,
+        "day2 expected 0.00165, got {}",
+        day2.cost
+    );
+}
+
+#[test]
+fn unknown_model_entry_is_skipped_without_crashing() {
+    // A model id absent from the pricing table must be skipped with a warning, never crash
+    // the scan and never silently price at $0 while still counting as an entry.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+
+    write_jsonl(
+        &projects.join("proj-e").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            r#"{"type":"assistant","sessionId":"session-unknown","timestamp":"2026-06-15T06:00:00Z","requestId":"r9","message":{"id":"m9","model":"definitely-not-a-real-model-xyz","usage":{"input_tokens":100000,"output_tokens":100000}}}"#,
+            // opus-4-7: input 10*5/1e6=0.00005; output 10*25/1e6=0.00025 -> total 0.0003
+            r#"{"type":"assistant","sessionId":"session-unknown","timestamp":"2026-06-15T06:05:00Z","requestId":"r10","message":{"id":"m10","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":10}}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let result = compute_summaries(&args, &config, &pricing, start, end, false, None);
+    let (_, sessions) = result.expect("unknown model must not crash the scan");
+
+    assert_eq!(sessions.len(), 1);
+    let s = &sessions[0];
+    assert_eq!(s.entries, 1, "only the known-model entry counts");
+    assert!(
+        (s.cost - 0.0003).abs() < 1e-9,
+        "unknown-model entry must contribute $0, got total {}",
+        s.cost
+    );
+}
+
+#[test]
+fn missing_message_id_bypasses_dedup_and_counts_as_is() {
+    // Two entries with the SAME requestId but no message.id at all: without a dedup key
+    // they bypass dedup entirely and both count, even though a naive requestId-based key
+    // would have collapsed them.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+
+    write_jsonl(
+        &projects.join("proj-f").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            // opus-4-7: input 10*5/1e6=0.00005; output 10*25/1e6=0.00025 -> total 0.0003 (x2)
+            r#"{"type":"assistant","sessionId":"session-nomid","timestamp":"2026-06-15T07:00:00Z","requestId":"r11","message":{"model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":10}}}"#,
+            r#"{"type":"assistant","sessionId":"session-nomid","timestamp":"2026-06-15T07:01:00Z","requestId":"r11","message":{"model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":10}}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+
+    assert_eq!(sessions.len(), 1);
+    let s = &sessions[0];
+    assert_eq!(s.entries, 2, "no message.id -> no dedup, both copies count");
+    assert!(
+        (s.cost - 0.0006).abs() < 1e-9,
+        "expected 2x0.0003=0.0006 (not deduped to 0.0003), got {}",
+        s.cost
+    );
+}
+
+#[test]
+fn in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped() {
+    // Phase 1 correctness fix: the mtime prefilter is a LOWER-bound-only optimization. A file
+    // touched well AFTER the query window's `end` (e.g. a still-growing session queried for
+    // an earlier window) must still be scanned, because it can hold in-window entries. The
+    // OLD `mtime_date <= end` upper bound would have silently dropped this file and its
+    // dollars -- mutation-checked below by restoring that upper bound.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let file = projects.join("proj-g").join(format!("{FIXTURE_UUID}.jsonl"));
+
+    write_jsonl(
+        &file,
+        &[
+            // sonnet-4-6: input 400*3/1e6=0.0012; output 200*15/1e6=0.003 -> total 0.0042
+            // Timestamp sits mid-window with wide margin so it is unaffected by host timezone.
+            r#"{"type":"assistant","sessionId":"session-stale","timestamp":"2026-06-05T12:00:00Z","requestId":"r12","message":{"id":"m12","model":"claude-sonnet-4-6","usage":{"input_tokens":400,"output_tokens":200}}}"#,
+        ],
+    );
+
+    // Set the file's mtime to 10 days AFTER the query window's end -- "stale" relative to the
+    // window even though it holds an in-window entry.
+    let stale_mtime = std::time::SystemTime::UNIX_EPOCH
+        + std::time::Duration::from_secs(parse_ts("2026-06-20T12:00:00Z").timestamp() as u64);
+    filetime::set_file_mtime(&file, filetime::FileTime::from_system_time(stale_mtime)).unwrap();
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap();
+
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+
+    assert_eq!(
+        sessions.len(),
+        1,
+        "the in-window entry must be COUNTED despite the file's stale (post-window) mtime"
+    );
+    let s = &sessions[0];
+    assert_eq!(s.entries, 1);
+    assert!((s.cost - 0.0042).abs() < 1e-9, "expected 0.0042, got {}", s.cost);
+}
+
+#[test]
+fn compute_summaries_is_deterministic_across_repeated_runs() {
+    // Recommended (Phase 1 sorted discovery + the total-order tie-break): two independent
+    // invocations against the identical fixture must agree to the cent and the entry, and
+    // `scanner::find_session_files` must hand back an already path-sorted list so the
+    // insertion order into the dedup pipeline never depends on filesystem read_dir order.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+
+    write_jsonl(
+        &projects.join("proj-1").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            r#"{"type":"assistant","sessionId":"session-bbb","timestamp":"2026-06-15T09:00:00Z","requestId":"r13","message":{"id":"m13","model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":400}}}"#,
+        ],
+    );
+    write_jsonl(
+        &projects.join("proj-2").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            r#"{"type":"assistant","sessionId":"session-aaa","timestamp":"2026-06-15T09:05:00Z","requestId":"r13","message":{"id":"m13","model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":400}}}"#,
+        ],
+    );
+    write_jsonl(
+        &projects.join("proj-0").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            r#"{"type":"assistant","sessionId":"session-extra","timestamp":"2026-06-15T09:10:00Z","requestId":"r14","message":{"id":"m14","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":10}}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let (_, sessions1) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let (_, sessions2) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+
+    let ids1: Vec<_> = sessions1.iter().map(|s| s.session_id.clone()).collect();
+    let ids2: Vec<_> = sessions2.iter().map(|s| s.session_id.clone()).collect();
+    assert_eq!(ids1, ids2, "session set/order must be identical run-to-run");
+
+    let costs1: Vec<_> = sessions1.iter().map(|s| s.cost).collect();
+    let costs2: Vec<_> = sessions2.iter().map(|s| s.cost).collect();
+    assert_eq!(costs1, costs2, "costs must be bit-identical run-to-run");
+
+    let entries1: Vec<_> = sessions1.iter().map(|s| s.entries).collect();
+    let entries2: Vec<_> = sessions2.iter().map(|s| s.entries).collect();
+    assert_eq!(entries1, entries2, "entry counts must be identical run-to-run");
+
+    // Cross-check the Phase 1 sort invariant directly: discovery order is already sorted.
+    let files = crate::scanner::find_session_files(&projects).unwrap();
+    let paths: Vec<_> = files.iter().map(|f| f.path.clone()).collect();
+    let mut sorted = paths.clone();
+    sorted.sort();
+    assert_eq!(paths, sorted, "discovery must hand back a path-sorted file list");
+}
+
+// --- Phase 4 (cost-accuracy): self-diagnosis trace actually writes per-entry fate lines ---
+//
+// AC: `clyde -l trace cost session <id>` writes >=1 per-entry fate line for that session
+// (counted / deduped-collapsed / parse-dropped-with-reason). This test proves the `trace!` calls
+// added in `compute_summaries` (dedup loop, target `cost`) and `convert_raw_entry` (parse-drop
+// boundary, target `claude_pricing`) actually fire and carry the session id, by capturing the log
+// facade in-process with a custom `log::Log` sink. The complementary half of the AC -- that the
+// env_logger *filter target* now names `cost`/`claude_pricing` rather than the dead `ccu` target
+// so these records survive to the log file at `-l trace` -- is pinned by the `resolve_log_filter`
+// assertions above.
+
+static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
+struct CaptureLogger;
+
+impl log::Log for CaptureLogger {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        if let Ok(mut buf) = CAPTURED.lock() {
+            buf.push(format!("{}|{}|{}", record.level(), record.target(), record.args()));
+        }
+    }
+    fn flush(&self) {}
+}
+
+/// Install the capturing logger once for the whole test binary and open the level gate to trace,
+/// so the `trace!` macros in the code under test are actually evaluated and routed here. We filter
+/// captured lines by a unique session id, so other parallel tests logging into the same global
+/// sink cannot perturb the assertion.
+fn install_capture_logger() {
+    CAPTURE_INIT.call_once(|| {
+        let _ = log::set_boxed_logger(Box::new(CaptureLogger));
+        log::set_max_level(log::LevelFilter::Trace);
+    });
+}
+
+#[test]
+fn trace_writes_per_entry_fate_lines_for_the_target_session() {
+    install_capture_logger();
+
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let sid = "session-trace-tgt";
+
+    write_jsonl(
+        &projects.join("proj-trace").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            // m1/r1 streaming partial then final: the first copy is COUNTED, the second
+            // DEDUPED-COLLAPSED into it (opus-4-7; exact cost is irrelevant to the fate trace).
+            r#"{"type":"assistant","sessionId":"session-trace-tgt","timestamp":"2026-06-15T10:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":10}}}"#,
+            r#"{"type":"assistant","sessionId":"session-trace-tgt","timestamp":"2026-06-15T10:00:05Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":50}}}"#,
+            // Missing `message.usage`: dropped at the parse boundary, which must emit a
+            // parse-drop-with-reason trace naming the session id and the missing field.
+            r#"{"type":"assistant","sessionId":"session-trace-tgt","timestamp":"2026-06-15T10:10:00Z","requestId":"r9","message":{"id":"m9","model":"claude-opus-4-7"}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    // Scope the trace to exactly this session (the `cost session <id>` path passes the resolved id).
+    let _ = compute_summaries(&args, &config, &pricing, start, end, false, Some(sid)).unwrap();
+
+    let lines: Vec<String> = CAPTURED
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| l.contains(sid))
+        .cloned()
+        .collect();
+
+    let fate_lines: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("fate=counted") || l.contains("fate=deduped-collapsed") || l.contains("parse drop"))
+        .collect();
+
+    assert!(
+        !fate_lines.is_empty(),
+        "AC: expected >=1 per-entry fate line for {sid}; captured for-session lines: {lines:?}"
+    );
+    // Prove BOTH trace seams fire: the dedup-loop fate trace (target `cost`) and the parse-drop
+    // boundary trace (target `claude_pricing`).
+    assert!(
+        fate_lines
+            .iter()
+            .any(|l| l.contains("fate=counted") || l.contains("fate=deduped-collapsed")),
+        "expected a dedup-loop fate line (counted/deduped-collapsed): {fate_lines:?}"
+    );
+    assert!(
+        fate_lines
+            .iter()
+            .any(|l| l.contains("parse drop") && l.contains("message.usage")),
+        "expected a parse-drop-with-reason line naming the missing field: {fate_lines:?}"
+    );
 }

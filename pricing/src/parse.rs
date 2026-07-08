@@ -114,18 +114,61 @@ pub fn parse_jsonl_file(path: &Path) -> Result<ParseResult, PricingError> {
 }
 
 fn convert_raw_entry(raw: RawEntry) -> Option<AssistantEntry> {
+    // Non-assistant lines (user/system/tool) are expected and not billable -- they are not a
+    // "drop" worth tracing. Only an assistant line that fails a required-field gate is a
+    // parse-drop the self-diagnosis trace must explain (Phase 4). Each `trace!` below names the
+    // exact missing field so `clyde -l trace cost ...` says WHY a billable-looking line vanished
+    // instead of leaving the operator to a frozen-snapshot side-by-side.
     if raw.entry_type.as_deref() != Some("assistant") {
         return None;
     }
 
-    let session_id = raw.session_id?;
-    let timestamp_str = raw.timestamp?;
+    let session_id = match raw.session_id {
+        Some(s) => s,
+        None => {
+            trace!("parse drop: assistant line missing sessionId");
+            return None;
+        }
+    };
+    let timestamp_str = match raw.timestamp {
+        Some(t) => t,
+        None => {
+            trace!("parse drop: assistant line missing timestamp session_id={session_id}");
+            return None;
+        }
+    };
     let request_id = raw.request_id;
-    let message = raw.message?;
+    let message = match raw.message {
+        Some(m) => m,
+        None => {
+            trace!("parse drop: assistant line missing message session_id={session_id}");
+            return None;
+        }
+    };
     let message_id = message.id;
-    let model = message.model?;
-    let usage = message.usage?;
-    let timestamp = timestamp_str.parse::<DateTime<Utc>>().ok()?;
+    let model = match message.model {
+        Some(m) => m,
+        None => {
+            trace!("parse drop: assistant line missing message.model session_id={session_id}");
+            return None;
+        }
+    };
+    let usage = match message.usage {
+        Some(u) => u,
+        None => {
+            trace!("parse drop: assistant line missing message.usage session_id={session_id} model={model}");
+            return None;
+        }
+    };
+    let timestamp = match timestamp_str.parse::<DateTime<Utc>>() {
+        Ok(t) => t,
+        Err(e) => {
+            trace!(
+                "parse drop: assistant line unparseable timestamp session_id={session_id} raw={timestamp_str} err={e}"
+            );
+            return None;
+        }
+    };
 
     let (cache_5m, cache_1h) = if let Some(cc) = &usage.cache_creation {
         (

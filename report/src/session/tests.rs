@@ -33,6 +33,8 @@ fn parent_file(stem: &str, name: &str) -> SessionFile {
         path: PathBuf::from(format!("/parent/{}.jsonl", name)),
         group_id: stem.into(),
         kind: SessionFileKind::Parent,
+        mtime: std::time::SystemTime::UNIX_EPOCH,
+        size: 1,
     }
 }
 
@@ -41,6 +43,8 @@ fn subagent_file(parent_stem: &str, agent: &str) -> SessionFile {
         path: PathBuf::from(format!("/parent/{}/subagents/{}.jsonl", parent_stem, agent)),
         group_id: parent_stem.into(),
         kind: SessionFileKind::Subagent,
+        mtime: std::time::SystemTime::UNIX_EPOCH,
+        size: 1,
     }
 }
 

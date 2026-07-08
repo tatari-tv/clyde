@@ -379,6 +379,8 @@ fn fold_single(path: &Path) -> SessionSummary {
         path: path.to_path_buf(),
         group_id: PARENT_SID.into(),
         kind: SessionFileKind::Parent,
+        mtime: std::time::SystemTime::UNIX_EPOCH,
+        size: 1,
     };
     let mut parsed: HashMap<PathBuf, ParseResult> = HashMap::new();
     parsed.insert(
@@ -475,11 +477,15 @@ fn fold_unions_parent_and_subagent_files_with_dedupe() {
         path: parent_path.clone(),
         group_id: PARENT_SID.into(),
         kind: SessionFileKind::Parent,
+        mtime: std::time::SystemTime::UNIX_EPOCH,
+        size: 1,
     };
     let sub_file = SessionFile {
         path: sub_path.clone(),
         group_id: PARENT_SID.into(),
         kind: SessionFileKind::Subagent,
+        mtime: std::time::SystemTime::UNIX_EPOCH,
+        size: 1,
     };
 
     let (since, until) = window();

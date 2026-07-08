@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "clyde"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "clap",
@@ -339,12 +339,13 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "dirs",
  "eyre",
  "log",
+ "regex",
  "serde",
  "serde_yaml",
  "tempfile",
@@ -404,7 +405,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cost"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "clap",
@@ -414,6 +415,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "eyre",
+ "filetime",
  "include_dir",
  "log",
  "rasciichart",
@@ -1571,7 +1573,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permit"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "clap",
@@ -1903,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "report"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "clap",
@@ -2328,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "dirs",
@@ -2343,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "sessions"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "common",

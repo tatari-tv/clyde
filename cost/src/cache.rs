@@ -149,7 +149,22 @@ pub fn prune_cache(keep_days: u32) -> Result<()> {
 mod tests {
     use super::*;
     use crate::scanner::SessionFile;
+    use common::SessionFileKind;
     use std::time::SystemTime;
+
+    /// Build a `SessionFile` for the cache-hash tests. Only `path`, `mtime`, and `size` feed
+    /// `compute_mtime_hash` (grouping is irrelevant to cache invalidation), so `group_id`/`kind`
+    /// carry fixed placeholder values — this keeps the unified 5-field type from bloating every
+    /// literal in this module.
+    fn sf(path: &str, mtime: SystemTime, size: u64) -> SessionFile {
+        SessionFile {
+            path: PathBuf::from(path),
+            group_id: String::new(),
+            kind: SessionFileKind::Parent,
+            mtime,
+            size,
+        }
+    }
 
     /// Pins `compute_mtime_hash` against a known `(path, mtime, size)` tuple so an
     /// accidental algorithm change (e.g. reverting to `DefaultHasher`, or swapping the
@@ -157,22 +172,18 @@ mod tests {
     /// determinism/uniqueness, not a specific value.
     #[test]
     fn test_compute_mtime_hash_pinned_vector() {
-        let files = [SessionFile {
-            path: PathBuf::from("/tmp/pinned.jsonl"),
-            mtime: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
-            size: 4096,
-        }];
+        let files = [sf(
+            "/tmp/pinned.jsonl",
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+            4096,
+        )];
         let refs: Vec<&SessionFile> = files.iter().collect();
         assert_eq!(compute_mtime_hash(&refs), 0x9207_5a54_a049_57ce);
     }
 
     #[test]
     fn test_compute_mtime_hash_deterministic() {
-        let files = [SessionFile {
-            path: PathBuf::from("/tmp/test.jsonl"),
-            mtime: SystemTime::UNIX_EPOCH,
-            size: 1024,
-        }];
+        let files = [sf("/tmp/test.jsonl", SystemTime::UNIX_EPOCH, 1024)];
         let refs: Vec<&SessionFile> = files.iter().collect();
         let h1 = compute_mtime_hash(&refs);
         let h2 = compute_mtime_hash(&refs);
@@ -181,16 +192,8 @@ mod tests {
 
     #[test]
     fn test_compute_mtime_hash_changes_with_size() {
-        let f1 = [SessionFile {
-            path: PathBuf::from("/tmp/test.jsonl"),
-            mtime: SystemTime::UNIX_EPOCH,
-            size: 1024,
-        }];
-        let f2 = [SessionFile {
-            path: PathBuf::from("/tmp/test.jsonl"),
-            mtime: SystemTime::UNIX_EPOCH,
-            size: 2048,
-        }];
+        let f1 = [sf("/tmp/test.jsonl", SystemTime::UNIX_EPOCH, 1024)];
+        let f2 = [sf("/tmp/test.jsonl", SystemTime::UNIX_EPOCH, 2048)];
         let r1: Vec<&SessionFile> = f1.iter().collect();
         let r2: Vec<&SessionFile> = f2.iter().collect();
         assert_ne!(compute_mtime_hash(&r1), compute_mtime_hash(&r2));
@@ -226,16 +229,12 @@ mod tests {
 
     #[test]
     fn test_compute_mtime_hash_changes_with_mtime() {
-        let f1 = [SessionFile {
-            path: PathBuf::from("/tmp/test.jsonl"),
-            mtime: SystemTime::UNIX_EPOCH,
-            size: 1024,
-        }];
-        let f2 = [SessionFile {
-            path: PathBuf::from("/tmp/test.jsonl"),
-            mtime: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60),
-            size: 1024,
-        }];
+        let f1 = [sf("/tmp/test.jsonl", SystemTime::UNIX_EPOCH, 1024)];
+        let f2 = [sf(
+            "/tmp/test.jsonl",
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60),
+            1024,
+        )];
         let r1: Vec<&SessionFile> = f1.iter().collect();
         let r2: Vec<&SessionFile> = f2.iter().collect();
         assert_ne!(compute_mtime_hash(&r1), compute_mtime_hash(&r2));
@@ -243,16 +242,8 @@ mod tests {
 
     #[test]
     fn test_compute_mtime_hash_changes_with_path() {
-        let f1 = [SessionFile {
-            path: PathBuf::from("/tmp/a.jsonl"),
-            mtime: SystemTime::UNIX_EPOCH,
-            size: 1024,
-        }];
-        let f2 = [SessionFile {
-            path: PathBuf::from("/tmp/b.jsonl"),
-            mtime: SystemTime::UNIX_EPOCH,
-            size: 1024,
-        }];
+        let f1 = [sf("/tmp/a.jsonl", SystemTime::UNIX_EPOCH, 1024)];
+        let f2 = [sf("/tmp/b.jsonl", SystemTime::UNIX_EPOCH, 1024)];
         let r1: Vec<&SessionFile> = f1.iter().collect();
         let r2: Vec<&SessionFile> = f2.iter().collect();
         assert_ne!(compute_mtime_hash(&r1), compute_mtime_hash(&r2));
