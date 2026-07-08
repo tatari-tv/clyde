@@ -1,0 +1,15 @@
+# bump.yml -- repo-local release facts, read by `bump` (and the `release` driver, which
+# shells bump). Baking clyde's release facts in makes them AUTOMATIC, so no invocation
+# can forget them. Same trust model as .otto.yml: a repo-committed facts file, never CWD
+# config. CLI flags still override these.
+
+# The pricing/ crate (package `claude-pricing`) is a workspace member pinned independently
+# at 2.0.0 -- its major is locked to the pricing feed `schema_version`, so it must NOT
+# inherit the workspace version. `bump` skips it on every release. This is a permanent fact
+# of the workspace (the crate lives inside clyde; only the standalone claude-pricing repo is
+# being decommissioned).
+skip-members:
+  - claude-pricing
+
+# The one install step after a successful release.
+install: cargo install --path clyde
