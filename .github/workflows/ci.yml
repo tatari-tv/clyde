@@ -13,9 +13,13 @@ name: ci
 # installing tools directly on a bare runner instead of pulling a private
 # container. This mirrors that pattern, plus the org's own `rust-ci.yml` reusable
 # workflow (tatari-tv/github-actions) for the otto setup: dtolnay/rust-toolchain for
-# Rust, otto-rs/setup-otto for otto, and a checksummed release-asset download for
-# whitespace (also a public tatari-tv repo, so no auth needed there either). clyde
-# has no private git deps - every workspace member is an in-workspace path crate.
+# Rust, otto-rs/setup-otto for otto (a genuinely public, unrelated org - no access
+# issue), and a plain checksummed curl+tar for whitespace. NOTE: do NOT reference
+# `tatari-tv/github-actions/...` actions here - that repo is private, and a public
+# repo cannot resolve actions from a private repo in the same org ("Unable to
+# resolve action ... not found", confirmed live on this repo 2026-07-08). whitespace
+# itself is public, so downloading its release asset directly is fine. clyde has no
+# private git deps - every workspace member is an in-workspace path crate.
 
 on:
   push:
@@ -54,11 +58,13 @@ jobs:
         uses: otto-rs/setup-otto@0676703d0c225f6c782235e181e4498a7726e4b5 # main (arch fix; v1 is stale)
 
       - name: Install whitespace
-        uses: tatari-tv/github-actions/download-release-asset@v5
-        with:
-          url: https://github.com/tatari-tv/whitespace/releases/download/${{ env.WHITESPACE_VERSION }}/whitespace-${{ env.WHITESPACE_VERSION }}-linux-amd64.tar.gz
-          sha256: 161f05245538456068af0f7bfb1d8cc4afb1e099fbab50724a638b672b953787
-          binary-name: whitespace
+        env:
+          WHITESPACE_SHA256: 161f05245538456068af0f7bfb1d8cc4afb1e099fbab50724a638b672b953787
+        run: |
+          curl -sSL -o whitespace.tar.gz "https://github.com/tatari-tv/whitespace/releases/download/${WHITESPACE_VERSION}/whitespace-${WHITESPACE_VERSION}-linux-amd64.tar.gz"
+          echo "${WHITESPACE_SHA256}  whitespace.tar.gz" | sha256sum -c -
+          tar -xzf whitespace.tar.gz
+          sudo install -m 755 whitespace /usr/local/bin/whitespace
 
       - name: otto ci
         run: otto ci
