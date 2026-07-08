@@ -232,3 +232,81 @@ afterward).
 All five mutations were confirmed to make their respective test fail, then reverted. Production
 code (`cost/src/lib.rs`, `cost/src/scanner.rs`) is byte-identical to the Phase 2 commit; `otto
 ci` is green with the reverted tree.
+
+## Phase 4: Independent reconciliation oracle + self-diagnosis trace
+
+### Design decisions
+- Oracle lives entirely in-crate and test-scoped: `#[cfg(test)] mod oracle;` (`cost/src/oracle.rs`),
+  registered beside `#[cfg(test)] mod tests;` in `cost/src/lib.rs`. No `cost verify` CLI subcommand
+  was added -- the design marked it OPTIONAL, and the CLI surface stays minimal. The oracle is a
+  checked-in test helper + two tests, which is all the acceptance criteria require.
+- Oracle independence -- `cost/src/oracle.rs`: its own serde structs (`OracleRaw`/`OracleMsg`/
+  `OracleUsage`), its own recursive file discovery (`oracle_discover`, NOT
+  `scanner::find_session_files`), its own line parse (`oracle_parse_file`, NOT
+  `claude_pricing::parse_jsonl_file`), its own hand-transcribed rates (`oracle_rate`, NOT
+  `Pricing::calculate_usd`), and its own dedup tie-break (`oracle_candidate_wins`, NOT
+  `candidate_wins`). The ONE shared primitive is `crate::dates::local_date` (UTC->local calendar
+  bucketing) -- neither discovery/parse/pricing -- kept identical so the day-window equality is not
+  silently timezone-fragile. This is documented in the module doc-comment.
+- Three delta levels -- `reconcile` (`cost/src/oracle.rs`): FILE (oracle recursive discovery vs
+  `scanner::find_session_files`), PARSE (counted-entry count, evaluated only when file sets are
+  equal so a missing file is not misread as a parse-drop), AGGREGATION (total + per-session cost to
+  the cent). Attributing to the level that actually diverged is what makes a scanner omission
+  legible as "file", not just "the number is off".
+- Log-target fix -- `resolve_log_filter`/`build_filter` (`cost/src/lib.rs:90-119`): filter target
+  changed from the dead `ccu=<level>` to `cost=<level>,claude_pricing=<level>`. The lib crate is
+  named `cost` and the shared parse crate `claude_pricing`; `ccu` matched neither, so no crate
+  record ever emitted at `-l trace`. Both targets are named so the dedup-loop fate trace (`cost`)
+  AND the parse-drop trace (`claude_pricing`) survive. `CCU_LOG_LEVEL` (merged upstream by clap
+  into the level value) is untouched -- only the wrong env_logger filter *target* was fixed.
+- `compute_summaries` gains `trace_session: Option<&str>` (`cost/src/lib.rs`). New signature:
+  `fn compute_summaries(args: &CostArgs, config: &Config, pricing: &Pricing, start: NaiveDate,
+  end: NaiveDate, verbose: bool, trace_session: Option<&str>) -> Result<(Vec<DaySummary>,
+  Vec<SessionSummary>)>`. The `Session { id }` dispatch resolves the id (env `CLAUDE_CODE_SESSION_ID`
+  for `current`, else the literal id/prefix) and passes it; all five other call sites pass `None`.
+- Per-entry fate trace -- dedup loop in `compute_summaries`: each entry emits a `trace!` fate line
+  (`counted` / `deduped-collapsed` / `skipped reason=<synthetic|out-of-window|model-filter|
+  unknown-model|pricing-error>`) carrying `session_id`, `message_id`, `request_id`. Gated by
+  `should_trace` (prefix-match on `trace_session`; `None` traces every session). Per-entry -> `trace!`
+  per the logging rule's tight-loop demotion.
+- Parse-drop trace -- `convert_raw_entry` (`pricing/src/parse.rs`): each required-field `?` is
+  expanded to a `match` that emits a `trace!` naming the exact missing field (`sessionId`,
+  `timestamp`, `message`, `message.model`, `message.usage`, or an unparseable timestamp) with the
+  session id where available. Non-assistant lines are NOT traced (expected, not a billable drop).
+- AC-level trace test -- `trace_writes_per_entry_fate_lines_for_the_target_session`
+  (`cost/src/tests.rs`): a custom in-process `log::Log` sink (`CaptureLogger`) installed once, max
+  level Trace; captured lines are filtered by a unique session id (so parallel tests logging into
+  the same global sink cannot perturb it), and both the dedup-loop fate line AND the
+  parse-drop-with-reason line are asserted present.
+
+### Deviations
+- Design doc's Phase 4 references the parse-drop boundary at `pricing/src/parse.rs:116` -- the
+  correct seam was the `?`-chain body of `convert_raw_entry`, which I expanded to per-field
+  `match` arms (same effect, correct seam). Recorded because the exact line moved.
+- The injected-omission test (Test 2) uses a FILE-level omission (a stray `*.jsonl` inside a
+  session-uuid dir, outside `subagents/`, which `find_session_files` structurally skips) rather
+  than a parse-level omission. A parse-level injection would require the oracle's parser to be
+  deliberately more lenient than clyde's on a genuinely-billable line, which risks an oracle that
+  is "wrong on purpose". The design allows "file OR parse"; file-level is unambiguous and proves
+  the same property: the pure-arithmetic recheck (`pure_arithmetic_recheck`, reusing clyde's
+  scanner+parser) reproduces clyde's total and is blind to the omission, while the level-separated
+  oracle flags it at the file level.
+- The AC's "the trace actually writes at `-l trace`" is proven in two halves: the `trace!` seams
+  fire and carry the session id (the capture test), and the env_logger filter now enables the
+  `cost`/`claude_pricing` targets (the `resolve_log_filter` assertions). No end-to-end binary
+  smoke was run in this phase; the two automated tests together cover the criterion.
+
+### Tradeoffs
+- Custom `log::Log` capture sink vs env_logger buffer target -- chose the custom sink: env_logger's
+  `init()` is global-once and would fight both the capture and any other test, whereas a
+  `set_boxed_logger` sink guarded by `Once` plus a unique-session-id filter is race-free under
+  parallel tests. The design explicitly allowed either.
+- Oracle reimplements the dedup tie-break and pricing rather than importing `candidate_wins` /
+  `calculate_usd` -- more code, but genuine two-implementation agreement is the whole value of an
+  independent oracle; importing clyde's helpers would make Test 1 a tautology.
+- `should_trace` when `trace_session == None` traces every session's entries (the full firehose at
+  `-l trace`). Acceptable because it only fires at trace verbosity; scoping to one session is the
+  `cost session <id>` path's job and is what keeps that command's trace legible.
+
+### Open questions
+- None.

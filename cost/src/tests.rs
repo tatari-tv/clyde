@@ -42,22 +42,26 @@ fn test_subtract_months_twelve() {
 
 #[test]
 fn test_resolve_log_filter_cli_level() {
+    // Phase 4 log-target fix: the filter targets this crate (`cost`) AND the shared parse crate
+    // (`claude_pricing`), NOT the pre-merge `ccu` target that matched neither -- so the crate's
+    // own debug/trace records (and the parse-drop trace) actually emit.
     let (filter, explicit) = resolve_log_filter(Some("debug"), None);
-    assert_eq!(filter, "ccu=debug");
+    assert_eq!(filter, "cost=debug,claude_pricing=debug");
+    assert!(!filter.contains("ccu="), "the wrong `ccu` target must be gone");
     assert!(explicit);
 }
 
 #[test]
 fn test_resolve_log_filter_cli_level_trace() {
     let (filter, explicit) = resolve_log_filter(Some("trace"), None);
-    assert_eq!(filter, "ccu=trace");
+    assert_eq!(filter, "cost=trace,claude_pricing=trace");
     assert!(explicit);
 }
 
 #[test]
 fn test_resolve_log_filter_config_level() {
     let (filter, explicit) = resolve_log_filter(None, Some("info"));
-    assert_eq!(filter, "ccu=info");
+    assert_eq!(filter, "cost=info,claude_pricing=info");
     assert!(explicit);
 }
 
@@ -477,7 +481,7 @@ fn dedup_keeps_max_cost_copy_of_streaming_partial() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false).unwrap();
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
 
     assert_eq!(sessions.len(), 1, "both copies dedup into a single session");
     let s = &sessions[0];
@@ -522,7 +526,7 @@ fn dedup_equal_cost_cross_session_attributes_to_lower_session_id() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false).unwrap();
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
 
     assert_eq!(
         sessions.len(),
@@ -562,7 +566,7 @@ fn synthetic_model_entry_is_skipped() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false).unwrap();
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
 
     assert_eq!(sessions.len(), 1);
     let s = &sessions[0];
@@ -604,7 +608,7 @@ fn subagent_file_folds_into_parent_session_total() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false).unwrap();
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
 
     assert_eq!(
         sessions.len(),
@@ -660,7 +664,7 @@ fn multi_day_entries_roll_into_correct_day_buckets() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (days, sessions) = compute_summaries(&args, &config, &pricing, start, end, false).unwrap();
+    let (days, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
 
     // Compute the expected LOCAL bucket for each UTC timestamp the same way `compute_summaries`
     // does, so this test is robust to the CI host's timezone while still pinning day-split
@@ -720,7 +724,7 @@ fn unknown_model_entry_is_skipped_without_crashing() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let result = compute_summaries(&args, &config, &pricing, start, end, false);
+    let result = compute_summaries(&args, &config, &pricing, start, end, false, None);
     let (_, sessions) = result.expect("unknown model must not crash the scan");
 
     assert_eq!(sessions.len(), 1);
@@ -756,7 +760,7 @@ fn missing_message_id_bypasses_dedup_and_counts_as_is() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false).unwrap();
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
 
     assert_eq!(sessions.len(), 1);
     let s = &sessions[0];
@@ -800,7 +804,7 @@ fn in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false).unwrap();
+    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
 
     assert_eq!(
         sessions.len(),
@@ -846,8 +850,8 @@ fn compute_summaries_is_deterministic_across_repeated_runs() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions1) = compute_summaries(&args, &config, &pricing, start, end, false).unwrap();
-    let (_, sessions2) = compute_summaries(&args, &config, &pricing, start, end, false).unwrap();
+    let (_, sessions1) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let (_, sessions2) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
 
     let ids1: Vec<_> = sessions1.iter().map(|s| s.session_id.clone()).collect();
     let ids2: Vec<_> = sessions2.iter().map(|s| s.session_id.clone()).collect();
@@ -867,4 +871,106 @@ fn compute_summaries_is_deterministic_across_repeated_runs() {
     let mut sorted = paths.clone();
     sorted.sort();
     assert_eq!(paths, sorted, "discovery must hand back a path-sorted file list");
+}
+
+// --- Phase 4 (cost-accuracy): self-diagnosis trace actually writes per-entry fate lines ---
+//
+// AC: `clyde -l trace cost session <id>` writes >=1 per-entry fate line for that session
+// (counted / deduped-collapsed / parse-dropped-with-reason). This test proves the `trace!` calls
+// added in `compute_summaries` (dedup loop, target `cost`) and `convert_raw_entry` (parse-drop
+// boundary, target `claude_pricing`) actually fire and carry the session id, by capturing the log
+// facade in-process with a custom `log::Log` sink. The complementary half of the AC -- that the
+// env_logger *filter target* now names `cost`/`claude_pricing` rather than the dead `ccu` target
+// so these records survive to the log file at `-l trace` -- is pinned by the `resolve_log_filter`
+// assertions above.
+
+static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
+struct CaptureLogger;
+
+impl log::Log for CaptureLogger {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        if let Ok(mut buf) = CAPTURED.lock() {
+            buf.push(format!("{}|{}|{}", record.level(), record.target(), record.args()));
+        }
+    }
+    fn flush(&self) {}
+}
+
+/// Install the capturing logger once for the whole test binary and open the level gate to trace,
+/// so the `trace!` macros in the code under test are actually evaluated and routed here. We filter
+/// captured lines by a unique session id, so other parallel tests logging into the same global
+/// sink cannot perturb the assertion.
+fn install_capture_logger() {
+    CAPTURE_INIT.call_once(|| {
+        let _ = log::set_boxed_logger(Box::new(CaptureLogger));
+        log::set_max_level(log::LevelFilter::Trace);
+    });
+}
+
+#[test]
+fn trace_writes_per_entry_fate_lines_for_the_target_session() {
+    install_capture_logger();
+
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let sid = "session-trace-tgt";
+
+    write_jsonl(
+        &projects.join("proj-trace").join("session-trace.jsonl"),
+        &[
+            // m1/r1 streaming partial then final: the first copy is COUNTED, the second
+            // DEDUPED-COLLAPSED into it (opus-4-7; exact cost is irrelevant to the fate trace).
+            r#"{"type":"assistant","sessionId":"session-trace-tgt","timestamp":"2026-06-15T10:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":10}}}"#,
+            r#"{"type":"assistant","sessionId":"session-trace-tgt","timestamp":"2026-06-15T10:00:05Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":100,"output_tokens":50}}}"#,
+            // Missing `message.usage`: dropped at the parse boundary, which must emit a
+            // parse-drop-with-reason trace naming the session id and the missing field.
+            r#"{"type":"assistant","sessionId":"session-trace-tgt","timestamp":"2026-06-15T10:10:00Z","requestId":"r9","message":{"id":"m9","model":"claude-opus-4-7"}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    // Scope the trace to exactly this session (the `cost session <id>` path passes the resolved id).
+    let _ = compute_summaries(&args, &config, &pricing, start, end, false, Some(sid)).unwrap();
+
+    let lines: Vec<String> = CAPTURED
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| l.contains(sid))
+        .cloned()
+        .collect();
+
+    let fate_lines: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("fate=counted") || l.contains("fate=deduped-collapsed") || l.contains("parse drop"))
+        .collect();
+
+    assert!(
+        !fate_lines.is_empty(),
+        "AC: expected >=1 per-entry fate line for {sid}; captured for-session lines: {lines:?}"
+    );
+    // Prove BOTH trace seams fire: the dedup-loop fate trace (target `cost`) and the parse-drop
+    // boundary trace (target `claude_pricing`).
+    assert!(
+        fate_lines
+            .iter()
+            .any(|l| l.contains("fate=counted") || l.contains("fate=deduped-collapsed")),
+        "expected a dedup-loop fate line (counted/deduped-collapsed): {fate_lines:?}"
+    );
+    assert!(
+        fate_lines
+            .iter()
+            .any(|l| l.contains("parse drop") && l.contains("message.usage")),
+        "expected a parse-drop-with-reason line naming the missing field: {fate_lines:?}"
+    );
 }

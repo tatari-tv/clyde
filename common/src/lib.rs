@@ -20,8 +20,8 @@ pub use tools::{Tool, required_tools_help};
 /// Common globals shared across every clyde subcommand.
 ///
 /// `log_level == None` means "no explicit level was given": the receiving tool falls back to
-/// its prior default (for example `claude-permit`'s `RUST_LOG`/`env_logger` default, or `ccu`'s
-/// config/`RUST_LOG`/`ccu=warn` chain). This preserves behavior-exact semantics for a shim
+/// its prior default (for example `claude-permit`'s `RUST_LOG`/`env_logger` default, or `cost`'s
+/// config/`RUST_LOG`/`cost=warn,claude_pricing=warn` chain). This preserves behavior-exact semantics for a shim
 /// invoked without `--log-level`, while letting `clyde --log-level <lvl> <tool>` drive the
 /// level uniformly.
 #[derive(Debug, Clone, Default)]

@@ -11,7 +11,7 @@
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use claude_pricing::{Pricing, PricingError, StaleFeedInfo, normalize_model_id};
 use eyre::{Context, Result};
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -87,21 +87,48 @@ pub fn log_file_path() -> PathBuf {
         .join("cost.log")
 }
 
+/// Build the env_logger filter string for a given level, naming the crates whose records this
+/// tool actually emits: `cost` (this crate's own records, including the per-entry dedup fate
+/// trace) and `claude_pricing` (the shared parse crate, including the parse-drop trace at
+/// `convert_raw_entry`). BOTH targets must be enabled so `clyde -l trace cost ...` surfaces the
+/// self-diagnosis trace end to end.
+///
+/// Phase 4 log-target fix: the pre-merge tool filtered on `ccu=<level>`, but this lib crate is
+/// named `cost` and the parse crate `claude_pricing` -- so a `ccu=trace` filter matched NEITHER
+/// crate's target and no `cost::`/`claude_pricing::` record ever emitted. `CCU_LOG_LEVEL` (merged
+/// upstream by clap into the level itself) is preserved; only the wrong filter *target* is fixed.
+fn build_filter(level: &str) -> String {
+    format!("cost={level},claude_pricing={level}")
+}
+
 fn resolve_log_filter(cli_level: Option<&str>, config_level: Option<&str>) -> (String, bool) {
-    // CLI / CCU_LOG_LEVEL (merged by clap)
+    // CLI / CCU_LOG_LEVEL (merged by clap upstream)
     if let Some(level) = cli_level {
-        return (format!("ccu={}", level), true);
+        return (build_filter(level), true);
     }
     // Config file
     if let Some(level) = config_level {
-        return (format!("ccu={}", level), true);
+        return (build_filter(level), true);
     }
     // RUST_LOG - pass through as-is (advanced users expect full filter syntax)
     if let Ok(filter) = std::env::var("RUST_LOG") {
         return (filter, true);
     }
     // Default
-    ("ccu=warn".to_string(), false)
+    (build_filter("warn"), false)
+}
+
+/// Decide whether the per-entry dedup fate trace should fire for an entry whose session is
+/// `session_id`. When `trace_session` is `None` (every non-`session` call site), the trace fires
+/// for all entries -- the full self-diagnosis firehose at `-l trace`. When it is `Some` (the
+/// `cost session <id>` path), the trace is scoped to just that session; the value is matched as a
+/// prefix so both a full session id and the id *prefix* a user typed on the command line select
+/// the same session's entries.
+fn should_trace(trace_session: Option<&str>, session_id: &str) -> bool {
+    match trace_session {
+        None => true,
+        Some(prefix) => session_id.starts_with(prefix),
+    }
 }
 
 fn setup_logging(filter: &str, has_explicit_level: bool) -> Result<()> {
@@ -200,6 +227,15 @@ fn candidate_wins(
 /// before parsing is an OPTIMIZATION only -- a safe lower bound under the append-only invariant
 /// (a file's mtime is always >= its newest entry's timestamp) -- never the contract itself; it
 /// must never drop a file that could hold an in-window entry.
+///
+/// ## Self-diagnosis trace (Phase 4)
+///
+/// When `trace_session` is `Some`, each entry belonging to that session emits a `trace!` line in
+/// the dedup loop recording its fate -- `counted`, `deduped-collapsed`, or `skipped` with a
+/// reason -- carrying `message_id`, `request_id`, and `session_id`. This makes a future
+/// divergence self-diagnosing (which entries counted, which collapsed, which were skipped and
+/// why) instead of archaeology. `None` traces every session's entries. The complementary
+/// parse-drop trace lives at `claude_pricing::parse::convert_raw_entry`.
 fn compute_summaries(
     args: &CostArgs,
     config: &Config,
@@ -207,10 +243,11 @@ fn compute_summaries(
     start: NaiveDate,
     end: NaiveDate,
     verbose: bool,
+    trace_session: Option<&str>,
 ) -> Result<(Vec<DaySummary>, Vec<SessionSummary>)> {
     debug!(
-        "compute_summaries: start={}, end={}, verbose={}, model={:?}",
-        start, end, verbose, args.model
+        "compute_summaries: start={}, end={}, verbose={}, model={:?}, trace_session={:?}",
+        start, end, verbose, args.model, trace_session
     );
 
     let projects_dir = args
@@ -282,13 +319,27 @@ fn compute_summaries(
     let mut no_mid_entries: Vec<DedupedEntry> = Vec::new();
 
     for entry in &all_entries {
+        let traced = should_trace(trace_session, &entry.session_id);
+
         // Skip synthetic entries (internal Claude Code artifacts, not real API calls)
         if entry.model == "<synthetic>" {
+            if traced {
+                trace!(
+                    "entry fate=skipped reason=synthetic session_id={} message_id={:?} request_id={:?}",
+                    entry.session_id, entry.message_id, entry.request_id
+                );
+            }
             continue;
         }
 
         let date = dates::local_date(&entry.timestamp);
         if date < start || date > end {
+            if traced {
+                trace!(
+                    "entry fate=skipped reason=out-of-window date={} window=[{},{}] session_id={} message_id={:?} request_id={:?}",
+                    date, start, end, entry.session_id, entry.message_id, entry.request_id
+                );
+            }
             continue;
         }
 
@@ -297,6 +348,12 @@ fn compute_summaries(
         if let Some(ref model_filter) = args.model
             && normalized != model_filter
         {
+            if traced {
+                trace!(
+                    "entry fate=skipped reason=model-filter model={} session_id={} message_id={:?} request_id={:?}",
+                    entry.model, entry.session_id, entry.message_id, entry.request_id
+                );
+            }
             continue;
         }
 
@@ -306,10 +363,22 @@ fn compute_summaries(
                 if warned_models.insert(normalized.to_string()) {
                     warn!("Unknown model: {} (normalized: {})", entry.model, normalized);
                 }
+                if traced {
+                    trace!(
+                        "entry fate=skipped reason=unknown-model model={} session_id={} message_id={:?} request_id={:?}",
+                        entry.model, entry.session_id, entry.message_id, entry.request_id
+                    );
+                }
                 continue;
             }
             Err(e) => {
                 warn!("Pricing error for model {}: {}", entry.model, e);
+                if traced {
+                    trace!(
+                        "entry fate=skipped reason=pricing-error model={} session_id={} message_id={:?} request_id={:?}",
+                        entry.model, entry.session_id, entry.message_id, entry.request_id
+                    );
+                }
                 continue;
             }
         };
@@ -324,6 +393,9 @@ fn compute_summaries(
         match &entry.message_id {
             Some(mid) => {
                 let key = (mid.clone(), entry.request_id.clone());
+                // Distinguish the first copy of a key (counted) from a later copy that collapses
+                // into it (deduped-collapsed) for the fate trace.
+                let collapsed = deduped.contains_key(&key);
                 deduped
                     .entry(key)
                     .and_modify(|existing| {
@@ -342,10 +414,26 @@ fn compute_summaries(
                         }
                     })
                     .or_insert(deduped_entry);
+                if traced {
+                    trace!(
+                        "entry fate={} cost={:.6} session_id={} message_id={:?} request_id={:?}",
+                        if collapsed { "deduped-collapsed" } else { "counted" },
+                        cost,
+                        entry.session_id,
+                        entry.message_id,
+                        entry.request_id
+                    );
+                }
             }
             None => {
                 // No reliable dedup key: count as-is
                 no_mid_entries.push(deduped_entry);
+                if traced {
+                    trace!(
+                        "entry fate=counted reason=no-dedup-key cost={:.6} session_id={} message_id=None request_id={:?}",
+                        cost, entry.session_id, entry.request_id
+                    );
+                }
             }
         }
     }
@@ -569,7 +657,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                 Some(Command::Today { json, total, verbose }) => (*json, *total, *verbose),
                 _ => (false, false, false),
             };
-            let (days, sessions) = compute_summaries(args, config, pricing, today, today, verbose)?;
+            let (days, sessions) = compute_summaries(args, config, pricing, today, today, verbose, None)?;
             let summary = days.first().cloned().unwrap_or(DaySummary {
                 date: today,
                 cost: 0.0,
@@ -592,7 +680,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
         }
         Some(Command::Yesterday { json, total, verbose }) => {
             let yesterday = today - chrono::Duration::days(1);
-            let (days, sessions) = compute_summaries(args, config, pricing, yesterday, yesterday, *verbose)?;
+            let (days, sessions) = compute_summaries(args, config, pricing, yesterday, yesterday, *verbose, None)?;
             let summary = days.first().cloned().unwrap_or(DaySummary {
                 date: yesterday,
                 cost: 0.0,
@@ -621,7 +709,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
             graph: show_graph,
         }) => {
             let start = today - chrono::Duration::days(i64::from(*num_days) - 1);
-            let (days, ..) = compute_summaries(args, config, pricing, start, today, false)?;
+            let (days, ..) = compute_summaries(args, config, pricing, start, today, false, None)?;
 
             if *total {
                 let sum: f64 = days.iter().map(|d| d.cost).sum();
@@ -672,7 +760,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                 let current_sunday = today - chrono::Duration::days(days_since_sunday);
                 current_sunday - chrono::Duration::weeks(i64::from(*num_weeks) - 1)
             };
-            let (days, ..) = compute_summaries(args, config, pricing, start, today, false)?;
+            let (days, ..) = compute_summaries(args, config, pricing, start, today, false, None)?;
 
             // Group by Sunday-based week (Sun-Sat)
             let mut weeks: BTreeMap<String, (f64, HashSet<String>)> = BTreeMap::new();
@@ -743,7 +831,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                 let current_month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).expect("valid date");
                 subtract_months(current_month_start, *num_months - 1)
             };
-            let (days, ..) = compute_summaries(args, config, pricing, start, today, false)?;
+            let (days, ..) = compute_summaries(args, config, pricing, start, today, false, None)?;
 
             // Group by month
             let mut months: BTreeMap<String, (f64, HashSet<String>)> = BTreeMap::new();
@@ -801,7 +889,17 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
         Some(Command::Session { id }) => {
             // For session command, scan all recent files (last 30 days)
             let start = today - chrono::Duration::days(30);
-            let (_, sessions) = compute_summaries(args, config, pricing, start, today, false)?;
+            // Scope the per-entry fate trace to the one session being reported. `current` resolves
+            // to the live-session id Claude Code exports (when set); a literal id/prefix is passed
+            // through and matched as a prefix in `should_trace`. `None` here would trace every
+            // session; scoping keeps `clyde -l trace cost session <id>` legible.
+            let trace_session = if id == "current" {
+                std::env::var(LIVE_SESSION_ENV).ok()
+            } else {
+                Some(id.clone())
+            };
+            let (_, sessions) =
+                compute_summaries(args, config, pricing, start, today, false, trace_session.as_deref())?;
 
             if id == "current" {
                 // Prefer the live session id Claude Code exports; fall back to the
@@ -854,5 +952,7 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod oracle;
 #[cfg(test)]
 mod tests;
