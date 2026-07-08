@@ -13,6 +13,7 @@ use claude_pricing::{Pricing, PricingError, StaleFeedInfo, normalize_model_id};
 use eyre::{Context, Result};
 use log::{debug, info, warn};
 use rayon::prelude::*;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
@@ -131,6 +132,35 @@ fn setup_logging(filter: &str, has_explicit_level: bool) -> Result<()> {
     Ok(())
 }
 
+/// Deterministic total order for choosing which copy of a duplicated `(message.id, requestId)`
+/// key survives the dedup pass. The surviving copy's `session_id` decides cost attribution, so
+/// when a resume/fork duplicates an entry verbatim across sessions the winner MUST be stable
+/// regardless of filesystem discovery order. Precedence (highest first):
+///   1. higher `cost` wins -- the final, complete message Anthropic actually bills for;
+///   2. on equal cost, the lexicographically lower `session_id` wins;
+///   3. on equal cost AND equal `session_id`, the earlier `timestamp` wins.
+///
+/// Returns `true` when `candidate` should replace `existing`. Uses `f64::total_cmp` so equal costs
+/// compare `Equal` without a float `==` and the order is total (no NaN ambiguity).
+fn candidate_wins(
+    existing_cost: f64,
+    existing_session_id: &str,
+    existing_timestamp: DateTime<Utc>,
+    candidate_cost: f64,
+    candidate_session_id: &str,
+    candidate_timestamp: DateTime<Utc>,
+) -> bool {
+    match candidate_cost.total_cmp(&existing_cost) {
+        Ordering::Greater => true,
+        Ordering::Less => false,
+        Ordering::Equal => match candidate_session_id.cmp(existing_session_id) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => candidate_timestamp < existing_timestamp,
+        },
+    }
+}
+
 /// Compute daily summaries from JSONL files for a date range
 fn compute_summaries(
     args: &CostArgs,
@@ -201,7 +231,9 @@ fn compute_summaries(
     // JSONL file - partial streaming states with incomplete output_tokens, then a final
     // complete copy. Additionally, session resumption can duplicate entries. Keep the
     // highest-cost copy per (message.id, requestId), which corresponds to the final
-    // complete message Anthropic actually bills for.
+    // complete message Anthropic actually bills for. On EQUAL cost (a resume/fork that
+    // duplicates the entry verbatim across sessions) the winner is chosen by a deterministic
+    // total order (see `candidate_wins`) so per-session attribution is stable across runs.
     struct DedupedEntry {
         cost: f64,
         date: NaiveDate,
@@ -257,7 +289,14 @@ fn compute_summaries(
                 deduped
                     .entry(key)
                     .and_modify(|existing| {
-                        if cost > existing.cost {
+                        if candidate_wins(
+                            existing.cost,
+                            &existing.session_id,
+                            existing.timestamp,
+                            cost,
+                            &entry.session_id,
+                            entry.timestamp,
+                        ) {
                             existing.cost = cost;
                             existing.date = date;
                             existing.session_id = entry.session_id.clone();

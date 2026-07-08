@@ -112,13 +112,31 @@ pub fn find_session_files(projects_dir: &Path) -> Result<Vec<SessionFile>> {
         }
     }
 
+    // Sort by path so the insertion order into the parse/dedup pipeline is stable across runs.
+    // `read_dir` yields entries in filesystem-dependent order, which would otherwise make the
+    // equal-cost dedup tie-break (and thus per-session cost attribution) non-deterministic.
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
     info!("Found {} JSONL session files", files.len());
     Ok(files)
 }
 
-/// Filter session files to those modified within a date range (inclusive).
-/// Uses file mtime as a heuristic - files modified on a given day likely contain
-/// entries for that day.
+/// Prefilter session files by mtime as a *lower-bound optimization only*.
+///
+/// Counting is by entry timestamp (the counted-entry contract): a line counts iff its own
+/// `timestamp` falls in the window, enforced per-entry in `compute_summaries`. This prefilter
+/// exists solely to skip whole files that provably hold no in-window content, so it MUST NEVER
+/// drop a file that could hold an in-window entry.
+///
+/// The only safe test is the lower bound `mtime_date >= start`. It is safe under the append-only
+/// invariant: Claude Code only ever appends to a session JSONL, so a file's mtime is >= its newest
+/// entry's timestamp. Therefore a file whose mtime falls before `start` has *every* entry before
+/// `start` and cannot hold in-window content -- dropping it loses nothing.
+///
+/// There is deliberately NO upper bound (`mtime_date <= end`). A file touched after `end` (e.g. a
+/// still-growing session queried for an earlier day) can still hold entries dated within the
+/// window; the old `<= end` exclusion silently dropped those in-window dollars. Removing it is the
+/// Phase 1 correctness fix.
 pub fn filter_by_date_range(files: &[SessionFile], start: NaiveDate, end: NaiveDate) -> Vec<&SessionFile> {
     debug!(
         "filter_by_date_range: start={}, end={}, input_count={}",
@@ -132,10 +150,9 @@ pub fn filter_by_date_range(files: &[SessionFile], start: NaiveDate, end: NaiveD
         .filter(|f| {
             let mtime: chrono::DateTime<chrono::Local> = f.mtime.into();
             let file_date = mtime.date_naive();
-            // Include files modified on or after start date
-            // We can't perfectly filter by content date from mtime alone,
-            // so we're inclusive - a file modified today may contain entries from yesterday
-            file_date >= start && file_date <= end
+            // Lower bound only. Never exclude a file whose mtime is at/after `start`; the actual
+            // window enforcement is the per-entry timestamp check in compute_summaries.
+            file_date >= start
         })
         .collect()
 }
@@ -146,107 +163,4 @@ pub fn default_projects_dir() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_find_session_files() {
-        let tmp = TempDir::new().expect("create temp dir");
-        let project_dir = tmp.path().join("test-project");
-        fs::create_dir_all(&project_dir).expect("create project dir");
-
-        // Create a JSONL file with content
-        let jsonl_path = project_dir.join("session-123.jsonl");
-        let mut file = fs::File::create(&jsonl_path).expect("create jsonl");
-        writeln!(file, r#"{{"type":"system"}}"#).expect("write");
-
-        // Create an empty file (should be skipped)
-        fs::File::create(project_dir.join("empty.jsonl")).expect("create empty");
-
-        // Create a non-JSONL file (should be skipped)
-        let mut txt = fs::File::create(project_dir.join("notes.txt")).expect("create txt");
-        writeln!(txt, "hello").expect("write");
-
-        let files = find_session_files(tmp.path()).expect("find files");
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].path, jsonl_path);
-    }
-
-    #[test]
-    fn test_find_session_files_empty_dir() {
-        let tmp = TempDir::new().expect("create temp dir");
-        let files = find_session_files(tmp.path()).expect("find files");
-        assert!(files.is_empty());
-    }
-
-    #[test]
-    fn test_find_session_files_nonexistent() {
-        let files = find_session_files(Path::new("/nonexistent/path")).expect("find files");
-        assert!(files.is_empty());
-    }
-
-    #[test]
-    fn test_find_session_files_includes_subagents() {
-        let tmp = TempDir::new().expect("create temp dir");
-        let project_dir = tmp.path().join("test-project");
-        fs::create_dir_all(&project_dir).expect("create project dir");
-
-        // Direct session JSONL
-        let parent_jsonl = project_dir.join("abc123.jsonl");
-        let mut f = fs::File::create(&parent_jsonl).expect("create parent jsonl");
-        writeln!(f, r#"{{"type":"system"}}"#).expect("write");
-
-        // Subagent JSONL at <uuid>/subagents/<agent>.jsonl
-        let subagents_dir = project_dir.join("abc123").join("subagents");
-        fs::create_dir_all(&subagents_dir).expect("create subagents dir");
-        let agent_jsonl = subagents_dir.join("agent-aabbccdd.jsonl");
-        let mut f = fs::File::create(&agent_jsonl).expect("create agent jsonl");
-        writeln!(f, r#"{{"type":"assistant"}}"#).expect("write");
-
-        // Empty subagent file (should be skipped)
-        fs::File::create(subagents_dir.join("agent-empty.jsonl")).expect("create empty");
-
-        let files = find_session_files(tmp.path()).expect("find files");
-        assert_eq!(files.len(), 2);
-        let paths: Vec<_> = files.iter().map(|f| &f.path).collect();
-        assert!(paths.contains(&&parent_jsonl));
-        assert!(paths.contains(&&agent_jsonl));
-    }
-
-    #[test]
-    fn test_find_session_files_subagents_no_parent_jsonl() {
-        let tmp = TempDir::new().expect("create temp dir");
-        let project_dir = tmp.path().join("test-project");
-        fs::create_dir_all(&project_dir).expect("create project dir");
-
-        // Subagent JSONL exists without a sibling parent .jsonl
-        let subagents_dir = project_dir.join("orphan-uuid").join("subagents");
-        fs::create_dir_all(&subagents_dir).expect("create subagents dir");
-        let agent_jsonl = subagents_dir.join("agent-orphan.jsonl");
-        let mut f = fs::File::create(&agent_jsonl).expect("create agent jsonl");
-        writeln!(f, r#"{{"type":"assistant"}}"#).expect("write");
-
-        let files = find_session_files(tmp.path()).expect("find files");
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].path, agent_jsonl);
-    }
-
-    #[test]
-    fn test_find_session_files_tool_results_ignored() {
-        let tmp = TempDir::new().expect("create temp dir");
-        let project_dir = tmp.path().join("test-project");
-        fs::create_dir_all(&project_dir).expect("create project dir");
-
-        // tool-results dir should not be traversed for JSONL
-        let tool_results_dir = project_dir.join("abc123").join("tool-results");
-        fs::create_dir_all(&tool_results_dir).expect("create tool-results dir");
-        let mut f = fs::File::create(tool_results_dir.join("output.json")).expect("create json");
-        writeln!(f, "{{}}").expect("write");
-
-        // Only the subagents dir should be scanned; tool-results has no JSONL so result is 0
-        let files = find_session_files(tmp.path()).expect("find files");
-        assert!(files.is_empty());
-    }
-}
+mod tests;

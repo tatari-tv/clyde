@@ -86,6 +86,70 @@ fn test_wants_json_autodetects_pipe() {
     assert!(wants_json(false));
 }
 
+// --- Phase 1 (cost-accuracy): deterministic dedup tie-break (`candidate_wins`) ---
+
+fn ts(rfc3339: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(rfc3339).unwrap().with_timezone(&Utc)
+}
+
+#[test]
+fn candidate_wins_prefers_higher_cost() {
+    // Higher cost always wins, whatever the session id / timestamp.
+    let t = ts("2026-07-01T10:00:00Z");
+    assert!(
+        candidate_wins(1.0, "zzz", t, 2.0, "aaa", t),
+        "higher-cost candidate must win"
+    );
+    assert!(
+        !candidate_wins(2.0, "aaa", t, 1.0, "zzz", t),
+        "lower-cost candidate must lose"
+    );
+}
+
+#[test]
+fn candidate_wins_equal_cost_breaks_on_lower_session_id() {
+    // Equal cost: the lexicographically lower session_id wins, deterministically.
+    let t = ts("2026-07-01T10:00:00Z");
+    // candidate session "aaa" < existing "bbb" -> candidate wins.
+    assert!(candidate_wins(5.0, "bbb", t, 5.0, "aaa", t));
+    // candidate session "ccc" > existing "bbb" -> candidate loses.
+    assert!(!candidate_wins(5.0, "bbb", t, 5.0, "ccc", t));
+}
+
+#[test]
+fn candidate_wins_equal_cost_and_session_breaks_on_earlier_timestamp() {
+    // Equal cost AND equal session_id: the earlier timestamp wins.
+    let earlier = ts("2026-07-01T10:00:00Z");
+    let later = ts("2026-07-01T11:00:00Z");
+    assert!(
+        candidate_wins(5.0, "sess", later, 5.0, "sess", earlier),
+        "earlier timestamp must win"
+    );
+    assert!(
+        !candidate_wins(5.0, "sess", earlier, 5.0, "sess", later),
+        "later timestamp must lose"
+    );
+}
+
+#[test]
+fn candidate_wins_is_a_stable_total_order() {
+    // For a fully-equal pair, neither replaces the other (no oscillation), and the order is
+    // antisymmetric: exactly one direction wins for any distinct pair.
+    let t = ts("2026-07-01T10:00:00Z");
+    assert!(
+        !candidate_wins(5.0, "sess", t, 5.0, "sess", t),
+        "identical entries: keep first, no replace"
+    );
+
+    // Distinct pair: exactly one direction is true (antisymmetry).
+    let a_wins = candidate_wins(5.0, "bbb", t, 5.0, "aaa", t);
+    let b_wins = candidate_wins(5.0, "aaa", t, 5.0, "bbb", t);
+    assert_ne!(
+        a_wins, b_wins,
+        "a distinct pair must have exactly one winner regardless of order"
+    );
+}
+
 // --- Phase 9 (#13): `cost session current` resolves the live session ---
 
 fn summary(session_id: &str, last_active: &str) -> SessionSummary {
