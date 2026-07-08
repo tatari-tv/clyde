@@ -93,3 +93,48 @@ the design doc (`2026-07-08-cost-accuracy-verification.md`). One section per pha
   not enforced. Phase 5 (scanner unification) is the natural place to decide whether to assert it
   or carry a cheap content-derived bound. No action needed for Phase 1; noting it so it is not
   lost. Not a blocker.
+
+## Phase 2: Document the counted-entry contract
+
+### Design decisions
+- Wrote the contract as a `///` doc-comment directly above `fn compute_summaries` in
+  `cost/src/lib.rs` (not a separate `//!` module doc or a standalone doc page) — the design doc's
+  own Phase 2 bullet names this exact attachment point, and it is the one place a reviewer already
+  looks when auditing the dedup/window logic that sits a few lines below it.
+- Named the five load-bearing facts explicitly, each phrased to match the code as written after
+  Phase 1: (1) the assistant-gate + required-field drop happens at parse
+  (`pricing/src/parse.rs::convert_raw_entry`'s `?` chain) before `compute_summaries` ever sees the
+  line, plus the `<synthetic>` skip; (2) dedup key `(message.id, requestId)` with the survivor
+  chosen by `candidate_wins`'s deterministic total order (cost, then `session_id`, then
+  `timestamp`) — named the comparator by its actual function name so the doc-comment and the code
+  cannot drift apart under a rename without both breaking `cargo doc`'s intra-doc link; (3) dedup
+  is global across every scanned file, not per-file; (4) the subagent fold — `subagents/*.jsonl`
+  carries the parent `sessionId`; (5) the window is enforced by per-entry `local_date(timestamp)`,
+  with the mtime prefilter called out as an optimization only, never the contract.
+- Used an intra-doc link (`[\`candidate_wins\`]`) to the Phase 1 comparator rather than restating
+  its logic inline a second time, so the two comments (on `candidate_wins` itself and on
+  `compute_summaries`) can't silently diverge into two different descriptions of the same rule.
+
+### Deviations
+- None. This phase is documentation-only; no behavior, signature, or test changed.
+
+### Tradeoffs
+- Doc-comment on `compute_summaries` vs. a `//!` crate/module-level doc — chose the function
+  doc-comment because the design doc's own Phase 2 bullet specifies this attachment point, and
+  because `compute_summaries` is the single function that actually executes every clause of the
+  contract (parse-gate call site, dedup loop, window check), so the comment sits directly above
+  the code it describes rather than at a remove.
+
+### Open questions
+- The design doc's "Data Model: the counted-entry contract" section (lines ~69-74) is
+  substantively accurate (assistant-gate + required fields, max-cost keep, global dedup, no-`id`
+  bypass, subagent fold, mtime-prefilter-then-per-entry-window are all still true) but has two
+  gaps against the post-Phase-1 code: (1) it does not mention the equal-cost secondary tie-break
+  (lower `session_id`, then earlier `timestamp`) that Phase 1's `candidate_wins` added — it still
+  only says "keep the max-cost copy"; (2) its cited line numbers (`cost/src/lib.rs:254-267`,
+  `:262-263`, `:269-271`) are now stale — those lines currently fall in the date/model-filter
+  block above the dedup loop, not the dedup loop itself (which is `lib.rs:237-313` in the
+  Phase-1-landed code, with the `candidate_wins` call at `:292-299`). Per the phase brief, the
+  design doc is not edited in this phase (status/content changes are the final-phase owner's
+  responsibility); flagging here for the parent/final-phase pass to reconcile the doc's Data Model
+  section against ground truth.

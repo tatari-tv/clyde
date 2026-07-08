@@ -161,7 +161,45 @@ fn candidate_wins(
     }
 }
 
-/// Compute daily summaries from JSONL files for a date range
+/// Compute daily and per-session cost summaries by scanning JSONL files for a date range.
+///
+/// ## The counted-entry contract
+///
+/// This function (with its collaborators in `scanner.rs` and `pricing/src/parse.rs`) is the
+/// definition of "the reported cost." A reviewer diffing this comment against the code below,
+/// `scanner::find_session_files`, `scanner::filter_by_date_range`, and
+/// `claude_pricing::parse::convert_raw_entry` should find no divergence.
+///
+/// **A line counts iff** it has `type == "assistant"` AND `message.model`, `message.usage`,
+/// `sessionId`, and `timestamp` are all present -- missing any of these drops the line at parse
+/// (`pricing/src/parse.rs::convert_raw_entry`'s `?` chain), before it ever reaches this function.
+/// `model == "<synthetic>"` (an internal Claude Code artifact, not a real API call) is then
+/// skipped here.
+///
+/// **Dedup key** is `(message.id, requestId)`. Claude Code emits multiple copies of the same
+/// assistant message (streaming partials, then a final complete copy; a resume/fork can also
+/// duplicate an entry verbatim across sessions). Among copies sharing a key, the survivor is
+/// chosen by [`candidate_wins`]'s deterministic total order: higher `cost` wins; on equal cost
+/// the lexicographically lower `session_id` wins; on equal cost AND equal `session_id` the
+/// earlier `timestamp` wins. The survivor's `session_id` -- not any discarded copy's -- decides
+/// which session the cost attributes to. An entry with no `message.id` bypasses dedup entirely
+/// and counts as-is.
+///
+/// **Dedup is GLOBAL across every scanned file, not per-file.** A duplicate spread across two
+/// files (e.g. the original and a resumed/forked copy in a different session's file) is deduped
+/// exactly like a duplicate within one file.
+///
+/// **Subagent fold:** `scanner::find_session_files` collects every top-level `*.jsonl` in each
+/// project dir PLUS `<session-uuid>/subagents/*.jsonl`. Subagent files carry the PARENT
+/// `sessionId`, so their spend folds into the parent session's total -- `cost session <id>` is
+/// never one file; it scans the whole projects tree.
+///
+/// **The window is enforced by entry timestamp, not file mtime.** The real enforcement is the
+/// per-entry `dates::local_date(entry.timestamp)` check below, which drops the entry if its local
+/// date falls outside `[start, end]`. The `scanner::filter_by_date_range` mtime prefilter run
+/// before parsing is an OPTIMIZATION only -- a safe lower bound under the append-only invariant
+/// (a file's mtime is always >= its newest entry's timestamp) -- never the contract itself; it
+/// must never drop a file that could hold an in-window entry.
 fn compute_summaries(
     args: &CostArgs,
     config: &Config,
