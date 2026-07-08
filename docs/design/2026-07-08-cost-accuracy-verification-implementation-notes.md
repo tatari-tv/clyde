@@ -138,3 +138,97 @@ the design doc (`2026-07-08-cost-accuracy-verification.md`). One section per pha
   design doc is not edited in this phase (status/content changes are the final-phase owner's
   responsibility); flagging here for the parent/final-phase pass to reconcile the doc's Data Model
   section against ground truth.
+
+## Phase 3: Fixture-JSONL regression tests
+
+### Design decisions
+- Harvested `report/src/tests.rs`'s inline-JSONL pattern (`write_jsonl` writing raw `r#"..."#`
+  JSON lines under a `TempDir` laid out as a projects tree) directly into `cost/src/tests.rs`,
+  the existing Rust-2018 submodule test file for `cost/src/lib.rs` (no inline `#[cfg(test)] mod
+  tests {}` added anywhere).
+- Nine fixture-JSONL tests added, each driving the REAL `compute_summaries` (and, for one test,
+  `scanner::find_session_files` directly) against a hand-authored fixture, asserting a
+  hand-computed cost AND entry count with the arithmetic shown in a comment:
+  1. `dedup_keeps_max_cost_copy_of_streaming_partial` — streaming-partial duplicate, max-cost wins.
+  2. `dedup_equal_cost_cross_session_attributes_to_lower_session_id` — equal-cost cross-session
+     duplicate, deterministic attribution to the lower `session_id`.
+  3. `synthetic_model_entry_is_skipped` — `<synthetic>` model entry skipped regardless of token size.
+  4. `subagent_file_folds_into_parent_session_total` — `subagents/*.jsonl` carrying the parent
+     `sessionId` folds into the parent total.
+  5. `multi_day_entries_roll_into_correct_day_buckets` — entries on different days land in two
+     distinct `DaySummary` buckets with independently correct costs.
+  6. `unknown_model_entry_is_skipped_without_crashing` — unrecognized model id skipped, no crash.
+  7. `missing_message_id_bypasses_dedup_and_counts_as_is` — no `message.id` means no dedup key,
+     both copies count even with a shared `requestId`.
+  8. `in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped` — the Phase 1 mtime-prefilter
+     fix: a file touched 10 days after the query window's `end` still yields its in-window entry.
+  9. `compute_summaries_is_deterministic_across_repeated_runs` (recommended, not
+     mutation-check-required) — two back-to-back invocations against the identical fixture agree
+     bit-for-bit on cost/entries/session order, cross-checked against
+     `scanner::find_session_files` returning an already path-sorted list.
+- Rates used in every fixture are read verbatim from the embedded `pricing/data/pricing.json`
+  (`claude-opus-4-7` $5in/$25out, `claude-sonnet-4-6` $3in/$15out, `claude-haiku-4-5`
+  $1in/$5out per Mtok) with zero cache tokens in every entry, so cache multipliers never enter
+  the hand-computed arithmetic and the expected numbers are simple to verify by hand.
+- Date-bucket-sensitive tests (`multi_day_entries_roll_into_correct_day_buckets`) compute their
+  expected bucket via `dates::local_date(&parse_ts(...))` (the same function `compute_summaries`
+  uses) rather than a hardcoded `NaiveDate` literal, so the test is robust to the CI host's local
+  timezone while still pinning the actual day-split behavior for the two fixture timestamps.
+- `filetime` added as a dev-dependency (`cargo add --dev filetime -p cost`) to set an exact
+  historical mtime on the stale-mtime fixture file in test 8; `SystemTime` is derived from a UTC
+  timestamp string parsed the same way JSONL timestamps are, keeping the "10 days after `end`"
+  margin comfortably TZ-safe.
+
+### Deviations
+- **The `<synthetic>` skip's prescribed mutation ("remove it") is a no-op in this codebase, so a
+  different mutation was substituted.** Verified empirically: `"<synthetic>"` is never a key in
+  the embedded pricing table and matches no alias/family rule, so deleting the explicit `if
+  entry.model == "<synthetic>" { continue; }` check does not change behavior — the entry falls
+  through to `pricing.calculate_usd`, gets `Err(PricingError::UnknownModel(_))`, and is skipped
+  by the exact same `continue` via the generic unknown-model path. Confirmed live: with the
+  check literally deleted, `synthetic_model_entry_is_skipped` still passed. The explicit check's
+  only observable effect is suppressing the "Unknown model" warning-log noise for this expected,
+  frequent, internal artifact — not cost/entry correctness. Used condition inversion (`==` ->
+  `!=`) as the mutation that actually exercises this branch's logic (it skips every
+  non-synthetic entry and keeps the synthetic one), which does make
+  `synthetic_model_entry_is_skipped` fail as expected. See the mutation-check table below.
+- Used readable, non-UUID directory/file names (`session-parent`, `proj-a`, etc.) in every
+  fixture rather than real UUIDv4 strings. `cost`'s current scanner (pre-Phase-5) does not
+  validate directory names as UUIDs — that guard is `report`'s precedent, slated for Phase 5's
+  scanner unification — so fixture directory names are free-form without weakening any assertion
+  made in this phase.
+
+### Tradeoffs
+- Compared `SessionSummary` fields manually (`session_id`, `cost`, `entries` as parallel `Vec`s)
+  in the determinism test rather than deriving `PartialEq` on `SessionSummary`/`DaySummary` —
+  those types are production output structs outside this phase's scope; adding a derive for one
+  test would be an undisclosed drive-by production change. The manual comparison is equally
+  precise (compares every field that matters) without touching `output.rs`.
+- `compute_summaries_is_deterministic_across_repeated_runs` calls `compute_summaries` twice
+  in-process rather than attempting to force the OS's `read_dir` into a literally shuffled order
+  (not controllable portably from a test). This is weaker than a true filesystem-order fuzz, but
+  it directly matches the AC1 wording ("two runs ... yield identical cost and entry count") and
+  additionally cross-checks the Phase 1 sort invariant on `scanner::find_session_files`'s return
+  value, which is the actual mechanism AC1 depends on.
+
+### Open questions
+- None.
+
+### Mutation-check results
+
+Each mutation was applied, the corresponding test was run and observed to FAIL, then the
+mutation was reverted via the same `Edit` (confirmed via `git diff cost/src/lib.rs
+cost/src/scanner.rs` showing no diff after all five were reverted, and a clean `otto ci` run
+afterward).
+
+| # | Branch (test) | Mutation | Result |
+|---|---|---|---|
+| 1 | `dedup_keeps_max_cost_copy_of_streaming_partial` | `candidate_wins`: swapped `Ordering::Greater => true` / `Ordering::Less => false` to their opposites (lower cost wins) | FAILED — `expected max-cost copy ($0.025) to win, got 0.01` |
+| 2 | `dedup_equal_cost_cross_session_attributes_to_lower_session_id` | `candidate_wins`: swapped the equal-cost `Ordering::Less => true` / `Ordering::Greater => false` arms (higher `session_id` wins) | FAILED — `left: "session-bbb"`, `right: "session-aaa"` |
+| 3 | `synthetic_model_entry_is_skipped` | `cost/src/lib.rs`: inverted `if entry.model == "<synthetic>"` to `!=` (literal deletion tried first and found to be a no-op; documented above) | FAILED — `left: 0, right: 1` (haiku entry no longer counted) |
+| 4 | `subagent_file_folds_into_parent_session_total` | `cost/src/scanner.rs`: `if subagents_dir.is_dir()` forced to `if false && subagents_dir.is_dir()` | FAILED — `left: 1, right: 2` (parent entry + subagent entry) |
+| 5 | `in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped` | `cost/src/scanner.rs::filter_by_date_range`: restored the old `file_date >= start && file_date <= end` upper bound | FAILED — `left: 0, right: 1` (in-window entry silently dropped) |
+
+All five mutations were confirmed to make their respective test fail, then reverted. Production
+code (`cost/src/lib.rs`, `cost/src/scanner.rs`) is byte-identical to the Phase 2 commit; `otto
+ci` is green with the reverted tree.

@@ -414,6 +414,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "eyre",
+ "filetime",
  "include_dir",
  "log",
  "rasciichart",
