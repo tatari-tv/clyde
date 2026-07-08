@@ -1,14 +1,25 @@
 name: ci
 
 # Rust CI for the clyde workspace. Runs `otto ci` (whitespace + clippy + fmt + test)
-# INSIDE the org builder-base image, which ships otto + whitespace + sccache + the
-# Rust toolchain - so GitHub CI == local `otto ci`.
+# on a bare ubuntu-latest runner - no AWS/ECR dependency.
 #
-# Why not the rust-ci reusable: it runs on a bare runner with only `setup-otto`, so it
-# has no `whitespace` binary and a standard otto ci lint task fails ("whitespace:
-# command not found"). The builder-base image is the org's answer to that (see
-# marquee's ci.yml). clyde has no private git deps - every workspace member is an
-# in-workspace path crate - so no private-dep token is wired.
+# Previously ran inside the org's private builder-base ECR image (see git history)
+# to get otto/whitespace/sccache preinstalled. That image pull required assuming an
+# AWS IAM role via OIDC, whose trust policy broke the moment this repo went public
+# (2026-07-08) - ECR Auth started failing "Could not load credentials from any
+# providers" on every push. Every OTHER public Rust repo in the org (the very tools
+# clyde absorbed: claude-cost-usage, claude-permit, claude-pricing, claude-report;
+# plus drata-cli, pagerduty-cli, renew, whitespace) avoids this entirely by
+# installing tools directly on a bare runner instead of pulling a private
+# container. This mirrors that pattern, plus the org's own `rust-ci.yml` reusable
+# workflow (tatari-tv/github-actions) for the otto setup: dtolnay/rust-toolchain for
+# Rust, otto-rs/setup-otto for otto (a genuinely public, unrelated org - no access
+# issue), and a plain checksummed curl+tar for whitespace. NOTE: do NOT reference
+# `tatari-tv/github-actions/...` actions here - that repo is private, and a public
+# repo cannot resolve actions from a private repo in the same org ("Unable to
+# resolve action ... not found", confirmed live on this repo 2026-07-08). whitespace
+# itself is public, so downloading its release asset directly is fine. clyde has no
+# private git deps - every workspace member is an in-workspace path crate.
 
 on:
   push:
@@ -18,72 +29,44 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
-  RUST_IMG_TAG: "1.96"
+  RUST_VERSION: "1.96.0"
+  WHITESPACE_VERSION: "v0.1.6"
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Mint an ECR token so the container job can pull the builder-base image.
-  # NOTE: do NOT add-mask the token - masked values are dropped from job outputs,
-  # which would leave the container credential empty.
-  ecr-auth:
-    name: ECR Auth
-    runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.ecr.outputs.token }}
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
-        with:
-          role-to-assume: ${{ secrets.CI_AWS_IAM_ROLE }}
-          aws-region: us-east-1
-      - name: Get ECR auth token
-        id: ecr
-        shell: bash
-        run: echo "token=$(aws ecr get-login-password --region us-east-1)" >> "$GITHUB_OUTPUT"
-
   build-and-test:
     name: Build and Test
-    needs: ecr-auth
     runs-on: ubuntu-latest
-    container:
-      image: 878256633362.dkr.ecr.us-east-1.amazonaws.com/base/rust:1.96-builder-base
-      credentials:
-        username: AWS
-        password: ${{ needs.ecr-auth.outputs.token }}
-    env:
-      # Override the image's SCCACHE_DIR=/sccache so actions/cache can persist it.
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
     steps:
-      - name: Install git
-        run: apt-get update && apt-get install -y --no-install-recommends git
-      - uses: actions/checkout@v6
-      # The image runs as a different uid than the checkout.
-      - name: Mark workspace safe for git
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # The builder-base image ships cargo/rustc but not clippy/rustfmt, which
-      # `otto check` needs. rustup is present, so add them.
-      - name: Add clippy + rustfmt
-        run: rustup component add clippy rustfmt
-      - name: Cache sccache
-        uses: actions/cache@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          path: ${{ github.workspace }}/.sccache
-          key: sccache-${{ env.RUST_IMG_TAG }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            sccache-${{ env.RUST_IMG_TAG }}-
-      - name: Cache cargo registry and git
-        uses: actions/cache@v5
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
         with:
-          path: |
-            /usr/local/cargo/registry
-            /usr/local/cargo/git
-          key: cargo-${{ env.RUST_IMG_TAG }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-${{ env.RUST_IMG_TAG }}-
-      - name: CI (otto)
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up otto
+        # Pinned to setup-otto main (arch-aware asset suffix), matching
+        # tatari-tv/github-actions/.github/workflows/rust-ci.yml - the v1 tag is
+        # stale and downloads a nonexistent asset on Linux.
+        uses: otto-rs/setup-otto@0676703d0c225f6c782235e181e4498a7726e4b5 # main (arch fix; v1 is stale)
+
+      - name: Install whitespace
+        env:
+          WHITESPACE_SHA256: 161f05245538456068af0f7bfb1d8cc4afb1e099fbab50724a638b672b953787
+        run: |
+          curl -sSL -o whitespace.tar.gz "https://github.com/tatari-tv/whitespace/releases/download/${WHITESPACE_VERSION}/whitespace-${WHITESPACE_VERSION}-linux-amd64.tar.gz"
+          echo "${WHITESPACE_SHA256}  whitespace.tar.gz" | sha256sum -c -
+          tar -xzf whitespace.tar.gz
+          sudo install -m 755 whitespace /usr/local/bin/whitespace
+
+      - name: otto ci
         run: otto ci
-      - name: Show sccache stats
-        run: sccache --show-stats

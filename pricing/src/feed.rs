@@ -12,7 +12,7 @@ use crate::pricing::{
 };
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
-pub const DEFAULT_FEED_URL: &str = "https://tatari-tv.github.io/claude-pricing/pricing.json";
+pub const DEFAULT_FEED_URL: &str = "https://tatari-tv.github.io/clyde/pricing.json";
 const LIBRARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone)]
