@@ -89,11 +89,10 @@ jobs:
           . "$HOME/.cargo/env"
           rustup target add "$TARGET"
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          prefix-key: "v1-rust"
-          shared-key: ${{ matrix.target }}
+      # No dependency cache in the release pipeline, on purpose: a shared rust-cache
+      # keyed off the default branch can be poisoned by a less-trusted PR build and
+      # then restored into the binaries we publish. Release builds are infrequent, so a
+      # clean build is the right supply-chain tradeoff (CodeRabbit #38, cache-poisoning).
 
       - name: Build
         env:
@@ -157,11 +156,10 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          prefix-key: "v1-rust"
-          shared-key: ${{ matrix.target }}
+      # No dependency cache in the release pipeline, on purpose: a shared rust-cache
+      # keyed off the default branch can be poisoned by a less-trusted PR build and
+      # then restored into the binaries we publish. Release builds are infrequent, so a
+      # clean build is the right supply-chain tradeoff (CodeRabbit #38, cache-poisoning).
 
       - name: Build
         env:
@@ -201,10 +199,14 @@ jobs:
     needs: [build-linux, build-macos]
     # != 'failure' (not == 'success') so a deliberately-skipped job never publishes
     # an empty Release, while a real build failure blocks the publish.
+    # Publish ONLY for a real tag push or an explicit dispatch tag input. Without this,
+    # a blank-tag workflow_dispatch on a branch sets REF_NAME=<branch> and would create
+    # a spurious Release/tag named after the branch (CodeRabbit #38, functional-correctness).
     if: >-
       ${{ !cancelled()
       && needs.build-linux.result != 'failure'
-      && needs.build-macos.result != 'failure' }}
+      && needs.build-macos.result != 'failure'
+      && (inputs.tag != '' || startsWith(github.ref, 'refs/tags/')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
