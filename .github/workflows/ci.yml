@@ -1,72 +1,17 @@
 name: ci
 
-# Rust CI for the clyde workspace. Runs `otto ci` (whitespace + clippy + fmt + test)
-# on a bare ubuntu-latest runner - no AWS/ECR dependency.
-#
-# Previously ran inside the org's private builder-base ECR image (see git history)
-# to get otto/whitespace/sccache preinstalled. That image pull required assuming an
-# AWS IAM role via OIDC, whose trust policy broke the moment this repo went public
-# (2026-07-08) - ECR Auth started failing "Could not load credentials from any
-# providers" on every push. Every OTHER public Rust repo in the org (the very tools
-# clyde absorbed: claude-cost-usage, claude-permit, claude-pricing, claude-report;
-# plus drata-cli, pagerduty-cli, renew, whitespace) avoids this entirely by
-# installing tools directly on a bare runner instead of pulling a private
-# container. This mirrors that pattern, plus the org's own `rust-ci.yml` reusable
-# workflow (tatari-tv/github-actions) for the otto setup: dtolnay/rust-toolchain for
-# Rust, otto-rs/setup-otto for otto (a genuinely public, unrelated org - no access
-# issue), and a plain checksummed curl+tar for whitespace. NOTE: do NOT reference
-# `tatari-tv/github-actions/...` actions here - that repo is private, and a public
-# repo cannot resolve actions from a private repo in the same org ("Unable to
-# resolve action ... not found", confirmed live on this repo 2026-07-08). whitespace
-# itself is public, so downloading its release asset directly is fine. clyde has no
-# private git deps - every workspace member is an in-workspace path crate.
-
+# Public repo: calls the PUBLIC reusable. tatari-tv/github-actions is internal and
+# a public repo cannot resolve reusable workflows/actions from it, so this uses the
+# public twin tatari-tv/github-actions-public. CI = `otto ci` via rust-ci.yml@v1;
+# the caller owns the trigger. Toolchain (1.96.0) and whitespace (v0.1.6) use the
+# reusable's defaults. clyde already ran the otto ci steps inline on a bare runner;
+# this collapses that to the shared caller. pages.yml, refresh-pricing.yml,
+# release.yml and sast.yml are preserved (release migrated separately).
 on:
   push:
-    branches:
-      - "**"
-  workflow_dispatch: {}
-
-permissions:
-  contents: read
-
-env:
-  RUST_VERSION: "1.96.0"
-  WHITESPACE_VERSION: "v0.1.6"
-  CARGO_TERM_COLOR: always
+    branches: ['**']
+  pull_request: {}
 
 jobs:
-  build-and-test:
-    name: Build and Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          components: clippy, rustfmt
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Set up otto
-        # Pinned to setup-otto main (arch-aware asset suffix), matching
-        # tatari-tv/github-actions/.github/workflows/rust-ci.yml - the v1 tag is
-        # stale and downloads a nonexistent asset on Linux.
-        uses: otto-rs/setup-otto@0676703d0c225f6c782235e181e4498a7726e4b5 # main (arch fix; v1 is stale)
-
-      - name: Install whitespace
-        env:
-          WHITESPACE_SHA256: 161f05245538456068af0f7bfb1d8cc4afb1e099fbab50724a638b672b953787
-        run: |
-          curl -sSL -o whitespace.tar.gz "https://github.com/tatari-tv/whitespace/releases/download/${WHITESPACE_VERSION}/whitespace-${WHITESPACE_VERSION}-linux-amd64.tar.gz"
-          echo "${WHITESPACE_SHA256}  whitespace.tar.gz" | sha256sum -c -
-          tar -xzf whitespace.tar.gz
-          sudo install -m 755 whitespace /usr/local/bin/whitespace
-
-      - name: otto ci
-        run: otto ci
+  ci:
+    uses: tatari-tv/github-actions-public/.github/workflows/rust-ci.yml@v1
