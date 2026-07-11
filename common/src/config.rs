@@ -62,7 +62,12 @@ pub struct RenderConfig {
 }
 
 /// The parsed `clyde.yml`. Every field defaults, so an absent file deserializes to all-defaults.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+///
+/// `Default` is hand-written (NOT derived): `reindex_on_start` defaults to `true`, but a derived
+/// `Default` would give the `bool` zero value `false` and diverge from the serde default a missing
+/// file resolves to. Hand-writing keeps `Config::default()` and a from-scratch deserialize in lock
+/// step.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -72,6 +77,45 @@ pub struct Config {
     /// Defaults for `report render` (currently just the output format).
     #[serde(default)]
     render: RenderConfig,
+    /// The Claude session transcript root `clyde mcp serve` reindexes and reads. Absent -> the
+    /// platform default `~/.claude/projects`. A `clyde mcp serve` is spawned by an MCP host with
+    /// fixed args (`mcp serve`, no flags reachable), so this config field is the only way to point
+    /// it elsewhere; it replaces the old `session serve --projects-dir` flag.
+    #[serde(default)]
+    projects_dir: Option<PathBuf>,
+    /// Whether `clyde mcp serve` runs a one-shot incremental reindex at startup (default `true`),
+    /// so today's sessions are findable. Set `false` to serve a possibly-stale catalog and skip the
+    /// startup scan (e.g. a very large catalog whose reindex would delay the MCP handshake). It
+    /// replaces the old `session serve --no-reindex` flag.
+    #[serde(default = "default_reindex_on_start")]
+    reindex_on_start: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            date_tz: DateTzConfig::default(),
+            render: RenderConfig::default(),
+            projects_dir: None,
+            reindex_on_start: default_reindex_on_start(),
+        }
+    }
+}
+
+/// The serde default for `reindex-on-start`: on. A one-shot startup reindex keeps the served
+/// catalog current for the common case.
+fn default_reindex_on_start() -> bool {
+    true
+}
+
+/// The platform default projects root when `projects-dir` is unset: `~/.claude/projects`.
+/// `dirs::home_dir()` is correct on every platform, and this is a Claude-owned path (not a clyde
+/// XDG path). Mirrors `session::paths::claude_projects_dir`; `common` cannot depend on the
+/// `session` crate, so the fallback is inlined here.
+fn default_projects_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".claude").join("projects"))
+        .unwrap_or_else(|| PathBuf::from(".claude").join("projects"))
 }
 
 impl Config {
@@ -83,6 +127,17 @@ impl Config {
     /// The configured default output format for `report render` (`markdown` when unset).
     pub fn render_format(&self) -> FormatConfig {
         self.render.format
+    }
+
+    /// The resolved projects root for `clyde mcp serve`: the configured `projects-dir`, else the
+    /// platform default `~/.claude/projects`.
+    pub fn projects_dir(&self) -> PathBuf {
+        self.projects_dir.clone().unwrap_or_else(default_projects_dir)
+    }
+
+    /// Whether `clyde mcp serve` runs a one-shot incremental reindex at startup (default `true`).
+    pub fn reindex_on_start(&self) -> bool {
+        self.reindex_on_start
     }
 }
 

@@ -78,6 +78,13 @@ pub enum Command {
     Doctor,
     /// Check for, install, or revert a newer released version of clyde.
     Update(renew::UpdateCmd),
+    /// Serve, register, and bundle clyde's session-catalog MCP tools (local stdio MCP).
+    ///
+    /// `clyde mcp serve` speaks JSON-RPC on stdin/stdout for an MCP host (e.g. Claude Code); it is
+    /// spawned, not run by hand. `register`/`unregister`/`status` self-manage the Claude config
+    /// entry (`{"command":"<abs clyde>","args":["mcp","serve"]}`); `bundle` packages a `.mcpb`. The
+    /// subcommand surface and stdio/logging discipline come from the shared `mcp-io` library.
+    Mcp(mcp_io::McpCmd),
 }
 
 #[derive(Subcommand, Debug)]
@@ -108,10 +115,6 @@ pub enum SessionsCommand {
     Enrich(EnrichArgs),
     /// Report enrichment health.
     Doctor,
-    /// Serve the session catalog over MCP (stdio).
-    ///
-    /// Spawned by an MCP host (e.g. Claude Code), not run by hand: speaks JSON-RPC on stdin/stdout.
-    Serve(ServeArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -226,16 +229,6 @@ pub struct EnrichArgs {
     /// Halt the sweep once cumulative tokens (in + out) reach this budget.
     #[arg(long)]
     pub budget_tokens: Option<u64>,
-}
-
-#[derive(clap::Args, Debug)]
-pub struct ServeArgs {
-    /// Override the Claude projects dir (default: ~/.claude/projects).
-    #[arg(long)]
-    pub projects_dir: Option<PathBuf>,
-    /// Skip the one-time reindex at startup (serve a possibly-stale catalog).
-    #[arg(long)]
-    pub no_reindex: bool,
 }
 
 /// The subcommand path whose help is being requested, or `None` when this is not a help
