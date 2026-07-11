@@ -23,7 +23,7 @@ pub use db::{Db, EnrichSuccess, Upsert};
 pub use enrich::{EnrichOptions, enrich};
 pub use index::reindex;
 pub use llm::{AnthropicClient, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment};
-pub use mcp::{ServeOpts, SessionsMcpServer, serve_stdio};
+pub use mcp::{SessionsMcpServer, build_server};
 pub use model::{
     EnrichDetail, EnrichStats, EnrichSummary, Fallback, Filters, MatchSource, ReindexStats, SearchHit, SearchResults,
     SessionRecord, SortBy, StageStats,

@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use super::*;
@@ -109,6 +110,60 @@ fn load_from_rejects_bad_enum() {
     let path = dir.path().join("clyde.yml");
     std::fs::write(&path, "date-tz: pacific\n").unwrap();
     assert!(load_from(&path).is_err(), "unknown enum variant should fail to parse");
+}
+
+#[test]
+fn mcp_serve_config_defaults_when_absent() {
+    // A from-scratch default and a missing file must agree: reindex-on-start ON, projects-dir the
+    // platform `~/.claude/projects`. (Guards the hand-written `impl Default` against the derived
+    // `bool` zero-value footgun.)
+    let cfg = Config::default();
+    assert!(cfg.reindex_on_start(), "reindex-on-start must default to true");
+    assert!(
+        cfg.projects_dir().ends_with(".claude/projects"),
+        "projects-dir default must be ~/.claude/projects, got {}",
+        cfg.projects_dir().display()
+    );
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    let loaded = load_from(&path).unwrap();
+    assert_eq!(loaded, Config::default(), "a missing file must equal Config::default()");
+    assert!(loaded.reindex_on_start());
+    assert!(loaded.projects_dir().ends_with(".claude/projects"));
+}
+
+#[test]
+fn mcp_serve_config_override_from_clyde_yml() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "projects-dir: /tmp/custom-projects\nreindex-on-start: false\n").unwrap();
+    let cfg = load_from(&path).unwrap();
+    assert_eq!(cfg.projects_dir(), PathBuf::from("/tmp/custom-projects"));
+    assert!(!cfg.reindex_on_start(), "reindex-on-start override to false must stick");
+}
+
+#[test]
+fn mcp_serve_config_partial_override_keeps_other_default() {
+    // Only reindex-on-start set: projects-dir must still resolve to the platform default.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "reindex-on-start: false\n").unwrap();
+    let cfg = load_from(&path).unwrap();
+    assert!(!cfg.reindex_on_start());
+    assert!(cfg.projects_dir().ends_with(".claude/projects"));
+}
+
+#[test]
+fn load_from_rejects_malformed_reindex_on_start() {
+    // A non-bool value must fail loud rather than silently defaulting.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "reindex-on-start: maybe\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "a non-bool reindex-on-start must fail to parse"
+    );
 }
 
 #[test]

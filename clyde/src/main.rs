@@ -18,10 +18,7 @@ use colored::Colorize;
 use eyre::{Context, Result};
 use log::{LevelFilter, warn};
 
-use cli::{
-    Cli, Command, EnrichArgs, LsArgs, ReindexArgs, ResumeArgs, SearchArgs, ServeArgs, SessionsCommand, StageArgs,
-    TagArgs,
-};
+use cli::{Cli, Command, EnrichArgs, LsArgs, ReindexArgs, ResumeArgs, SearchArgs, SessionsCommand, StageArgs, TagArgs};
 
 /// Default log level for the clyde-native `sessions` subtree when `--log-level` is unset. The
 /// absorbed tools keep their own defaults (via `Globals::log_level == None`), so this applies
@@ -29,7 +26,7 @@ use cli::{
 const DEFAULT_LOG_LEVEL: &str = "info";
 use sessions::{
     AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, Fallback, Filters, MatchSource, ReindexStats,
-    SearchResults, ServeOpts, SessionRecord, StageStats,
+    SearchResults, SessionRecord, StageStats,
 };
 
 /// Max width of a title in the human (terminal) listing before it is truncated with an ellipsis.
@@ -73,19 +70,37 @@ fn main() -> Result<()> {
         };
     }
     let cli = Cli::from_arg_matches(&command.get_matches())?;
+
+    // `mcp serve|register|unregister|status|bundle` is intercepted here, BEFORE any logging setup
+    // and the renew notice below, for the reason the `mcp-io` library exists: once `mcp serve`
+    // runs, stdout IS the JSON-RPC protocol channel, so nothing (not our logger init, not a renew
+    // stdout notice) may touch it first — `mcp-io` owns stdout and routes its own logging to a
+    // file. `common::config::load()` is read here (token-free, `deny_unknown_fields`): a malformed
+    // `clyde.yml` FAILS LOUD/CLOSED via `?` on stderr rather than silently serving defaults. The
+    // build closure opens the `Db` + runs the startup reindex ONLY for the build-requiring verbs
+    // (`serve`/`bundle`); `register`/`unregister`/`status` never build it, so they need no catalog.
+    // This is the only path that constructs a tokio runtime (inside `mcp-io`); every command below
+    // stays synchronous.
+    if let Command::Mcp(cmd) = &cli.command {
+        let cfg = common::config::load().context("failed to load clyde config")?;
+        let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
+        let projects_dir = cfg.projects_dir();
+        let reindex_on_start = cfg.reindex_on_start();
+        let io = mcp_io::mcp_io!();
+        std::process::exit(cmd.run(&io, || {
+            sessions::build_server(&db_path, &projects_dir, reindex_on_start)
+        }));
+    }
+
     // The absorbed tools (report/cost/permit) own their own logging, output, and exit code, so
     // clyde must NOT install a logger for those arms — env_logger can only be initialized once
     // per process. Only the clyde-native `sessions` subtree sets up clyde's logger here.
     let level = cli.log_level.clone().unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string());
     if matches!(cli.command, Command::Report(_) | Command::Cost(_) | Command::Permit(_)) {
         // Absorbed tools install their own logger; clyde must not (one init per process).
-    } else if is_serve(&cli) {
-        // Serve mode keeps stdout reserved for JSON-RPC frames: rmcp/tokio emit via `tracing`, so
-        // route logging through a file-target tracing subscriber (which also bridges `log`)
-        // instead of env_logger.
-        setup_serve_tracing(&level, &log_path)?;
     } else {
-        // Every clyde-native arm (sessions non-serve, bootstrap, doctor, update) uses env_logger.
+        // Every clyde-native arm (sessions, bootstrap, doctor, update) uses env_logger. (The
+        // `mcp` arm never reaches here — it is intercepted above and owns its own file logging.)
         setup_logging(&level, &log_path)?;
     }
 
@@ -111,17 +126,6 @@ fn main() -> Result<()> {
     }
 
     run(cli)
-}
-
-/// True when the parsed command is `clyde session serve` — the one arm that owns stdout for the
-/// MCP protocol and therefore needs the file-target tracing subscriber.
-fn is_serve(cli: &Cli) -> bool {
-    matches!(
-        cli.command,
-        Command::Sessions {
-            command: SessionsCommand::Serve(_)
-        }
-    )
 }
 
 /// Restore the default `SIGPIPE` disposition. Rust ignores SIGPIPE by default, which turns a
@@ -188,13 +192,9 @@ fn run(cli: Cli) -> Result<()> {
         // clyde-native migration/health commands.
         Command::Bootstrap(args) => bootstrap::run(&args),
         Command::Doctor => std::process::exit(doctor::run()?),
-        // Handled by the early intercept in `main`, which exits the process.
+        // Handled by early intercepts in `main`, which exit the process.
         Command::Update(_) => unreachable!("Update is intercepted before this dispatch"),
-        // Serve owns its own catalog handle (inside the async server) and needs a Tokio runtime,
-        // so it is handled before opening the synchronous `Db` the other arms share.
-        Command::Sessions {
-            command: SessionsCommand::Serve(args),
-        } => cmd_serve(&db_path, args),
+        Command::Mcp(_) => unreachable!("Mcp is intercepted before this dispatch"),
         // Resume computes its action from the catalog, then drops the `Db` BEFORE acting: the
         // action is executed outside the `Db`'s scope so no SQLite handle is held across the exec
         // (rusqlite opens with `O_CLOEXEC`, so it would not actually leak, but dropping it first
@@ -216,7 +216,7 @@ fn run(cli: Cli) -> Result<()> {
                 // The bare-date `--since` convention is configurable via clyde.yml (default UTC).
                 // Config is loaded lazily here, inside the commands that actually consume a tz, so
                 // that a malformed clyde.yml never breaks commands that don't read dates
-                // (search, resume, tag, reindex, doctor, bootstrap, serve).
+                // (search, resume, tag, reindex, doctor, bootstrap).
                 SessionsCommand::Ls(args) => {
                     let tz = load_date_tz()?;
                     cmd_ls(&db, args, tz)
@@ -232,9 +232,7 @@ fn run(cli: Cli) -> Result<()> {
                     cmd_enrich(&db, args, tz)
                 }
                 SessionsCommand::Doctor => cmd_doctor(&db),
-                // Unreachable: the outer arms above peel `Serve` and `Resume` off before this
-                // shared `Db` block.
-                SessionsCommand::Serve(_) => unreachable!("Serve is dispatched before opening Db"),
+                // Unreachable: the outer arm above peels `Resume` off before this shared `Db` block.
                 SessionsCommand::Resume(_) => unreachable!("Resume is dispatched before this Db block"),
             }
         }
@@ -248,20 +246,6 @@ fn run(cli: Cli) -> Result<()> {
 fn load_date_tz() -> Result<common::DateTz> {
     let config = common::config::load().context("failed to load clyde config")?;
     Ok(config.date_tz())
-}
-
-/// Bring up the MCP server on stdio. `clyde`'s `main`/`run` are synchronous, so the runtime is
-/// built explicitly here and the only async work is the serve path; no other subcommand changes.
-fn cmd_serve(db_path: &std::path::Path, args: ServeArgs) -> Result<()> {
-    let projects_dir = args
-        .projects_dir
-        .or_else(session::paths::claude_projects_dir)
-        .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects (set HOME)"))?;
-    let opts = ServeOpts {
-        reindex_on_start: !args.no_reindex,
-    };
-    let runtime = tokio::runtime::Runtime::new().context("failed to build the serve Tokio runtime")?;
-    runtime.block_on(sessions::serve_stdio(db_path, &projects_dir, opts))
 }
 
 fn cmd_search(db: &Db, args: SearchArgs) -> Result<()> {
@@ -854,29 +838,6 @@ fn setup_logging(level: &str, log_path: &PathBuf) -> Result<()> {
     env_logger::Builder::new()
         .filter_level(level)
         .target(env_logger::Target::Pipe(Box::new(file)))
-        .init();
-    Ok(())
-}
-
-/// Serve-mode logging: a file-target `tracing` subscriber, NOT env_logger. rmcp and tokio emit
-/// via `tracing` (not `log`), and stdout is reserved for JSON-RPC framing, so their output must
-/// land in the log file. `tracing_subscriber::fmt().init()` also installs the `tracing-log`
-/// bridge, so clyde's own `log::*` records (e.g. reindex warnings) are captured by the same
-/// subscriber. Mutually exclusive with [`setup_logging`]: installing both would race for the
-/// global `log` logger slot and panic.
-fn setup_serve_tracing(level: &str, log_path: &PathBuf) -> Result<()> {
-    if let Some(dir) = log_path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("failed to create log dir {}", dir.display()))?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .with_context(|| format!("failed to open log file {}", log_path.display()))?;
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(level))
-        .with_writer(file)
-        .with_ansi(false)
         .init();
     Ok(())
 }

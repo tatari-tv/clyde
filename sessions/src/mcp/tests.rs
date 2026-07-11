@@ -857,7 +857,7 @@ async fn dispatch_unknown_tool_is_invalid() {
 /// hang. We serve the server "directly" over an in-memory duplex (skipping the JSON-RPC
 /// handshake, which `serve_directly_with_ct` is designed for), drop the client write half to
 /// signal EOF on the server's read half, and assert `waiting()` returns `QuitReason::Closed`.
-/// This exercises the exact transport path `serve_stdio` relies on: rmcp's `AsyncRwTransport`
+/// This exercises the exact transport path `build_server`+`mcp-io` rely on: rmcp's `AsyncRwTransport`
 /// yields `None` on a 0-byte read, and the service loop maps that to `Closed`.
 #[tokio::test]
 async fn serve_exits_on_stdin_eof() {

@@ -23,7 +23,8 @@ pricing/    was claude-pricing     — pricing data, JSONL parsing, cost math (l
 ## Command surface
 
 ```
-clyde session  <search|ls|resume|tag|reindex|stage|enrich|doctor|serve>   # catalog + MCP server
+clyde session  <search|ls|resume|tag|reindex|stage|enrich|doctor>        # catalog
+clyde mcp      <serve|register|unregister|status|bundle>                 # session-catalog MCP server
 clyde report   <collect|render>                                          # was `cr`
 clyde cost     <today|yesterday|daily|weekly|monthly|session|statusline|pricing>   # was `ccu`
 clyde permit   <log|audit|suggest|report|clean|check|install|apply>      # was `claude-permit`
@@ -101,12 +102,37 @@ never copied here; they stay Claude-owned and are referenced.
 
 ## MCP server
 
-`clyde session serve` exposes the catalog's read paths to a Claude agent over the Model Context
-Protocol (stdio, JSON-RPC). It is spawned by the MCP host, not run by hand; stdout is reserved for
-protocol frames. Register it:
+`clyde mcp serve` exposes the catalog's read paths (`sessions_search`, `sessions_ls`,
+`session_open`, `session_grep`, `session_read`) to a Claude agent over the Model Context Protocol
+(stdio, JSON-RPC). It is spawned by the MCP host, not run by hand; stdout is reserved for protocol
+frames. The `mcp` subcommand surface (serve/register/unregister/status/bundle), stdio + logging
+discipline, self-registration, and the `.mcpb` bundle come from the shared `mcp-io` library.
+
+Register it into Claude Code (no more manual `claude mcp add`):
 
 ```bash
-claude mcp add clyde -s user -- clyde session serve
+clyde mcp register --target user      # write the stdio entry into ~/.claude.json
+clyde mcp status                      # show where it is registered
+clyde mcp unregister --target user    # remove it
+clyde mcp bundle                      # package a .mcpb for Claude Desktop / Cowork
+```
+
+`register` writes a `current_exe()`-derived entry: `{"command":"<abs clyde>","args":["mcp","serve"]}`.
+
+**Upgrading from a build that had `clyde session serve`:** the MCP subcommand moved to the top
+level (`clyde session serve` -> `clyde mcp serve`), so any existing `claude mcp add clyde ... session
+serve` entry is now stale. Run `clyde mcp register --target user` UNCONDITIONALLY after upgrading —
+it overwrites the stale entry in place (`register` is idempotent and derives the value from the
+current binary). Do not rely on `clyde mcp status` to detect staleness: it only checks that the key
+is present, not that its `command`/`args` are current.
+
+`clyde mcp serve` takes no flags (an MCP host spawns it with fixed args), so its `projects-dir` and
+`reindex-on-start` come from `~/.config/clyde/clyde.yml` (defaults: `~/.claude/projects`, `true`):
+
+```yaml
+# ~/.config/clyde/clyde.yml
+projects-dir: ~/.claude/projects   # where transcripts live (default)
+reindex-on-start: true             # one-shot incremental reindex at startup (default)
 ```
 
 ## Resuming sessions

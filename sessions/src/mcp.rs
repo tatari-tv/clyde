@@ -1,14 +1,19 @@
 //! Read-only MCP server exposing the session catalog over stdio (JSON-RPC).
 //!
-//! `clyde session serve` spawns this per MCP-host session. The server wraps the existing `Db`
-//! read paths (`search`, `list`, `resolve_id`) as MCP tools an agent can discover and call; it
-//! is transport, not new query logic. It mirrors the house conventions established by
-//! second-brain's `oracle` (rmcp, stdio, `#[tool_router]`/`#[tool_handler]`,
-//! `block_in_place` over the SQLite handle).
+//! `clyde mcp serve` spawns this per MCP-host session. This module supplies ONLY the host-specific
+//! `ServerHandler` (the tools) and [`build_server`] (open the catalog + startup reindex); the `mcp`
+//! subcommand surface (serve/register/unregister/status/bundle), the stdio + logging discipline,
+//! self-registration into Claude config, and the `.mcpb` bundle all come from the shared `mcp-io`
+//! library, wired in `clyde`'s `main.rs` early `Mcp` intercept. The server wraps the existing `Db`
+//! read paths (`search`, `list`, `resolve_id`) as MCP tools an agent can discover and call; it is
+//! transport, not new query logic. It mirrors the house conventions established by second-brain's
+//! `oracle` (rmcp, stdio, `#[tool_router]`/`#[tool_handler]`, `block_in_place` over the SQLite
+//! handle).
 //!
-//! **stdout is the protocol channel.** In serve mode nothing may be written to stdout except
-//! JSON-RPC frames — the `clyde` binary routes logging to a file-target tracing subscriber so
-//! rmcp/tokio's `tracing` output never corrupts the framing.
+//! **stdout is the protocol channel.** Once `mcp serve` runs nothing may be written to stdout
+//! except JSON-RPC frames — `mcp-io` routes the `log` facade to a file before serving, so the
+//! host's `log::*` records never corrupt the framing. (rmcp/tokio's internal `tracing` events are
+//! not captured to that file; they never reach stdout either, so protocol safety holds.)
 //!
 //! **Concurrency.** The catalog handle lives behind a process-local `Arc<Mutex<Db>>` that
 //! serializes the tools *within* one server process. Several servers (spawned per Claude session)
@@ -24,8 +29,8 @@ use std::sync::{Arc, Mutex};
 use eyre::Result;
 use log::{debug, info, warn};
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
-use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use serde_json::json;
 
 use crate::db::Db;
@@ -40,19 +45,6 @@ use tools::{
     LS_LIMIT_MAX, OpenResult, READ_LIMIT_DEFAULT, READ_LIMIT_MAX, ReadResult, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX,
     SessionGrepRequest, SessionReadRequest, SessionRef, SessionsLsRequest, SessionsSearchRequest,
 };
-
-/// Options controlling serve bring-up.
-pub struct ServeOpts {
-    /// Run a single incremental reindex at startup so *today's* sessions are findable without a
-    /// per-query write storm. Default on; the binary's `--no-reindex` flips it off.
-    pub reindex_on_start: bool,
-}
-
-impl Default for ServeOpts {
-    fn default() -> Self {
-        Self { reindex_on_start: true }
-    }
-}
 
 /// The read-only sessions MCP server. Holds the catalog handle behind a process-local `Mutex`.
 #[derive(Clone)]
@@ -101,7 +93,7 @@ impl SessionsMcpServer {
     }
 
     /// Run lock-holding, synchronous rusqlite work with `block_in_place` on a multi-thread runtime
-    /// (production: `clyde session serve`), and inline on a current-thread runtime
+    /// (production: `clyde mcp serve`), and inline on a current-thread runtime
     /// (`#[tokio::test]`, where `block_in_place` panics). Ported from oracle.
     fn block_in_place_compat<F, R>(f: F) -> R
     where
@@ -233,7 +225,7 @@ impl SessionsMcpServer {
             "sessions_search: returning {} hits (fallback={:?})",
             results.count, results.fallback
         );
-        Ok(CallToolResult::success(vec![Content::json(&results)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(&results)?]))
     }
 
     /// List sessions by metadata filters (repo / since / tag / model), most-recent first.
@@ -270,7 +262,7 @@ impl SessionsMcpServer {
         })?;
 
         debug!("sessions_ls: returning {} records", records.len());
-        Ok(CallToolResult::success(vec![Content::json(json!({
+        Ok(CallToolResult::success(vec![ContentBlock::json(json!({
             "count": records.len(),
             "results": records,
         }))?]))
@@ -291,7 +283,7 @@ impl SessionsMcpServer {
             Ok(Self::open_result_for(rec))
         })?;
 
-        Ok(CallToolResult::success(vec![Content::json(&result)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(&result)?]))
     }
 
     /// Search within one session's transcript for a plain (non-FTS) case-insensitive substring,
@@ -351,7 +343,7 @@ impl SessionsMcpServer {
             })
         })?;
 
-        Ok(CallToolResult::success(vec![Content::json(&result)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(&result)?]))
     }
 
     /// Read a window of one session's transcript as role-labeled messages, paged over the served
@@ -412,7 +404,7 @@ impl SessionsMcpServer {
             })
         })?;
 
-        Ok(CallToolResult::success(vec![Content::json(&result)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(&result)?]))
     }
 }
 
@@ -420,7 +412,11 @@ impl SessionsMcpServer {
 impl ServerHandler for SessionsMcpServer {
     fn get_info(&self) -> ServerInfo {
         info!("SessionsMcpServer::get_info: MCP client requested server info");
-        let mut info = ServerInfo::default();
+        // `ServerInfo::default()`'s `Implementation::from_build_env()` expands `CARGO_CRATE_NAME`
+        // INSIDE rmcp, so an MCP client would see the server as "rmcp". Set our own identity
+        // explicitly (`env!("CARGO_PKG_VERSION")` is this crate's version, the host) so clients
+        // see "clyde".
+        let mut info = ServerInfo::default().with_server_info(Implementation::new("clyde", env!("CARGO_PKG_VERSION")));
         info.instructions = Some(
             "clyde session - read-only navigation over the Claude Code session catalog. \
              Find, search inside, and read past sessions conversationally instead of shelling out to the \
@@ -439,44 +435,30 @@ impl ServerHandler for SessionsMcpServer {
     }
 }
 
-/// Bring the MCP server up on the stdio transport and block until the client disconnects.
+/// Build the sessions MCP handler: open the catalog and run the one-shot startup reindex.
 ///
-/// Owns stdin/stdout for JSON-RPC framing; all logging/tracing must already be routed to a file
-/// by the caller. Runs at most one incremental reindex at startup (per `opts`), then serves.
-pub async fn serve_stdio(db_path: &Path, projects_dir: &Path, opts: ServeOpts) -> Result<()> {
+/// This is the host-owned half of serving. `mcp-io` owns the stdio transport, the tokio runtime,
+/// logging discipline, and the serve/`waiting()` loop; the `clyde mcp serve` intercept in
+/// `main.rs` calls this from `McpCmd::run`'s build closure to produce the [`SessionsMcpServer`]
+/// handler. Runs at most one incremental reindex at startup (per `reindex_on_start`) so *today's*
+/// sessions are findable without a per-query write storm; the reindex is synchronous, so a slow
+/// one delays the MCP `initialize` response (accepted, config-tunable via `reindex-on-start`).
+pub fn build_server(db_path: &Path, projects_dir: &Path, reindex_on_start: bool) -> Result<SessionsMcpServer> {
     info!(
-        "serve_stdio: db_path={} projects_dir={} reindex_on_start={}",
+        "build_server: db_path={} projects_dir={} reindex_on_start={}",
         db_path.display(),
         projects_dir.display(),
-        opts.reindex_on_start,
+        reindex_on_start,
     );
     let db = Db::open_at(db_path)?;
-    if opts.reindex_on_start {
+    if reindex_on_start {
         let stats = crate::reindex(&db, projects_dir)?;
         info!(
-            "serve_stdio: startup reindex scanned={} upserted={} skipped={} archived={}",
+            "build_server: startup reindex scanned={} upserted={} skipped={} archived={}",
             stats.scanned, stats.upserted, stats.skipped_unchanged, stats.archived,
         );
     }
-
-    let server = SessionsMcpServer::new(db);
-    let service = server.serve((tokio::io::stdin(), tokio::io::stdout())).await?;
-    info!("serve_stdio: MCP server started, waiting for client requests");
-
-    // #12 (investigated Phase 9): rmcp 1.7.0's stdio transport RESOLVES `waiting()` on EOF at the
-    // protocol layer — `AsyncRwTransport::receive()` returns `None` on a 0-byte `read_until`, which
-    // the service loop maps to `QuitReason::Closed`. The `serve_exits_on_stdin_eof` test proves
-    // this over an in-memory duplex.
-    //
-    // LIMITATION (accepted, not verified): the production substrate here is `tokio::io::stdin()`, a
-    // blocking, uncancellable reader thread — it is NOT proven that a real terminal/pipe stdin EOF
-    // propagates as promptly as the duplex (the original shakedown probe hung ~8s before its
-    // timeout). We do NOT add a select-on-EOF watcher because MCP hosts terminate the child process
-    // on shutdown, so a lingering blocked read is harmless in practice. We capture the QuitReason
-    // (vs discarding it) so the shutdown reason is visible in the log if this ever needs revisiting.
-    let quit_reason = service.waiting().await?;
-    info!("serve_stdio: client disconnected, shutting down (reason={quit_reason:?})");
-    Ok(())
+    Ok(SessionsMcpServer::new(db))
 }
 
 #[cfg(test)]
