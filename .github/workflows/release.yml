@@ -1,224 +1,27 @@
 name: release
 
-# Tag-driven release for clyde. On a v* tag, cross-compile the clyde umbrella
-# binary for the four standard targets (linux amd64/arm64, macOS x86_64/arm64),
-# tarball + sha256 each, and publish the GitHub Release.
+# Thin caller: delegates the tag-driven cross-compile -> tarball + sha256 ->
+# GitHub Release to the shared public reusable. The binary and the repo are both
+# named `clyde`, so the reusable's defaults (bin-names = archive-prefix = repo
+# name) already produce clyde-<tag>-<suffix>.tar.gz(.sha256); no overrides needed.
 #
-# SELF-CONTAINED ON PURPOSE. clyde is a PUBLIC repo, and a public repo CANNOT
-# consume a reusable workflow from an internal/private repo. The previous version
-# called tatari-tv/github-actions/.github/workflows/rust-cli-release.yml@v5; that
-# started failing at startup ("workflow file issue", 0 jobs) the moment clyde went
-# public (2026-07-08), which is why v0.8.0/v0.8.1 built no Release. The build logic
-# below is vendored from that reusable; do NOT re-introduce a cross-repo `uses:` to
-# the internal github-actions repo while clyde is public. Precedent: claude-report
-# (public sibling CLI) inlines its release workflow the same way.
+# Only the canonical `clyde` binary ships. The report/cost/permit members are
+# libraries reached through `clyde` subcommands, not separate binaries.
 #
-# Only the canonical `clyde` binary is shipped. The report/cost/permit members are
-# libraries reached through `clyde` subcommands; there are no separate binaries.
-#
-# The `tag` workflow_dispatch input lets us (re)publish an EXISTING tag without
-# re-tagging: dispatch on `main` (which carries this fixed file) with tag=v0.8.1,
-# and the run checks out and versions the artifacts as that tag. Dispatching
-# directly against the tag ref would instead run the file as it existed at that
-# tag (the old, broken caller), so the input is the supported backfill path.
+# Tag-push trigger only (no workflow_dispatch): the reusable's publish job has no
+# tag-ref guard, so a manual dispatch on a branch would cut a Release named after
+# the branch. This drops the old vendored file's workflow_dispatch tag-backfill
+# input, which existed only to republish tags that the (now-removed) broken
+# internal reusable failed to build while clyde was going public.
 
 on:
   push:
     tags:
-      - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to (re)build a Release for, e.g. v0.8.1. Leave blank to build the dispatched ref."
-        required: false
-        type: string
-        default: ""
-
-env:
-  RUST_VERSION: "1.96.0"
-  # The tag being released: the workflow_dispatch input when set, else the pushed ref.
-  REF_NAME: ${{ inputs.tag || github.ref_name }}
+      - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-linux:
-    name: Build ${{ matrix.suffix }}
-    runs-on: ubuntu-latest
-    container: debian:bookworm
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - suffix: linux-amd64
-            target: x86_64-unknown-linux-gnu
-            cross: false
-          - suffix: linux-arm64
-            target: aarch64-unknown-linux-gnu
-            cross: true
-    steps:
-      - name: Install build deps
-        run: |
-          apt-get update
-          apt-get install -y curl build-essential git pkg-config libssl-dev
-
-      - name: Install cross toolchain (arm64)
-        if: matrix.cross
-        run: apt-get install -y gcc-aarch64-linux-gnu
-
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ inputs.tag || github.ref }}
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-
-      - name: Mark workspace safe for git (container)
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Set GIT_DESCRIBE
-        run: echo "GIT_DESCRIBE=$(git describe --tags --dirty --always)" >> "$GITHUB_ENV"
-
-      - name: Set up Rust
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$RUST_VERSION"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          . "$HOME/.cargo/env"
-          rustup target add "$TARGET"
-
-      # No dependency cache in the release pipeline, on purpose: a shared rust-cache
-      # keyed off the default branch can be poisoned by a less-trusted PR build and
-      # then restored into the binaries we publish. Release builds are infrequent, so a
-      # clean build is the right supply-chain tradeoff (CodeRabbit #38, cache-poisoning).
-
-      - name: Build
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
-          TARGET: ${{ matrix.target }}
-        run: cargo build --release --target "$TARGET" --bin clyde
-
-      - name: Package tarball
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-          SUFFIX: ${{ matrix.suffix }}
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts
-          cp "target/$TARGET/release/clyde" artifacts/
-          tar -czvf "clyde-${REF_NAME}-${SUFFIX}.tar.gz" -C artifacts clyde
-
-      - name: Generate checksum
-        shell: bash
-        env:
-          SUFFIX: ${{ matrix.suffix }}
-        run: |
-          set -euo pipefail
-          f="clyde-${REF_NAME}-${SUFFIX}.tar.gz"
-          sha256sum "$f" > "$f.sha256"
-
-      - name: Upload tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: clyde-${{ matrix.suffix }}
-          path: |
-            clyde-${{ env.REF_NAME }}-${{ matrix.suffix }}.tar.gz
-            clyde-${{ env.REF_NAME }}-${{ matrix.suffix }}.tar.gz.sha256
-
-  build-macos:
-    name: Build ${{ matrix.suffix }}
-    runs-on: macos-14
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - suffix: macos-x86_64
-            target: x86_64-apple-darwin
-          - suffix: macos-arm64
-            target: aarch64-apple-darwin
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ inputs.tag || github.ref }}
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-
-      - name: Set GIT_DESCRIBE
-        run: echo "GIT_DESCRIBE=$(git describe --tags --dirty --always)" >> "$GITHUB_ENV"
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          targets: ${{ matrix.target }}
-
-      # No dependency cache in the release pipeline, on purpose: a shared rust-cache
-      # keyed off the default branch can be poisoned by a less-trusted PR build and
-      # then restored into the binaries we publish. Release builds are infrequent, so a
-      # clean build is the right supply-chain tradeoff (CodeRabbit #38, cache-poisoning).
-
-      - name: Build
-        env:
-          TARGET: ${{ matrix.target }}
-        run: cargo build --release --target "$TARGET" --bin clyde
-
-      - name: Package tarball
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-          SUFFIX: ${{ matrix.suffix }}
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts
-          cp "target/$TARGET/release/clyde" artifacts/
-          tar -czvf "clyde-${REF_NAME}-${SUFFIX}.tar.gz" -C artifacts clyde
-
-      - name: Generate checksum
-        shell: bash
-        env:
-          SUFFIX: ${{ matrix.suffix }}
-        run: |
-          set -euo pipefail
-          f="clyde-${REF_NAME}-${SUFFIX}.tar.gz"
-          shasum -a 256 "$f" > "$f.sha256"
-
-      - name: Upload tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: clyde-${{ matrix.suffix }}
-          path: |
-            clyde-${{ env.REF_NAME }}-${{ matrix.suffix }}.tar.gz
-            clyde-${{ env.REF_NAME }}-${{ matrix.suffix }}.tar.gz.sha256
-
   release:
-    name: Publish GitHub Release
-    needs: [build-linux, build-macos]
-    # != 'failure' (not == 'success') so a deliberately-skipped job never publishes
-    # an empty Release, while a real build failure blocks the publish.
-    # Publish ONLY for a real tag push or an explicit dispatch tag input. Without this,
-    # a blank-tag workflow_dispatch on a branch sets REF_NAME=<branch> and would create
-    # a spurious Release/tag named after the branch (CodeRabbit #38, functional-correctness).
-    if: >-
-      ${{ !cancelled()
-      && needs.build-linux.result != 'failure'
-      && needs.build-macos.result != 'failure'
-      && (inputs.tag != '' || startsWith(github.ref, 'refs/tags/')) }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download tarballs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          path: dist
-      - name: Create Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
-        with:
-          tag_name: ${{ env.REF_NAME }}
-          files: 'dist/**'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    uses: tatari-tv/github-actions-public/.github/workflows/rust-cli-release.yml@v1
