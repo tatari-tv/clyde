@@ -276,6 +276,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "eyre",
+ "gethostname",
  "libc",
  "log",
  "mcp-io",

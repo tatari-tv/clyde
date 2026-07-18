@@ -215,6 +215,38 @@ fn truncate_title_is_char_boundary_safe() {
     assert!(out.chars().count() <= TITLE_DISPLAY_WIDTH);
 }
 
+// ---------------------------------------------------------------------------
+// dormant_after_duration - arg -> ExportContext mapping
+// ---------------------------------------------------------------------------
+
+/// A `--dormant-after` span (e.g. `7d`) recovers as (approximately) that span's `chrono::Duration`,
+/// via the shared `parse_since` span parser, not a second one.
+#[test]
+fn dormant_after_duration_recovers_the_span() {
+    let now = Utc::now();
+    let dur = dormant_after_duration("7d", common::DateTz::Utc, now).expect("valid span");
+    // parse_since resolves "7d" against its OWN internal `Utc::now()` call (a few micros after
+    // ours), so the recovered duration is 7 days minus that small epsilon - never over 7 days,
+    // and no more than a second short of it in a healthy test run.
+    let seven_days = chrono::Duration::days(7);
+    assert!(
+        dur <= seven_days,
+        "recovered duration must not exceed the requested span: {dur}"
+    );
+    assert!(
+        dur > seven_days - chrono::Duration::seconds(5),
+        "recovered duration should be within a few seconds of the requested span: {dur}"
+    );
+}
+
+/// An unparseable span is a loud error, not a silently wrong duration.
+#[test]
+fn dormant_after_duration_rejects_garbage() {
+    let now = Utc::now();
+    let result = dormant_after_duration("not-a-span", common::DateTz::Utc, now);
+    assert!(result.is_err(), "garbage span must error, not silently default");
+}
+
 #[test]
 fn is_debug_level_selects_debug_form_only_for_debug_and_trace() {
     // debug/trace -> Debug rendering (with Location), case-insensitively.

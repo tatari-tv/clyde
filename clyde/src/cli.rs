@@ -109,6 +109,9 @@ pub enum SessionsCommand {
     Tag(TagArgs),
     /// Reindex the catalog (incremental).
     Reindex(ReindexArgs),
+    /// Versioned JSON export contract: bulk metadata (incremental via `--cursor`) or one session's
+    /// full record (`--id`, optionally with its parsed transcript body).
+    Export(ExportArgs),
     /// Stage durable copies of dormant transcripts.
     Stage(StageArgs),
     /// Enrich dormant sessions with tags + summary.
@@ -195,6 +198,49 @@ pub struct ReindexArgs {
     /// Override the Claude projects dir (default: ~/.claude/projects).
     #[arg(long)]
     pub projects_dir: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ExportArgs {
+    /// Incremental cursor: only sessions with a revision strictly greater than this opaque value
+    /// (from a prior envelope's `cursor` field). Separate from `--since`; passing both ANDs them.
+    #[arg(long)]
+    pub cursor: Option<i64>,
+    /// Only sessions modified since this point: a relative span (e.g. 7d, 24h, 30m) or a date.
+    /// Human-time filter on `modified`, distinct from `--cursor` (the opaque revision).
+    #[arg(long)]
+    pub since: Option<String>,
+    /// Substring match against cwd / project dir (e.g. `org/repo`).
+    #[arg(long)]
+    pub repo: Option<String>,
+    /// Require this tag.
+    #[arg(long)]
+    pub tag: Option<String>,
+    /// Treat a session as dormant once idle this long (e.g. 7d, 24h); drives the `dormant` field.
+    #[arg(long, default_value = "7d")]
+    pub dormant_after: String,
+    /// Include TTL-reaped (archived) sessions in the bulk listing.
+    #[arg(long)]
+    pub include_archived: bool,
+    /// Cap on rows per page (bulk mode only). Consecutive pages keyed off the returned `cursor`
+    /// concatenate with no gap and no overlap.
+    #[arg(long)]
+    pub limit: Option<usize>,
+    /// Export exactly one session by id (or unique prefix), instead of a bulk metadata page.
+    /// Exclusive of the bulk filters above (`--cursor`/`--since`/`--repo`/`--tag`/`--limit`/
+    /// `--include-archived`).
+    #[arg(long)]
+    pub id: Option<String>,
+    /// With `--id`: include the parsed transcript body.
+    #[arg(long)]
+    pub with_body: bool,
+    /// With `--id --with-body`: cap the body read at this many bytes (message-boundary safe, never
+    /// mid-message).
+    #[arg(long)]
+    pub max_body_bytes: Option<usize>,
+    /// Skip the lazy reindex that normally refreshes the catalog before querying.
+    #[arg(long)]
+    pub no_reindex: bool,
 }
 
 #[derive(clap::Args, Debug)]
