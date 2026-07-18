@@ -1028,3 +1028,375 @@ fn coverage_counts_distinct_terms_only() {
         "the body matches the two distinct terms alpha + beta, counted once each"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase 1: schema v5 `updated_at` revision cursor.
+//
+// The cursor is an opaque monotonic revision assigned by DB triggers from the one-row `export_meta`
+// counter — never a timestamp. These tests pin the invariant structurally: EVERY write to a
+// `sessions` row advances the cursor by exactly 1 and stamps the affected row with the new revision,
+// no matter which code path (or which binary) issued the write.
+// ---------------------------------------------------------------------------
+
+/// The one-row `export_meta` revision counter — the source every trigger draws the next value from.
+fn revision_counter(db: &Db) -> i64 {
+    db.conn
+        .query_row("SELECT revision FROM export_meta WHERE id = 0", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// The stored `updated_at` revision for a single session.
+fn updated_at_of(db: &Db, session_id: &str) -> i64 {
+    db.conn
+        .query_row(
+            "SELECT updated_at FROM sessions WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// The max `updated_at` across all rows — the envelope cursor a consumer would persist. 0 when empty.
+fn max_revision(db: &Db) -> i64 {
+    db.conn
+        .query_row("SELECT COALESCE(MAX(updated_at), 0) FROM sessions", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// Matrix case 1 — INSERT. A fresh DB seeds the counter at 0; the first insert advances it to 1 and
+/// stamps the new row.
+#[test]
+fn v5_insert_advances_cursor_once() {
+    let db = Db::open_memory().unwrap();
+    assert_eq!(revision_counter(&db), 0, "fresh DB seeds the counter at 0");
+    assert_eq!(max_revision(&db), 0);
+
+    assert_eq!(
+        db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap(),
+        Upsert::Inserted
+    );
+    assert_eq!(revision_counter(&db), 1, "one INSERT advances the counter by exactly 1");
+    assert_eq!(
+        updated_at_of(&db, UUID_A),
+        1,
+        "the inserted row carries the new revision"
+    );
+    assert_eq!(max_revision(&db), 1);
+}
+
+/// Matrix case 2 — normal UPDATE (a re-upsert with a newer mtime).
+#[test]
+fn v5_normal_update_advances_cursor_once() {
+    let db = Db::open_memory().unwrap();
+    let mut p = parsed(UUID_A, "/tmp/a.jsonl");
+    db.upsert_session(&p, "desk").unwrap(); // revision 1
+
+    let before = revision_counter(&db);
+    p.modified = dt("2026-06-25T10:00:00Z");
+    assert_eq!(db.upsert_session(&p, "desk").unwrap(), Upsert::Updated);
+    assert_eq!(
+        revision_counter(&db),
+        before + 1,
+        "a normal UPDATE advances the cursor by exactly 1"
+    );
+    assert_eq!(
+        updated_at_of(&db, UUID_A),
+        revision_counter(&db),
+        "the updated row carries the new revision"
+    );
+}
+
+/// A skipped-unchanged upsert writes nothing, so it must NOT advance the cursor (correct by
+/// construction: no write, no bump — the cursor only moves on real changes).
+#[test]
+fn v5_skipped_unchanged_does_not_advance_cursor() {
+    let db = Db::open_memory().unwrap();
+    let p = parsed(UUID_A, "/tmp/a.jsonl");
+    db.upsert_session(&p, "desk").unwrap();
+
+    let before = revision_counter(&db);
+    assert_eq!(db.upsert_session(&p, "desk").unwrap(), Upsert::SkippedUnchanged);
+    assert_eq!(
+        revision_counter(&db),
+        before,
+        "an unchanged upsert issues no write, so the cursor holds"
+    );
+}
+
+/// Matrix case 3 — enrich-SKIP write (`record_enrich_skip`, db.rs write site).
+#[test]
+fn v5_enrich_skip_write_advances_cursor_once() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    let before = revision_counter(&db);
+    assert!(db.record_enrich_skip(UUID_A, "personal", "skipped-personal").unwrap());
+    assert_eq!(
+        revision_counter(&db),
+        before + 1,
+        "record_enrich_skip advances the cursor exactly once"
+    );
+    assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
+}
+
+/// Matrix case 4 — enrich-FAILURE write (`record_enrich_failure`, db.rs write site).
+#[test]
+fn v5_enrich_failure_write_advances_cursor_once() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    let before = revision_counter(&db);
+    assert!(
+        db.record_enrich_failure(UUID_A, "work", "the model call blew up")
+            .unwrap()
+    );
+    assert_eq!(
+        revision_counter(&db),
+        before + 1,
+        "record_enrich_failure advances the cursor exactly once"
+    );
+    assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
+}
+
+/// A successful enrichment write happens inside a transaction that also rebuilds the high-signal FTS
+/// row; the trigger must still fire exactly once (not once per statement in the tx). This is the
+/// write site the whole cursor exists for — an enrichment that leaves the session row otherwise
+/// "unchanged since X" must still move the cursor.
+#[test]
+fn v5_set_enrichment_advances_cursor_once() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    let before = revision_counter(&db);
+    assert!(
+        db.set_enrichment(
+            UUID_A,
+            &EnrichSuccess {
+                summary: "set up the Marquee S3 bucket",
+                tags: Some(&["terraform".to_string(), "s3".to_string()]),
+                scope: "work",
+                enriched_modified: dt("2026-06-21T10:00:00Z"),
+                enrich_model: "claude-opus-4-8",
+                prompt_version: 1,
+                redaction_count: 0,
+                tokens_in: 100,
+                tokens_out: 50,
+            },
+            dt("2026-06-22T10:00:00Z"),
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        revision_counter(&db),
+        before + 1,
+        "set_enrichment advances the cursor exactly once, even inside its transaction"
+    );
+    assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
+}
+
+/// Matrix case 5 — raw-SQL stale-binary write. A direct `UPDATE sessions` (as a stale v4 binary, or
+/// any other writer, would issue) still fires the trigger: the invariant lives in the DB file, not
+/// in clyde's write code. This is the rollback-hazard mitigation from the design doc.
+#[test]
+fn v5_raw_sql_write_advances_cursor_once() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    let before = revision_counter(&db);
+    db.conn
+        .execute(
+            "UPDATE sessions SET title = 'a stale binary wrote this directly' WHERE session_id = ?1",
+            rusqlite::params![UUID_A],
+        )
+        .unwrap();
+    assert_eq!(
+        revision_counter(&db),
+        before + 1,
+        "a raw UPDATE fires the trigger regardless of the writing binary"
+    );
+    assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
+}
+
+/// Matrix case 6 — `ON CONFLICT DO UPDATE`. An upsert that resolves to the DO UPDATE branch (the row
+/// already exists) fires the AFTER UPDATE trigger exactly once.
+#[test]
+fn v5_on_conflict_do_update_advances_cursor_once() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+
+    let before = revision_counter(&db);
+    db.conn
+        .execute(
+            "INSERT INTO sessions (session_id, project_dir, transcript_path, modified, host) \
+             VALUES (?1, '/p', '/t', '2026-06-30T00:00:00Z', 'desk') \
+             ON CONFLICT(session_id) DO UPDATE SET title = 'set via on-conflict'",
+            rusqlite::params![UUID_A],
+        )
+        .unwrap();
+    assert_eq!(
+        revision_counter(&db),
+        before + 1,
+        "ON CONFLICT DO UPDATE advances the cursor exactly once"
+    );
+    assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
+}
+
+/// Matrix case 7 — no-recursion assertion. With `recursive_triggers` turned ON, the UPDATE trigger's
+/// OWN write would re-fire it (unbounded recursion / hard error) WITHOUT the
+/// `WHEN NEW.updated_at IS OLD.updated_at` guard. The guard must make both an INSERT and an UPDATE
+/// advance the cursor by EXACTLY 1 and never error, so the behavior is correct under either PRAGMA
+/// setting (clyde leaves `recursive_triggers` unset; this proves the guard, not the default).
+#[test]
+fn v5_update_trigger_does_not_recurse_even_with_recursive_triggers_on() {
+    let db = Db::open_memory().unwrap();
+    db.conn.pragma_update(None, "recursive_triggers", "ON").unwrap();
+
+    // INSERT: exactly one bump, no runaway recursion.
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+    assert_eq!(
+        revision_counter(&db),
+        1,
+        "insert bumps exactly once under recursive_triggers=ON"
+    );
+    assert_eq!(updated_at_of(&db, UUID_A), 1);
+
+    // UPDATE: exactly one more bump, no error, no double-bump — the guard blocks the self-re-fire.
+    let before = revision_counter(&db);
+    db.conn
+        .execute(
+            "UPDATE sessions SET title = 'guarded update' WHERE session_id = ?1",
+            rusqlite::params![UUID_A],
+        )
+        .unwrap();
+    assert_eq!(
+        revision_counter(&db),
+        before + 1,
+        "the guarded UPDATE trigger bumps exactly once (no recursion) under recursive_triggers=ON"
+    );
+    assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
+}
+
+/// The exact `sessions` schema clyde shipped at v4 — every column through `tags_source`, and NO
+/// `updated_at`. Used to build a real v4 DB on disk so the v4 -> v5 migration path (column add,
+/// rowid-order backfill, counter seed, triggers-last) is exercised end to end.
+const V4_SESSIONS_SQL: &str = "\
+CREATE TABLE sessions (
+    id              INTEGER PRIMARY KEY,
+    session_id      TEXT NOT NULL UNIQUE,
+    cwd             TEXT,
+    project_dir     TEXT NOT NULL,
+    transcript_path TEXT NOT NULL,
+    title           TEXT,
+    first_prompt    TEXT,
+    summary         TEXT,
+    tags            TEXT NOT NULL DEFAULT '',
+    git_branch      TEXT,
+    model           TEXT,
+    n_msgs          INTEGER NOT NULL DEFAULT 0,
+    created         TEXT,
+    modified        TEXT NOT NULL,
+    cost            REAL,
+    host            TEXT NOT NULL,
+    archived        INTEGER NOT NULL DEFAULT 0,
+    staged_path     TEXT,
+    scope             TEXT,
+    enriched_at       TEXT,
+    enriched_modified TEXT,
+    enrich_model      TEXT,
+    prompt_version    INTEGER,
+    enrich_status     TEXT,
+    last_error        TEXT,
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    redaction_count   INTEGER,
+    tokens_in         INTEGER,
+    tokens_out        INTEGER,
+    tags_source       TEXT
+);
+";
+
+/// v4 -> v5 migration: the backfill assigns revisions in rowid order, the counter is seeded to
+/// `MAX(updated_at)`, and the first post-migration write is `MAX+1` (never a collision, never
+/// backward). Builds a genuine v4 DB on disk (three rows, ascending ids, `user_version = 4`) and
+/// reopens it through `Db::open_at` to drive the real migration.
+#[test]
+fn v5_migration_from_v4_backfills_in_rowid_order_and_seeds_counter() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("v4.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(V4_SESSIONS_SQL).unwrap();
+        // Ascending ids -> the rowid-order backfill must assign 1, 2, 3 in exactly that order.
+        for (id, sid) in [(1i64, UUID_A), (2, UUID_B), (3, UUID_C)] {
+            conn.execute(
+                "INSERT INTO sessions (id, session_id, project_dir, transcript_path, modified, host) \
+                 VALUES (?1, ?2, '/p', '/t', '2026-06-01T00:00:00Z', 'desk')",
+                rusqlite::params![id, sid],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 4i64).unwrap();
+    }
+
+    // Reopen: migrate v4 -> v5.
+    let db = Db::open_at(&path).unwrap();
+    let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema version");
+
+    // Backfill in rowid order: 1, 2, 3.
+    assert_eq!(updated_at_of(&db, UUID_A), 1, "row id=1 backfilled to revision 1");
+    assert_eq!(updated_at_of(&db, UUID_B), 2, "row id=2 backfilled to revision 2");
+    assert_eq!(updated_at_of(&db, UUID_C), 3, "row id=3 backfilled to revision 3");
+
+    // Counter seeded to MAX(updated_at) = 3.
+    assert_eq!(revision_counter(&db), 3, "counter seeded to MAX(updated_at)");
+
+    // First post-migration write is MAX+1 = 4 (no collision, strictly greater than every backfill).
+    assert!(db.record_enrich_skip(UUID_A, "work", "skipped-empty").unwrap());
+    assert_eq!(revision_counter(&db), 4, "the first write after migration is MAX+1");
+    assert_eq!(updated_at_of(&db, UUID_A), 4);
+    assert!(
+        updated_at_of(&db, UUID_A) > 3,
+        "the new revision is strictly greater than every backfilled one, so paging cannot go backward"
+    );
+}
+
+/// The migration is idempotent on reopen: `migrate` is version-gated and its whole body (column add,
+/// backfill, seed, triggers) plus the `user_version` bump commit in ONE transaction, so a fresh open
+/// of an already-migrated DB re-runs nothing — the counter and every row's revision are stable.
+#[test]
+fn v5_migration_is_idempotent_on_reopen() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("s.db");
+    {
+        let db = Db::open_at(&path).unwrap();
+        db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+        assert_eq!(revision_counter(&db), 1);
+    }
+
+    // Second open: already v5, migrate short-circuits on the version gate.
+    let rev_after_reopen = {
+        let db = Db::open_at(&path).unwrap();
+        assert_eq!(
+            revision_counter(&db),
+            1,
+            "reopening an already-migrated DB must not re-run the backfill/seed"
+        );
+        assert_eq!(
+            updated_at_of(&db, UUID_A),
+            1,
+            "the row's revision is stable across reopen"
+        );
+        revision_counter(&db)
+    };
+
+    // Third open: still stable, and the schema still functions — a fresh write advances normally.
+    let db = Db::open_at(&path).unwrap();
+    assert_eq!(revision_counter(&db), rev_after_reopen);
+    let before = revision_counter(&db);
+    assert!(db.record_enrich_failure(UUID_A, "work", "boom").unwrap());
+    assert_eq!(
+        revision_counter(&db),
+        before + 1,
+        "after an idempotent reopen the cursor still advances on the next write"
+    );
+}

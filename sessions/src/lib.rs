@@ -11,6 +11,7 @@
 
 pub mod db;
 pub mod enrich;
+pub mod export;
 pub mod index;
 pub mod llm;
 pub mod mcp;
@@ -21,6 +22,9 @@ pub mod transcript;
 
 pub use db::{Db, EnrichSuccess, Upsert};
 pub use enrich::{EnrichOptions, enrich};
+pub use export::{
+    EXPORT_SCHEMA_VERSION, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters, ExportRecord,
+};
 pub use index::reindex;
 pub use llm::{AnthropicClient, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment};
 pub use mcp::{SessionsMcpServer, build_server};
@@ -30,4 +34,4 @@ pub use model::{
 };
 pub use since::{DateTz, parse_since};
 pub use stage::stage_dormant;
-pub use transcript::transcript_layout;
+pub use transcript::{transcript_layout, transcript_layout_parts};

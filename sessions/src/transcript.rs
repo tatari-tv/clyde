@@ -14,12 +14,30 @@ use crate::model::SessionRecord;
 /// staged copy if one exists, else `None` (nothing left to parse). Staged copies are plain jsonl
 /// mirroring the live layout (`session::stage`), so one parse path serves both.
 pub fn transcript_layout(rec: &SessionRecord) -> Option<(PathBuf, PathBuf)> {
-    if rec.transcript_path.exists() {
-        let subagents = Path::new(&rec.project_dir).join(&rec.session_id).join("subagents");
-        return Some((rec.transcript_path.clone(), subagents));
+    transcript_layout_parts(
+        &rec.session_id,
+        &rec.transcript_path,
+        &rec.project_dir,
+        rec.staged_path.as_deref(),
+    )
+}
+
+/// The live-then-staged layout resolution over the raw fields, without a [`SessionRecord`]. The
+/// `export` query maps its own columns (the enrichment fields `SessionRecord` omits) and reuses this
+/// so the body-source fallback stays identical to `enrich` and the MCP content tools: prefer the
+/// live `transcript_path` if on disk, else the staged copy, else `None`.
+pub fn transcript_layout_parts(
+    session_id: &str,
+    transcript_path: &Path,
+    project_dir: &str,
+    staged_path: Option<&Path>,
+) -> Option<(PathBuf, PathBuf)> {
+    if transcript_path.exists() {
+        let subagents = Path::new(project_dir).join(session_id).join("subagents");
+        return Some((transcript_path.to_path_buf(), subagents));
     }
-    let staged = rec.staged_path.as_ref().filter(|p| p.exists())?;
-    let parent = staged.join(format!("{}.jsonl", rec.session_id));
+    let staged = staged_path.filter(|p| p.exists())?;
+    let parent = staged.join(format!("{session_id}.jsonl"));
     let subagents = staged.join("subagents");
     Some((parent, subagents))
 }

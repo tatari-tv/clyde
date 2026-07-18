@@ -60,6 +60,39 @@ fn work_org_only_matches_the_org_slot_not_anywhere() {
     assert_eq!(classify_str("/home/saidler/repos/tatari-tv/anything/deep"), Scope::Work);
 }
 
+fn repo_str(s: &str) -> Option<String> {
+    repo_slug(Some(&PathBuf::from(s)))
+}
+
+#[test]
+fn repo_slug_derives_org_and_name_from_repos_anchor() {
+    assert_eq!(
+        repo_str("/home/saidler/repos/tatari-tv/drata-cli").as_deref(),
+        Some("tatari-tv/drata-cli")
+    );
+    assert_eq!(
+        repo_str("/home/saidler/repos/scottidler/manifest").as_deref(),
+        Some("scottidler/manifest")
+    );
+    // A deeper working dir resolves to its top repo slot (org + the component after it); the first
+    // `repos` anchor wins.
+    assert_eq!(
+        repo_str("/home/saidler/repos/tatari-tv/clyde/main").as_deref(),
+        Some("tatari-tv/clyde")
+    );
+}
+
+#[test]
+fn repo_slug_is_null_without_a_repos_anchor() {
+    // No cwd at all -> None (the export `repo` field is null).
+    assert_eq!(repo_slug(None), None);
+    // A bare home dir / scratch path has no `repos/<org>/<repo>` anchor -> None.
+    assert_eq!(repo_str("/home/saidler"), None);
+    assert_eq!(repo_str("/tmp/scratch"), None);
+    // `repos` present but no repo component after the org slot -> None (needs org AND name).
+    assert_eq!(repo_str("/home/saidler/repos/tatari-tv"), None);
+}
+
 #[test]
 fn scope_tokens_are_stable() {
     assert_eq!(Scope::Work.as_str(), "work");

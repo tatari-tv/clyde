@@ -23,6 +23,7 @@ cost = { path = "../cost" }
 dirs = { workspace = true }
 env_logger = { workspace = true }
 eyre = { workspace = true }
+gethostname = "1.1.0"
 libc = "0.2.186"
 log = { workspace = true }
 mcp-io = { git = "https://github.com/tatari-tv/mcp-io-rs", tag = "v0.1.2", version = "0.1.2" }

@@ -1,0 +1,37 @@
+{
+  "schema-version": 1,
+  "generated-at": "2026-07-17T00:00:00+00:00",
+  "host": "desk",
+  "cursor": 7,
+  "sessions": [
+    {
+      "session-id": "03640da6-2c18-4b33-94d3-ac9750f6ae04",
+      "host": "desk",
+      "scope": "personal",
+      "cwd": "/home/saidler",
+      "project-dir": "/home/saidler/.claude/projects/-home-saidler",
+      "repo": null,
+      "git-branch": "HEAD",
+      "created": "2026-06-06T14:04:25.072+00:00",
+      "modified": "2026-06-07T02:57:32.134527425+00:00",
+      "updated-at": 7,
+      "duration-secs": 46387,
+      "dormant": true,
+      "title": "Clone and organize skill framework repositories",
+      "first-prompt": "SKILL FRAMEWORKS\nhttps://github.com/addyosmani/agent-s...",
+      "n-msgs": 652,
+      "model": "claude-haiku-4-5-20251001",
+      "summary": null,
+      "tags": [],
+      "tags-source": null,
+      "enriched-at": null,
+      "enrich-status": "skipped-personal",
+      "enrich-model": null,
+      "prompt-version": null,
+      "redaction-count": 0,
+      "transcript-path": "/home/saidler/.claude/projects/-home-saidler/03640da6-2c18-4b33-94d3-ac9750f6ae04.jsonl",
+      "staged-path": "/home/saidler/.local/share/clyde/staged/03640da6-2c18-4b33-94d3-ac9750f6ae04",
+      "archived": true
+    }
+  ]
+}

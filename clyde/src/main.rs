@@ -18,15 +18,18 @@ use colored::Colorize;
 use eyre::{Context, Result};
 use log::{LevelFilter, warn};
 
-use cli::{Cli, Command, EnrichArgs, LsArgs, ReindexArgs, ResumeArgs, SearchArgs, SessionsCommand, StageArgs, TagArgs};
+use cli::{
+    Cli, Command, EnrichArgs, ExportArgs, LsArgs, ReindexArgs, ResumeArgs, SearchArgs, SessionsCommand, StageArgs,
+    TagArgs,
+};
 
 /// Default log level for the clyde-native `sessions` subtree when `--log-level` is unset. The
 /// absorbed tools keep their own defaults (via `Globals::log_level == None`), so this applies
 /// only to the sessions arm.
 const DEFAULT_LOG_LEVEL: &str = "info";
 use sessions::{
-    AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, Fallback, Filters, MatchSource, ReindexStats,
-    SearchResults, SessionRecord, StageStats,
+    AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, ExportContext, ExportEnvelope, ExportFilters,
+    Fallback, Filters, MatchSource, ReindexStats, SearchResults, SessionRecord, StageStats,
 };
 
 /// Max width of a title in the human (terminal) listing before it is truncated with an ellipsis.
@@ -223,6 +226,10 @@ fn run(cli: Cli) -> Result<()> {
                 }
                 SessionsCommand::Tag(args) => cmd_tag(&db, args),
                 SessionsCommand::Reindex(args) => cmd_reindex(&db, args),
+                SessionsCommand::Export(args) => {
+                    let tz = load_date_tz()?;
+                    cmd_export(&db, args, tz)
+                }
                 SessionsCommand::Stage(args) => {
                     let tz = load_date_tz()?;
                     cmd_stage(&db, args, tz)
@@ -273,6 +280,130 @@ fn cmd_ls(db: &Db, args: LsArgs, tz: common::DateTz) -> Result<()> {
     let records = db.list(&filters)?;
     print_records(&records);
     Ok(())
+}
+
+/// `clyde session export`: always-JSON, versioned envelope (deliberate deviation from the
+/// TTY-detect house pattern — an export is machine output by definition, design doc "Architecture").
+///
+/// Two mutually exclusive shapes, both wrapped in the same [`ExportEnvelope`]:
+/// - bulk metadata page (`--cursor`/`--since`/`--repo`/`--tag`/`--dormant-after`/`--include-archived`/
+///   `--limit`) via [`Db::export`]
+/// - one session by id/prefix, optionally with its parsed body (`--with-body`/`--max-body-bytes`)
+///   via [`Db::export_one`], wrapped in a one-element envelope whose `cursor` echoes that record's
+///   own `updated-at` revision
+///
+/// An unknown/ambiguous `--id` exits nonzero with a stderr message (mirrors `cmd_tag`/`cmd_enrich`).
+fn cmd_export(db: &Db, args: ExportArgs, tz: common::DateTz) -> Result<()> {
+    log::debug!(
+        "cmd_export: id={:?} cursor={:?} since={:?} repo={:?} tag={:?} dormant_after={} \
+         include_archived={} limit={:?} with_body={} max_body_bytes={:?} no_reindex={}",
+        args.id,
+        args.cursor,
+        args.since,
+        args.repo,
+        args.tag,
+        args.dormant_after,
+        args.include_archived,
+        args.limit,
+        args.with_body,
+        args.max_body_bytes,
+        args.no_reindex
+    );
+    lazy_reindex(db, args.no_reindex);
+
+    let now = chrono::Utc::now();
+    let dormant_after = dormant_after_duration(&args.dormant_after, tz, now)?;
+    let host = gethostname::gethostname().to_string_lossy().into_owned();
+    let ctx = ExportContext {
+        now,
+        dormant_after,
+        host,
+    };
+
+    if let Some(needle) = &args.id {
+        if args.cursor.is_some()
+            || args.since.is_some()
+            || args.repo.is_some()
+            || args.tag.is_some()
+            || args.limit.is_some()
+            || args.include_archived
+        {
+            eyre::bail!(
+                "--id is exclusive of the bulk export filters (--cursor/--since/--repo/--tag/--limit/--include-archived)"
+            );
+        }
+        return cmd_export_one(db, needle, &ctx, args.with_body, args.max_body_bytes);
+    }
+    if args.with_body || args.max_body_bytes.is_some() {
+        eyre::bail!("--with-body/--max-body-bytes require --id");
+    }
+
+    let since = match args.since.as_deref() {
+        Some(s) => Some(sessions::parse_since(s, tz)?),
+        None => None,
+    };
+    let filters = ExportFilters {
+        cursor: args.cursor,
+        since,
+        repo: args.repo,
+        tag: args.tag,
+        include_archived: args.include_archived,
+        limit: args.limit,
+    };
+    let envelope = db.export(&filters, &ctx)?;
+    print_json(&envelope);
+    Ok(())
+}
+
+/// The `--id` arm of `cmd_export`: resolve the id/prefix (same fuzzy contract as `tag`/`resume`/
+/// `enrich`), fetch the one record, and wrap it in a one-element [`ExportEnvelope`]. Exits nonzero
+/// on no match or an ambiguous prefix.
+fn cmd_export_one(
+    db: &Db,
+    needle: &str,
+    ctx: &ExportContext,
+    with_body: bool,
+    max_body_bytes: Option<usize>,
+) -> Result<()> {
+    let ids = db.resolve_id(needle)?;
+    let id = match ids.as_slice() {
+        [id] => id.clone(),
+        [] => {
+            eprintln!("{} no session matches {:?}", "✗".red(), needle);
+            std::process::exit(1);
+        }
+        many => {
+            eprintln!("{} {:?} is ambiguous ({} matches)", "✗".red(), needle, many.len());
+            std::process::exit(1);
+        }
+    };
+    let Some(record) = db.export_one(&id, ctx, with_body, max_body_bytes)? else {
+        eprintln!("{} no session matches {:?}", "✗".red(), needle);
+        std::process::exit(1);
+    };
+    let envelope = ExportEnvelope {
+        schema_version: sessions::EXPORT_SCHEMA_VERSION,
+        generated_at: ctx.now.to_rfc3339(),
+        host: ctx.host.clone(),
+        cursor: record.updated_at,
+        sessions: vec![record],
+    };
+    print_json(&envelope);
+    Ok(())
+}
+
+/// Convert a `--dormant-after` span (e.g. `7d`, `24h`; same convention as `stage`/`enrich`'s
+/// `--dormant-after`) into the [`chrono::Duration`] threshold [`ExportContext::dormant_after`]
+/// wants, by reusing the shared [`sessions::parse_since`] span parser: `parse_since` resolves a
+/// span to the instant that long ago, and the duration back to `now` recovers the span itself
+/// (correct seam — no second span parser to keep in sync with `common::since`).
+fn dormant_after_duration(
+    span: &str,
+    tz: common::DateTz,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<chrono::Duration> {
+    let cutoff = sessions::parse_since(span, tz)?;
+    Ok(now - cutoff)
 }
 
 /// What `resume` should do, computed from a resolved [`SessionRecord`] by [`plan_resume`]. Returned

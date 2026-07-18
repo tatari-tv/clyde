@@ -276,6 +276,77 @@ fn parse_messages_returns_empty_for_a_missing_transcript() {
 }
 
 #[test]
+fn parse_messages_bounded_stops_reading_at_the_byte_cap_without_buffering_whole() {
+    // A multi-MB transcript: 5,000 assistant turns, each carrying ~1 KB of text. The LAST turn
+    // carries a unique sentinel so we can prove the reader stopped early (never reached it).
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("proj");
+    let parent = proj.join(format!("{UUID_A}.jsonl"));
+    let subagents_dir = proj.join(UUID_A).join("subagents");
+
+    const TURNS: usize = 5_000;
+    const CHUNK: usize = 1_000; // bytes of text per turn
+    const SENTINEL: &str = "SENTINEL-LAST-MESSAGE-PAST-THE-CAP";
+    let mut lines: Vec<String> = Vec::with_capacity(TURNS);
+    for i in 0..TURNS {
+        let text = if i == TURNS - 1 { SENTINEL.to_string() } else { "x".repeat(CHUNK) };
+        lines.push(format!(
+            r#"{{"type":"assistant","timestamp":"2026-06-21T10:00:00Z","message":{{"model":"claude-opus-4-8","content":[{{"type":"text","text":"{text}"}}]}}}}"#
+        ));
+    }
+    write(&parent, &lines.iter().map(String::as_str).collect::<Vec<_>>());
+    let total_bytes = fs::metadata(&parent).unwrap().len();
+    assert!(
+        total_bytes > 4_000_000,
+        "fixture transcript should be multi-MB (was {total_bytes} bytes)"
+    );
+
+    // Cap at ~50 KB: only ~50 of the 5,000 turns fit.
+    const CAP: usize = 50_000;
+    let bounded = parse_messages_bounded(UUID_A, &parent, &subagents_dir, Some(CAP));
+
+    assert!(
+        bounded.truncated,
+        "reading a multi-MB transcript under a 50 KB cap must truncate"
+    );
+    // The cap is honored: cumulative emitted text bytes never exceed it.
+    let emitted: usize = bounded.messages.iter().map(|m| m.text.len()).sum();
+    assert!(emitted <= CAP, "emitted {emitted} bytes exceeded cap {CAP}");
+    // Bounded read, not buffer-then-truncate: far fewer than all 5,000 messages are materialized...
+    assert!(
+        bounded.messages.len() < 100,
+        "expected the read to stop after ~50 messages, got {}",
+        bounded.messages.len()
+    );
+    // ...and the sentinel in the FINAL line was never reached, proving the stream stopped early
+    // rather than parsing the whole file into memory first.
+    assert!(
+        !bounded.messages.iter().any(|m| m.text.contains(SENTINEL)),
+        "the trailing sentinel message must never be read under the cap"
+    );
+}
+
+#[test]
+fn parse_messages_bounded_unbounded_matches_parse_messages() {
+    // With `None`, the bounded path yields exactly the legacy `parse_messages` sequence, untruncated.
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("proj");
+    let parent = proj.join(format!("{UUID_A}.jsonl"));
+    let subagents_dir = proj.join(UUID_A).join("subagents");
+    write(
+        &parent,
+        &[
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:01Z","message":{"content":"first prompt"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:02Z","message":{"model":"m","content":[{"type":"text","text":"a reply"}]}}"#,
+        ],
+    );
+    let bounded = parse_messages_bounded(UUID_A, &parent, &subagents_dir, None);
+    assert!(!bounded.truncated);
+    assert_eq!(bounded.messages, parse_messages(UUID_A, &parent, &subagents_dir));
+    assert_eq!(bounded.messages.len(), 2);
+}
+
+#[test]
 fn helpers_handle_edges() {
     assert!(is_command_noise("   "));
     assert!(is_command_noise("<system-reminder>foo"));

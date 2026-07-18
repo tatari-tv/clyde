@@ -25,7 +25,10 @@ use crate::model::{
 /// v2 added `staged_path` (Phase 1.5 transcript staging).
 /// v3 added the Phase 2 enrichment state (`scope`, `enriched_at`, …).
 /// v4 added `tags_source` so manual-tag preservation tracks ownership, not enrichment state.
-const SCHEMA_VERSION: i64 = 4;
+/// v5 added `updated_at`: an opaque monotonic revision assigned by DB triggers (never a timestamp),
+///    plus the one-row `export_meta` counter that sources it, so `session export --cursor` is
+///    correct by construction — every write to a `sessions` row advances the cursor structurally.
+const SCHEMA_VERSION: i64 = 5;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -104,11 +107,39 @@ CREATE TABLE IF NOT EXISTS sessions (
     redaction_count   INTEGER,
     tokens_in         INTEGER,
     tokens_out        INTEGER,
-    tags_source       TEXT
+    tags_source       TEXT,
+    updated_at        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(title, tags, summary);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_body_fts USING fts5(body);
+";
+
+/// Schema v5 revision-cursor triggers. Created LAST in [`migrate_v5_cursor`] (after the backfill),
+/// so the bulk backfill never fires them. Each trigger consumes the next value from the one-row
+/// `export_meta` counter and stamps it on the affected row, making the `updated_at` revision
+/// strictly increasing per write — no timestamp ties, safe `--limit` paging by construction.
+///
+/// The UPDATE trigger carries the recursion guard `WHEN NEW.updated_at IS OLD.updated_at`: a normal
+/// write leaves `updated_at` untouched (guard true -> fire), and the trigger's OWN write changes it
+/// (guard false -> no re-fire). This is correct whether `recursive_triggers` is off (clyde's
+/// default; the inner write never re-fires anyway) or on (the guard is what prevents the otherwise
+/// unbounded recursion / hard error). The INSERT trigger needs no guard: its body only UPDATEs, so
+/// it can never re-fire the INSERT trigger, and the UPDATE trigger's guard blocks the cross-fire.
+const V5_TRIGGERS_SQL: &str = "\
+CREATE TRIGGER IF NOT EXISTS sessions_updated_at_insert
+AFTER INSERT ON sessions
+BEGIN
+    UPDATE export_meta SET revision = revision + 1 WHERE id = 0;
+    UPDATE sessions SET updated_at = (SELECT revision FROM export_meta WHERE id = 0) WHERE id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS sessions_updated_at_update
+AFTER UPDATE ON sessions
+WHEN NEW.updated_at IS OLD.updated_at
+BEGIN
+    UPDATE export_meta SET revision = revision + 1 WHERE id = 0;
+    UPDATE sessions SET updated_at = (SELECT revision FROM export_meta WHERE id = 0) WHERE id = NEW.id;
+END;
 ";
 
 /// Column list (table alias `s`) shared by every record-returning query so the row mapper
@@ -936,8 +967,57 @@ fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(&tx, "sessions", "tokens_out", "INTEGER")?;
     // v4: tag-ownership marker ('manual' / 'enrich' / NULL) for manual-tag preservation.
     ensure_column(&tx, "sessions", "tags_source", "TEXT")?;
+    // v5: opaque monotonic revision cursor (column + counter + triggers), applied in the strict
+    // order add-column -> backfill -> seed -> create-triggers so the bulk backfill never fires them.
+    migrate_v5_cursor(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Apply the schema v5 revision cursor inside the caller's migration transaction. The ordering is
+/// itself part of the contract (design doc, Data Model): (1) add the `updated_at` column, (2)
+/// backfill revisions in `rowid` order, (3) seed the `export_meta` counter to `MAX(updated_at)`,
+/// (4) create the triggers LAST. Skipping the seed would make the next write collide or go
+/// backward; creating the triggers before the backfill would fire them once per backfilled row.
+///
+/// Every statement is idempotent (`ensure_column` probes `pragma_table_info`; the index, table, and
+/// triggers use `IF NOT EXISTS`; the counter row uses `INSERT OR IGNORE`), and `migrate` is
+/// version-gated, so re-running against an already-migrated DB is a no-op.
+fn migrate_v5_cursor(conn: &Connection) -> Result<()> {
+    debug!("migrate_v5_cursor: add updated_at revision column + export_meta counter + triggers");
+    // (1) Add the revision column (no-op on a fresh DB whose CREATE TABLE already carries it).
+    ensure_column(conn, "sessions", "updated_at", "INTEGER NOT NULL DEFAULT 0")?;
+    // Index + one-row counter table. Seed the counter row at 0; the real seed happens in step (3).
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
+         CREATE TABLE IF NOT EXISTS export_meta (
+             id       INTEGER PRIMARY KEY CHECK (id = 0),
+             revision INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT OR IGNORE INTO export_meta (id, revision) VALUES (0, 0);",
+    )
+    .context("v5: create updated_at index and export_meta counter")?;
+    // (2) Backfill revisions in rowid order (id == rowid here): each row's revision is its 1-based
+    // position, strictly increasing, distinct — a rowid-order dense rank, never a timestamp. This
+    // runs BEFORE the triggers exist so it does not fire them.
+    let backfilled = conn
+        .execute(
+            "UPDATE sessions SET updated_at = (SELECT COUNT(*) FROM sessions s2 WHERE s2.id <= sessions.id)",
+            [],
+        )
+        .context("v5: backfill updated_at in rowid order")?;
+    // (3) Seed the counter to MAX(updated_at) so the first post-migration write is MAX+1 — never a
+    // collision, never going backward.
+    conn.execute(
+        "UPDATE export_meta SET revision = (SELECT COALESCE(MAX(updated_at), 0) FROM sessions) WHERE id = 0",
+        [],
+    )
+    .context("v5: seed export_meta counter to MAX(updated_at)")?;
+    // (4) Create the triggers LAST so the backfill above did not fire them.
+    conn.execute_batch(V5_TRIGGERS_SQL)
+        .context("v5: create revision triggers")?;
+    debug!("migrate_v5_cursor: backfilled {backfilled} rows in rowid order; triggers installed");
     Ok(())
 }
 
@@ -1160,6 +1240,11 @@ fn rerank_body(body: &mut Vec<SearchHit>, coverage_first: bool) {
         .collect();
     *body = reordered;
 }
+
+/// The `session export` query: contract-record mapping and the `Db::export` / `Db::export_one`
+/// methods. Split out of `db.rs` to keep both files under the line-count limit; the export contract
+/// is a self-contained surface, so it lives in its own submodule.
+mod query;
 
 #[cfg(test)]
 mod tests;
