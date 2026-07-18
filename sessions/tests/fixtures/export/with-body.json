@@ -35,11 +35,13 @@
       "body": [
         {
           "role": "user",
-          "text": "use clyde session to find a session I was working on today talking about making changes the manifest for env and file operations. I think I closed it accidentally. I need the location and the full session-id."
+          "text": "use clyde session to find a session I was working on today talking about making changes the manifest for env and file operations. I think I closed it accidentally. I need the location and the full session-id.",
+          "subagent": false
         },
         {
           "role": "assistant",
-          "text": "Found it. This confirms session `9bb86fff-13c6-4c93-b34d-0676441f63f8` is where the manifest-driven-secrets design doc (which references file/env lane + Manifest) was worked on. [truncated for fixture]"
+          "text": "Found it. This confirms session `9bb86fff-13c6-4c93-b34d-0676441f63f8` is where the manifest-driven-secrets design doc (which references file/env lane + Manifest) was worked on. [truncated for fixture]",
+          "subagent": false
         }
       ],
       "body-truncated": false,

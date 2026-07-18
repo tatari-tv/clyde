@@ -1241,5 +1241,10 @@ fn rerank_body(body: &mut Vec<SearchHit>, coverage_first: bool) {
     *body = reordered;
 }
 
+/// The `session export` query: contract-record mapping and the `Db::export` / `Db::export_one`
+/// methods. Split out of `db.rs` to keep both files under the line-count limit; the export contract
+/// is a self-contained surface, so it lives in its own submodule.
+mod query;
+
 #[cfg(test)]
 mod tests;

@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -88,25 +89,59 @@ pub fn parse_one(session_id: &str, parent: &Path, subagents_dir: &Path) -> Optio
 /// each subagent file in path order -- the same ordering [`parse_group`] uses for the body
 /// roll-up, so a `msg-index` computed here lines up with what search already matched.
 pub fn parse_messages(session_id: &str, parent: &Path, subagents_dir: &Path) -> Vec<Message> {
+    parse_messages_bounded(session_id, parent, subagents_dir, None).messages
+}
+
+/// The role-labeled message stream plus whether it was cut short to honor a byte cap. Returned by
+/// [`parse_messages_bounded`]; `truncated` is `true` exactly when trailing messages were dropped
+/// because the cumulative message-text bytes reached `max_bytes`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundedMessages {
+    pub messages: Vec<Message>,
+    pub truncated: bool,
+}
+
+/// Bounded variant of [`parse_messages`]: yields the same role-labeled, noise-excluded message
+/// sequence, but stops as soon as the cumulative emitted message-text byte count would exceed
+/// `max_bytes` (when `Some`). Each transcript file is STREAMED line-by-line (`BufRead::read_until`
+/// on raw bytes, so a non-UTF-8 byte cannot silently truncate the stream) rather than read whole,
+/// so a runaway multi-MB transcript stops reading at the cap instead of buffering the entire message
+/// Vec first — the bounded-read requirement the export `--with-body` path depends on. Truncation
+/// drops WHOLE trailing messages (never a byte-split of a message's text, which would panic on a
+/// char boundary); `truncated` is set when it happens. `None` means unbounded.
+pub fn parse_messages_bounded(
+    session_id: &str,
+    parent: &Path,
+    subagents_dir: &Path,
+    max_bytes: Option<usize>,
+) -> BoundedMessages {
     debug!(
-        "parse::parse_messages: session_id={} parent={} subagents_dir={}",
+        "parse::parse_messages_bounded: session_id={} parent={} subagents_dir={} max_bytes={:?}",
         session_id,
         parent.display(),
-        subagents_dir.display()
+        subagents_dir.display(),
+        max_bytes
     );
     let mut files = discover_layout_files(session_id, parent, subagents_dir);
     files.sort_by_key(file_order_key);
 
     let mut messages = Vec::new();
+    let mut emitted_bytes = 0usize;
+    let mut truncated = false;
     for f in &files {
-        ingest_file_messages(f, &mut messages);
+        if ingest_file_messages(f, &mut messages, &mut emitted_bytes, max_bytes) {
+            truncated = true;
+            break;
+        }
     }
     debug!(
-        "parse::parse_messages: session_id={} messages={}",
+        "parse::parse_messages_bounded: session_id={} messages={} bytes={} truncated={}",
         session_id,
-        messages.len()
+        messages.len(),
+        emitted_bytes,
+        truncated
     );
-    messages
+    BoundedMessages { messages, truncated }
 }
 
 /// Discover the transcript files for an explicit `(parent, subagents_dir)` layout, unordered.
@@ -151,26 +186,54 @@ fn file_order_key(f: &SessionFile) -> (bool, PathBuf) {
     (matches!(f.kind, SessionFileKind::Subagent), f.path.clone())
 }
 
-/// Extract role-labeled messages from one transcript file, appending to `out` in file line order.
-/// Tight per-line loop: TRACE, not DEBUG (the call-site iteration entry already logs at DEBUG).
-fn ingest_file_messages(file: &SessionFile, out: &mut Vec<Message>) {
+/// Stream one transcript file line-by-line, appending role-labeled messages to `out` in file line
+/// order, and stop as soon as the cumulative `*emitted` message-text bytes would exceed `max_bytes`
+/// (when `Some`). Returns `true` when it stopped early because the cap was reached — the caller must
+/// then not read further files. Reads via `BufRead::read_until(b'\n')` on RAW bytes (never
+/// `read_line`, which returns `InvalidData` on the first non-UTF-8 byte and would silently drop the
+/// rest of the transcript) so the stream ends only at real EOF or the cap, never buffering the whole
+/// file. Tight per-line loop: TRACE, not DEBUG (the call-site iteration entry already logs at DEBUG).
+fn ingest_file_messages(
+    file: &SessionFile,
+    out: &mut Vec<Message>,
+    emitted: &mut usize,
+    max_bytes: Option<usize>,
+) -> bool {
     let subagent = matches!(file.kind, SessionFileKind::Subagent);
-    let bytes = match fs::read(&file.path) {
-        Ok(b) => b,
+    let handle = match fs::File::open(&file.path) {
+        Ok(f) => f,
         Err(e) => {
             warn!(
-                "parse::ingest_file_messages: failed to read {}: {}",
+                "parse::ingest_file_messages: failed to open {}: {}",
                 file.path.display(),
                 e
             );
-            return;
+            return false;
         }
     };
-    for line in bytes.split(|&b| b == b'\n') {
+    let mut reader = BufReader::new(handle);
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return false, // clean EOF, cap not reached
+            Ok(_) => {}
+            Err(e) => {
+                warn!(
+                    "parse::ingest_file_messages: read error in {}: {}",
+                    file.path.display(),
+                    e
+                );
+                return false;
+            }
+        }
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
         if line.is_empty() {
             continue;
         }
-        let v: Value = match serde_json::from_slice(line) {
+        let v: Value = match serde_json::from_slice(&line) {
             Ok(v) => v,
             Err(e) => {
                 trace!(
@@ -181,41 +244,53 @@ fn ingest_file_messages(file: &SessionFile, out: &mut Vec<Message>) {
                 continue;
             }
         };
-        match v.get("type").and_then(Value::as_str) {
+        let message = match v.get("type").and_then(Value::as_str) {
             Some("user") => {
                 let text = extract_text(v.get("message").and_then(|m| m.get("content")));
                 let trimmed = text.trim();
-                if !is_command_noise(trimmed) {
-                    trace!(
-                        "parse::ingest_file_messages: role=user subagent={} len={}",
-                        subagent,
-                        trimmed.len()
-                    );
-                    out.push(Message {
-                        role: Role::User,
-                        text: trimmed.to_string(),
-                        subagent,
-                    });
+                if is_command_noise(trimmed) {
+                    continue;
+                }
+                Message {
+                    role: Role::User,
+                    text: trimmed.to_string(),
+                    subagent,
                 }
             }
             Some("assistant") => {
                 let text = extract_text(v.get("message").and_then(|m| m.get("content")));
                 let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    trace!(
-                        "parse::ingest_file_messages: role=assistant subagent={} len={}",
-                        subagent,
-                        trimmed.len()
-                    );
-                    out.push(Message {
-                        role: Role::Assistant,
-                        text: trimmed.to_string(),
-                        subagent,
-                    });
+                if trimmed.is_empty() {
+                    continue;
+                }
+                Message {
+                    role: Role::Assistant,
+                    text: trimmed.to_string(),
+                    subagent,
                 }
             }
-            _ => {}
+            _ => continue,
+        };
+        // Honor the cap BEFORE pushing: a message that would carry the running total past the cap is
+        // dropped whole (with every message after it), and truncation is signalled to the caller.
+        if let Some(cap) = max_bytes
+            && *emitted + message.text.len() > cap
+        {
+            trace!(
+                "parse::ingest_file_messages: cap {} reached at {} bytes; dropping trailing messages",
+                cap, *emitted
+            );
+            return true;
         }
+        *emitted += message.text.len();
+        trace!(
+            "parse::ingest_file_messages: role={:?} subagent={} len={} total={}",
+            message.role,
+            subagent,
+            message.text.len(),
+            *emitted
+        );
+        out.push(message);
     }
 }
 

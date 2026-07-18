@@ -75,5 +75,22 @@ fn has_work_org(path: &Path) -> bool {
         .any(|w| w[0] == REPOS_ANCHOR && WORK_ORGS.contains(&w[1]))
 }
 
+/// Derive the `<org>/<repo>` slug from a session's `cwd`, using the same `~/repos/<org>/<repo>`
+/// convention [`classify`] keys off (the org is the component immediately after `repos`, the repo
+/// the one after that). Returns `None` when there is no `cwd`, or the path lacks a `repos/<org>/<repo>`
+/// anchor (a home dir, a `/tmp` scratch path) — the export contract's `repo` field is null there
+/// (finding R1). A deeper path (`~/repos/tatari-tv/clyde/main`) still resolves to its top repo slot
+/// (`tatari-tv/clyde`); the first `repos` anchor wins.
+pub fn repo_slug(cwd: Option<&Path>) -> Option<String> {
+    let path = cwd?;
+    let comps: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
+    let slug = comps
+        .windows(3)
+        .find(|w| w[0] == REPOS_ANCHOR)
+        .map(|w| format!("{}/{}", w[1], w[2]));
+    trace!("scope::repo_slug: cwd={:?} -> {:?}", cwd, slug);
+    slug
+}
+
 #[cfg(test)]
 mod tests;
