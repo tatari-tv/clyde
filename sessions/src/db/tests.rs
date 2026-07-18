@@ -1130,7 +1130,10 @@ fn v5_enrich_skip_write_advances_cursor_once() {
     db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
 
     let before = revision_counter(&db);
-    assert!(db.record_enrich_skip(UUID_A, "personal", "skipped-personal").unwrap());
+    assert!(
+        db.record_enrich_skip(UUID_A, "personal", crate::export::EnrichStatus::SkippedPersonal)
+            .unwrap()
+    );
     assert_eq!(
         revision_counter(&db),
         before + 1,
@@ -1351,7 +1354,10 @@ fn v5_migration_from_v4_backfills_in_rowid_order_and_seeds_counter() {
     assert_eq!(revision_counter(&db), 3, "counter seeded to MAX(updated_at)");
 
     // First post-migration write is MAX+1 = 4 (no collision, strictly greater than every backfill).
-    assert!(db.record_enrich_skip(UUID_A, "work", "skipped-empty").unwrap());
+    assert!(
+        db.record_enrich_skip(UUID_A, "work", crate::export::EnrichStatus::SkippedEmpty)
+            .unwrap()
+    );
     assert_eq!(revision_counter(&db), 4, "the first write after migration is MAX+1");
     assert_eq!(updated_at_of(&db, UUID_A), 4);
     assert!(

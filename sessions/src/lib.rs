@@ -23,7 +23,8 @@ pub mod transcript;
 pub use db::{Db, EnrichSuccess, Upsert};
 pub use enrich::{EnrichOptions, enrich};
 pub use export::{
-    EXPORT_SCHEMA_VERSION, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters, ExportRecord,
+    EXPORT_SCHEMA_VERSION, EnrichStatus, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters,
+    ExportRecord,
 };
 pub use index::reindex;
 pub use llm::{AnthropicClient, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment};

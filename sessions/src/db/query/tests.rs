@@ -110,7 +110,7 @@ fn export_work_session_derives_work_scope_and_repo_and_enrichment() {
     let rec = &env.sessions[0];
     assert_eq!(rec.scope, "work");
     assert_eq!(rec.repo.as_deref(), Some("tatari-tv/drata-cli"));
-    assert_eq!(rec.enrich_status.as_deref(), Some("ok"));
+    assert_eq!(rec.enrich_status, Some(crate::export::EnrichStatus::Ok));
     assert_eq!(rec.tags_source.as_deref(), Some("enrich"));
     assert_eq!(rec.tags, vec!["rust".to_string(), "cli".to_string()]);
     assert_eq!(rec.redaction_count, 4);
@@ -442,6 +442,72 @@ fn export_one_reports_transcript_missing_when_staged_dir_lacks_the_jsonl() {
         body.body_error.as_deref(),
         Some("transcript missing"),
         "staged dir present but <id>.jsonl absent -> transcript missing, not parsed empty"
+    );
+}
+
+#[test]
+fn export_one_with_body_reports_transcript_missing_when_live_path_is_a_directory() {
+    // Regression: a DIRECTORY named `<id>.jsonl` at the live transcript path (no staged copy) must
+    // resolve to no readable transcript, so the export reports `body-error: "transcript missing"` —
+    // not a layout that parses to zero messages and misreports `"parsed empty"`.
+    let db = Db::open_memory().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("proj");
+    let parent = proj.join(format!("{UUID_A}.jsonl"));
+    fs::create_dir_all(&proj).unwrap();
+    fs::create_dir(&parent).unwrap(); // a directory shaped exactly like `<id>.jsonl`
+
+    let mut p = parsed_cwd(
+        UUID_A,
+        parent.to_str().unwrap(),
+        "/home/saidler/repos/scottidler/x",
+        "2026-06-21T10:00:00Z",
+    );
+    p.project_dir = proj.clone();
+    db.upsert_session(&p, "desk").unwrap();
+
+    let rec = db
+        .export_one(UUID_A, &export_ctx("2026-07-01T00:00:00Z"), true, None)
+        .unwrap()
+        .unwrap();
+    let body = rec.body.unwrap();
+    assert!(body.body.is_none());
+    assert_eq!(
+        body.body_error.as_deref(),
+        Some("transcript missing"),
+        "a directory named <id>.jsonl at the live path is not a transcript"
+    );
+}
+
+#[test]
+fn export_fails_closed_on_a_non_contract_enrich_status() {
+    // The DB read boundary must parse the stored `enrich_status` TEXT into the frozen vocabulary and
+    // FAIL LOUDLY on a non-contract value rather than silently passing it onto the wire. Inject a
+    // bogus value directly (the live catalog never produces one) and assert export errors.
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "/home/saidler/repos/tatari-tv/x",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+    db.conn
+        .execute(
+            "UPDATE sessions SET enrich_status = 'not-a-contract-value' WHERE session_id = ?1",
+            rusqlite::params![UUID_A],
+        )
+        .unwrap();
+
+    let err = db.export(&ExportFilters::default(), &export_ctx("2026-07-01T00:00:00Z"));
+    assert!(err.is_err(), "a non-contract enrich-status must be a loud export error");
+    let msg = format!("{:#}", err.unwrap_err());
+    assert!(
+        msg.contains("non-contract enrich-status"),
+        "the error must name the offending value: {msg}"
     );
 }
 

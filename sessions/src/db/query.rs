@@ -8,14 +8,17 @@
 //! omit, and it re-derives `scope` from `cwd` rather than reading the nullable stored column.
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
-use eyre::{Result, ensure};
+use eyre::{Context, Result, ensure};
 use log::{debug, trace, warn};
 use rusqlite::{OptionalExtension, params};
 
 use super::{Db, parse_dt};
-use crate::export::{ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters, ExportRecord};
+use crate::export::{
+    EnrichStatus, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters, ExportRecord,
+};
 use crate::transcript::transcript_layout_parts;
 
 /// Column list (table alias `s`) for the `export` query. Deliberately its OWN list, NOT `db::COLS`:
@@ -107,7 +110,7 @@ impl Db {
         let sessions: Vec<ExportRecord> = raws
             .into_iter()
             .map(|raw| build_export_record(raw, ctx.now, ctx.dormant_after))
-            .collect();
+            .collect::<Result<_>>()?;
         // Max revision in the page, or the request cursor when the page is empty.
         let cursor = sessions
             .iter()
@@ -155,7 +158,7 @@ impl Db {
             &raw.project_dir,
             raw.staged_path.as_deref().map(Path::new),
         );
-        let mut record = build_export_record(raw, ctx.now, ctx.dormant_after);
+        let mut record = build_export_record(raw, ctx.now, ctx.dormant_after)?;
         if with_body {
             record.body = Some(resolve_body(session_id, layout, max_body_bytes));
         }
@@ -282,10 +285,20 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
 /// IS the transcript mtime, finding D1); `dormant` request-relative against the injected `now`
 /// (finding T1). `body` is left `None` (the bulk path); [`Db::export_one`] fills it under
 /// `--with-body`.
-fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono::Duration) -> ExportRecord {
+///
+/// Fails LOUDLY (fail closed) when the stored `enrich_status` TEXT is a non-null value outside the
+/// frozen [`EnrichStatus`] vocabulary: a non-contract value must never silently reach the wire. `NULL`
+/// maps to `None` (never-attempted); a known value to `Some(variant)`.
+fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono::Duration) -> Result<ExportRecord> {
     let cwd_path = raw.cwd.as_deref().map(Path::new);
     let scope = session::classify(cwd_path).as_str().to_string();
     let repo = session::repo_slug(cwd_path);
+    let enrich_status = raw
+        .enrich_status
+        .as_deref()
+        .map(EnrichStatus::from_str)
+        .transpose()
+        .with_context(|| format!("session {} has a non-contract enrich-status", raw.session_id))?;
     let created_dt = raw.created.as_deref().and_then(parse_dt);
     let modified_dt = parse_dt(&raw.modified);
     let duration_secs = match (created_dt, modified_dt) {
@@ -300,7 +313,7 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
         "db::build_export_record: session_id={} scope={} repo={:?} dormant={} duration_secs={}",
         raw.session_id, scope, repo, dormant, duration_secs
     );
-    ExportRecord {
+    Ok(ExportRecord {
         session_id: raw.session_id,
         host: raw.host,
         scope,
@@ -321,7 +334,7 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
         tags,
         tags_source: raw.tags_source,
         enriched_at: raw.enriched_at,
-        enrich_status: raw.enrich_status,
+        enrich_status,
         enrich_model: raw.enrich_model,
         prompt_version: raw.prompt_version,
         redaction_count: raw.redaction_count.unwrap_or(0),
@@ -329,7 +342,7 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
         staged_path: raw.staged_path,
         archived: raw.archived,
         body: None,
-    }
+    })
 }
 
 #[cfg(test)]

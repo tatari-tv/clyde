@@ -1,6 +1,36 @@
 #![allow(clippy::unwrap_used)]
 
+use std::str::FromStr;
+
 use super::*;
+
+#[test]
+fn enrich_status_wire_strings_are_the_frozen_kebab_vocabulary() {
+    // `as_str` and serde must agree on the exact kebab wire strings the contract froze.
+    for (status, wire) in [
+        (EnrichStatus::Ok, "ok"),
+        (EnrichStatus::SkippedPersonal, "skipped-personal"),
+        (EnrichStatus::SkippedEmpty, "skipped-empty"),
+        (EnrichStatus::Failed, "failed"),
+    ] {
+        assert_eq!(status.as_str(), wire);
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            serde_json::Value::String(wire.to_string())
+        );
+        assert_eq!(EnrichStatus::from_str(wire).unwrap(), status);
+    }
+}
+
+#[test]
+fn enrich_status_parse_fails_closed_on_a_non_contract_value() {
+    // A non-frozen value is a LOUD error at the read boundary, never a silent pass-through.
+    let err = EnrichStatus::from_str("skipped-unknown").unwrap_err();
+    assert!(
+        format!("{err:#}").contains("non-contract enrich-status"),
+        "the parse error must name the offending value"
+    );
+}
 
 fn metadata_record() -> ExportRecord {
     ExportRecord {
@@ -24,7 +54,7 @@ fn metadata_record() -> ExportRecord {
         tags: vec!["rust".to_string(), "cli".to_string()],
         tags_source: Some("enrich".to_string()),
         enriched_at: Some("2026-07-06T10:04:07.075906295+00:00".to_string()),
-        enrich_status: Some("ok".to_string()),
+        enrich_status: Some(EnrichStatus::Ok),
         enrich_model: Some("example-model-mini".to_string()),
         prompt_version: Some(1),
         redaction_count: 4,
