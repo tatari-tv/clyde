@@ -18,10 +18,16 @@ use serde::{Deserialize, Serialize};
 pub const EXPORT_SCHEMA_VERSION: u32 = 1;
 
 /// The top-level `session export` envelope: contract version, provenance, an incremental cursor, and
-/// the result records. `deny_unknown_fields` pins the envelope shape (a stray top-level key is a
-/// loud error, not silent drift).
+/// the result records.
+///
+/// `deny_unknown_fields` is intentionally NOT set: this is the house "forward-compatible envelope"
+/// carve-out (see `rules/rust.md`, "Schema is law"). The contract promise is additive-within-major,
+/// so a v1 consumer MUST tolerate a v2 producer's new top-level keys rather than error on them. Field
+/// pinning is enforced instead by the fixture round-trip contract test in `tests/export.rs`, which
+/// deserializes each golden fixture and asserts it re-serializes structurally identically -- that
+/// catches any rename, drop, or (within the frozen fixture set) addition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case")]
 pub struct ExportEnvelope {
     /// Contract version ([`EXPORT_SCHEMA_VERSION`]).
     pub schema_version: u32,
@@ -120,10 +126,14 @@ pub struct ExportBody {
 }
 
 /// One parsed transcript message in the exported body. `subagent` distinguishes parent from
-/// subagent text so consumers can route on it (finding B2). `deny_unknown_fields` pins the element
-/// shape.
+/// subagent text so consumers can route on it (finding B2).
+///
+/// `deny_unknown_fields` is intentionally NOT set: like [`ExportEnvelope`], the body element is part
+/// of the forward-compatible contract, so a v1 consumer must tolerate a v2 producer adding an element
+/// key. The element shape is pinned by the `with-body.json` fixture round-trip test in
+/// `tests/export.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case")]
 pub struct ExportBodyMessage {
     /// `user` | `assistant`.
     pub role: String,

@@ -365,6 +365,179 @@ fn export_one_without_body_omits_the_body_block() {
 }
 
 #[test]
+fn export_rejects_zero_and_out_of_range_limits() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "/home/saidler/repos/scottidler/x",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+    let ctx = export_ctx("2026-07-01T00:00:00Z");
+
+    // `--limit 0` returns an empty page whose cursor never advances -> a cursor-driven consumer
+    // loops forever. It must be a loud error, not a silent empty page.
+    let zero = db.export(
+        &ExportFilters {
+            limit: Some(0),
+            ..Default::default()
+        },
+        &ctx,
+    );
+    assert!(zero.is_err(), "--limit 0 must be rejected");
+
+    // A value above i64::MAX overflows the usize->i64 bind to a negative LIMIT; reject it too.
+    let huge = db.export(
+        &ExportFilters {
+            limit: Some(usize::MAX),
+            ..Default::default()
+        },
+        &ctx,
+    );
+    assert!(huge.is_err(), "--limit above i64::MAX must be rejected");
+
+    // A valid limit still works.
+    let ok = db.export(
+        &ExportFilters {
+            limit: Some(1),
+            ..Default::default()
+        },
+        &ctx,
+    );
+    assert_eq!(ok.unwrap().sessions.len(), 1, "--limit 1 is valid");
+}
+
+#[test]
+fn export_one_reports_transcript_missing_when_staged_dir_lacks_the_jsonl() {
+    let db = Db::open_memory().unwrap();
+    let tmp = TempDir::new().unwrap();
+    // Live transcript reaped; the staged DIRECTORY exists but the `<id>.jsonl` inside it does not.
+    // The classifier must verify the actual file, not just the dir, or it parses a nonexistent file
+    // to zero messages and misreports `"parsed empty"`.
+    let live_parent = tmp.path().join("live").join(format!("{UUID_A}.jsonl"));
+    let staged_dir = tmp.path().join("staged").join(UUID_A);
+    fs::create_dir_all(&staged_dir).unwrap(); // dir only -- no <id>.jsonl written
+
+    let mut p = parsed_cwd(
+        UUID_A,
+        live_parent.to_str().unwrap(),
+        "/home/saidler/repos/scottidler/x",
+        "2026-06-21T10:00:00Z",
+    );
+    p.project_dir = tmp.path().join("live");
+    db.upsert_session(&p, "desk").unwrap();
+    db.set_staged_path(UUID_A, &staged_dir).unwrap();
+
+    let rec = db
+        .export_one(UUID_A, &export_ctx("2026-07-01T00:00:00Z"), true, None)
+        .unwrap()
+        .unwrap();
+    let body = rec.body.unwrap();
+    assert!(body.body.is_none());
+    assert_eq!(
+        body.body_error.as_deref(),
+        Some("transcript missing"),
+        "staged dir present but <id>.jsonl absent -> transcript missing, not parsed empty"
+    );
+}
+
+#[test]
+fn export_repo_filter_treats_like_wildcards_as_literals() {
+    let db = Db::open_memory().unwrap();
+    // Two repos differing only where a `_` LIKE wildcard would over-match: `a_b` vs `axb`.
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "/home/saidler/repos/scottidler/a_b",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_B,
+            "/tmp/b.jsonl",
+            "/home/saidler/repos/scottidler/axb",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+
+    let out = db
+        .export(
+            &ExportFilters {
+                repo: Some("a_b".to_string()),
+                ..Default::default()
+            },
+            &export_ctx("2026-07-01T00:00:00Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        out.sessions.len(),
+        1,
+        "`_` is a literal, not a wildcard: only a_b matches"
+    );
+    assert_eq!(out.sessions[0].session_id, UUID_A);
+}
+
+#[test]
+fn export_tag_filter_treats_like_wildcards_as_literals() {
+    let db = Db::open_memory().unwrap();
+    // Tag sets differ only where a `_` LIKE wildcard in the multi-tag LIKE forms would over-match.
+    for (id, tag) in [(UUID_A, "a_b"), (UUID_B, "axb")] {
+        db.upsert_session(
+            &parsed_cwd(
+                id,
+                "/tmp/x.jsonl",
+                "/home/saidler/repos/scottidler/x",
+                "2026-06-21T10:00:00Z",
+            ),
+            "desk",
+        )
+        .unwrap();
+        db.set_enrichment(
+            id,
+            &EnrichSuccess {
+                summary: "s",
+                tags: Some(&[tag.to_string(), "other".to_string()]),
+                scope: "personal",
+                enriched_modified: dt("2026-06-21T10:00:00Z"),
+                enrich_model: "m",
+                prompt_version: 1,
+                redaction_count: 0,
+                tokens_in: 1,
+                tokens_out: 1,
+            },
+            dt("2026-06-22T10:00:00Z"),
+        )
+        .unwrap();
+    }
+
+    let out = db
+        .export(
+            &ExportFilters {
+                tag: Some("a_b".to_string()),
+                ..Default::default()
+            },
+            &export_ctx("2026-07-01T00:00:00Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        out.sessions.len(),
+        1,
+        "`_` in a tag is a literal: only the a_b session matches"
+    );
+    assert_eq!(out.sessions[0].session_id, UUID_A);
+}
+
+#[test]
 fn export_excludes_archived_unless_requested() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(

@@ -26,6 +26,12 @@ pub fn transcript_layout(rec: &SessionRecord) -> Option<(PathBuf, PathBuf)> {
 /// `export` query maps its own columns (the enrichment fields `SessionRecord` omits) and reuses this
 /// so the body-source fallback stays identical to `enrich` and the MCP content tools: prefer the
 /// live `transcript_path` if on disk, else the staged copy, else `None`.
+///
+/// Both branches resolve by the existence of the actual `.jsonl` file, never a mere directory: the
+/// staged branch requires `<staged>/<session-id>.jsonl` itself to be on disk, not just the staged
+/// directory. A staged dir whose `.jsonl` was reaped therefore yields `None` (nothing to parse), so
+/// `export` reports the contractually correct `body-error: "transcript missing"` rather than parsing
+/// a nonexistent file to zero messages and reporting `"parsed empty"`.
 pub fn transcript_layout_parts(
     session_id: &str,
     transcript_path: &Path,
@@ -38,6 +44,9 @@ pub fn transcript_layout_parts(
     }
     let staged = staged_path.filter(|p| p.exists())?;
     let parent = staged.join(format!("{session_id}.jsonl"));
+    if !parent.exists() {
+        return None;
+    }
     let subagents = staged.join("subagents");
     Some((parent, subagents))
 }

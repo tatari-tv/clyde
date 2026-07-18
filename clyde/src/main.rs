@@ -309,18 +309,10 @@ fn cmd_export(db: &Db, args: ExportArgs, tz: common::DateTz) -> Result<()> {
         args.max_body_bytes,
         args.no_reindex
     );
-    lazy_reindex(db, args.no_reindex);
-
-    let now = chrono::Utc::now();
-    let dormant_after = dormant_after_duration(&args.dormant_after, tz, now)?;
-    let host = gethostname::gethostname().to_string_lossy().into_owned();
-    let ctx = ExportContext {
-        now,
-        dormant_after,
-        host,
-    };
-
-    if let Some(needle) = &args.id {
+    // Argument-only validation and parsing run BEFORE the lazy reindex: an invalid flag combo (e.g.
+    // `--with-body` without `--id`) or an unparseable span must fail loudly WITHOUT first mutating
+    // the catalog via the reindex (finding: validate args before the lazy reindex).
+    if args.id.is_some() {
         if args.cursor.is_some()
             || args.since.is_some()
             || args.repo.is_some()
@@ -332,16 +324,29 @@ fn cmd_export(db: &Db, args: ExportArgs, tz: common::DateTz) -> Result<()> {
                 "--id is exclusive of the bulk export filters (--cursor/--since/--repo/--tag/--limit/--include-archived)"
             );
         }
-        return cmd_export_one(db, needle, &ctx, args.with_body, args.max_body_bytes);
-    }
-    if args.with_body || args.max_body_bytes.is_some() {
+    } else if args.with_body || args.max_body_bytes.is_some() {
         eyre::bail!("--with-body/--max-body-bytes require --id");
     }
-
+    let now = chrono::Utc::now();
+    let dormant_after = dormant_after_duration(&args.dormant_after, tz, now)?;
     let since = match args.since.as_deref() {
         Some(s) => Some(sessions::parse_since(s, tz)?),
         None => None,
     };
+
+    lazy_reindex(db, args.no_reindex);
+
+    let host = gethostname::gethostname().to_string_lossy().into_owned();
+    let ctx = ExportContext {
+        now,
+        dormant_after,
+        host,
+    };
+
+    if let Some(needle) = &args.id {
+        return cmd_export_one(db, needle, &ctx, args.with_body, args.max_body_bytes);
+    }
+
     let filters = ExportFilters {
         cursor: args.cursor,
         since,
