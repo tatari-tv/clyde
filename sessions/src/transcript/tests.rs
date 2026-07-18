@@ -96,6 +96,54 @@ fn returns_none_when_staged_dir_exists_but_the_jsonl_is_absent() {
 }
 
 #[test]
+fn a_directory_named_like_the_live_transcript_is_not_a_transcript() {
+    // Regression: `.exists()` would accept a DIRECTORY named `<id>.jsonl` at the live path and
+    // return a layout with no readable transcript. `.is_file()` rejects it, so with no staged copy
+    // resolution is `None` (nothing to parse) -> the export layer reports `"transcript missing"`.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = tmp.path().join(format!("{UUID_A}.jsonl"));
+    // Insert with a real file so the row's transcript_path is set, then replace it with a directory.
+    std::fs::write(&parent, "{}\n").unwrap();
+
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, tmp.path(), &parent), "desk").unwrap();
+
+    std::fs::remove_file(&parent).unwrap();
+    std::fs::create_dir(&parent).unwrap(); // a directory shaped exactly like `<id>.jsonl`
+
+    let rec = db.get(UUID_A).unwrap().unwrap();
+    assert!(
+        transcript_layout(&rec).is_none(),
+        "a directory named <id>.jsonl at the live path is not a readable transcript"
+    );
+}
+
+#[test]
+fn a_directory_named_like_the_staged_jsonl_is_not_a_transcript() {
+    // Regression: the staged branch must key off the `<id>.jsonl` FILE, not just its presence: a
+    // DIRECTORY named `<staged>/<id>.jsonl` must not be treated as a transcript.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = tmp.path().join(format!("{UUID_A}.jsonl"));
+    std::fs::write(&parent, "{}\n").unwrap();
+
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, tmp.path(), &parent), "desk").unwrap();
+
+    // Stage a dir and create a DIRECTORY (not a file) named `<id>.jsonl` inside it, then reap live.
+    let staged_dir = tmp.path().join("staged").join(UUID_A);
+    std::fs::create_dir_all(&staged_dir).unwrap();
+    std::fs::create_dir(staged_dir.join(format!("{UUID_A}.jsonl"))).unwrap();
+    db.set_staged_path(UUID_A, &staged_dir).unwrap();
+    std::fs::remove_file(&parent).unwrap();
+
+    let rec = db.get(UUID_A).unwrap().unwrap();
+    assert!(
+        transcript_layout(&rec).is_none(),
+        "a directory named <id>.jsonl in the staged dir is not a readable transcript"
+    );
+}
+
+#[test]
 fn returns_none_when_neither_live_nor_staged_exists() {
     let tmp = tempfile::TempDir::new().unwrap();
     let parent = tmp.path().join(format!("{UUID_A}.jsonl"));
