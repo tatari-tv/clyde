@@ -1,7 +1,10 @@
 # Export contract fixtures (Phase 0 spike)
 
-Golden fixtures for `clyde session export`, pinned from the live catalog
-(`~/.local/share/clyde/sessions.db`, schema v4, 1677 rows) on 2026-07-17.
+Golden fixtures for `clyde session export`, originally pinned from a live catalog
+(schema v4) on 2026-07-17, then ANONYMIZED for this public repo. Every value is
+now synthetic (user `alice`, repos like `example-org/widget`, zeroed-but-valid
+UUIDs, generic prompts/summaries): only the SHAPE, field names, and each
+fixture's distinguishing state are load-bearing, not the values.
 Design doc: `docs/design/2026-07-17-session-export-contract.md`.
 
 Purpose (Phase 0 success criteria):
@@ -9,18 +12,17 @@ Purpose (Phase 0 success criteria):
 2. No promised contract field lacks a verified source column.
 3. `cost` and tool-call counts are confirmed absent from v1.
 
-These fixtures are the schema Phase 3 validates its emitted envelope against.
-Values are real DB values (some long strings elided with `...` / `[truncated
-for fixture]`); the SHAPE and field names are the contract.
+These fixtures are the schema Phase 3 validates its emitted envelope against. The
+SHAPE and field names are the contract; the values are synthetic placeholders.
 
 ## Fixtures
 
 | File | Session | State exercised |
 |---|---|---|
-| `enriched.json` | `7114f1fa` | enriched (`enrich-status: ok`), `tags-source: enrich`, nonzero `redaction-count`, `scope: work`, `repo` derived |
-| `staged-archived.json` | `03640da6` | `archived: true` + `staged-path` set, `enrich-status: skipped-personal`, transcript file REAPED, `repo: null`, `redaction-count` COALESCEd 0 |
-| `never-enriched.json` | `5c1a4705` | `enrich-status: null`, stored `scope` NULL re-derived to `personal`, empty tags |
-| `with-body.json` | `5c1a4705` | `--with-body`: `body` array of `{role, text}`, `body-truncated`, `body-error` |
+| `enriched.json` | `...0001` | enriched (`enrich-status: ok`), `tags-source: enrich`, nonzero `redaction-count`, `scope: work`, `repo` derived |
+| `staged-archived.json` | `...0002` | `archived: true` + `staged-path` set, `enrich-status: skipped-personal`, transcript file REAPED, `repo: null`, `redaction-count` COALESCEd 0 |
+| `never-enriched.json` | `...0003` | `enrich-status: null`, stored `scope` NULL re-derived to `personal`, empty tags |
+| `with-body.json` | `...0003` | `--with-body`: `body` array of `{role, text, subagent}` (with both `subagent` flag values), `body-truncated`, `body-error` |
 
 ## Field -> source verification
 
@@ -53,10 +55,10 @@ confirmed against the live schema; derived fields note their computation.
 | `enrich-model` | col `enrich_model` | nullable |
 | `prompt-version` | col `prompt_version` | nullable INTEGER |
 | `redaction-count` | col `redaction_count` COALESCE 0 | 559 non-null, 51 nonzero; skip/fail paths never write it |
-| `transcript-path` | col `transcript_path` | NOT NULL; file may be reaped (see `03640da6`) |
+| `transcript-path` | col `transcript_path` | NOT NULL; file may be reaped (see `staged-archived.json`) |
 | `staged-path` | col `staged_path` | nullable |
 | `archived` | col `archived` (0/1 -> bool) | NOT NULL default 0 |
-| `body` (with `--with-body`) | `parse::parse_messages` -> `Vec<Message>` | element `{role, text}` per doc; `Message` also carries `subagent: bool`. Finding B1. |
+| `body` (with `--with-body`) | `parse::parse_messages` -> `Vec<Message>` | element `{role, text, subagent}`; `subagent: bool` distinguishes parent from subagent text. Findings B1/B2. |
 | `body-truncated` | derived at truncation | true when trailing messages dropped for `--max-body-bytes` |
 | `body-error` | derived | `"transcript missing"` \| `"parsed empty"` (frozen strings) |
 
@@ -64,4 +66,4 @@ confirmed against the live schema; derived fields note their computation.
 
 - `cost`: col exists but **0 of 1677 rows non-null** -> no writer (doc `model.rs:34`). Excluded from v1. Confirmed.
 - tool-call counts: **no column exists**. Excluded from v1. Confirmed.
-- `tokens_in` / `tokens_out`: cols exist and **559 rows populated** — real data NOT in the contract and NOT covered by the Non-Goals (which name only cost + tool-counts). Additive-minor later. Decision for Scott. Finding K1.
+- `tokens_in` / `tokens_out`: cols exist and are populated, but token counts are excluded from contract v1 and now listed explicitly in the design doc's Non-Goals. Additive-minor later if a consumer needs them. Finding K1.

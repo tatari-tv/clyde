@@ -8,14 +8,17 @@
 //! omit, and it re-derives `scope` from `cwd` rather than reading the nullable stored column.
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
-use eyre::Result;
+use eyre::{Context, Result, ensure};
 use log::{debug, trace, warn};
 use rusqlite::{OptionalExtension, params};
 
 use super::{Db, parse_dt};
-use crate::export::{ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters, ExportRecord};
+use crate::export::{
+    EnrichStatus, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters, ExportRecord,
+};
 use crate::transcript::transcript_layout_parts;
 
 /// Column list (table alias `s`) for the `export` query. Deliberately its OWN list, NOT `db::COLS`:
@@ -40,6 +43,23 @@ impl Db {
             "Db::export: cursor={:?} since={:?} repo={:?} tag={:?} include_archived={} limit={:?}",
             filters.cursor, filters.since, filters.repo, filters.tag, filters.include_archived, filters.limit
         );
+        // A page size of 0 returns an empty page whose cursor is unchanged from the request, so a
+        // cursor-driven consumer would poll forever; a value above `i64::MAX` overflows the
+        // `usize -> i64` bind to a negative LIMIT. Reject both loudly: a valid `--limit` is
+        // `1..=i64::MAX` (finding: reject out-of-range limits).
+        let limit = match filters.limit {
+            Some(limit) => {
+                let limit = i64::try_from(limit).ok().filter(|&n| n >= 1);
+                ensure!(
+                    limit.is_some(),
+                    "--limit must be between 1 and {}; got {:?}",
+                    i64::MAX,
+                    filters.limit
+                );
+                limit
+            }
+            None => None,
+        };
         let mut sql = format!("SELECT {EXPORT_COLS} FROM sessions s WHERE 1=1");
         let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         if !filters.include_archived {
@@ -54,24 +74,32 @@ impl Db {
             binds.push(Box::new(since.to_rfc3339()));
         }
         if let Some(repo) = &filters.repo {
-            sql.push_str(" AND (s.cwd LIKE ? OR s.project_dir LIKE ?)");
-            let pat = format!("%{repo}%");
+            // Substring match, but `%`/`_` in the value are LIKE wildcards -- escape them (with `\`)
+            // so a literal `%` or `_` in a repo name matches itself, not "any run" / "any char"
+            // (finding: treat filters as literals, not LIKE patterns).
+            sql.push_str(r" AND (s.cwd LIKE ? ESCAPE '\' OR s.project_dir LIKE ? ESCAPE '\')");
+            let pat = format!("%{}%", escape_like(repo));
             binds.push(Box::new(pat.clone()));
             binds.push(Box::new(pat));
         }
         if let Some(tag) = &filters.tag {
-            sql.push_str(" AND (s.tags = ? OR s.tags LIKE ? OR s.tags LIKE ? OR s.tags LIKE ?)");
+            // Exact `=` needs no escaping; the space-delimited LIKE forms match the tag as a literal
+            // token, so its `%`/`_` are escaped too (finding: treat filters as literals).
+            let esc = escape_like(tag);
+            sql.push_str(
+                r" AND (s.tags = ? OR s.tags LIKE ? ESCAPE '\' OR s.tags LIKE ? ESCAPE '\' OR s.tags LIKE ? ESCAPE '\')",
+            );
             binds.push(Box::new(tag.clone()));
-            binds.push(Box::new(format!("{tag} %")));
-            binds.push(Box::new(format!("% {tag}")));
-            binds.push(Box::new(format!("% {tag} %")));
+            binds.push(Box::new(format!("{esc} %")));
+            binds.push(Box::new(format!("% {esc}")));
+            binds.push(Box::new(format!("% {esc} %")));
         }
         // Keyset pagination: ascending revision, id as the deterministic tiebreak (updated_at is
         // already unique, but a stable secondary key is cheap insurance).
         sql.push_str(" ORDER BY s.updated_at ASC, s.id ASC");
-        if let Some(limit) = filters.limit {
+        if let Some(limit) = limit {
             sql.push_str(" LIMIT ?");
-            binds.push(Box::new(limit as i64));
+            binds.push(Box::new(limit));
         }
 
         let mut stmt = self.conn.prepare(&sql)?;
@@ -82,7 +110,7 @@ impl Db {
         let sessions: Vec<ExportRecord> = raws
             .into_iter()
             .map(|raw| build_export_record(raw, ctx.now, ctx.dormant_after))
-            .collect();
+            .collect::<Result<_>>()?;
         // Max revision in the page, or the request cursor when the page is empty.
         let cursor = sessions
             .iter()
@@ -130,12 +158,18 @@ impl Db {
             &raw.project_dir,
             raw.staged_path.as_deref().map(Path::new),
         );
-        let mut record = build_export_record(raw, ctx.now, ctx.dormant_after);
+        let mut record = build_export_record(raw, ctx.now, ctx.dormant_after)?;
         if with_body {
             record.body = Some(resolve_body(session_id, layout, max_body_bytes));
         }
         Ok(Some(record))
     }
+}
+
+/// Escape SQLite `LIKE` metacharacters (`%`, `_`, and the `\` escape char itself) so a filter value
+/// is matched as a literal, not a pattern. Paired with an `ESCAPE '\'` clause on the `LIKE`.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_")
 }
 
 /// Read the parsed, bounded body for `session_id` from an already-resolved `layout`, mapping the
@@ -251,10 +285,20 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
 /// IS the transcript mtime, finding D1); `dormant` request-relative against the injected `now`
 /// (finding T1). `body` is left `None` (the bulk path); [`Db::export_one`] fills it under
 /// `--with-body`.
-fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono::Duration) -> ExportRecord {
+///
+/// Fails LOUDLY (fail closed) when the stored `enrich_status` TEXT is a non-null value outside the
+/// frozen [`EnrichStatus`] vocabulary: a non-contract value must never silently reach the wire. `NULL`
+/// maps to `None` (never-attempted); a known value to `Some(variant)`.
+fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono::Duration) -> Result<ExportRecord> {
     let cwd_path = raw.cwd.as_deref().map(Path::new);
     let scope = session::classify(cwd_path).as_str().to_string();
     let repo = session::repo_slug(cwd_path);
+    let enrich_status = raw
+        .enrich_status
+        .as_deref()
+        .map(EnrichStatus::from_str)
+        .transpose()
+        .with_context(|| format!("session {} has a non-contract enrich-status", raw.session_id))?;
     let created_dt = raw.created.as_deref().and_then(parse_dt);
     let modified_dt = parse_dt(&raw.modified);
     let duration_secs = match (created_dt, modified_dt) {
@@ -269,7 +313,7 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
         "db::build_export_record: session_id={} scope={} repo={:?} dormant={} duration_secs={}",
         raw.session_id, scope, repo, dormant, duration_secs
     );
-    ExportRecord {
+    Ok(ExportRecord {
         session_id: raw.session_id,
         host: raw.host,
         scope,
@@ -290,7 +334,7 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
         tags,
         tags_source: raw.tags_source,
         enriched_at: raw.enriched_at,
-        enrich_status: raw.enrich_status,
+        enrich_status,
         enrich_model: raw.enrich_model,
         prompt_version: raw.prompt_version,
         redaction_count: raw.redaction_count.unwrap_or(0),
@@ -298,7 +342,7 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
         staged_path: raw.staged_path,
         archived: raw.archived,
         body: None,
-    }
+    })
 }
 
 #[cfg(test)]

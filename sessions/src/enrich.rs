@@ -14,6 +14,7 @@ use eyre::{Result, bail};
 use log::{debug, info, warn};
 
 use crate::db::{Db, EnrichSuccess};
+use crate::export::EnrichStatus;
 use crate::llm::{Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION};
 use crate::model::{EnrichDetail, EnrichStats, SessionRecord};
 use crate::transcript::transcript_layout;
@@ -91,11 +92,16 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
 
         // --- Routing gate: personal content never leaves the machine. ---
         if !scope.is_work() {
-            db.record_enrich_skip(&rec.session_id, scope.as_str(), "skipped-personal")?;
+            db.record_enrich_skip(&rec.session_id, scope.as_str(), EnrichStatus::SkippedPersonal)?;
             stats.skipped_personal += 1;
-            stats
-                .details
-                .push(detail(rec, scope.as_str(), false, None, None, "skipped-personal"));
+            stats.details.push(detail(
+                rec,
+                scope.as_str(),
+                false,
+                None,
+                None,
+                EnrichStatus::SkippedPersonal.as_str(),
+            ));
             continue;
         }
 
@@ -105,22 +111,32 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 "enrich::enrich: {} archived with no staged copy; skipping",
                 rec.session_id
             );
-            db.record_enrich_skip(&rec.session_id, scope.as_str(), "skipped-empty")?;
+            db.record_enrich_skip(&rec.session_id, scope.as_str(), EnrichStatus::SkippedEmpty)?;
             stats.skipped_empty += 1;
-            stats
-                .details
-                .push(detail(rec, scope.as_str(), false, None, None, "skipped-empty"));
+            stats.details.push(detail(
+                rec,
+                scope.as_str(),
+                false,
+                None,
+                None,
+                EnrichStatus::SkippedEmpty.as_str(),
+            ));
             continue;
         };
         let body = session::parse::parse_one(&rec.session_id, &parent, &subagents_dir).map(|p| p.body);
         let body = match body {
             Some(b) if !b.trim().is_empty() => b,
             _ => {
-                db.record_enrich_skip(&rec.session_id, scope.as_str(), "skipped-empty")?;
+                db.record_enrich_skip(&rec.session_id, scope.as_str(), EnrichStatus::SkippedEmpty)?;
                 stats.skipped_empty += 1;
-                stats
-                    .details
-                    .push(detail(rec, scope.as_str(), false, None, None, "skipped-empty"));
+                stats.details.push(detail(
+                    rec,
+                    scope.as_str(),
+                    false,
+                    None,
+                    None,
+                    EnrichStatus::SkippedEmpty.as_str(),
+                ));
                 continue;
             }
         };
@@ -195,7 +211,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                     true,
                     Some(redactions),
                     Some(payload_bytes),
-                    "ok",
+                    EnrichStatus::Ok.as_str(),
                 ));
             }
             Err(e) => {
@@ -207,7 +223,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                     true,
                     Some(redactions),
                     Some(payload_bytes),
-                    "failed",
+                    EnrichStatus::Failed.as_str(),
                 ));
             }
         }

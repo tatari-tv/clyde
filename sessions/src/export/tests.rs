@@ -1,15 +1,45 @@
 #![allow(clippy::unwrap_used)]
 
+use std::str::FromStr;
+
 use super::*;
+
+#[test]
+fn enrich_status_wire_strings_are_the_frozen_kebab_vocabulary() {
+    // `as_str` and serde must agree on the exact kebab wire strings the contract froze.
+    for (status, wire) in [
+        (EnrichStatus::Ok, "ok"),
+        (EnrichStatus::SkippedPersonal, "skipped-personal"),
+        (EnrichStatus::SkippedEmpty, "skipped-empty"),
+        (EnrichStatus::Failed, "failed"),
+    ] {
+        assert_eq!(status.as_str(), wire);
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            serde_json::Value::String(wire.to_string())
+        );
+        assert_eq!(EnrichStatus::from_str(wire).unwrap(), status);
+    }
+}
+
+#[test]
+fn enrich_status_parse_fails_closed_on_a_non_contract_value() {
+    // A non-frozen value is a LOUD error at the read boundary, never a silent pass-through.
+    let err = EnrichStatus::from_str("skipped-unknown").unwrap_err();
+    assert!(
+        format!("{err:#}").contains("non-contract enrich-status"),
+        "the parse error must name the offending value"
+    );
+}
 
 fn metadata_record() -> ExportRecord {
     ExportRecord {
-        session_id: "7114f1fa-833e-46d7-9e88-c0f387fde9c9".to_string(),
-        host: "desk".to_string(),
+        session_id: "00000000-0000-4000-8000-000000000001".to_string(),
+        host: "host-01".to_string(),
         scope: "work".to_string(),
-        cwd: Some("/home/saidler/repos/tatari-tv/drata-cli".to_string()),
-        project_dir: "/home/saidler/.claude/projects/-home-saidler-repos-tatari-tv-drata-cli".to_string(),
-        repo: Some("tatari-tv/drata-cli".to_string()),
+        cwd: Some("/home/alice/repos/example-org/widget".to_string()),
+        project_dir: "/home/alice/.claude/projects/-home-alice-repos-example-org-widget".to_string(),
+        repo: Some("example-org/widget".to_string()),
         git_branch: Some("main".to_string()),
         created: Some("2026-06-27T21:39:42.310+00:00".to_string()),
         modified: "2026-06-28T16:38:05.788399466+00:00".to_string(),
@@ -17,18 +47,18 @@ fn metadata_record() -> ExportRecord {
         duration_secs: 68303,
         dormant: true,
         title: Some("Phase 1 complete".to_string()),
-        first_prompt: Some("Another Claude session sent a message".to_string()),
+        first_prompt: Some("Another agent sent a message".to_string()),
         n_msgs: 2041,
-        model: Some("claude-opus-4-8".to_string()),
+        model: Some("example-model-large".to_string()),
         summary: Some("Orchestrated a phased port".to_string()),
         tags: vec!["rust".to_string(), "cli".to_string()],
         tags_source: Some("enrich".to_string()),
         enriched_at: Some("2026-07-06T10:04:07.075906295+00:00".to_string()),
-        enrich_status: Some("ok".to_string()),
-        enrich_model: Some("claude-haiku-4-5-20251001".to_string()),
+        enrich_status: Some(EnrichStatus::Ok),
+        enrich_model: Some("example-model-mini".to_string()),
         prompt_version: Some(1),
         redaction_count: 4,
-        transcript_path: "/home/saidler/.claude/projects/x/7114f1fa.jsonl".to_string(),
+        transcript_path: "/home/alice/.claude/projects/x/00000000-0000-4000-8000-000000000001.jsonl".to_string(),
         staged_path: None,
         archived: false,
         body: None,
@@ -37,7 +67,7 @@ fn metadata_record() -> ExportRecord {
 
 fn body_record() -> ExportRecord {
     let mut rec = metadata_record();
-    rec.session_id = "5c1a4705-74f8-4d75-827a-4bcb056a109b".to_string();
+    rec.session_id = "00000000-0000-4000-8000-000000000003".to_string();
     rec.scope = "personal".to_string();
     rec.enrich_status = None;
     rec.tags = vec![];
@@ -66,7 +96,7 @@ fn envelope_round_trips_losslessly_through_serde() {
     let envelope = ExportEnvelope {
         schema_version: EXPORT_SCHEMA_VERSION,
         generated_at: "2026-07-17T00:00:00+00:00".to_string(),
-        host: "desk".to_string(),
+        host: "host-01".to_string(),
         cursor: 478,
         sessions: vec![metadata_record(), body_record()],
     };
@@ -105,8 +135,24 @@ fn body_record_emits_all_three_body_keys_including_null_error() {
 }
 
 #[test]
-fn unknown_top_level_envelope_field_is_rejected() {
-    // deny_unknown_fields on the envelope: a stray key is a loud error, not silent drift.
-    let json = r#"{"schema-version":1,"generated-at":"x","host":"h","cursor":0,"sessions":[],"bogus":1}"#;
-    assert!(serde_json::from_str::<ExportEnvelope>(json).is_err());
+fn unknown_top_level_envelope_field_is_tolerated() {
+    // Forward-compatible envelope (no deny_unknown_fields): the contract is additive-within-major, so
+    // a v1 consumer MUST tolerate a v2 producer's new top-level key rather than error on it. The
+    // stray field is ignored, and the known fields still deserialize.
+    let json = r#"{"schema-version":1,"generated-at":"x","host":"h","cursor":0,"sessions":[],"future-key":1}"#;
+    let env: ExportEnvelope =
+        serde_json::from_str(json).expect("a v2 producer's extra top-level key must not break a v1 consumer");
+    assert_eq!(env.schema_version, 1);
+    assert!(env.sessions.is_empty());
+}
+
+#[test]
+fn unknown_body_message_field_is_tolerated() {
+    // Same forward-compatibility promise for the body element: an added element key is ignored, not a
+    // hard error (deny_unknown_fields removed from ExportBodyMessage).
+    let json = r#"{"role":"user","text":"hi","subagent":false,"future-key":"x"}"#;
+    let msg: ExportBodyMessage =
+        serde_json::from_str(json).expect("a v2 producer's extra body-element key must not break a v1 consumer");
+    assert_eq!(msg.role, "user");
+    assert!(!msg.subagent);
 }

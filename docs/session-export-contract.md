@@ -10,7 +10,7 @@ Design doc: `docs/design/2026-07-17-session-export-contract.md`.
 
 ## Two-phase export
 
-```
+```text
 clyde session export [--cursor <revision>] [--since <span|date>] [--repo <org/name>] [--tag <t>]
                      [--dormant-after <span>] [--include-archived] [--limit <n>]
 

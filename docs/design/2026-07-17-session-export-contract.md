@@ -197,7 +197,7 @@ Every phase ends `otto ci` green with exactly one commit.
 - Contract test pinning field names (fails on rename/drop).
 - Seam test: serde round-trip of envelope with real records.
 - Migration test: v4 -> v5 idempotent, backfill correct.
-- Cursor test: enrichment-only write is visible under `--since`.
+- Cursor test: enrichment-only write is visible under `--cursor` (not `--since`: `--since` filters `modified`, which enrichment writes do not touch).
 
 ### Rollout Plan
 - Lands in a normal clyde release via `bump`; no flag-gating needed (new read-only subcommand).

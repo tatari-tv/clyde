@@ -17,6 +17,7 @@ use log::{debug, trace, warn};
 use rusqlite::{Connection, OptionalExtension, params};
 use session::ParsedSession;
 
+use crate::export::EnrichStatus;
 use crate::model::{
     EnrichSummary, Fallback, Filters, MatchSource, SearchHit, SearchResults, SessionRecord, SortBy, Unenriched,
 };
@@ -387,7 +388,7 @@ impl Db {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "UPDATE sessions SET summary=?2, tags=?3, scope=?4, enriched_at=?5, enriched_modified=?6, \
-             enrich_model=?7, prompt_version=?8, enrich_status='ok', last_error=NULL, attempts=0, \
+             enrich_model=?7, prompt_version=?8, enrich_status=?13, last_error=NULL, attempts=0, \
              redaction_count=?9, tokens_in=?10, tokens_out=?11, \
              tags_source=COALESCE(?12, tags_source) WHERE id=?1",
             params![
@@ -403,6 +404,8 @@ impl Db {
                 e.tokens_in as i64,
                 e.tokens_out as i64,
                 tags_source,
+                // Single source of truth for the wire literal (never a scattered 'ok').
+                EnrichStatus::Ok.as_str(),
             ],
         )?;
         rebuild_high_signal_fts_on(&tx, id, title.as_deref(), &new_tags, Some(e.summary))?;
@@ -410,14 +413,18 @@ impl Db {
         Ok(true)
     }
 
-    /// Record a non-failure skip (`skipped-personal` / `skipped-empty`): persist the `scope` and
-    /// `status` for observability without touching `enriched_at` (the session stays un-enriched).
-    /// Returns `false` if no such session exists.
-    pub fn record_enrich_skip(&self, session_id: &str, scope: &str, status: &str) -> Result<bool> {
-        debug!("Db::record_enrich_skip: session_id={session_id} scope={scope} status={status}");
+    /// Record a non-failure skip ([`EnrichStatus::SkippedPersonal`] / [`EnrichStatus::SkippedEmpty`]):
+    /// persist the `scope` and typed `status` for observability without touching `enriched_at` (the
+    /// session stays un-enriched). The wire literal comes from [`EnrichStatus::as_str`], never a
+    /// scattered string. Returns `false` if no such session exists.
+    pub fn record_enrich_skip(&self, session_id: &str, scope: &str, status: EnrichStatus) -> Result<bool> {
+        debug!(
+            "Db::record_enrich_skip: session_id={session_id} scope={scope} status={}",
+            status.as_str()
+        );
         let n = self.conn.execute(
             "UPDATE sessions SET scope=?2, enrich_status=?3 WHERE session_id=?1",
-            params![session_id, scope, status],
+            params![session_id, scope, status.as_str()],
         )?;
         Ok(n > 0)
     }
@@ -428,9 +435,10 @@ impl Db {
     pub fn record_enrich_failure(&self, session_id: &str, scope: &str, last_error: &str) -> Result<bool> {
         warn!("Db::record_enrich_failure: session_id={session_id} scope={scope} last_error={last_error}");
         let n = self.conn.execute(
-            "UPDATE sessions SET scope=?2, enrich_status='failed', last_error=?3, attempts=attempts+1 \
+            "UPDATE sessions SET scope=?2, enrich_status=?4, last_error=?3, attempts=attempts+1 \
              WHERE session_id=?1",
-            params![session_id, scope, last_error],
+            // ?4 comes from the enum, not a scattered 'failed' literal.
+            params![session_id, scope, last_error, EnrichStatus::Failed.as_str()],
         )?;
         Ok(n > 0)
     }
