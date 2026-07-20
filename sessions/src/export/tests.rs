@@ -62,8 +62,8 @@ fn metadata_record() -> ExportRecord {
         staged_path: None,
         archived: false,
         files_touched: Some(vec![
-            "/home/alice/repos/example-org/widget/src/main.rs".to_string(),
             "/home/alice/repos/example-org/widget/src/lib.rs".to_string(),
+            "/home/alice/repos/example-org/widget/src/main.rs".to_string(),
         ]),
         repos_touched: Some(vec!["example-org/widget".to_string()]),
         body: None,
