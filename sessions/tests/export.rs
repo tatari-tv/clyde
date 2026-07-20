@@ -164,6 +164,7 @@ fn parsed(id: &str, cwd: &str, dir: &Path, parent: &Path) -> ParsedSession {
         modified: dt("2026-06-21T10:00:00Z"),
         body: "indexed body".to_string(),
         jsonl_paths: vec![parent.to_path_buf()],
+        files_touched: Default::default(),
     }
 }
 

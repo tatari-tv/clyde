@@ -347,6 +347,155 @@ fn parse_messages_bounded_unbounded_matches_parse_messages() {
 }
 
 #[test]
+fn files_touched_collects_whitelisted_tool_paths() {
+    // One assistant message carrying a tool_use block for each whitelisted tool. NotebookEdit's
+    // key is `notebook_path`; the other four are `file_path`. All five paths land in the set.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    write(
+        &path,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:00Z","message":{"model":"claude-opus-4-8","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/home/saidler/repos/a/read.rs"}},{"type":"tool_use","name":"Edit","input":{"file_path":"/home/saidler/repos/a/edit.rs"}},{"type":"tool_use","name":"MultiEdit","input":{"file_path":"/home/saidler/repos/a/multi.rs"}},{"type":"tool_use","name":"Write","input":{"file_path":"/home/saidler/repos/a/write.rs"}},{"type":"tool_use","name":"NotebookEdit","input":{"notebook_path":"/home/saidler/repos/a/nb.ipynb"}}]}}"#,
+        ],
+    );
+    let s = &parse_sessions(&[parent_file(path)])[0];
+    let expected: BTreeSet<String> = [
+        "/home/saidler/repos/a/read.rs",
+        "/home/saidler/repos/a/edit.rs",
+        "/home/saidler/repos/a/multi.rs",
+        "/home/saidler/repos/a/write.rs",
+        "/home/saidler/repos/a/nb.ipynb",
+    ]
+    .iter()
+    .map(|p| p.to_string())
+    .collect();
+    assert_eq!(s.files_touched, expected);
+}
+
+#[test]
+fn files_touched_excludes_bash_grep_glob() {
+    // Bash (command), Grep (path), and Glob (path) are NOT touched files. Only the Read path counts.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    write(
+        &path,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:00Z","message":{"model":"claude-opus-4-8","content":[{"type":"tool_use","name":"Bash","input":{"command":"rm /home/saidler/repos/a/danger.rs"}},{"type":"tool_use","name":"Grep","input":{"path":"/home/saidler/repos/a","pattern":"foo"}},{"type":"tool_use","name":"Glob","input":{"path":"/home/saidler/repos/a","glob":"**/*.rs"}},{"type":"tool_use","name":"Read","input":{"file_path":"/home/saidler/repos/a/kept.rs"}}]}}"#,
+        ],
+    );
+    let s = &parse_sessions(&[parent_file(path)])[0];
+    assert_eq!(
+        s.files_touched,
+        BTreeSet::from(["/home/saidler/repos/a/kept.rs".to_string()]),
+        "only the Read path is retained; Bash/Grep/Glob roots are excluded"
+    );
+}
+
+#[test]
+fn files_touched_captures_tool_use_only_assistant_message() {
+    // A tool_use-only assistant message (no text block) must still yield its path — extraction is
+    // never gated on the presence of text (38% of real assistant messages are tool_use-only).
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    write(
+        &path,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:00Z","message":{"model":"claude-opus-4-8","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/home/saidler/repos/a/only.rs"}}]}}"#,
+        ],
+    );
+    let s = &parse_sessions(&[parent_file(path)])[0];
+    assert_eq!(s.body, "", "the tool_use-only message contributes no body text");
+    assert_eq!(
+        s.files_touched,
+        BTreeSet::from(["/home/saidler/repos/a/only.rs".to_string()]),
+        "the path is captured despite there being no text block"
+    );
+}
+
+#[test]
+fn files_touched_rolls_up_subagent_touches_into_the_group() {
+    // Parent and subagent transcripts share a group_id; each touches a distinct file, and both
+    // land in the single rolled-up set.
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("proj");
+    let parent = proj.join(format!("{UUID_A}.jsonl"));
+    let sub = proj.join(UUID_A).join("subagents").join("agent-1.jsonl");
+    write(
+        &parent,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:00Z","message":{"model":"claude-opus-4-8","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/home/saidler/repos/a/parent.rs"}}]}}"#,
+        ],
+    );
+    write(
+        &sub,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:01:00Z","message":{"model":"claude-haiku-4-5","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/home/saidler/repos/a/sub.rs"}}]}}"#,
+        ],
+    );
+    let files = vec![
+        parent_file(parent),
+        SessionFile {
+            path: sub,
+            group_id: UUID_A.to_string(),
+            kind: SessionFileKind::Subagent,
+        },
+    ];
+    let s = &parse_sessions(&files)[0];
+    assert_eq!(
+        s.files_touched,
+        BTreeSet::from([
+            "/home/saidler/repos/a/parent.rs".to_string(),
+            "/home/saidler/repos/a/sub.rs".to_string(),
+        ]),
+        "subagent touches roll up into the parent's set"
+    );
+}
+
+#[test]
+fn files_touched_dedups_and_sorts() {
+    // The same file touched several times (across messages and tools) collapses to one entry, and
+    // the BTreeSet yields a stable, sorted order regardless of first-seen order.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    write(
+        &path,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:00Z","message":{"model":"m","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/z/second.rs"}}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:01Z","message":{"model":"m","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/z/second.rs"}}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-21T10:00:02Z","message":{"model":"m","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/a/first.rs"}}]}}"#,
+        ],
+    );
+    let s = &parse_sessions(&[parent_file(path)])[0];
+    // Two distinct entries despite three touches; /z/second.rs read then edited counts once.
+    assert_eq!(s.files_touched.len(), 2, "duplicate touches dedup to one entry");
+    // BTreeSet iteration is sorted: /a/first.rs before /z/second.rs even though /z was seen first.
+    let ordered: Vec<&String> = s.files_touched.iter().collect();
+    assert_eq!(
+        ordered,
+        vec!["/a/first.rs", "/z/second.rs"],
+        "sorted, deterministic order"
+    );
+}
+
+#[test]
+fn extract_tool_paths_edges() {
+    // Non-array content, tool_result blocks, unknown tools, and empty paths all yield nothing.
+    assert!(extract_tool_paths(Some(&serde_json::json!("plain string"))).is_empty());
+    assert!(extract_tool_paths(None).is_empty());
+    assert_eq!(
+        extract_tool_paths(Some(&serde_json::json!([
+            {"type":"text","text":"hi"},
+            {"type":"tool_result","content":"ignored"},
+            {"type":"tool_use","name":"TodoWrite","input":{"todos":[]}},
+            {"type":"tool_use","name":"Read","input":{"file_path":""}},
+            {"type":"tool_use","name":"Read","input":{"file_path":"/kept.rs"}}
+        ]))),
+        vec!["/kept.rs".to_string()],
+        "only a non-empty whitelisted tool_use path is collected"
+    );
+}
+
+#[test]
 fn helpers_handle_edges() {
     assert!(is_command_noise("   "));
     assert!(is_command_noise("<system-reminder>foo"));

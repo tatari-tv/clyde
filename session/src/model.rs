@@ -1,6 +1,7 @@
 //! Typed model for a Claude Code session: the discovered files ([`SessionFile`]) and the
 //! parsed, rolled-up record ([`ParsedSession`]) the navigational layer indexes.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -56,6 +57,11 @@ pub struct ParsedSession {
     pub body: String,
     /// All transcript files (parent first, then subagents), for `open`/staging.
     pub jsonl_paths: Vec<PathBuf>,
+    /// The set of file paths touched by whitelisted file tools (Read/Edit/MultiEdit/Write/
+    /// NotebookEdit) across parent and subagent transcripts, deduped and sorted (BTreeSet =
+    /// deterministic serialization order). Paths are stored verbatim as they appeared in the
+    /// tool input; canonicalization/derivation is a later phase. Empty when no file tool ran.
+    pub files_touched: BTreeSet<String>,
 }
 
 impl ParsedSession {

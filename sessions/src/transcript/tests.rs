@@ -29,6 +29,7 @@ fn parsed(session_id: &str, project_dir: &Path, parent: &Path) -> ParsedSession 
         modified: dt("2026-06-21T10:00:00Z"),
         body: "indexed body".into(),
         jsonl_paths: vec![parent.to_path_buf()],
+        files_touched: Default::default(),
     }
 }
 

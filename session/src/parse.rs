@@ -4,7 +4,7 @@
 //! and Claude JSONL schema drift are skip-and-logged, never fatal. Each line is parsed
 //! independently from raw bytes so one bad line never truncates the rest of a transcript.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -321,6 +321,7 @@ struct Acc {
     body: String,
     body_chars: usize,
     paths: Vec<PathBuf>,
+    files_touched: BTreeSet<String>,
 }
 
 impl Acc {
@@ -340,6 +341,7 @@ impl Acc {
             body: String::new(),
             body_chars: 0,
             paths: Vec::new(),
+            files_touched: BTreeSet::new(),
         }
     }
 
@@ -418,7 +420,13 @@ impl Acc {
                 {
                     self.model = Some(m.to_string());
                 }
-                let text = extract_text(v.get("message").and_then(|m| m.get("content")));
+                let content = v.get("message").and_then(|m| m.get("content"));
+                // Runs UNCONDITIONALLY, never gated on the text below: 38% of real assistant
+                // messages are tool_use-only with no text block, and gating would drop their paths.
+                for path in extract_tool_paths(content) {
+                    self.files_touched.insert(path);
+                }
+                let text = extract_text(content);
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
                     self.append_body(trimmed);
@@ -465,6 +473,7 @@ impl Acc {
             modified,
             body: self.body,
             jsonl_paths: self.paths,
+            files_touched: self.files_touched,
         })
     }
 }
@@ -496,6 +505,48 @@ fn extract_text(content: Option<&Value>) -> String {
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// Whitelisted file tools and the input key carrying the touched path. Only structured tools that
+/// name a concrete file are included; `Grep`/`Glob` (`path` is a search root, not a touched file)
+/// and `Bash` (freeform `command`) are deliberately absent (design doc non-goals). `NotebookEdit`'s
+/// key is `notebook_path`, confirmed against the first-party tool schema.
+const TOOL_PATH_KEYS: &[(&str, &str)] = &[
+    ("Read", "file_path"),
+    ("Edit", "file_path"),
+    ("MultiEdit", "file_path"),
+    ("Write", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+];
+
+/// Collect the touched file paths from an assistant message's `content` array: for each `tool_use`
+/// block whose tool `name` is whitelisted in [`TOOL_PATH_KEYS`], read the corresponding input key
+/// and yield its string value. `tool_result` and every non-whitelisted tool are ignored. The path
+/// string is stored verbatim (no canonicalization); derivation is a later phase. Order is not
+/// meaningful here — the caller dedups into a sorted `BTreeSet`.
+fn extract_tool_paths(content: Option<&Value>) -> Vec<String> {
+    let Some(Value::Array(arr)) = content else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for block in arr {
+        if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let Some(name) = block.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some((_, key)) = TOOL_PATH_KEYS.iter().find(|(tool, _)| *tool == name) else {
+            continue;
+        };
+        if let Some(path) = block.get("input").and_then(|i| i.get(*key)).and_then(Value::as_str)
+            && !path.is_empty()
+        {
+            trace!("parse::extract_tool_paths: tool={name} path={path}");
+            paths.push(path.to_string());
+        }
+    }
+    paths
 }
 
 /// Extract the invoked command/skill name from a `<command-name>…</command-name>` user message,

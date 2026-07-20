@@ -28,6 +28,7 @@ fn parsed(session_id: &str, transcript: &str) -> ParsedSession {
         modified: dt("2026-06-21T10:00:00Z"),
         body: "the Marquee S3 bucket lives in us-east-1".into(),
         jsonl_paths: vec![PathBuf::from(transcript)],
+        files_touched: Default::default(),
     }
 }
 

@@ -44,6 +44,7 @@ fn parsed_cwd(session_id: &str, transcript: &str, cwd: &str, modified: &str) -> 
         modified: dt(modified),
         body: "some body text".to_string(),
         jsonl_paths: vec![PathBuf::from(transcript)],
+        files_touched: Default::default(),
     }
 }
 

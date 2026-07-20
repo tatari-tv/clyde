@@ -37,6 +37,7 @@ fn parsed(session_id: &str, transcript: &str, repo: &str, body: &str) -> ParsedS
         modified: dt("2026-06-21T10:00:00Z"),
         body: body.to_string(),
         jsonl_paths: vec![PathBuf::from(transcript)],
+        files_touched: Default::default(),
     }
 }
 
@@ -442,6 +443,7 @@ fn parsed_at(session_id: &str, project_dir: &std::path::Path, parent: &std::path
         modified: dt("2026-06-21T10:00:00Z"),
         body: "indexed body".into(),
         jsonl_paths: vec![parent.to_path_buf()],
+        files_touched: Default::default(),
     }
 }
 

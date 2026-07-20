@@ -106,6 +106,7 @@ fn parsed_record(dir: &Path, id: &str, cwd: &str, parent: &Path) -> ParsedSessio
         modified: dt("2026-06-21T10:00:00Z"),
         body: "indexed body".into(),
         jsonl_paths: vec![parent.to_path_buf()],
+        files_touched: Default::default(),
     }
 }
 
