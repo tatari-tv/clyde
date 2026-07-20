@@ -605,6 +605,152 @@ fn export_tag_filter_treats_like_wildcards_as_literals() {
 }
 
 #[test]
+fn export_derives_repos_touched_from_two_repo_files_touched() {
+    // A session touching files in two distinct repos exports the raw paths in `files-touched` and both
+    // canonical `<org>/<repo>` slugs in `repos-touched`, derived at query time via `repo_slug`.
+    let db = Db::open_memory().unwrap();
+    let mut p = parsed_cwd(
+        UUID_A,
+        "/tmp/a.jsonl",
+        "/home/saidler/repos/tatari-tv/clyde",
+        "2026-06-21T10:00:00Z",
+    );
+    p.files_touched = [
+        "/home/saidler/repos/tatari-tv/clyde/sessions/src/db.rs".to_string(),
+        "/home/saidler/repos/scottidler/keep/notes.md".to_string(),
+    ]
+    .into_iter()
+    .collect();
+    db.upsert_session(&p, "desk").unwrap();
+
+    let env = db
+        .export(&ExportFilters::default(), &export_ctx("2026-07-01T00:00:00Z"))
+        .unwrap();
+    let rec = &env.sessions[0];
+    assert_eq!(
+        rec.files_touched.as_deref(),
+        Some(
+            [
+                "/home/saidler/repos/scottidler/keep/notes.md".to_string(),
+                "/home/saidler/repos/tatari-tv/clyde/sessions/src/db.rs".to_string(),
+            ]
+            .as_slice()
+        ),
+        "files-touched carries the raw paths, sorted"
+    );
+    assert_eq!(
+        rec.repos_touched.as_deref(),
+        Some(["scottidler/keep".to_string(), "tatari-tv/clyde".to_string()].as_slice()),
+        "repos-touched has both canonical slugs, sorted + deduped"
+    );
+}
+
+#[test]
+fn export_omits_both_fields_when_files_touched_column_is_null() {
+    // A NULL `files_touched` column means "not parsed / unknowable": export OMITS both fields (keys
+    // absent), never an empty array. `upsert_session` writes `[]`, so NULL the cell explicitly.
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "/home/saidler/repos/tatari-tv/clyde",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+    db.conn
+        .execute(
+            "UPDATE sessions SET files_touched = NULL WHERE session_id = ?1",
+            rusqlite::params![UUID_A],
+        )
+        .unwrap();
+
+    let env = db
+        .export(&ExportFilters::default(), &export_ctx("2026-07-01T00:00:00Z"))
+        .unwrap();
+    let rec = &env.sessions[0];
+    assert!(rec.files_touched.is_none(), "NULL column -> files-touched omitted");
+    assert!(rec.repos_touched.is_none(), "NULL column -> repos-touched omitted");
+    // Prove the omission reaches the wire: the kebab keys must be absent from the JSON object.
+    let v = serde_json::to_value(rec).unwrap();
+    let obj = v.as_object().unwrap();
+    assert!(!obj.contains_key("files-touched"));
+    assert!(!obj.contains_key("repos-touched"));
+}
+
+#[test]
+fn export_repos_touched_is_empty_when_no_path_resolves_to_a_repo() {
+    // Paths all outside `~/repos/` (plus a relative path, which is discarded, never canonicalized):
+    // `files-touched` is populated but `repos-touched` is an empty array (present, not omitted).
+    let db = Db::open_memory().unwrap();
+    let mut p = parsed_cwd(
+        UUID_A,
+        "/tmp/a.jsonl",
+        "/home/saidler/repos/tatari-tv/clyde",
+        "2026-06-21T10:00:00Z",
+    );
+    p.files_touched = [
+        "/tmp/scratch.txt".to_string(),
+        "/home/saidler/notes.md".to_string(),
+        "relative/path.rs".to_string(),
+    ]
+    .into_iter()
+    .collect();
+    db.upsert_session(&p, "desk").unwrap();
+
+    let env = db
+        .export(&ExportFilters::default(), &export_ctx("2026-07-01T00:00:00Z"))
+        .unwrap();
+    let rec = &env.sessions[0];
+    assert_eq!(
+        rec.files_touched.as_ref().map(Vec::len),
+        Some(3),
+        "all three paths are carried raw"
+    );
+    assert_eq!(
+        rec.repos_touched.as_deref(),
+        Some([].as_slice()),
+        "no path resolves to a repo -> repos-touched is [], not omitted"
+    );
+}
+
+#[test]
+fn export_fails_loudly_on_a_malformed_files_touched_cell() {
+    // A `files_touched` cell that is not a JSON array (an aborted write) is a LOUD per-session error
+    // naming the id, never a silently-omitted field or an empty set.
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "/home/saidler/repos/tatari-tv/clyde",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+    db.conn
+        .execute(
+            "UPDATE sessions SET files_touched = 'not-json' WHERE session_id = ?1",
+            rusqlite::params![UUID_A],
+        )
+        .unwrap();
+
+    let err = db.export(&ExportFilters::default(), &export_ctx("2026-07-01T00:00:00Z"));
+    assert!(
+        err.is_err(),
+        "a malformed files_touched cell must be a loud export error"
+    );
+    let msg = format!("{:#}", err.unwrap_err());
+    assert!(
+        msg.contains("malformed files_touched cell") && msg.contains(UUID_A),
+        "the error must name the offending session: {msg}"
+    );
+}
+
+#[test]
 fn export_excludes_archived_unless_requested() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(

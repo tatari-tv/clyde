@@ -31,7 +31,9 @@
       "redaction-count": 0,
       "transcript-path": "/home/alice/.claude/projects/-home-alice-repos-example-user-gadget/00000000-0000-4000-8000-000000000003.jsonl",
       "staged-path": null,
-      "archived": false
+      "archived": false,
+      "files-touched": [],
+      "repos-touched": []
     }
   ]
 }

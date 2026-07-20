@@ -7,6 +7,7 @@
 //! contract needs the enrichment fields and the v5 `updated_at` cursor that `db`'s `COLS`/`map_record`
 //! omit, and it re-derives `scope` from `cwd` rather than reading the nullable stored column.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -29,7 +30,7 @@ use crate::transcript::transcript_layout_parts;
 const EXPORT_COLS: &str = "s.session_id, s.host, s.cwd, s.project_dir, s.git_branch, s.created, \
      s.modified, s.updated_at, s.title, s.first_prompt, s.n_msgs, s.model, s.summary, s.tags, \
      s.tags_source, s.enriched_at, s.enrich_status, s.enrich_model, s.prompt_version, \
-     s.redaction_count, s.transcript_path, s.staged_path, s.archived";
+     s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.files_touched";
 
 impl Db {
     /// Bulk metadata export: the versioned envelope of [`ExportRecord`] for every row matching
@@ -247,6 +248,10 @@ struct ExportRaw {
     transcript_path: String,
     staged_path: Option<String>,
     archived: bool,
+    /// The raw `files_touched` JSON-array cell, or `None` when the column is NULL (not yet parsed or
+    /// unknowable). `Option` is load-bearing: it preserves the NULL-vs-`[]` distinction the export
+    /// contract requires (NULL -> omit the field; `[]` -> emit an empty array).
+    files_touched: Option<String>,
 }
 
 /// Map one row to [`ExportRaw`]. Index order mirrors [`EXPORT_COLS`] exactly.
@@ -275,6 +280,7 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
         transcript_path: row.get(20)?,
         staged_path: row.get(21)?,
         archived: row.get::<_, i64>(22)? != 0,
+        files_touched: row.get(23)?,
     })
 }
 
@@ -309,9 +315,37 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
     // treated as NOT dormant rather than silently "dormant".
     let dormant = modified_dt.map(|m| now - m > dormant_after).unwrap_or(false);
     let tags: Vec<String> = raw.tags.split_whitespace().map(str::to_string).collect();
+    // `files-touched`: the raw JSON-array cell parsed to `Vec<String>` (NULL -> None -> omitted).
+    // Malformed JSON is a LOUD per-session error naming the id (fail closed): a corrupt cell is never
+    // a silently-empty set. Paths are already sorted+deduped (BTreeSet serialization in the writer).
+    let files_touched: Option<Vec<String>> = raw
+        .files_touched
+        .as_deref()
+        .map(|json| {
+            serde_json::from_str::<Vec<String>>(json)
+                .with_context(|| format!("session {} has a malformed files_touched cell", raw.session_id))
+        })
+        .transpose()?;
+    // `repos-touched`: derived from `files-touched` via the SAME `repo_slug` that yields `repo` from
+    // `cwd`. Presence mirrors `files-touched` exactly; a path with no `repos/<org>/<repo>` anchor
+    // (outside `~/repos/`, or relative) yields None and contributes nothing. BTreeSet: dedup + sort.
+    let repos_touched: Option<Vec<String>> = files_touched.as_ref().map(|paths| {
+        paths
+            .iter()
+            .filter_map(|p| session::repo_slug(Some(Path::new(p))))
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect()
+    });
     trace!(
-        "db::build_export_record: session_id={} scope={} repo={:?} dormant={} duration_secs={}",
-        raw.session_id, scope, repo, dormant, duration_secs
+        "db::build_export_record: session_id={} scope={} repo={:?} dormant={} duration_secs={} files_touched={:?} repos_touched={:?}",
+        raw.session_id,
+        scope,
+        repo,
+        dormant,
+        duration_secs,
+        files_touched.as_ref().map(Vec::len),
+        repos_touched.as_ref().map(Vec::len),
     );
     Ok(ExportRecord {
         session_id: raw.session_id,
@@ -341,6 +375,8 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
         transcript_path: raw.transcript_path,
         staged_path: raw.staged_path,
         archived: raw.archived,
+        files_touched,
+        repos_touched,
         body: None,
     })
 }

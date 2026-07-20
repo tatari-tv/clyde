@@ -61,6 +61,11 @@ fn metadata_record() -> ExportRecord {
         transcript_path: "/home/alice/.claude/projects/x/00000000-0000-4000-8000-000000000001.jsonl".to_string(),
         staged_path: None,
         archived: false,
+        files_touched: Some(vec![
+            "/home/alice/repos/example-org/widget/src/main.rs".to_string(),
+            "/home/alice/repos/example-org/widget/src/lib.rs".to_string(),
+        ]),
+        repos_touched: Some(vec!["example-org/widget".to_string()]),
         body: None,
     }
 }
@@ -132,6 +137,41 @@ fn body_record_emits_all_three_body_keys_including_null_error() {
     let first = obj.get("body").unwrap().as_array().unwrap()[0].as_object().unwrap();
     assert_eq!(first.get("subagent"), Some(&serde_json::Value::Bool(false)));
     assert!(first.contains_key("role") && first.contains_key("text"));
+}
+
+#[test]
+fn record_round_trips_with_files_touched_and_repos_touched() {
+    // Seam test: a record carrying both new fields serializes to the kebab-case keys and survives a
+    // serde round-trip. `metadata_record()` populates both, so this pins their wire shape.
+    let rec = metadata_record();
+    let v = serde_json::to_value(&rec).unwrap();
+    let obj = v.as_object().unwrap();
+    assert!(obj.contains_key("files-touched"), "kebab-case key must be present");
+    assert!(obj.contains_key("repos-touched"), "kebab-case key must be present");
+    assert_eq!(
+        obj.get("repos-touched").unwrap(),
+        &serde_json::json!(["example-org/widget"])
+    );
+    let back: ExportRecord = serde_json::from_value(v).unwrap();
+    assert_eq!(rec, back, "record with both fields must round-trip losslessly");
+}
+
+#[test]
+fn record_omits_both_fields_when_none() {
+    // NULL-column shape: `None` on both fields must OMIT the keys entirely, never emit `[]`.
+    let mut rec = metadata_record();
+    rec.files_touched = None;
+    rec.repos_touched = None;
+    let v = serde_json::to_value(&rec).unwrap();
+    let obj = v.as_object().unwrap();
+    assert!(
+        !obj.contains_key("files-touched"),
+        "None -> key omitted, not empty array"
+    );
+    assert!(
+        !obj.contains_key("repos-touched"),
+        "None -> key omitted, not empty array"
+    );
 }
 
 #[test]

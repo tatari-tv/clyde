@@ -160,6 +160,21 @@ pub struct ExportRecord {
     pub transcript_path: String,
     pub staged_path: Option<String>,
     pub archived: bool,
+    // files touched
+    /// Raw file paths the session touched via whitelisted file tools, exactly as stored (sorted,
+    /// deduped). `Option` mirrors the catalog column's NULL-vs-`[]` distinction: `None` (key omitted)
+    /// when the column is NULL — not yet parsed or unknowable; `Some([])` when parsed but no file
+    /// tools were used. Never collapse NULL into an empty array (that breaks the omit-when-NULL
+    /// contract); the shape follows the `body` precedent below.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_touched: Option<Vec<String>>,
+    /// Canonical `<org>/<repo>` slugs DERIVED at query time from `files-touched` via the same
+    /// `scope::repo_slug` that yields `repo` from `cwd`; never stored (a derived field never diverges
+    /// from its source). Presence mirrors `files-touched` EXACTLY: omitted when `files-touched` is
+    /// omitted; `Some([])` when present but no path resolves to a repo (paths outside `~/repos/`
+    /// contribute nothing; relative paths are discarded, never canonicalized).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repos_touched: Option<Vec<String>>,
     /// The `--with-body` block: absent (all three keys omitted) in metadata mode; present (all three
     /// keys emitted) when a body was requested. Flattened so the keys sit at the record's top level.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
