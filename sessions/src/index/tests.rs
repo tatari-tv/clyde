@@ -91,3 +91,46 @@ fn reindex_empty_projects_is_ok() {
     let stats = reindex(&db, &tmp.path().join("nonexistent")).unwrap();
     assert_eq!(stats, crate::ReindexStats::default());
 }
+
+/// The path a `Read` tool_use in [`FILE_TOOL_TRANSCRIPT`] touches, so tests assert an exact set.
+const TOUCHED_PATH: &str = "/home/saidler/repos/tatari-tv/clyde/src/foo.rs";
+
+/// A one-turn transcript whose assistant message is a `Read` tool_use (no text block), so parsing
+/// yields `files_touched = ["…/foo.rs"]` — exercising the Phase 1 extraction through the catalog.
+const FILE_TOOL_TRANSCRIPT: &[&str] = &[
+    r#"{"type":"user","cwd":"/home/saidler/repos/tatari-tv/clyde","gitBranch":"main","timestamp":"2026-06-21T10:00:00Z","message":{"content":"read the file"}}"#,
+    r#"{"type":"assistant","timestamp":"2026-06-21T10:00:05Z","message":{"model":"claude-opus-4-8","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/home/saidler/repos/tatari-tv/clyde/src/foo.rs"}}]}}"#,
+];
+
+/// Phase 2 criterion: `reindex --reparse` repopulates a LIVE row's `files_touched` despite an
+/// unchanged parent-transcript mtime — the case a plain incremental reindex skips.
+#[test]
+fn reparse_repopulates_live_row_despite_unchanged_mtime() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let path = projects.join("proj").join(format!("{UUID_A}.jsonl"));
+    write(&path, FILE_TOOL_TRANSCRIPT);
+
+    let db = Db::open_memory().unwrap();
+    reindex(&db, &projects).unwrap();
+    let expected = format!(r#"["{TOUCHED_PATH}"]"#);
+    assert_eq!(db.files_touched_of(UUID_A).unwrap().as_deref(), Some(expected.as_str()));
+
+    // Overwrite the column with a stale value via the public narrow writer; the mtime is now
+    // unchanged, so a plain reindex must SKIP (leaving the stale value in place).
+    db.set_files_touched(UUID_A, r#"["/stale"]"#).unwrap();
+    let s = reindex(&db, &projects).unwrap();
+    assert_eq!(s.skipped_unchanged, 1, "unchanged mtime -> plain reindex skips");
+    assert_eq!(db.files_touched_of(UUID_A).unwrap().as_deref(), Some(r#"["/stale"]"#));
+
+    // --reparse defeats the skip and rewrites the parse-derived column from the transcript.
+    let rs = reparse(&db, &projects).unwrap();
+    assert_eq!(rs.live_scanned, 1);
+    assert_eq!(rs.live_populated, 1);
+    assert_eq!(rs.failed, 0);
+    assert_eq!(
+        db.files_touched_of(UUID_A).unwrap().as_deref(),
+        Some(expected.as_str()),
+        "reparse re-derived files_touched despite the unchanged mtime"
+    );
+}

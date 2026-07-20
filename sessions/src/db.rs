@@ -29,7 +29,11 @@ use crate::model::{
 /// v5 added `updated_at`: an opaque monotonic revision assigned by DB triggers (never a timestamp),
 ///    plus the one-row `export_meta` counter that sources it, so `session export --cursor` is
 ///    correct by construction — every write to a `sessions` row advances the cursor structurally.
-const SCHEMA_VERSION: i64 = 5;
+/// v6 added `files_touched`: a JSON array (TEXT) of the file paths a session touched via whitelisted
+///    file tools. NULL = not yet parsed or unknowable; `[]` = parsed, no file tools ran. Roll-forward
+///    only (`ALTER TABLE ADD COLUMN` is not cleanly reversible; a v5 binary reads a v6 DB fine because
+///    every SELECT uses an explicit column list that omits this column).
+const SCHEMA_VERSION: i64 = 6;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -109,7 +113,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     tokens_in         INTEGER,
     tokens_out        INTEGER,
     tags_source       TEXT,
-    updated_at        INTEGER NOT NULL DEFAULT 0
+    updated_at        INTEGER NOT NULL DEFAULT 0,
+    files_touched     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(title, tags, summary);
@@ -225,9 +230,26 @@ impl Db {
     /// columns (`tags`, `summary`, `cost`) are preserved across reindex. Skips when the parent
     /// transcript mtime is unchanged from the stored value.
     pub fn upsert_session(&self, parsed: &ParsedSession, host: &str) -> Result<Upsert> {
-        trace!("Db::upsert_session: session_id={}", parsed.session_id);
+        self.upsert_with(parsed, host, false)
+    }
+
+    /// Force-refresh the row for `parsed` even when the parent-transcript mtime is unchanged — the
+    /// `reindex --reparse` live pass. Identical to [`Self::upsert_session`] but defeats the
+    /// unchanged-mtime skip, so an already-catalogued row's parse-derived columns (notably the v6
+    /// `files_touched`) are rewritten. Bumps `updated_at` on every row it touches (the acknowledged
+    /// backfill cursor churn).
+    pub fn reparse_session(&self, parsed: &ParsedSession, host: &str) -> Result<Upsert> {
+        self.upsert_with(parsed, host, true)
+    }
+
+    /// Shared upsert body. `force` defeats the unchanged-mtime skip (the only difference between
+    /// [`Self::upsert_session`] and [`Self::reparse_session`]). `files_touched` is serialized as a
+    /// JSON array of the touched paths (empty array when no file tool ran) — a parse-derived column,
+    /// so it is overwritten on every write, mirroring `title`/`n_msgs`.
+    fn upsert_with(&self, parsed: &ParsedSession, host: &str, force: bool) -> Result<Upsert> {
+        trace!("Db::upsert_with: session_id={} force={}", parsed.session_id, force);
         let existing = self.modified_of(&parsed.session_id)?;
-        if existing == Some(parsed.modified) {
+        if !force && existing == Some(parsed.modified) {
             return Ok(Upsert::SkippedUnchanged);
         }
 
@@ -241,12 +263,14 @@ impl Db {
         let modified = parsed.modified.to_rfc3339();
         let cwd = parsed.cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
         let project_dir = parsed.project_dir.to_string_lossy().into_owned();
+        let files_touched =
+            serde_json::to_string(&parsed.files_touched).context("serialize files_touched to a JSON array")?;
 
         let outcome = if existing.is_some() {
             self.conn.execute(
                 "UPDATE sessions SET cwd=?2, project_dir=?3, transcript_path=?4, title=?5, \
                  first_prompt=?6, git_branch=?7, model=?8, n_msgs=?9, created=?10, modified=?11, \
-                 host=?12, archived=0 WHERE session_id=?1",
+                 host=?12, archived=0, files_touched=?13 WHERE session_id=?1",
                 params![
                     parsed.session_id,
                     cwd,
@@ -260,14 +284,15 @@ impl Db {
                     created,
                     modified,
                     host,
+                    files_touched,
                 ],
             )?;
             Upsert::Updated
         } else {
             self.conn.execute(
                 "INSERT INTO sessions (session_id, cwd, project_dir, transcript_path, title, \
-                 first_prompt, git_branch, model, n_msgs, created, modified, host) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                 first_prompt, git_branch, model, n_msgs, created, modified, host, files_touched) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                 params![
                     parsed.session_id,
                     cwd,
@@ -281,6 +306,7 @@ impl Db {
                     created,
                     modified,
                     host,
+                    files_touched,
                 ],
             )?;
             Upsert::Inserted
@@ -536,6 +562,57 @@ impl Db {
             params![session_id, staged_dir.to_string_lossy()],
         )?;
         Ok(n > 0)
+    }
+
+    /// Narrow single-column writer for the `reindex --reparse` staged pass: persist ONLY the v6
+    /// `files_touched` column (a JSON array string) for `session_id`. Deliberately NOT
+    /// [`Self::upsert_session`], which would overwrite `modified`/`transcript_path` with the staged
+    /// file's metadata and corrupt the contract fields feeding the v5 cursor and dormancy. Like
+    /// [`Self::set_enrichment`], it does NOT set `updated_at` itself — the v5 AFTER UPDATE trigger
+    /// assigns the next revision (a plain single-column UPDATE fires the guard `NEW.updated_at IS
+    /// OLD.updated_at`). Returns `false` if no such session exists.
+    pub fn set_files_touched(&self, session_id: &str, files_touched_json: &str) -> Result<bool> {
+        debug!(
+            "Db::set_files_touched: session_id={session_id} json_len={}",
+            files_touched_json.len()
+        );
+        let n = self.conn.execute(
+            "UPDATE sessions SET files_touched = ?2 WHERE session_id = ?1",
+            params![session_id, files_touched_json],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Rows the `reindex --reparse` staged pass must fill: `files_touched` not yet populated AND a
+    /// durable staged copy exists to parse from. The `files_touched IS NULL` half makes the two
+    /// passes order-tolerant and non-overlapping — the live pass populates (via
+    /// [`Self::reparse_session`]) every row it reaches, dropping those out of this set. Returns full
+    /// records so the caller resolves the staged layout via `transcript_layout`.
+    pub fn files_touched_backfill_candidates(&self) -> Result<Vec<SessionRecord>> {
+        debug!("Db::files_touched_backfill_candidates");
+        let sql = format!(
+            "SELECT {COLS} FROM sessions s WHERE s.files_touched IS NULL AND s.staged_path IS NOT NULL \
+             ORDER BY s.modified DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let records: Vec<SessionRecord> = stmt.query_map([], map_record)?.collect::<rusqlite::Result<_>>()?;
+        debug!("Db::files_touched_backfill_candidates: {} candidates", records.len());
+        Ok(records)
+    }
+
+    /// Read the raw `files_touched` JSON cell for a session (test-only accessor: production reads go
+    /// through the export column list in `query.rs`, Phase 3). `None` = the column is NULL.
+    #[cfg(test)]
+    pub(crate) fn files_touched_of(&self, session_id: &str) -> Result<Option<String>> {
+        let raw: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT files_touched FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw.flatten())
     }
 
     /// Non-archived sessions eligible for staging: all of them when `dormant_before` is `None`,
@@ -978,6 +1055,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     // v5: opaque monotonic revision cursor (column + counter + triggers), applied in the strict
     // order add-column -> backfill -> seed -> create-triggers so the bulk backfill never fires them.
     migrate_v5_cursor(&tx)?;
+    // v6: files_touched (JSON array of paths touched by whitelisted file tools; NULL until parsed).
+    // Roll-forward only; the ALTER is idempotent via `ensure_column`'s pragma_table_info probe.
+    ensure_column(&tx, "sessions", "files_touched", "TEXT")?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())

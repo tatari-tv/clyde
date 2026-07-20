@@ -163,6 +163,22 @@ pub struct ReindexStats {
     pub archived: usize,
 }
 
+/// Counts from a `reindex --reparse` backfill run (v6 `files_touched`). The live pass force-parses
+/// every scanned transcript; the staged pass fills rows the scan cannot reach from their durable
+/// staged copy. `failed` counts per-row errors that were skipped-and-logged (a nonzero value drives
+/// a nonzero process exit); `staged_skipped` counts staged candidates whose transcript was
+/// unreachable/unparseable and so stay NULL ("unknowable"), which is not a failure.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ReparseStats {
+    pub live_scanned: usize,
+    pub live_populated: usize,
+    pub staged_candidates: usize,
+    pub staged_populated: usize,
+    pub staged_skipped: usize,
+    pub failed: usize,
+}
+
 /// Per-session outcome from an enrichment pass — also the per-session row `--dry-run` prints so
 /// the operator can inspect the gate's decisions before the first off-machine call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

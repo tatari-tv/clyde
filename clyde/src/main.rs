@@ -29,7 +29,7 @@ use cli::{
 const DEFAULT_LOG_LEVEL: &str = "info";
 use sessions::{
     AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, ExportContext, ExportEnvelope, ExportFilters,
-    Fallback, Filters, MatchSource, ReindexStats, SearchResults, SessionRecord, StageStats,
+    Fallback, Filters, MatchSource, ReindexStats, ReparseStats, SearchResults, SessionRecord, StageStats,
 };
 
 /// Max width of a title in the human (terminal) listing before it is truncated with an ellipsis.
@@ -646,6 +646,16 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
         .projects_dir
         .or_else(session::paths::claude_projects_dir)
         .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects (set HOME)"))?;
+    if args.reparse {
+        let stats = sessions::reparse(db, &projects_dir)?;
+        print_reparse(&stats);
+        // Per-row failures were skipped-and-logged so the batch completed; surface them as a nonzero
+        // exit so an operator/script notices the incomplete backfill.
+        if stats.failed > 0 {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let stats = sessions::reindex(db, &projects_dir)?;
     print_reindex(&stats);
     Ok(())
@@ -864,6 +874,24 @@ fn print_reindex(stats: &ReindexStats) {
             stats.upserted,
             stats.skipped_unchanged,
             stats.archived,
+        );
+    } else {
+        print_json(stats);
+    }
+}
+
+fn print_reparse(stats: &ReparseStats) {
+    if std::io::stdout().is_terminal() {
+        let mark = if stats.failed > 0 { "✗".red() } else { "✓".green() };
+        println!(
+            "{} live {}/{}, staged {}/{} ({} left NULL), failed {}",
+            mark,
+            stats.live_populated,
+            stats.live_scanned,
+            stats.staged_populated,
+            stats.staged_candidates,
+            stats.staged_skipped,
+            stats.failed,
         );
     } else {
         print_json(stats);

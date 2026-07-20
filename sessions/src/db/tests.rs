@@ -3,6 +3,10 @@
 use super::*;
 use std::path::PathBuf;
 
+/// Phase 2 (`files-touched`) tests live in their own submodule to keep this file under the
+/// line-count limit; they reuse the helpers/fixtures defined here via `super::*`.
+mod files_touched;
+
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
 const UUID_C: &str = "7c19b25e-0d11-4e4b-a82d-2345678901bc";

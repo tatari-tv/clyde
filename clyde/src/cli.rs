@@ -198,6 +198,11 @@ pub struct ReindexArgs {
     /// Override the Claude projects dir (default: ~/.claude/projects).
     #[arg(long)]
     pub projects_dir: Option<PathBuf>,
+    /// Backfill the `files_touched` column on existing rows instead of a normal incremental reindex:
+    /// re-parse every live transcript with the unchanged-mtime skip defeated, then fill archived rows
+    /// from their staged copy. Re-runnable; exits nonzero if any row failed to parse.
+    #[arg(long)]
+    pub reparse: bool,
 }
 
 #[derive(clap::Args, Debug)]
