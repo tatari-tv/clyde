@@ -19,10 +19,10 @@ SHAPE and field names are the contract; the values are synthetic placeholders.
 
 | File | Session | State exercised |
 |---|---|---|
-| `enriched.json` | `...0001` | enriched (`enrich-status: ok`), `tags-source: enrich`, nonzero `redaction-count`, `scope: work`, `repo` derived |
-| `staged-archived.json` | `...0002` | `archived: true` + `staged-path` set, `enrich-status: skipped-personal`, transcript file REAPED, `repo: null`, `redaction-count` COALESCEd 0 |
-| `never-enriched.json` | `...0003` | `enrich-status: null`, stored `scope` NULL re-derived to `personal`, empty tags |
-| `with-body.json` | `...0003` | `--with-body`: `body` array of `{role, text, subagent}` (with both `subagent` flag values), `body-truncated`, `body-error` |
+| `enriched.json` | `...0001` | enriched (`enrich-status: ok`), `tags-source: enrich`, nonzero `redaction-count`, `scope: work`, `repo` derived, `files-touched`/`repos-touched` POPULATED (the catalog column is non-NULL) |
+| `staged-archived.json` | `...0002` | `archived: true` + `staged-path` set, `enrich-status: skipped-personal`, transcript file REAPED, `repo: null`, `redaction-count` COALESCEd 0, `files-touched`/`repos-touched` OMITTED (the catalog column is still NULL — unbackfilled/unreachable transcript) |
+| `never-enriched.json` | `...0003` | `enrich-status: null`, stored `scope` NULL re-derived to `personal`, empty tags, `files-touched`/`repos-touched` present as `[]` (parsed, no file tools used) |
+| `with-body.json` | `...0003` | `--with-body`: `body` array of `{role, text, subagent}` (with both `subagent` flag values), `body-truncated`, `body-error`, `files-touched`/`repos-touched` present as `[]` |
 
 ## Field -> source verification
 
@@ -58,6 +58,8 @@ confirmed against the live schema; derived fields note their computation.
 | `transcript-path` | col `transcript_path` | NOT NULL; file may be reaped (see `staged-archived.json`) |
 | `staged-path` | col `staged_path` | nullable |
 | `archived` | col `archived` (0/1 -> bool) | NOT NULL default 0 |
+| `files-touched` | col `files_touched` (JSON array, parsed) | raw paths, sorted+deduped; `null` column -> key OMITTED (not `[]`); see `staged-archived.json` |
+| `repos-touched` | DERIVED from `files-touched` via `scope::repo_slug` | never stored; presence mirrors `files-touched` exactly; `[]` when no path resolves to a `~/repos/<org>/<repo>` anchor |
 | `body` (with `--with-body`) | `parse::parse_messages` -> `Vec<Message>` | element `{role, text, subagent}`; `subagent: bool` distinguishes parent from subagent text. Findings B1/B2. |
 | `body-truncated` | derived at truncation | true when trailing messages dropped for `--max-body-bytes` |
 | `body-error` | derived | `"transcript missing"` \| `"parsed empty"` (frozen strings) |

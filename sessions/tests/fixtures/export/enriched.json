@@ -31,7 +31,12 @@
       "redaction-count": 4,
       "transcript-path": "/home/alice/.claude/projects/-home-alice-repos-example-org-widget/00000000-0000-4000-8000-000000000001.jsonl",
       "staged-path": null,
-      "archived": false
+      "archived": false,
+      "files-touched": [
+        "/home/alice/repos/example-org/widget/src/lib.rs",
+        "/home/alice/repos/example-org/widget/src/main.rs"
+      ],
+      "repos-touched": ["example-org/widget"]
     }
   ]
 }
