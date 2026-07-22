@@ -28,7 +28,7 @@ libc = "0.2.186"
 log = { workspace = true }
 mcp-io = { git = "https://github.com/tatari-tv/mcp-io-rs", tag = "v0.1.2", version = "0.1.2" }
 permit = { path = "../permit" }
-renew = { git = "https://github.com/tatari-tv/renew", tag = "v0.3.2" }
+renew = { git = "https://github.com/tatari-tv/renew", tag = "v0.3.3" }
 report = { path = "../report" }
 rusqlite = { workspace = true, features = ["bundled"] }
 serde = { workspace = true }
