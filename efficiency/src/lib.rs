@@ -22,13 +22,15 @@
 //! Phase 1 scaffolded the crate + the `clyde efficiency` dispatch path. Phase 2 added pure Rust
 //! per-session token/cost aggregation (`metrics`). Phase 3 adds the behavioral signal extractor
 //! (`extract`) and the per-scope fold (`fold`): per-file per-scope counters unioned into a
-//! per-session aggregate + subagent breakdown. Scoring, output, persistence, MCP, and narrative
-//! land in Phases 4-8.
+//! per-session aggregate + subagent breakdown. Phase 4 adds threshold flagging (`score`): the
+//! aggregate signals are scored against the `efficiency:` config thresholds into
+//! `SessionEfficiency.flags`. Output, persistence, MCP, and narrative land in Phases 5-8.
 
 pub mod cli;
 pub mod extract;
 pub mod fold;
 pub mod metrics;
+pub mod score;
 
 use eyre::Result;
 use log::debug;
@@ -39,6 +41,7 @@ pub use fold::{EfficiencyFlag, SessionEfficiency, SubagentEfficiency, fold};
 pub use metrics::{
     Compaction, CompactionTrigger, EfficiencySignals, RawCounters, WorkloadCost, aggregate_tokens, finalize,
 };
+pub use score::{score, scored};
 
 /// Entry point the clyde umbrella dispatches to:
 /// `Command::Efficiency(args) => dispatch_tool(efficiency::run(args, globals), debug)`

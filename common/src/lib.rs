@@ -15,7 +15,7 @@ pub mod since;
 pub mod tools;
 
 pub use atomic::write_atomic;
-pub use config::Config;
+pub use config::{Config, EfficiencyConfig};
 pub use metrics::cache_read_share;
 pub use scan::{SessionFile, SessionFileKind};
 pub use since::{DateTz, parse_since};

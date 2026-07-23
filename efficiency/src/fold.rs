@@ -25,11 +25,21 @@ pub struct SubagentEfficiency {
     pub signals: EfficiencySignals,
 }
 
-/// A flagged efficiency breach. Scored against configurable thresholds in Phase 4; Phase 3 always
-/// yields an empty `flags` list (this enum has no variants yet), so the field exists in the Data
-/// Model shape without pretending to score anything.
+/// A flagged efficiency breach, scored on the whole-session aggregate against the configured
+/// `efficiency:` thresholds ([`crate::score`]). Each variant names the breached signal AND carries
+/// the observed value alongside the threshold it crossed, so a flag is self-describing and legible
+/// (fail loudly, per the house rule) — a consumer never has to re-derive why the session tripped.
 #[derive(Debug, Clone, PartialEq)]
-pub enum EfficiencyFlag {}
+pub enum EfficiencyFlag {
+    /// `cache-read-share` fell below `cache-read-share-floor` on an ELIGIBLE session (one past both
+    /// the `minimum-total-tokens` and `minimum-turns` gates). Cache-waste.
+    LowCacheReadShare { observed: f64, floor: f64 },
+    /// `tool-error rate` (`tool_errors / tool_calls`) rose above `tool-error-rate-ceiling`.
+    HighToolErrorRate { observed: f64, ceiling: f64 },
+    /// The session auto-compacted at least once (`auto-compaction-flag` is on). `count` is how many
+    /// auto-compactions occurred.
+    AutoCompaction { count: u64 },
+}
 
 /// One session's full efficiency picture: the recomputed whole-session `aggregate`, the canonical
 /// per-subagent `subagents` breakdown, and (Phase 4) any scored `flags`.

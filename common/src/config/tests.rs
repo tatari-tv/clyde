@@ -167,6 +167,83 @@ fn load_from_rejects_malformed_reindex_on_start() {
 }
 
 #[test]
+fn efficiency_defaults_when_absent() {
+    // A from-scratch default and a missing file must agree on every efficiency threshold. (Guards
+    // the hand-written `impl Default for EfficiencyConfig` against the derived-zero-value footgun:
+    // a derived Default would give floor 0.0 / ceiling 0.0 / gates 0, all wrong.)
+    let eff = Config::default();
+    let eff = eff.efficiency();
+    assert_eq!(eff.cache_read_share_floor(), 0.6);
+    assert_eq!(eff.tool_error_rate_ceiling(), 0.05);
+    assert!(eff.auto_compaction_flag());
+    assert_eq!(eff.minimum_total_tokens(), 20000);
+    assert_eq!(eff.minimum_turns(), 3);
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    let loaded = load_from(&path).unwrap();
+    assert_eq!(loaded, Config::default(), "a missing file must equal Config::default()");
+    assert_eq!(loaded.efficiency().cache_read_share_floor(), 0.6);
+}
+
+#[test]
+fn efficiency_override_from_clyde_yml() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(
+        &path,
+        "efficiency:\n  cache-read-share-floor: 0.4\n  tool-error-rate-ceiling: 0.1\n  \
+         auto-compaction-flag: false\n  minimum-total-tokens: 5000\n  minimum-turns: 2\n",
+    )
+    .unwrap();
+    let cfg = load_from(&path).unwrap();
+    let eff = cfg.efficiency();
+    assert_eq!(eff.cache_read_share_floor(), 0.4);
+    assert_eq!(eff.tool_error_rate_ceiling(), 0.1);
+    assert!(!eff.auto_compaction_flag());
+    assert_eq!(eff.minimum_total_tokens(), 5000);
+    assert_eq!(eff.minimum_turns(), 2);
+}
+
+#[test]
+fn efficiency_partial_override_keeps_other_defaults() {
+    // Only one field set: the rest must still resolve to their hand-written defaults.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "efficiency:\n  cache-read-share-floor: 0.75\n").unwrap();
+    let cfg = load_from(&path).unwrap();
+    let eff = cfg.efficiency();
+    assert_eq!(eff.cache_read_share_floor(), 0.75);
+    assert_eq!(eff.tool_error_rate_ceiling(), 0.05, "unset field keeps its default");
+    assert!(eff.auto_compaction_flag());
+    assert_eq!(eff.minimum_total_tokens(), 20000);
+}
+
+#[test]
+fn efficiency_rejects_unknown_field() {
+    // deny_unknown_fields: a typo'd efficiency key must fail LOUD, never silently widen behavior.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "efficiency:\n  cache-read-share-flooor: 0.4\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "deny_unknown_fields should reject the typo'd `cache-read-share-flooor`"
+    );
+}
+
+#[test]
+fn efficiency_rejects_bad_type() {
+    // A non-numeric threshold must fail to parse rather than silently defaulting.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "efficiency:\n  minimum-turns: three\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "a non-integer minimum-turns must fail to parse"
+    );
+}
+
+#[test]
 fn xdg_config_dir_honors_env_and_falls_back() {
     let guard = ENV_LOCK.lock().unwrap();
     let prior = std::env::var("XDG_CONFIG_HOME").ok();

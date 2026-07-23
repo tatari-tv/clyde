@@ -371,3 +371,99 @@ None. The one spec ambiguity (which parse seam supports per-scope token
 splitting) was resolvable from the code -- `AssistantEntry` has no `agentId`, so
 the own-struct parse + `calculate_usd` reuse is forced, not a judgment call.
 Cross-repo / system-mutating bullets: none in Phase 3 (clyde-only).
+
+## Phase 4: Scoring + threshold flagging
+
+### Design decisions
+
+- **`efficiency:` config section is a distinct `EfficiencyConfig` struct**
+  (`common/src/config.rs`) nested under `Config` via `#[serde(default)]`, mirroring
+  the existing `RenderConfig`/`render:` pattern exactly: `#[serde(rename_all =
+  "kebab-case")]` + `deny_unknown_fields`, a HAND-WRITTEN `impl Default` (not
+  derived), per-field `#[serde(default = "...")]` free functions, and private
+  fields with public getter methods. Hand-writing `Default` is load-bearing here
+  (not just convention): a derived `Default` would give floor `0.0` / ceiling
+  `0.0` / gates `0`, and a floor of `0.0` flags nothing while a ceiling of `0.0`
+  flags everything -- both diverge from what a missing config must resolve to
+  (the house "derived Default can produce an invalid value" footgun).
+- **`tool-error rate` denominator = `tool_errors / tool_calls`** where `tool_calls`
+  is the count of ALL `tool_result` blocks (errored or not), added as a new
+  `RawCounters` field this phase. This is the FIRST denominator the design doc
+  names ("tool_errors / total tool calls", line 69-adjacent Phase 4 guidance) and
+  the most defensible: every completed tool call yields exactly one `tool_result`
+  block, so `tool_errors` (the `is_error==true` subset) is structurally `<=
+  tool_calls` and the rate is always in `[0, 1]`. The rejected alternative was
+  `tool_errors / turns`: turns is available without touching the extractor, but
+  it is a poor denominator (many turns make no tool call at all -> understates;
+  one turn can make several -> a "rate" that exceeds 1.0). `tool_error_rate` is a
+  derived metric computed in `metrics::finalize` (the ONE recompute path), so the
+  aggregate's rate is a ratio-of-sums over unioned counters, not an average of
+  per-scope rates -- the Aggregation invariant holds for it automatically.
+- **`EfficiencyFlag` given three variants** (`efficiency/src/fold.rs`, filling the
+  Phase 3 empty enum): `LowCacheReadShare { observed, floor }`,
+  `HighToolErrorRate { observed, ceiling }`, `AutoCompaction { count }`. Each
+  carries the observed value AND the threshold it crossed, so a flag is
+  self-describing (fail loudly / legible, per the task) without the consumer
+  re-deriving why it tripped.
+- **Scoring is a pure function returning data** (`efficiency/src/score.rs`,
+  `score(&EfficiencySignals, &EfficiencyConfig) -> Vec<EfficiencyFlag>`), with a
+  thin `scored(SessionEfficiency, &EfficiencyConfig) -> SessionEfficiency` seam
+  that populates `flags`. `fold` (Phase 3) stays config-free and always leaves
+  `flags` empty, so its aggregation-invariant tests are untouched; the caller
+  (Phase 5 run path) composes `scored(fold(...), config)`. The scoring entry fn
+  DEBUG-logs every threshold and the observed value it checks, per the
+  function-level logging rule.
+- **Eligibility gate scopes to cache-waste ONLY.** `eligible = total_tokens >=
+  minimum-total-tokens && turns >= minimum-turns` gates `LowCacheReadShare`.
+  `HighToolErrorRate` and `AutoCompaction` are NOT gated: an error-prone or
+  ran-to-the-wall session is worth surfacing regardless of size (an ineligible
+  short session with an auto-compaction still flags the compaction).
+
+### Deviations
+
+- **`RawCounters` extended with `tool_calls: u64` and `EfficiencySignals` with
+  `tool_error_rate: Option<f64>`.** The design's Data Model `RawCounters`
+  (lines ~100-121) does not list a total-tool-call counter, and its
+  `EfficiencySignals` does not list `tool_error_rate`. Both are required to
+  compute the tool-error rate against the doc's own denominator ("tool_errors /
+  total tool calls"). Same effect as the doc's intent, correct seam: the counter
+  is populated in `extract::apply_tool_results` (one increment per `tool_result`
+  block, alongside the existing `is_error` gate) and the rate is derived in
+  `finalize`. Extending the Phase 2/3 structs (rather than inventing parallel
+  ones) follows the Phase 2 note's "Phase N should EXTEND these same two structs"
+  directive.
+- **`Config` no longer derives `Eq`** (`common/src/config.rs`). `EfficiencyConfig`
+  carries `f64` thresholds, and `f64` is not `Eq`; `PartialEq` (what every
+  `assert_eq!` in the config tests needs) is retained. Verified no consumer
+  requires `common::Config: Eq` (grep: `common::Config` is referenced only by the
+  re-export; the crate-local `Config` types in `cost`/`permit` are unrelated).
+
+### Tradeoffs
+
+- **Scoring unit tests use constructed `EfficiencySignals` (built through the real
+  `finalize`) rather than new JSONL fixtures.** Scoring consumes the aggregate
+  signals, not raw JSONL, so constructing counters directly pins the eligibility
+  boundary and each threshold EXACTLY and legibly (e.g. 20000 tokens / 3 turns on
+  the nose), which hunting for a fixture that happens to straddle a boundary
+  cannot. The end-to-end path (`extract -> fold -> scored`) is still proven on a
+  REAL fixture: `scored_on_multi_subagent_fixture_proves_gate_end_to_end` runs the
+  full pipeline on `multi-subagent.jsonl` (2325 total tokens -> ineligible),
+  asserting the below-floor cache share is gated OUT while the non-gated
+  tool-error and auto-compaction flags fire. No new fixtures were needed; the
+  existing set covers the end-to-end case, and constructed signals cover the four
+  threshold/eligibility criteria more precisely.
+- **Config-driven tests deserialize `EfficiencyConfig` directly via `serde_yaml`**
+  (new dev-dependency on `efficiency`) rather than routing through `common`'s
+  private `load_from`. Exercises the real kebab-case serde path + per-field
+  defaults without exposing loader internals across the crate boundary. The
+  `deny_unknown_fields` / bad-type / defaults tests live in `common`'s own config
+  tests, against the real `load_from`.
+
+### Open questions
+
+- **The design doc `docs/design/2026-07-22-session-efficiency-signals.md` is still
+  UNTRACKED in git** (was untracked at session start and through Phases 0-3; only
+  the `-implementation-notes.md` companion is tracked). This phase followed the
+  established pattern and did NOT sweep it into the Phase 4 commit. The parent
+  orchestrator should decide whether the design doc gets committed (likely at
+  finalization) -- flagging it so it does not stay orphaned. Not a code blocker.

@@ -34,6 +34,10 @@ fn tool_errors_counts_is_error_and_bash_subset_split_by_scope() {
 
     assert_eq!(f.parent.tool_errors, 1, "one parent is_error tool_result");
     assert_eq!(
+        f.parent.tool_calls, 2,
+        "two parent tool_result blocks (the failed Bash + the healthy Bash)"
+    );
+    assert_eq!(
         f.parent.bash_command_failures, 1,
         "the parent error matches Error: Exit code N"
     );
@@ -45,6 +49,7 @@ fn tool_errors_counts_is_error_and_bash_subset_split_by_scope() {
         .expect("subagent scope present");
     assert_eq!(sub.agent_type.as_deref(), Some("phase-implementer"));
     assert_eq!(sub.raw.tool_errors, 1, "one subagent is_error tool_result");
+    assert_eq!(sub.raw.tool_calls, 1, "one subagent tool_result block");
     assert_eq!(
         sub.raw.bash_command_failures, 0,
         "the subagent error is a non-Bash framework error, NOT an Error: Exit code N shape"

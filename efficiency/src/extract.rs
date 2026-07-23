@@ -402,12 +402,14 @@ fn apply_tool_results(record: &Record, scope: &Scope, raw: &mut RawCounters) {
 
     let mut record_had_error = false;
     for block in blocks {
-        if block.get("type").and_then(Value::as_str) == Some("tool_result")
-            && block.get("is_error").and_then(Value::as_bool) == Some(true)
-        {
-            raw.tool_errors += 1;
-            record_had_error = true;
-            trace!("apply_tool_results: scope={scope:?} tool_error");
+        if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+            // Every tool_result block is one completed tool call: the tool_error_rate denominator.
+            raw.tool_calls += 1;
+            if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+                raw.tool_errors += 1;
+                record_had_error = true;
+                trace!("apply_tool_results: scope={scope:?} tool_error");
+            }
         }
     }
 

@@ -84,6 +84,10 @@ pub struct RawCounters {
     /// recomputes them from the UNIONED sample (Aggregation invariant).
     pub turn_durations_ms: Vec<u64>,
     pub compactions: Vec<Compaction>,
+    /// Count of ALL `tool_result` blocks (errored or not) — one per completed tool call. The
+    /// denominator for `tool_error_rate`; `tool_errors` is a subset of this, so `tool_errors <=
+    /// tool_calls` always holds.
+    pub tool_calls: u64,
     /// `tool_result` blocks with `is_error == true` (the only sound tool-failure predicate).
     pub tool_errors: u64,
     /// Subset of `tool_errors` whose top-level `toolUseResult` matches the `Error: Exit code N`
@@ -161,6 +165,7 @@ impl RawCounters {
         self.turns += other.turns;
         self.turn_durations_ms.extend_from_slice(&other.turn_durations_ms);
         self.compactions.extend_from_slice(&other.compactions);
+        self.tool_calls += other.tool_calls;
         self.tool_errors += other.tool_errors;
         self.bash_command_failures += other.bash_command_failures;
         self.interrupts_structured += other.interrupts_structured;
@@ -191,6 +196,10 @@ pub struct EfficiencySignals {
     pub cache_1h_write_fraction: Option<f64>,
     pub tokens_per_turn: Option<f64>,
     pub cost_per_turn_usd: Option<f64>,
+    /// `tool_errors / tool_calls`. `None` when the scope made no tool calls (denominator 0) — no
+    /// rate to speak of, rendered `n/a`, never `NaN`. A ratio of sums at the aggregate (recomputed
+    /// from unioned counters), never an average of per-scope rates.
+    pub tool_error_rate: Option<f64>,
     pub turn_ms_p50: Option<u64>,
     pub turn_ms_p90: Option<u64>,
     pub turn_ms_max: Option<u64>,
@@ -207,19 +216,23 @@ pub fn finalize(raw: RawCounters) -> EfficiencySignals {
         cache_1h_write_fraction: cache_1h_write_fraction(&raw),
         tokens_per_turn: tokens_per_turn(&raw),
         cost_per_turn_usd: cost_per_turn_usd(&raw),
+        tool_error_rate: tool_error_rate(&raw),
         turn_ms_p50,
         turn_ms_p90,
         turn_ms_max,
         raw,
     };
     debug!(
-        "finalize: turns={} total-tokens={} cost-usd={} cache-read-share={:?} tool-errors={} \
-         bash-failures={} compactions={} durations={} p50={:?} p90={:?} max={:?}",
+        "finalize: turns={} total-tokens={} cost-usd={} cache-read-share={:?} tool-calls={} \
+         tool-errors={} tool-error-rate={:?} bash-failures={} compactions={} durations={} \
+         p50={:?} p90={:?} max={:?}",
         signals.raw.turns,
         signals.raw.total_tokens(),
         signals.raw.cost_usd,
         signals.cache_read_share,
+        signals.raw.tool_calls,
         signals.raw.tool_errors,
+        signals.tool_error_rate,
         signals.raw.bash_command_failures,
         signals.raw.compactions.len(),
         signals.raw.turn_durations_ms.len(),
@@ -279,6 +292,17 @@ fn tokens_per_turn(raw: &RawCounters) -> Option<f64> {
 
 fn cost_per_turn_usd(raw: &RawCounters) -> Option<f64> {
     if raw.turns == 0 { None } else { Some(raw.cost_usd / raw.turns as f64) }
+}
+
+/// `tool_errors / tool_calls` — the tool-error rate the design's Phase 4 scoring checks against
+/// `tool-error-rate-ceiling`. `None` when the scope made no tool calls (denominator 0). Because
+/// `tool_errors <= tool_calls` structurally, the rate is always in `[0, 1]`.
+fn tool_error_rate(raw: &RawCounters) -> Option<f64> {
+    if raw.tool_calls == 0 {
+        None
+    } else {
+        Some(raw.tool_errors as f64 / raw.tool_calls as f64)
+    }
 }
 
 /// p50/p90/max of a turn-duration sample (ms), using the nearest-rank method (`ceil(p * n)`-th
