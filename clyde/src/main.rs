@@ -192,6 +192,11 @@ fn run(cli: Cli) -> Result<()> {
         Command::Report(args) => dispatch_tool(report::run(args, globals), debug),
         Command::Cost(args) => dispatch_tool(cost::run(args, globals), debug),
         Command::Permit(args) => dispatch_tool(permit::run(args, globals), debug),
+        // `efficiency` is clyde-native (not an absorbed legacy shim): it owns no logger of its
+        // own and relies on clyde's own logger, already installed above. `dispatch_tool` is still
+        // the right shape here since `efficiency::run` returns `Result<i32>` like the absorbed
+        // tools, not because it needs the same own-logging treatment.
+        Command::Efficiency(args) => dispatch_tool(efficiency::run(args, globals), debug),
         // clyde-native migration/health commands.
         Command::Bootstrap(args) => bootstrap::run(&args),
         Command::Doctor => std::process::exit(doctor::run()?),

@@ -274,6 +274,7 @@ dependencies = [
  "common",
  "cost",
  "dirs",
+ "efficiency",
  "env_logger",
  "eyre",
  "gethostname",
@@ -637,6 +638,16 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "efficiency"
+version = "0.10.2"
+dependencies = [
+ "clap",
+ "common",
+ "eyre",
+ "log",
+]
 
 [[package]]
 name = "either"

@@ -1,0 +1,19 @@
+[package]
+name = "efficiency"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Session efficiency & behavior signals mined from Claude Code JSONL session logs"
+
+[lib]
+name = "efficiency"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+common = { path = "../common" }
+eyre = { workspace = true }
+log = { workspace = true }

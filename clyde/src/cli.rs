@@ -72,6 +72,9 @@ pub enum Command {
     Cost(cost::CostArgs),
     /// Permission-hygiene hook and audit (was `claude-permit`).
     Permit(permit::PermitArgs),
+    /// Session efficiency & behavior signals mined from the JSONL logs (cache reuse, tokens/cost,
+    /// compaction, turn duration, interrupts, tool-error rate).
+    Efficiency(efficiency::EfficiencyArgs),
     /// Migrate config/data/cache into one clyde home.
     Bootstrap(crate::bootstrap::BootstrapArgs),
     /// Health-check the migration and integrations.
