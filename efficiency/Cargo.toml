@@ -18,3 +18,6 @@ claude-pricing = { version = "2.0.0", path = "../pricing" }
 common = { path = "../common" }
 eyre = { workspace = true }
 log = { workspace = true }
+regex = "1.13.1"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

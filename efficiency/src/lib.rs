@@ -19,18 +19,26 @@
 //! own-logging skip-list (`clyde/src/main.rs`, the `matches!(cli.command, Command::Report(_) |
 //! Command::Cost(_) | Command::Permit(_))` check).
 //!
-//! Phase 1 scaffolded the crate + the `clyde efficiency` dispatch path. Phase 2 adds pure Rust
-//! per-session token/cost aggregation (`metrics`). Extraction, scoring, output, persistence, MCP,
-//! and narrative land in Phases 3-8.
+//! Phase 1 scaffolded the crate + the `clyde efficiency` dispatch path. Phase 2 added pure Rust
+//! per-session token/cost aggregation (`metrics`). Phase 3 adds the behavioral signal extractor
+//! (`extract`) and the per-scope fold (`fold`): per-file per-scope counters unioned into a
+//! per-session aggregate + subagent breakdown. Scoring, output, persistence, MCP, and narrative
+//! land in Phases 4-8.
 
 pub mod cli;
+pub mod extract;
+pub mod fold;
 pub mod metrics;
 
 use eyre::Result;
 use log::debug;
 
 pub use cli::EfficiencyArgs;
-pub use metrics::{EfficiencySignals, RawCounters, aggregate_tokens};
+pub use extract::{FileEfficiency, Scope, SubagentRaw, extract};
+pub use fold::{EfficiencyFlag, SessionEfficiency, SubagentEfficiency, fold};
+pub use metrics::{
+    Compaction, CompactionTrigger, EfficiencySignals, RawCounters, WorkloadCost, aggregate_tokens, finalize,
+};
 
 /// Entry point the clyde umbrella dispatches to:
 /// `Command::Efficiency(args) => dispatch_tool(efficiency::run(args, globals), debug)`

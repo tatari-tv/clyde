@@ -259,3 +259,115 @@ None. The struct-scoping call (partial vs. full `RawCounters`) was resolved
 per the task's own "your call, document it" instruction; Phase 3 has enough
 here (the exact field names deferred, and the reasoning) to extend rather
 than redesign.
+
+## Phase 3: Behavioral signal extractor
+
+### Design decisions
+
+- **Scope partition by `agentId`, not by file** (`efficiency/src/extract.rs`,
+  `extract` + `Scope`). `outcome.rs` is scope-blind (one `FileOutcomes` per
+  file, unioned by `group_id` in `session::fold`). Phase 3 instead attributes
+  EACH record to a `Scope::Parent` (no `agentId`) or `Scope::Subagent(agentId)`,
+  so `extract` returns a `FileEfficiency { parent, subagents }`. This works for
+  BOTH transcript layouts uniformly: the live layout (parent and each subagent
+  in SEPARATE files under `<session>/subagents/`, each subagent file's records
+  carrying one `agentId`) AND the Phase 0 fixture layout (parent + subagent
+  records interleaved in ONE file). `fold` (`efficiency/src/fold.rs`) unions the
+  per-file `FileEfficiency` across a session group's files. The multi-file live
+  layout is covered by `fold::tests::fold_unions_parent_scope_across_multiple_files`.
+- **EXTENDED the existing Phase 2 `RawCounters`/`EfficiencySignals`** (not
+  parallel structs, per the Phase 2 note): added all behavioral counters
+  (`turn_durations_ms`, `compactions`, `tool_errors`, `bash_command_failures`,
+  `interrupts_structured`, `interrupts_text`, `web_search_requests`,
+  `web_fetch_requests`, `effort_high`, `effort_xhigh`, `model_mix`, `by_skill`,
+  `by_mcp_tool`) to `RawCounters`, and `turn_ms_p50`/`p90`/`max` to
+  `EfficiencySignals`. Phase 2's `tokens_per_turn`/`cost_per_turn_usd` are kept.
+- **`add_usage`/`finalize`/`merge` as the single math seam** (`metrics.rs`).
+  Phase 2's `add_entry(&AssistantEntry)` now delegates to a new
+  `add_usage(model, &TokenUsage) -> f64` (returns the turn's `$` so the extractor
+  can attribute it to a skill/MCP bucket without recomputing cost). `finalize`
+  is the ONE recompute path for every derived metric; `aggregate_tokens` (Phase 2)
+  now delegates to it. `RawCounters::merge` is the additive union step.
+- **Aggregation invariant enforced in `fold`** (`efficiency/src/fold.rs`, `fold`):
+  `parent_own` is unioned across the group's files, subagents unioned by
+  `agentId`, and `aggregate = finalize(parent_own ⊎ every subagent's counters)`
+  -- a ratio-of-sums for the cache ratios and a percentile recompute over the
+  UNIONED `turn_durations_ms` sample, never a field-sum/average of sub-scope
+  derived metrics. `fold::tests::aggregate_equals_recompute_of_parent_and_subagents`
+  pins `aggregate == recompute(parent_own ⊎ subagents)`; the accompanying
+  `aggregate_cache_share_is_ratio_of_sums_not_average_of_ratios` and
+  `aggregate_percentiles_recompute_from_unioned_sample` prove the invariant BITES
+  (the ratio-of-sums differs from the mean of per-scope ratios; the union p50
+  differs from any single scope's).
+- **`tool_errors`/`bash_command_failures` are self-contained on the tool_result's
+  own user record** -- no `tool_use_id` pending map (`apply_tool_results`).
+  `tool_errors` = `is_error==true` blocks; `bash_command_failures` increments at
+  most once per record, only when the record already contributed to `tool_errors`
+  AND its top-level `toolUseResult` string matches `^Error: Exit code \d+`. This
+  structurally guarantees `bash <= tool_errors` in every scope (asserted across
+  every fixture in `extract::tests::bash_command_failures_never_exceeds_tool_errors_per_scope`).
+- **`CompactionTrigger` is a typed enum** (`Auto`/`Manual`) parsed from
+  `compactMetadata.trigger`; both live-`auto` and synthesized-`manual` values are
+  handled, and an unrecognized trigger is `warn!`-and-skipped (fail closed, never
+  fabricate a trigger), per the Phase 0 note that neither `interrupted:true` nor
+  `trigger:"manual"` occur in the live corpus.
+- **Own raw serde structs, tolerant (not `deny_unknown_fields`)** for the
+  non-pricing fields (`extract.rs` `Record`/`Message`/`Usage`/`CacheCreation`/
+  `ServerToolUse`/`CompactMetadata`). These are external Claude Code logs -- a
+  deliberately forward-compatible wire shape (the house carve-out for tolerant
+  wire frames), so a newer Claude Code field can't fail the parse. `Usage`
+  replicates `claude_pricing::parse.rs:173-180`'s exact 5m/1h derivation so
+  Phase 3 token totals stay identical to Phase 2's `parse_jsonl_file` path
+  (cross-checked by `fold::tests::scope_split_then_refold_equals_flat_whole_file_totals`).
+- **New fixtures** (documented in `fixtures/efficiency/README.md`):
+  `multi-subagent.jsonl` (parent + 2 subagents; the scope-split + aggregation
+  invariant + positive coverage for effort/web/model_mix/by_skill/by_mcp_tool)
+  and `malformed-line.jsonl` (skip-and-log proof).
+
+### Deviations
+
+- **Cost math reuses `claude_pricing::{TokenUsage, calculate_usd}`, NOT
+  `parse_jsonl_file`.** The design's Overview says token totals reuse
+  `parse_jsonl_file -> AssistantEntry`, but `AssistantEntry` carries no
+  `agentId`, so it cannot support the per-scope split Phase 3 requires. `extract`
+  parses each record's `usage` in its own raw struct and reuses the pricing
+  crate's `TokenUsage` + `calculate_usd` for the cost. Same cost engine, correct
+  seam; zero pricing change (verified: `git diff ebd1fed -- pricing/` empty).
+- **`service_tier` / `inference_geo` / `iterations` are tolerated but NOT
+  stored.** The design lists them as "retained, informational" but the Data
+  Model `RawCounters` has no field for them and the Phase 3 counter list omits
+  them; storing an unconsumed field is dead weight under `#![deny(dead_code)]`.
+  The tolerant raw structs simply ignore them (they remain available to a later
+  phase that gives them a home). Same effect as the doc's intent (they don't
+  break the parse), correct seam (no phantom field).
+- **`bash_command_failures` keys on the TOP-LEVEL `toolUseResult` string**, per
+  the Phase 0 note, not `message.content[].content` -- the latter reads
+  `"Exit code N"` without the `Error:` prefix.
+- **`SessionEfficiency.flags` is `Vec<EfficiencyFlag>` with an empty enum.**
+  Scoring is Phase 4; the field exists in the Data Model shape but is always
+  empty in Phase 3 (the enum has no variants yet), so nothing pretends to score.
+- **Phase 3 in-memory types carry no `serde` derive** (only
+  `Debug`/`Clone`/`Default`/`PartialEq`), mirroring `outcome.rs`'s `FileOutcomes`.
+  Serialization/persistence is Phase 6; adding `Serialize` now (and resolving the
+  empty-enum-serde question for `EfficiencyFlag`) would be premature.
+
+### Tradeoffs
+
+- **Percentiles use the nearest-rank method** (`ceil(p*n)`-th value). Simple,
+  deterministic, integer-valued (no interpolation/rounding ambiguity), and it
+  reproduces the README's stated median (44268) for `turn-duration.jsonl`. The
+  tradeoff: for small samples p90 can coincide with max (e.g. n=7 here), which
+  is mathematically correct for nearest-rank; the distinct-p50/p90/max property
+  is proven separately on a 10-element sample in
+  `metrics::tests::turn_duration_percentiles_p50_p90_max_are_distinct`.
+- **One unified line-by-line parse in `extract`** rather than a pricing pass plus
+  a separate behavioral pass. Slightly more parsing logic in one place, but it
+  is the only way to split tokens by `agentId`, and it keeps the "second read of
+  a page-cache-hot file" performance shape the design calls for.
+
+### Open questions
+
+None. The one spec ambiguity (which parse seam supports per-scope token
+splitting) was resolvable from the code -- `AssistantEntry` has no `agentId`, so
+the own-struct parse + `calculate_usd` reuse is forced, not a judgment call.
+Cross-repo / system-mutating bullets: none in Phase 3 (clyde-only).

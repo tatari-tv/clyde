@@ -135,6 +135,38 @@ below by session id only -- no session content is quoted).
   placeholders, `queue-operation`/`attachment`/`ai-title`/`last-prompt`
   bookkeeping records (not consumed by any signal) dropped for brevity.
 
+### `multi-subagent.jsonl` -- scope split + aggregation invariant (Phase 3)
+
+- Added in Phase 3 (behavioral extractor). Exercises the per-scope split and the
+  Aggregation invariant: ONE file carrying a parent transcript plus TWO subagents
+  (`agentId` `asubagentaaa000000000001`, type `phase-implementer`; and
+  `asubagentbbb000000000002`, type `code-reviewer`), so `extract` must partition by
+  `agentId` and `fold` must recompute the aggregate from the union of all scopes.
+- Also the single positive fixture for the counters the single-signal files leave at
+  zero: `effort` (`high` on parent, `xhigh` on subagent A), `server_tool_use`
+  (`web_search_requests`/`web_fetch_requests`), `model_mix` (opus-4-8 x2, opus-4-7 x1),
+  `by_skill` (`graphify`), and `by_mcp_tool` (`mcp__atlassian__createJiraIssue`).
+- Scope breakdown (hand-summed, asserted in `efficiency/src/fold/tests.rs`):
+  parent = {input 100, output 50, cache_read 200, cache_5m 1000; tool_errors 1 (a
+  Bash `Error: Exit code 2` -> also bash_command_failures 1); turn_durations
+  [1000,3000]; one `auto` compaction; one text interrupt}. Subagent A = {input 20,
+  output 10, cache_read 100, cache_1h 500; tool_errors 1 (non-Bash Edit error, NOT
+  a bash failure); turn_duration [5000]}. Subagent B = {input 30, output 15,
+  cache_5m 300; web_fetch 3; one structured interrupt}.
+- Aggregate (parent ⊎ A ⊎ B): cache_read_share = 300/2250 (a ratio of sums, which
+  differs from the mean of the three per-scope shares -- the test proves the
+  invariant bites); turn-duration p50/p90/max recomputed from the UNIONED sample
+  [1000,3000,5000] = 3000/5000/5000. All values SYNTHETIC (round numbers chosen for
+  legible hand-summing), built from the real record shapes the other fixtures lock.
+
+### `malformed-line.jsonl` -- skip-and-log robustness (Phase 3)
+
+- Added in Phase 3. Three lines: a valid assistant turn, a syntactically BROKEN JSON
+  line, then a valid Bash-failure `tool_result`. Proves the mandatory per-line
+  `warn!`-and-skip guard (`report/src/outcome.rs:226-234`): the broken middle line is
+  skipped, and the two good lines still count (parent `turns` 1, `tool_errors` 1,
+  `bash_command_failures` 1). Asserted in `efficiency/src/extract/tests.rs`.
+
 ## Verification
 
 `bin/verify-fixtures.sh` (throwaway `jq` script, Phase 0 only) asserts every

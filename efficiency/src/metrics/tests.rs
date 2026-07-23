@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use claude_pricing::{AssistantEntry, parse_jsonl_file};
@@ -108,6 +109,83 @@ fn empty_scope_yields_none_everywhere_not_nan() {
     assert_eq!(signals.cache_1h_write_fraction, None);
     assert_eq!(signals.tokens_per_turn, None);
     assert_eq!(signals.cost_per_turn_usd, None);
+}
+
+#[test]
+fn turn_duration_percentiles_p50_p90_max_are_distinct() {
+    // A hand-crafted sample where nearest-rank p50/p90/max land on three DIFFERENT values, so a
+    // regression that returned `max` (or the mean) for a percentile would fail loudly. sorted =
+    // [10,20,30,40,50,60,70,80,90,1000], n=10: p50=ceil(.5*10)=5 -> idx4 -> 50;
+    // p90=ceil(.9*10)=9 -> idx8 -> 90; max -> 1000.
+    let raw = RawCounters {
+        turn_durations_ms: vec![50, 1000, 10, 90, 30, 70, 20, 80, 40, 60],
+        ..RawCounters::default()
+    };
+    let signals = finalize(raw);
+    assert_eq!(signals.turn_ms_p50, Some(50));
+    assert_eq!(signals.turn_ms_p90, Some(90));
+    assert_eq!(signals.turn_ms_max, Some(1000));
+}
+
+#[test]
+fn empty_turn_duration_sample_yields_none_percentiles() {
+    let signals = finalize(RawCounters::default());
+    assert_eq!(signals.turn_ms_p50, None);
+    assert_eq!(signals.turn_ms_p90, None);
+    assert_eq!(signals.turn_ms_max, None);
+}
+
+#[test]
+fn merge_sums_counters_concatenates_samples_and_merges_maps() {
+    let mut a = RawCounters {
+        input_tokens: 10,
+        tool_errors: 1,
+        bash_command_failures: 1,
+        turn_durations_ms: vec![100, 200],
+        web_search_requests: 2,
+        model_mix: BTreeMap::from([("m".to_string(), 1)]),
+        by_skill: BTreeMap::from([(
+            "s".to_string(),
+            WorkloadCost {
+                tokens: 10,
+                cost_usd: 1.0,
+            },
+        )]),
+        ..RawCounters::default()
+    };
+    let b = RawCounters {
+        input_tokens: 5,
+        tool_errors: 2,
+        turn_durations_ms: vec![300],
+        web_search_requests: 3,
+        model_mix: BTreeMap::from([("m".to_string(), 4), ("n".to_string(), 1)]),
+        by_skill: BTreeMap::from([(
+            "s".to_string(),
+            WorkloadCost {
+                tokens: 5,
+                cost_usd: 0.5,
+            },
+        )]),
+        ..RawCounters::default()
+    };
+    a.merge(&b);
+
+    assert_eq!(a.input_tokens, 15);
+    assert_eq!(a.tool_errors, 3);
+    assert_eq!(a.bash_command_failures, 1);
+    assert_eq!(a.turn_durations_ms, vec![100, 200, 300]);
+    assert_eq!(a.web_search_requests, 5);
+    assert_eq!(
+        a.model_mix,
+        BTreeMap::from([("m".to_string(), 5), ("n".to_string(), 1)])
+    );
+    assert_eq!(
+        a.by_skill["s"],
+        WorkloadCost {
+            tokens: 15,
+            cost_usd: 1.5
+        }
+    );
 }
 
 #[test]
