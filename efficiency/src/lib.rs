@@ -118,7 +118,7 @@ fn run_session(
             // guard is enforced inside `narrate` itself (it rejects prose inventing a number).
             let narrative = if want_narrate {
                 let client = sessions::llm::AnthropicClient::from_env()
-                    .context("run_session: --narrate needs ANTHROPIC_API_KEY")?;
+                    .context("run_session: failed to initialize the Anthropic client for --narrate")?;
                 let input = crate::narrate::narration_input(&matches[0].efficiency);
                 Some(crate::narrate::narrate(&client, &input).context("run_session: narration failed")?)
             } else {
