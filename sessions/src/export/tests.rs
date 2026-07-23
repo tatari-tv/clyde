@@ -61,6 +61,7 @@ fn metadata_record() -> ExportRecord {
         transcript_path: "/home/alice/.claude/projects/x/00000000-0000-4000-8000-000000000001.jsonl".to_string(),
         staged_path: None,
         archived: false,
+        efficiency: None,
         body: None,
     }
 }

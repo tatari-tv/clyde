@@ -1406,3 +1406,8 @@ fn v5_migration_is_idempotent_on_reopen() {
         "after an idempotent reopen the cursor still advances on the next write"
     );
 }
+
+// Phase 6 efficiency-annotation tests live in a submodule to keep this file under the
+// line-count limit (they are a self-contained surface: schema v6 columns, the trigger-suppressed
+// efficiency write, and the v5->v6 migration).
+mod efficiency;

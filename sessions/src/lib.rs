@@ -20,7 +20,7 @@ pub mod since;
 pub mod stage;
 pub mod transcript;
 
-pub use db::{Db, EnrichSuccess, Upsert};
+pub use db::{Db, EfficiencyWrite, EnrichSuccess, Upsert};
 pub use enrich::{EnrichOptions, enrich};
 pub use export::{
     EXPORT_SCHEMA_VERSION, EnrichStatus, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters,

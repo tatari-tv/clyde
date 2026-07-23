@@ -26,8 +26,10 @@
 //! aggregate signals are scored against the `efficiency:` config thresholds into
 //! `SessionEfficiency.flags`. Phase 5 adds the `clyde efficiency` output surfaces (`collect`,
 //! `rank`, `rollup`, `output`): `session <id>` (aggregate / `--by-subagent`), `--worst N`,
-//! `daily`/`weekly` rollups, and TTY-detected JSON/YAML rendering. Persistence, MCP, and narrative
-//! land in Phases 6-8.
+//! `daily`/`weekly` rollups, and TTY-detected JSON/YAML rendering. Phase 6 adds catalog persistence
+//! (`persist`): the domain types gain serde derives (kebab-case), and `reindex_efficiency` computes
+//! and writes the `efficiency IS NULL` backfill into `sessions.db` without advancing the export
+//! cursor. MCP and narrative land in Phases 7-8.
 
 pub mod cli;
 pub mod collect;
@@ -35,6 +37,7 @@ pub mod extract;
 pub mod fold;
 pub mod metrics;
 pub mod output;
+pub mod persist;
 pub mod rank;
 pub mod rollup;
 pub mod score;
@@ -47,12 +50,13 @@ use eyre::{Context, Result};
 use log::debug;
 
 pub use cli::EfficiencyArgs;
-pub use collect::{CollectedSession, collect_all, collect_matching};
+pub use collect::{CollectedSession, collect_all, collect_ids, collect_matching};
 pub use extract::{FileEfficiency, Scope, SubagentRaw, extract};
 pub use fold::{EfficiencyFlag, SessionEfficiency, SubagentEfficiency, fold};
 pub use metrics::{
     Compaction, CompactionTrigger, EfficiencySignals, RawCounters, WorkloadCost, aggregate_tokens, finalize,
 };
+pub use persist::{PersistStats, reindex_efficiency};
 pub use rollup::PeriodEfficiency;
 pub use score::{score, scored};
 

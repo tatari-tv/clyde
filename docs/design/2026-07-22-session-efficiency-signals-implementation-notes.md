@@ -592,3 +592,127 @@ None. `--path`/`--json` global-flag placement was a live clap parsing failure,
 not a judgment call -- resolved directly, documented above. The pre-existing
 open question (design doc untracked in git) is unchanged by this phase; still
 the parent orchestrator's to resolve at finalization.
+
+## Phase 6: Catalog persistence + export contract
+
+### Design decisions
+
+- **Dependency direction is `efficiency -> sessions`** (the design's own
+  "Dependencies" section: efficiency depends on `sessions` for Phase 6/7). So the
+  three sub-parts split by crate along that seam: `sessions` owns the STORAGE
+  primitives (schema, write, missing-query, export block) with NO knowledge of
+  efficiency's types; the `efficiency` crate owns the COMPUTE+WRITE composition
+  (`persist::reindex_efficiency`) that reads `sessions::Db`. No cycle: `sessions`
+  depends only on `common`/`session`.
+- **Schema v6 = one blob column + three flat indexed scalars.** `efficiency_json`
+  TEXT holds the whole nested `SessionEfficiency`; `cache_read_share` REAL /
+  `tool_errors` INTEGER / `cost_usd` REAL are the ranking scalars, each with a
+  `CREATE INDEX IF NOT EXISTS` (`db.rs` `migrate_v6_efficiency`) so `--worst`/sort
+  never parses JSON per row. All four columns are in BOTH `SCHEMA_SQL`'s
+  `CREATE TABLE` (fresh DBs) AND `ensure_column`'d in `migrate_v6_efficiency` (old
+  DBs) -- the exact v5 `updated_at` pattern.
+- **Serde on the efficiency domain types** (`metrics.rs`, `fold.rs`):
+  `SessionEfficiency`/`EfficiencySignals`/`RawCounters`/`SubagentEfficiency`/
+  `Compaction`/`CompactionTrigger`/`WorkloadCost` gained
+  `#[derive(Serialize, Deserialize)] #[serde(rename_all = "kebab-case")]`;
+  `EfficiencyFlag` gained the internally-tagged `#[serde(tag = "kind", rename_all
+  = "kebab-case")]` form -- byte-identical to the Phase 5 `output::FlagJson`
+  rendering, so a persisted flag reads the same as a live-rendered one. This is
+  the Phase-3-deferred "serialization is Phase 6" work.
+- **Writing efficiency never advances `updated_at`** (`db.rs`
+  `set_efficiency_many`): the v5 revision trigger fires on ANY content-less
+  `UPDATE`, so a plain efficiency write would bump the export cursor and force
+  every `session export --cursor` consumer to re-download the catalog after a
+  backfill. `set_efficiency_many` DROPs the `sessions_updated_at_update` trigger,
+  does the batch of writes, and recreates it -- all in ONE transaction (rolls
+  back / restores the trigger on any error), mirroring the v5 "backfill before
+  the triggers exist" precedent exactly. Proven by
+  `v6_set_efficiency_stores_columns_without_advancing_updated_at`.
+- **Backfill drives off `efficiency IS NULL`, independent of the mtime skip-key**
+  (`db.rs` `sessions_missing_efficiency` -> `efficiency::reindex_efficiency` ->
+  `collect_ids` -> `set_efficiency_many`). This is the panel-caught gap: because
+  `upsert_session` skips unchanged rows by transcript mtime, a bare migration
+  leaves every existing session `NULL` forever; the `NULL` predicate finds them
+  regardless of mtime. Only the missing set is recomputed (via the new
+  `collect::collect_ids`), not the whole tree.
+- **Content change invalidates stale efficiency** (`db.rs` `upsert_session`
+  UPDATE branch NULLs the four columns): a grown transcript makes the row a
+  backfill candidate again so the next pass recomputes it (derived fields must
+  never diverge from their source). This invalidation rides the content UPDATE's
+  own legitimate cursor bump. Proven by `v6_content_update_nulls_stale_efficiency`.
+- **Export efficiency block = opaque `serde_json::Value`** (`export.rs`
+  `ExportRecord.efficiency: Option<serde_json::Value>`): the nested shape is OWNED
+  by the `efficiency` crate, and (per the dep direction) `sessions` cannot name
+  those types anyway, so the contract passes the blob through as the
+  forward-compatible-envelope carve-out. Always emitted (`null` when absent). The
+  three flat scalar columns are deliberately NOT re-emitted on the wire -- they
+  are derivable from the block, and duplicating a derived value where it could
+  diverge is a taste violation; they exist purely for server-side ranking.
+- **`EXPORT_SCHEMA_VERSION` stays 1** (additive), pinned by
+  `export_schema_version_stays_one_after_efficiency_block`. Golden fixtures
+  regenerated in this phase: `"efficiency": null` added to the four existing
+  fixtures, plus a new `with-efficiency.json` carrying a fully-populated block.
+  Contract doc `docs/session-export-contract.md` gained an "Efficiency block"
+  section documenting the nested shape and the additive/opaque promise.
+
+### Deviations
+
+- **Necessary migration-hazard fix: `migrate_v5_cursor` now takes `from_version`
+  and gates its rowid backfill+seed on `from_version < 5`.** Bumping
+  `SCHEMA_VERSION` to 6 makes `migrate` re-enter `migrate_v5_cursor` for every v5
+  DB; its UNCONDITIONAL rowid-order backfill would have RESET every live
+  `updated_at` revision to its rowid position and reseeded the counter, silently
+  rewinding consumers' `--cursor` paging. The `from_version` gate makes the
+  backfill run ONLY on a genuine v4->v5 upgrade. Same effect the v5 code intended
+  (backfill once), correct seam (version-gated, not re-entrant). Proven to BITE by
+  `v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns` (revisions
+  10/20 and counter 20 preserved, not reset to 1/2/2).
+- **Export block is `serde_json::Value`, not a typed `ExportEfficiency` struct**
+  (see Design decisions) -- forced by the dep direction (sessions can't see
+  efficiency's types) and the no-duplicate-derived-field rule. Consequence:
+  `ExportRecord`/`ExportEnvelope` DROP `Eq` (kept `PartialEq`) because
+  `serde_json::Value`/`f64` are not `Eq`; verified no consumer needs `Eq`
+  (mirrors the Phase 4 `common::Config` `Eq` drop).
+- **`reindex_efficiency` wired into the explicit `clyde session reindex` only,
+  NOT `lazy_reindex`.** A query's cheap incremental refresh must not pay the
+  transcript-re-read cost the efficiency compute incurs. Same mechanism, invoked
+  at the deterministic reindex point; MCP/lazy wiring can follow if it becomes a
+  need.
+- **`db/tests.rs` decomposed:** the Phase 6 tests pushed `db/tests.rs` over the
+  1500-line bloat limit, so they live in the `db::tests::efficiency` submodule
+  (`db/tests/efficiency.rs`), reusing the parent test helpers via `use super::*`.
+  A self-contained test surface, extracted per the large-file rule -- no behavior
+  change to the existing v1-v5 tests.
+
+### Tradeoffs
+
+- **Trigger DROP/recreate per `set_efficiency_many` batch** vs. re-shaping the v5
+  trigger to ignore efficiency-only writes. The batch-level suppression touches
+  the trigger twice per backfill run (not per row) and rolls back safely; a
+  smarter trigger guard would have to enumerate ~25 content columns to detect
+  "efficiency-only", which is fragile and drifts as columns are added. Chose the
+  proven-precedent suppression.
+- **`reindex_efficiency` recomputes only the `NULL` set** (via `collect_ids`)
+  rather than reusing `collect_all` and filtering. Slightly more surface (a new
+  public `collect_ids`) but it does not re-read every already-annotated session's
+  transcripts on every reindex -- the incremental win the design's `efficiency
+  IS NULL` predicate is for.
+- **The `with-efficiency.json` fixture's block is hand-authored** (opaque to the
+  export round-trip, which only proves lossless passthrough). Serde correctness on
+  the REAL `SessionEfficiency` shape is proven separately in the efficiency crate
+  (`from_session_scalars_match_the_serialized_json` builds it through the real
+  extract->fold->scored pipeline), so the hand-authored fixture is documentation +
+  passthrough proof, not the serde-correctness gate.
+
+### Open questions
+
+- **Cross-repo blast radius: the versioned export contract now carries an
+  `efficiency` block.** It is additive (`EXPORT_SCHEMA_VERSION` stays 1) and
+  opaque, so existing external consumers keep working, but any consumer that wants
+  the new signals reads an efficiency-crate-owned nested shape. The parent should
+  confirm no external export consumer needs a typed/frozen efficiency schema
+  before ship (the design accepted an additive block; this flags it for the
+  finalization checklist). Not a code blocker.
+- The pre-existing open question (design doc still UNTRACKED in git) is unchanged;
+  this phase did NOT commit the design doc, per the phase boundary -- still the
+  parent's to resolve at finalization.

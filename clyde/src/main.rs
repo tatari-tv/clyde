@@ -653,6 +653,14 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
         .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects (set HOME)"))?;
     let stats = sessions::reindex(db, &projects_dir)?;
     print_reindex(&stats);
+    // Phase 6: after the content reindex, annotate every un-annotated session (`efficiency_json
+    // IS NULL`) with its computed efficiency signals. This writes a derived read-side annotation and
+    // deliberately does NOT advance the export `updated_at` cursor. Wired here (the explicit reindex),
+    // not into `lazy_reindex`, so a query's cheap incremental refresh never pays the transcript
+    // re-read the efficiency compute costs. Config supplies the scoring thresholds.
+    let cfg = common::config::load().context("failed to load clyde config for the efficiency pass")?;
+    let eff = efficiency::reindex_efficiency(db, &projects_dir, cfg.efficiency())?;
+    print_efficiency_reindex(&eff);
     Ok(())
 }
 
@@ -869,6 +877,23 @@ fn print_reindex(stats: &ReindexStats) {
             stats.upserted,
             stats.skipped_unchanged,
             stats.archived,
+        );
+    } else {
+        print_json(stats);
+    }
+}
+
+/// Report the Phase 6 efficiency annotation pass. TTY -> a one-line summary; piped -> JSON, so a
+/// scripted reindex sees the counts. Distinct from [`print_reindex`] so the two passes' shapes never
+/// conflate.
+fn print_efficiency_reindex(stats: &efficiency::PersistStats) {
+    if std::io::stdout().is_terminal() {
+        println!(
+            "{} efficiency: candidates {}, computed {}, written {}",
+            "✓".green(),
+            stats.candidates,
+            stats.computed,
+            stats.written,
         );
     } else {
         print_json(stats);

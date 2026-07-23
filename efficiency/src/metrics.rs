@@ -14,10 +14,16 @@ use std::collections::BTreeMap;
 
 use claude_pricing::{AssistantEntry, TokenUsage, calculate_usd};
 use log::{debug, warn};
+use serde::{Deserialize, Serialize};
 
 /// Tokens + `$` attributed to one workflow bucket (a skill or an MCP tool). Additive across the
 /// records that carry the same attribution key, and across scopes in [`RawCounters::merge`].
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// `Serialize`/`Deserialize` (kebab-case) is added in Phase 6: the whole nested [`SessionEfficiency`]
+/// serializes to the catalog's `efficiency_json` TEXT column and re-parses out of it. The wire shape
+/// is deliberately kebab-case to match the house convention and the export contract.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct WorkloadCost {
     pub tokens: u64,
     pub cost_usd: f64,
@@ -34,7 +40,8 @@ impl WorkloadCost {
 /// and compacted on its own (a signal the session was oversized); `manual` = the user invoked it.
 /// A typed vocabulary, not free strings (house typed-values rule); an unrecognized `trigger` string
 /// is warn-and-skipped by the extractor rather than coerced into either variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum CompactionTrigger {
     Auto,
     Manual,
@@ -56,7 +63,8 @@ impl CompactionTrigger {
 
 /// One `compact_boundary` event: the trigger, the tokens before/after the compaction, and the dead
 /// wall-clock it cost. `pre_tokens - post_tokens` is the reclaimed context.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct Compaction {
     pub trigger: CompactionTrigger,
     pub pre_tokens: u64,
@@ -69,7 +77,8 @@ pub struct Compaction {
 /// counters add, the `turn_durations_ms` SAMPLE and the `compactions` list concatenate, and the
 /// attribution maps merge key-wise. The derived metrics ([`EfficiencySignals`]) are NEVER stored
 /// here -- they are recomputed from these counters by [`finalize`], so nothing can diverge.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct RawCounters {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -189,7 +198,8 @@ impl RawCounters {
 /// Counters + the derived metrics computed FOR THAT SCOPE from its own counters (design "Data
 /// Model"). Every field here is a pure function of [`RawCounters`]; [`finalize`] is the single
 /// place that computes them, so a scope's derived values can never drift from its raw counters.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct EfficiencySignals {
     pub raw: RawCounters,
     pub cache_read_share: Option<f64>,

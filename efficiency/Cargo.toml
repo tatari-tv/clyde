@@ -24,6 +24,8 @@ regex = "1.13.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml.workspace = true
+sessions = { path = "../sessions" }
 
 [dev-dependencies]
+session = { path = "../session" }
 tempfile.workspace = true

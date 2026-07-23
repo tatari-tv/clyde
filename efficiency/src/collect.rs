@@ -4,7 +4,7 @@
 //! `weekly`) shares -- mirroring `cost`'s single `compute_summaries` seam (design "API Design":
 //! "Discovery reuses `common::scan`").
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -64,6 +64,31 @@ pub fn collect_matching(projects_dir: &Path, id: &str, config: &EfficiencyConfig
         .collect();
     debug!("collect_matching: id={id} matches={}", matches.len());
     Ok(matches)
+}
+
+/// Discover and compute ONLY the session groups whose id is in `ids`. The incremental seam behind
+/// the Phase 6 backfill (`efficiency::reindex_efficiency`): the catalog hands the set of
+/// efficiency-`NULL` session ids, and this recomputes exactly those (skipping the many already-
+/// annotated sessions) rather than the whole tree. Empty `ids` is an empty result (no scan work
+/// beyond the directory walk). Parallel over the matched groups, same shape as [`collect_all`].
+pub fn collect_ids(
+    projects_dir: &Path,
+    ids: &BTreeSet<String>,
+    config: &EfficiencyConfig,
+) -> Result<Vec<CollectedSession>> {
+    debug!("collect_ids: projects_dir={} ids={}", projects_dir.display(), ids.len());
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let files = find_session_files(projects_dir).context("collect_ids: failed to scan session files")?;
+    let groups = group_by_session(&files);
+    let sessions: Vec<CollectedSession> = groups
+        .par_iter()
+        .filter(|(session_id, _)| ids.contains(*session_id))
+        .map(|(session_id, group_files)| build_session(session_id, group_files, config))
+        .collect();
+    debug!("collect_ids: requested={} computed={}", ids.len(), sessions.len());
+    Ok(sessions)
 }
 
 fn group_by_session(files: &[SessionFile]) -> BTreeMap<String, Vec<&SessionFile>> {

@@ -12,13 +12,15 @@
 use std::collections::BTreeMap;
 
 use log::debug;
+use serde::{Deserialize, Serialize};
 
 use crate::extract::{FileEfficiency, SubagentRaw};
 use crate::metrics::{EfficiencySignals, RawCounters, finalize};
 
 /// Signals for one subagent scope, tagged with its `agentId` and (if known) its `attributionAgent`
 /// TYPE. The `signals` are `finalize`d from the subagent's OWN unioned counters.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct SubagentEfficiency {
     pub agent_id: String,
     pub agent_type: Option<String>,
@@ -29,7 +31,13 @@ pub struct SubagentEfficiency {
 /// `efficiency:` thresholds ([`crate::score`]). Each variant names the breached signal AND carries
 /// the observed value alongside the threshold it crossed, so a flag is self-describing and legible
 /// (fail loudly, per the house rule) — a consumer never has to re-derive why the session tripped.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// The persisted serde shape is the internally-tagged `{ "kind": "...", ... }` form -- byte-identical
+/// to the CLI's [`crate::output::FlagJson`] rendering -- so the flag reads the same whether it comes
+/// from the `efficiency_json` catalog column or a live `clyde efficiency` render (siblings behave
+/// identically).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum EfficiencyFlag {
     /// `cache-read-share` fell below `cache-read-share-floor` on an ELIGIBLE session (one past both
     /// the `minimum-total-tokens` and `minimum-turns` gates). Cache-waste.
@@ -43,7 +51,13 @@ pub enum EfficiencyFlag {
 
 /// One session's full efficiency picture: the recomputed whole-session `aggregate`, the canonical
 /// per-subagent `subagents` breakdown, and (Phase 4) any scored `flags`.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Phase 6 persists this whole nested value as the catalog's `efficiency_json` TEXT column (kebab-case
+/// JSON); the three ranking scalars (`aggregate.cache-read-share`, `aggregate.raw.tool-errors`,
+/// `aggregate.raw.cost-usd`) ALSO land in flat indexed columns, materialized from THIS struct in one
+/// computation so an indexed scalar can never diverge from the JSON it was taken from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct SessionEfficiency {
     pub session_id: String,
     pub aggregate: EfficiencySignals,
