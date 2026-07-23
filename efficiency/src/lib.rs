@@ -29,13 +29,16 @@
 //! `daily`/`weekly` rollups, and TTY-detected JSON/YAML rendering. Phase 6 adds catalog persistence
 //! (`persist`): the domain types gain serde derives (kebab-case), and `reindex_efficiency` computes
 //! and writes the `efficiency IS NULL` backfill into `sessions.db` without advancing the export
-//! cursor. MCP and narrative land in Phases 7-8.
+//! cursor. Phase 8 adds the LLM narrative (`narrate`): a prose verdict over PRE-FORMATTED,
+//! Rust-computed facts ([`NarrationInput`]) with zero raw operands, so the model selects and phrases
+//! but never calculates. (The MCP `session_efficiency` tool from Phase 7 lives in `sessions::mcp`.)
 
 pub mod cli;
 pub mod collect;
 pub mod extract;
 pub mod fold;
 pub mod metrics;
+pub mod narrate;
 pub mod output;
 pub mod persist;
 pub mod rank;
@@ -56,6 +59,7 @@ pub use fold::{EfficiencyFlag, SessionEfficiency, SubagentEfficiency, fold};
 pub use metrics::{
     Compaction, CompactionTrigger, EfficiencySignals, RawCounters, WorkloadCost, aggregate_tokens, finalize,
 };
+pub use narrate::{NarrationInput, narrate, narration_input};
 pub use persist::{PersistStats, reindex_efficiency};
 pub use rollup::PeriodEfficiency;
 pub use score::{score, scored};

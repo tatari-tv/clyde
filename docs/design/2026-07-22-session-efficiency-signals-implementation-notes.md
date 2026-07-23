@@ -799,3 +799,104 @@ None. The one genuine ambiguity (read persisted vs. recompute) was resolved by t
 code, not judgment: `sessions` cannot depend on `efficiency` (Phase 6 dep direction),
 so recompute-in-`sessions` is impossible and reading the persisted blob is forced.
 Cross-repo / system-mutating bullets: none in Phase 7 (clyde-only).
+
+## Phase 8: LLM narrative (prose only, math-free)
+
+### Design decisions
+
+- **The math-free guard is STRUCTURAL, enforced by the type, not just the prompt.**
+  `narrate` (`efficiency/src/narrate.rs`) takes `&NarrationInput`, whose EVERY
+  field is a `String`/`Vec<String>` of pre-formatted facts (`cache_read_share:
+  "62%"`, `worst_signal: "auto-compacted twice, reclaiming 155k tokens over 9s of
+  dead wall-clock"`) -- there is NO raw `u64`/`f64` token/cost field anywhere on
+  the struct. The panel's finding 3 (design line ~253): passing the full
+  `SessionEfficiency` would still let the LLM derive cost-per-turn / rates /
+  "projected savings" from the operands it was handed. `NarrationInput` gives it
+  no operands at all -- its job is to SELECT and PHRASE the strings, never to
+  calculate. Proven structurally by `narration_input_carries_only_string_facts`,
+  which serializes a real `NarrationInput` and asserts NO `serde_json::Value::Number`
+  appears anywhere in the tree (walks objects + arrays recursively).
+- **All formatting/arithmetic lives in `narration_input(&SessionEfficiency) ->
+  NarrationInput`** (Rust). This is the single seam where the already-computed
+  aggregate numbers are consumed and turned into display strings (percent
+  rounding, `155000 -> "155k"` / `1.2M` humanization, `2/61 -> "3%"`, ms ->
+  seconds, per-turn `${:.2}`, compaction reclaimed-token/dead-wall-clock summing,
+  flag phrasing, worst-signal selection). Downstream -- the prompt, the LLM --
+  sees strings only. `narration_input_formats_the_computed_numbers_as_display_strings`
+  pins each field against hand-computed expected strings (break the fixture ->
+  the assert fails), and `empty_scope_formats_to_na_never_nan` proves the
+  zero-scope path renders `n/a`/`none`/`no tool calls`, never `NaN`.
+- **The prompt output contract (`NARRATE_SYSTEM_PROMPT`) is the prompt-level HALF
+  of the guard:** it forbids introducing any number/percentage/dollar/duration/
+  token count absent from the supplied facts, and forbids compute/sum/average/
+  project/estimate. The structural half (no operands on the type) is the primary
+  defense; the prompt is defense-in-depth.
+- **Function-level debug logging** on `narrate` (entry logs every already-safe
+  display-string field of the `NarrationInput`, exit logs the produced prose char
+  count) and `narration_input` (entry: session id + flag count). Per the security
+  rule these are Rust-computed pre-formatted facts, so logging them in full is
+  safe (no raw prompt, no secret, no LLM payload inlined).
+
+### Deviations
+
+- **The LLM-client seam is a NEW `sessions::Narrator` port (prose completion),
+  sibling to the existing enrichment `Completer`, implemented by the SAME
+  `AnthropicClient`.** The Phase 8 bullet says "reuse the `sessions` enrichment
+  LLM path (`sessions/src/llm.rs`)", but the existing `Completer::enrich` returns
+  the structured `LlmEnrichment` (tags + summary), not free prose -- its contract
+  does not fit a narrative. Rather than invent a second HTTP integration (which
+  the task forbids) or bend `Completer`'s enrichment-shaped return, I added a
+  `Narrator` trait (`fn narrate(&self, system, user) -> Result<String>`) and
+  impl'd it on `AnthropicClient`, refactoring the body-build + POST into a shared
+  private `AnthropicClient::messages(model, system, user, max_tokens)` +
+  `first_text(resp)` that BOTH `enrich` and `narrate` now ride. Same key
+  (`ANTHROPIC_API_KEY`), same timeout, same `post_with_retry` (429/5xx bounded
+  retry), same error handling -- genuinely ONE integration, zero new LLM
+  dependency (no new crate; `reqwest`/`serde_json` were already `sessions` deps).
+  `NARRATE_MODEL` is a const alias of `ENRICH_MODEL` so the two callers share one
+  pinned model. This mirrors how the codebase already crosses the
+  `efficiency -> sessions` boundary (Phase 6/7): `efficiency` depends on
+  `sessions`, so `efficiency::narrate` depending on `sessions::Narrator` is the
+  correct dep direction (no cycle). Same effect as "reuse the enrichment LLM
+  path," correct seam for a prose (not schema) return.
+- **`narrate` is a library capability, not wired to a new CLI flag.** The design's
+  Architecture lists `src/narrate.rs`; the API Design section names NO
+  `--narrate`/narrate surface, and Phase 8's success criteria are only about the
+  `NarrationInput` type and the golden-input test. Adding an unrequested CLI flag
+  would be out-of-scope gold-plating (unrequested scope is illegitimate). The
+  module + `pub use narrate::{NarrationInput, narrate, narration_input}` is the
+  exported seam a later phase/flag can call; no CLI change was made.
+
+### Tradeoffs
+
+- **The no-invented-number check is a TEST verification helper, not a hard runtime
+  gate on `narrate`'s output.** The design asks the *prompt contract* to forbid
+  invented numbers and the *test* to assert the output contains no numeric token
+  absent from the input. I implemented exactly that: `foreign_numbers(prose,
+  input)` (regex `\d+(?:\.\d+)?` extraction, subtract tokens present in the input
+  strings) is used by `narrate_returns_prose_and_sends_the_facts_no_network`
+  (well-behaved reply -> zero foreign numbers) AND
+  `foreign_number_checker_bites_on_an_invented_figure` (a fabricated "$99
+  projected savings" -> caught), proving the check is not vacuous. I deliberately
+  did NOT make `narrate` itself reject output on a foreign number: a legitimate
+  paraphrase ("two" for "2", or reformatting "155k" as "155,000") would false-
+  positive and fail a valid narration. The structural guard (no operands on the
+  type) is the real enforcement; a runtime output gate would trade correctness
+  for a weaker, noisier signal.
+- **Tests inject a `FakeNarrator` (deterministic canned prose) and a
+  `FailingNarrator`; no real network call in `otto ci`.** This mirrors the
+  enrichment path's own `Fake` `Completer` (`sessions/src/enrich/tests.rs`). The
+  `FakeNarrator` also records the `(system, user)` it was handed so the test
+  asserts `narrate` sent `NARRATE_SYSTEM_PROMPT` + the formatted facts (never raw
+  operands). The real `AnthropicClient::narrate` HTTP path is exercised only in
+  production, exactly as `enrich`'s is.
+
+### Open questions
+
+None. The one genuine call (how to reuse the LLM path for a prose return without a
+new integration) was resolved by mirroring the existing `Completer` DI shape with
+a sibling `Narrator` port on the same client. Cross-repo / system-mutating bullets:
+none in Phase 8 (clyde-only). The pre-existing open question (design doc still
+UNTRACKED in git through Phases 0-7) is unchanged; this phase did NOT commit or
+modify the design doc, per the phase boundary -- still the parent orchestrator's to
+resolve at finalization.

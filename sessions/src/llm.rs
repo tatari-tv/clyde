@@ -18,6 +18,13 @@ pub const ENRICH_MODEL: &str = "claude-haiku-4-5-20251001";
 /// The enrichment prompt/schema version. Bumping it makes every row eligible for re-enrichment.
 pub const ENRICH_PROMPT_VERSION: i64 = 1;
 
+/// The model the prose-narration path ([`Narrator`]) pins. Reuses the enrichment model so the two
+/// LLM callers share ONE pinned model on this host (siblings behave identically); a chatty prose
+/// verdict is cheap on the same small model.
+pub const NARRATE_MODEL: &str = ENRICH_MODEL;
+/// Output-token cap for a prose narration. A verdict is a few sentences; a runaway reply is clamped.
+const NARRATE_MAX_OUTPUT_TOKENS: u32 = 512;
+
 /// Environment variable holding the Anthropic API key.
 const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -56,6 +63,18 @@ pub trait Completer {
     /// Enrich `payload`. `payload` is the redacted high-signal body; implementations must never
     /// log it in full.
     fn enrich(&self, payload: &str) -> Result<LlmEnrichment>;
+}
+
+/// A general prose-completion port: turn a system + user prompt into free-text prose. Distinct from
+/// [`Completer`] (which returns the structured enrichment JSON) because narration selects and
+/// phrases pre-computed facts rather than producing a tag/summary schema. The `efficiency` crate's
+/// Phase 8 narrative layer depends on this port so tests inject a deterministic fake and the
+/// narration never touches the network. The real [`AnthropicClient`] implements it over the SAME
+/// key/timeout/retry HTTP path as enrichment (one integration, no new LLM dependency).
+pub trait Narrator {
+    /// Complete `user` under `system`, returning the model's prose reply (trimmed, non-empty).
+    /// Implementations must never log `user`/`system` in full — previews only, per the logging rule.
+    fn narrate(&self, system: &str, user: &str) -> Result<String>;
 }
 
 /// The Anthropic Messages API client. Holds the key in memory only; never serializes or logs it.
@@ -115,20 +134,8 @@ struct EnrichJson {
 impl Completer for AnthropicClient {
     fn enrich(&self, payload: &str) -> Result<LlmEnrichment> {
         debug!("AnthropicClient::enrich: payload_chars={}", payload.chars().count());
-        let body = json!({
-            "model": ENRICH_MODEL,
-            "max_tokens": MAX_OUTPUT_TOKENS,
-            "system": SYSTEM_PROMPT,
-            "messages": [{ "role": "user", "content": payload }],
-        });
-
-        let resp = self.post_with_retry(&body)?;
-        let text = resp
-            .content
-            .iter()
-            .find(|b| b.kind == "text")
-            .map(|b| b.text.as_str())
-            .ok_or_else(|| eyre!("Anthropic response had no text block"))?;
+        let resp = self.messages(ENRICH_MODEL, SYSTEM_PROMPT, payload, MAX_OUTPUT_TOKENS)?;
+        let text = Self::first_text(&resp)?;
         let parsed = parse_enrich_json(text).context("Anthropic response was not the expected JSON")?;
         let tags = normalize_tags(parsed.tags);
         if tags.is_empty() || parsed.summary.trim().is_empty() {
@@ -143,7 +150,45 @@ impl Completer for AnthropicClient {
     }
 }
 
+impl Narrator for AnthropicClient {
+    fn narrate(&self, system: &str, user: &str) -> Result<String> {
+        debug!(
+            "AnthropicClient::narrate: system_chars={} user_chars={}",
+            system.chars().count(),
+            user.chars().count()
+        );
+        let resp = self.messages(NARRATE_MODEL, system, user, NARRATE_MAX_OUTPUT_TOKENS)?;
+        let prose = Self::first_text(&resp)?.trim().to_string();
+        if prose.is_empty() {
+            bail!("Anthropic narration response had no prose");
+        }
+        Ok(prose)
+    }
+}
+
 impl AnthropicClient {
+    /// Build the Messages request and POST it (shared by [`Completer::enrich`] and
+    /// [`Narrator::narrate`] so both callers ride ONE key/timeout/retry path). Returns the decoded
+    /// response; callers pick out the text block via [`first_text`](Self::first_text).
+    fn messages(&self, model: &str, system: &str, user: &str, max_tokens: u32) -> Result<MessagesResponse> {
+        let body = json!({
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": [{ "role": "user", "content": user }],
+        });
+        self.post_with_retry(&body)
+    }
+
+    /// The first `text` content block of a response, or an error when none is present.
+    fn first_text(resp: &MessagesResponse) -> Result<&str> {
+        resp.content
+            .iter()
+            .find(|b| b.kind == "text")
+            .map(|b| b.text.as_str())
+            .ok_or_else(|| eyre!("Anthropic response had no text block"))
+    }
+
     /// POST the request, retrying bounded on 429 / 5xx with linear backoff. Returns the decoded
     /// response or an error after the retries are exhausted.
     fn post_with_retry(&self, body: &serde_json::Value) -> Result<MessagesResponse> {

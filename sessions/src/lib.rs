@@ -27,7 +27,9 @@ pub use export::{
     ExportRecord,
 };
 pub use index::reindex;
-pub use llm::{AnthropicClient, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment};
+pub use llm::{
+    AnthropicClient, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment, NARRATE_MODEL, Narrator,
+};
 pub use mcp::{SessionsMcpServer, build_server};
 pub use model::{
     EnrichDetail, EnrichStats, EnrichSummary, Fallback, Filters, MatchSource, ReindexStats, SearchHit, SearchResults,
