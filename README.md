@@ -93,8 +93,24 @@ $XDG_CONFIG_HOME/clyde/pricing.json  # merged pricing override (was ccu/ + cr/)
 
 `clyde.yml` is optional and strict (`deny_unknown_fields`): a missing file is all-defaults, but a
 typo'd key is a hard error. Today it carries `date-tz` (how `report collect --since <date>`
-interprets a bare date) and a `render:` section whose `format` sets the default `report render`
-output format. See [`report/README.md`](report/README.md) for the render options.
+interprets a bare date), a `render:` section whose `format` sets the default `report render`
+output format, and an `efficiency:` section (below) with the thresholds `clyde efficiency` scores
+sessions against. See [`report/README.md`](report/README.md) for the render options.
+
+The `efficiency:` thresholds (all optional; a missing section is all-defaults):
+
+```yaml
+# ~/.config/clyde/clyde.yml
+efficiency:
+  cache-read-share-floor: 0.6      # cache-read share below this flags cache waste (eligible sessions only)
+  tool-error-rate-ceiling: 0.05    # tool-error rate above this flags the session error-prone
+  auto-compaction-flag: true       # any auto-compaction raises a flag (ran the context to the wall)
+  minimum-total-tokens: 20000      # eligibility gate: below this, no cache-waste flag (too small to reuse cache)
+  minimum-turns: 3                 # eligibility gate: fewer turns can't structurally reuse cache
+```
+
+The two `minimum-*` gates also govern `clyde efficiency --worst N`: ineligible short one-shots are
+never ranked as "worst," since a structurally-low cache-read share there is expected, not waste.
 
 Config readers prefer the clyde location and fall back to the legacy path until `bootstrap`
 migrates, so a tool invoked before bootstrap still finds its existing state. Raw transcripts are

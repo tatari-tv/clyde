@@ -140,7 +140,7 @@ fn run_weekly(projects_dir: &Path, config: &EfficiencyConfig, weeks: u32, json: 
 fn run_worst(projects_dir: &Path, config: &EfficiencyConfig, n: usize, json: bool) -> Result<i32> {
     debug!("run_worst: n={n} json={json}");
     let sessions = collect_all(projects_dir, config)?;
-    let worst = rank::worst(sessions, n);
+    let worst = rank::worst(sessions, n, config);
     println!("{}", output::render(json, &output::worst_json(&worst))?);
     Ok(0)
 }

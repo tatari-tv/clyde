@@ -19,6 +19,16 @@ use log::debug;
 use crate::fold::{EfficiencyFlag, SessionEfficiency};
 use crate::metrics::{CompactionTrigger, EfficiencySignals};
 
+/// The eligibility gate, shared by [`score`] (cache-waste flagging) and [`crate::rank::worst`]
+/// (`--worst` ranking) so the two can never drift: a session must carry enough total tokens AND
+/// enough turns to have structurally been able to reuse cache. Below either gate, a low
+/// `cache-read-share` is expected (a short one-shot), not waste — so such a session is neither
+/// flagged nor allowed to surface as "worst". One definition kills the drift class.
+pub fn is_eligible(signals: &EfficiencySignals, config: &EfficiencyConfig) -> bool {
+    let raw = &signals.raw;
+    raw.total_tokens() >= config.minimum_total_tokens() && raw.turns >= config.minimum_turns()
+}
+
 /// Score one session's aggregate `signals` against `config`, returning every breached flag.
 ///
 /// Order is deterministic (cache-waste, tool-error, auto-compaction) so callers/tests see a stable
@@ -27,7 +37,7 @@ use crate::metrics::{CompactionTrigger, EfficiencySignals};
 pub fn score(signals: &EfficiencySignals, config: &EfficiencyConfig) -> Vec<EfficiencyFlag> {
     let raw = &signals.raw;
     let total_tokens = raw.total_tokens();
-    let eligible = total_tokens >= config.minimum_total_tokens() && raw.turns >= config.minimum_turns();
+    let eligible = is_eligible(signals, config);
     debug!(
         "score: total-tokens={} turns={} eligible={} (min-tokens={} min-turns={}) \
          cache-read-share={:?} floor={} tool-error-rate={:?} ceiling={} auto-compaction-flag={}",

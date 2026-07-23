@@ -67,7 +67,7 @@ Behavioral:
 - Turn duration (`system`/`subtype:"turn_duration"` `durationMs`): p50/p90/max per session.
 - Interrupts: two distinct forms, counted separately -- structured `toolUseResult.interrupted == true`, and the user-text markers already in `session/src/parse.rs:42-43`.
 - Tool errors: ONE reliable signal plus an optional subset. `tool_errors` = count of `tool_result` blocks with `is_error == true` (the only sound predicate; verified against 2,881 files). `bash_command_failures` = the SUBSET of those whose result text matches the `"Error: Exit code N"` shape (a sub-classification, always `<= tool_errors`, never an independent count). The `toolUseResult.stderr` / `returnCodeInterpretation` predicate is DROPPED -- the data proves it unsound (`stderr` carries `is_error:false` cwd-reset noise; `returnCodeInterpretation` is free text like `"No matches found"`; no clean `exitCode` field exists on Bash `toolUseResult`; hard Bash failures already surface as `is_error:true`). See Resolved Decisions.
-- Cost attributed by workflow: tokens/`$` grouped by `attributionAgent`, `attributionSkill`, `attributionMcpTool`.
+- Cost attributed by workflow: tokens/`$` grouped by `attributionSkill` and `attributionMcpTool` (the `by_skill` / `by_mcp_tool` maps in the data model). Per-agent (`attributionAgent`) cost is NOT a separate `by_agent` map -- it is recoverable from the per-subagent breakdown, where each `SubagentEfficiency` scope is one agent invocation carrying its own `agent_type` label and `cost_usd`.
 - `effort` distribution per session (`high`/`xhigh`).
 - `server_tool_use`: `web_search_requests` / `web_fetch_requests` counts.
 - `service_tier` / `inference_geo`: retained, informational.
