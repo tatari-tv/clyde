@@ -79,9 +79,11 @@ pub fn run(args: EfficiencyArgs, globals: common::Globals) -> Result<i32> {
     let json = output::wants_json(args.json);
 
     match &args.command {
-        Some(cli::Command::Session { id, by_subagent }) => {
-            run_session(&projects_dir, config.efficiency(), id, *by_subagent, json)
-        }
+        Some(cli::Command::Session {
+            id,
+            by_subagent,
+            narrate,
+        }) => run_session(&projects_dir, config.efficiency(), id, *by_subagent, *narrate, json),
         Some(cli::Command::Daily { days }) => run_daily(&projects_dir, config.efficiency(), *days, json),
         Some(cli::Command::Weekly { weeks }) => run_weekly(&projects_dir, config.efficiency(), *weeks, json),
         None => match args.worst {
@@ -96,15 +98,33 @@ pub fn run(args: EfficiencyArgs, globals: common::Globals) -> Result<i32> {
     }
 }
 
-fn run_session(projects_dir: &Path, config: &EfficiencyConfig, id: &str, by_subagent: bool, json: bool) -> Result<i32> {
-    debug!("run_session: id={id} by_subagent={by_subagent} json={json}");
+fn run_session(
+    projects_dir: &Path,
+    config: &EfficiencyConfig,
+    id: &str,
+    by_subagent: bool,
+    want_narrate: bool,
+    json: bool,
+) -> Result<i32> {
+    debug!("run_session: id={id} by_subagent={by_subagent} want_narrate={want_narrate} json={json}");
     let matches = collect_matching(projects_dir, id, config)?;
     match matches.len() {
         0 => {
             println!("No session found matching '{id}'");
         }
         1 => {
-            let view = output::session_json(&matches[0].efficiency, by_subagent);
+            // Prose verdict is opt-in (`--narrate`): only then is an LLM client constructed and a
+            // single network call made. Without the flag, nothing touches the network. The math-free
+            // guard is enforced inside `narrate` itself (it rejects prose inventing a number).
+            let narrative = if want_narrate {
+                let client = sessions::llm::AnthropicClient::from_env()
+                    .context("run_session: --narrate needs ANTHROPIC_API_KEY")?;
+                let input = crate::narrate::narration_input(&matches[0].efficiency);
+                Some(crate::narrate::narrate(&client, &input).context("run_session: narration failed")?)
+            } else {
+                None
+            };
+            let view = output::session_json(&matches[0].efficiency, by_subagent, narrative);
             println!("{}", output::render(json, &view)?);
         }
         _ => {

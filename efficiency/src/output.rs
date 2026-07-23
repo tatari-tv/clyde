@@ -209,16 +209,24 @@ pub struct SessionJson {
     /// the N-subagent breakdown").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagents: Option<Vec<SubagentJson>>,
+    /// The LLM prose verdict, present only with `--narrate`. Rendered below the signals (last field)
+    /// so the numbers lead and the prose closes. Named `narrative` in JSON and YAML alike (one name
+    /// per concept across layers); omitted entirely when the flag is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub narrative: Option<String>,
 }
 
 /// Build the `session <id>` view. The aggregate is ALWAYS present; `by_subagent` controls whether
-/// the per-subagent breakdown rides along.
-pub fn session_json(session: &SessionEfficiency, by_subagent: bool) -> SessionJson {
+/// the per-subagent breakdown rides along; `narrative` (from `--narrate`) rides along when `Some`.
+/// The narrative string is computed by the caller (an LLM call) and injected here, so this stays a
+/// pure, network-free view builder that a test can drive with a canned string.
+pub fn session_json(session: &SessionEfficiency, by_subagent: bool, narrative: Option<String>) -> SessionJson {
     SessionJson {
         session_id: session.session_id.clone(),
         aggregate: (&session.aggregate).into(),
         flags: session.flags.iter().map(FlagJson::from).collect(),
         subagents: by_subagent.then(|| session.subagents.iter().map(SubagentJson::from).collect()),
+        narrative,
     }
 }
 
