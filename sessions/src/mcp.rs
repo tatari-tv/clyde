@@ -41,9 +41,10 @@ pub mod read;
 pub mod tools;
 
 use tools::{
-    GREP_CONTEXT_DEFAULT, GREP_CONTEXT_MAX, GREP_LIMIT_DEFAULT, GREP_LIMIT_MAX, GrepResult, LS_LIMIT_DEFAULT,
-    LS_LIMIT_MAX, OpenResult, READ_LIMIT_DEFAULT, READ_LIMIT_MAX, ReadResult, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX,
-    SessionGrepRequest, SessionReadRequest, SessionRef, SessionsLsRequest, SessionsSearchRequest,
+    EFFICIENCY_RESPONSE_MAX_CHARS, EfficiencyResult, GREP_CONTEXT_DEFAULT, GREP_CONTEXT_MAX, GREP_LIMIT_DEFAULT,
+    GREP_LIMIT_MAX, GrepResult, LS_LIMIT_DEFAULT, LS_LIMIT_MAX, OpenResult, READ_LIMIT_DEFAULT, READ_LIMIT_MAX,
+    ReadResult, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, SessionGrepRequest, SessionReadRequest, SessionRef,
+    SessionsLsRequest, SessionsSearchRequest,
 };
 
 /// The read-only sessions MCP server. Holds the catalog handle behind a process-local `Mutex`.
@@ -83,6 +84,10 @@ impl SessionsMcpServer {
             "session_read" => {
                 let req: SessionReadRequest = serde_json::from_value(args).map_err(|e| Self::deser_err(name, &e))?;
                 self.session_read(Parameters(req)).await
+            }
+            "session_efficiency" => {
+                let req: SessionRef = serde_json::from_value(args).map_err(|e| Self::deser_err(name, &e))?;
+                self.session_efficiency(Parameters(req)).await
             }
             _ => Err(McpError::invalid_params(format!("unknown tool: {name}"), None)),
         }
@@ -406,6 +411,72 @@ impl SessionsMcpServer {
 
         Ok(CallToolResult::success(vec![ContentBlock::json(&result)?]))
     }
+
+    /// Return the Rust-computed efficiency signals persisted for one session (schema v6
+    /// `efficiency_json`): the aggregate + per-subagent breakdown + threshold flags.
+    #[tool(
+        description = "Return the computed efficiency and behavior signals for one session: cache-reuse \
+                       ratio, 5m/1h cache-write split, tokens and cost per session/turn, compaction, \
+                       turn-duration percentiles, tool-error rate (and its bash-failure subset), interrupts, \
+                       and cost attributed by workflow - plus the aggregate, the per-subagent breakdown, and \
+                       any threshold flags. Resolve the session by id or unique prefix (ambiguous/unknown = \
+                       invalid_params). Signals are read from the catalog's persisted annotation; a session \
+                       not yet reindexed (or reaped/archived with nothing to recompute from) returns state: \
+                       \"not-computed\" (run `clyde session reindex` to populate). A blob larger than the \
+                       tool-result budget returns state: \"oversized\" with its size - use `clyde efficiency \
+                       session <id>` for the full detail. Otherwise state: \"computed\" carries the nested \
+                       signals verbatim."
+    )]
+    async fn session_efficiency(&self, params: Parameters<SessionRef>) -> Result<CallToolResult, McpError> {
+        let req = params.0;
+        debug!("session_efficiency: id={:?}", req.id);
+        let result = Self::block_in_place_compat(|| -> Result<EfficiencyResult, McpError> {
+            let db = self.db.lock().map_err(Self::err)?;
+            let rec = Self::resolve_record(&db, &req.id)?;
+            let raw = db.get_efficiency_json(&rec.session_id).map_err(Self::db_err)?;
+            let Some(raw) = raw else {
+                debug!(
+                    "session_efficiency: {} not-computed (efficiency_json NULL)",
+                    rec.session_id
+                );
+                return Ok(EfficiencyResult::NotComputed { record: Box::new(rec) });
+            };
+            // Fail LOUDLY (fail closed) on a corrupt/non-JSON blob rather than emitting a silent null,
+            // exactly as the export contract's `build_export_record` does — a non-JSON value must never
+            // reach the wire.
+            let efficiency: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+                Self::err(format!(
+                    "session {} has an unparseable efficiency_json blob: {e}",
+                    rec.session_id
+                ))
+            })?;
+            // Enforce the SAME response cap session_read applies to its output. A nested JSON document
+            // cannot be truncated mid-structure and stay valid, so an over-budget blob is WITHHELD (the
+            // caller falls back to the CLI) rather than cut short.
+            let chars = raw.chars().count();
+            if chars > EFFICIENCY_RESPONSE_MAX_CHARS {
+                warn!(
+                    "session_efficiency: {} blob {chars} chars exceeds cap {EFFICIENCY_RESPONSE_MAX_CHARS}; withholding",
+                    rec.session_id
+                );
+                return Ok(EfficiencyResult::Oversized {
+                    session_id: rec.session_id,
+                    chars,
+                    cap: EFFICIENCY_RESPONSE_MAX_CHARS,
+                });
+            }
+            debug!(
+                "session_efficiency: {} returning computed efficiency ({chars} chars)",
+                rec.session_id
+            );
+            Ok(EfficiencyResult::Computed {
+                session_id: rec.session_id,
+                efficiency,
+            })
+        })?;
+
+        Ok(CallToolResult::success(vec![ContentBlock::json(&result)?]))
+    }
 }
 
 #[tool_handler]
@@ -427,7 +498,10 @@ impl ServerHandler for SessionsMcpServer {
              unique prefix to a resume command or a staged copy), session_grep (plain case-insensitive \
              substring search within one session's transcript, role-labeled excerpts with context), \
              session_read (paged role-labeled transcript messages over the same index space grep reports, \
-             for reading around a hit). grep and read work on live and staged (archived) sessions."
+             for reading around a hit), session_efficiency (Rust-computed efficiency/behavior signals for a \
+             session: cache-reuse, tokens/cost per session and turn, compaction, turn-duration percentiles, \
+             tool-error rate, interrupts, cost by workflow, aggregate + per-subagent breakdown + flags). grep \
+             and read work on live and staged (archived) sessions."
                 .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();

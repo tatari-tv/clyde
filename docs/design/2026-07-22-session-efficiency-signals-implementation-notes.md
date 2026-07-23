@@ -716,3 +716,86 @@ the parent orchestrator's to resolve at finalization.
 - The pre-existing open question (design doc still UNTRACKED in git) is unchanged;
   this phase did NOT commit the design doc, per the phase boundary -- still the
   parent's to resolve at finalization.
+
+## Phase 7: MCP tool
+
+### Design decisions
+
+- **`session_efficiency` reads the PERSISTED `efficiency_json` blob; it does NOT
+  recompute via the pipeline.** This is forced, not a preference: the design's
+  dependency direction is `efficiency -> sessions` (Phase 6), so `sessions`
+  (where `mcp.rs` lives) CANNOT depend on the `efficiency` crate -- calling the
+  Phase 2-5 pipeline from the MCP handler would be a dependency cycle. The tool
+  therefore mirrors the export contract exactly: it pulls the stored blob back
+  out as an opaque `serde_json::Value` (shape owned by the `efficiency` crate)
+  and passes it through verbatim. New DB read `Db::get_efficiency_json`
+  (`sessions/src/db.rs`, the READ half of `set_efficiency_many`) returns the raw
+  `efficiency_json` TEXT (`NULL` column or absent row -> `None`).
+- **Mirrors `session_read` precisely** (`sessions/src/mcp.rs`): same dispatch-match
+  entry (`SessionsMcpServer::dispatch`), same `#[tool]` handler shape, same
+  `block_in_place_compat` + `self.db.lock()` + `Self::resolve_record` id/prefix
+  resolution (so unknown-id and ambiguous-prefix are `invalid_params`, byte-for-byte
+  the sibling behavior), same `CallToolResult::success(vec![ContentBlock::json(..)])`
+  return. Request type reuses `SessionRef` (the id-only request `session_open`
+  already reuses -- efficiency takes only an id, exactly like `session_open`).
+- **Response cap reuses `session_read`'s cap verbatim.** New
+  `tools::EFFICIENCY_RESPONSE_MAX_CHARS` is DEFINED AS `READ_RESPONSE_MAX_CHARS`
+  (`pub const EFFICIENCY_RESPONSE_MAX_CHARS: usize = READ_RESPONSE_MAX_CHARS;`),
+  so the two read-side tools share ONE tool-result budget and cannot drift
+  (siblings behave identically; one definition kills the class). The cap-enforcement
+  test names both constants and asserts their equality.
+- **`EfficiencyResult` is a `tag = "state"` union** mirroring
+  `OpenResult`/`GrepResult`/`ReadResult`: `Computed { session-id, efficiency }`
+  (opaque blob within cap), `Oversized { session-id, chars, cap }` (blob exceeds
+  the cap -> WITHHELD, size + cap reported), `NotComputed { record }` (efficiency
+  NULL -> the `session_read`-style `Unavailable` analog, boxed record, no
+  `efficiency` key).
+- **Fail-loud on a corrupt blob** (`session_efficiency` handler): a non-JSON
+  `efficiency_json` surfaces as a server-fault `internal_error`
+  ("unparseable efficiency_json blob: ..."), never a silent `null` -- the exact
+  fail-closed posture `build_export_record` (`db/query.rs`) takes on the same column.
+- **Function-level debug logging**: the handler logs entry (`id=`), and a DEBUG
+  outcome per branch (not-computed / oversized-with-`warn!` / computed with char
+  count); `Db::get_efficiency_json` logs entry + `present=` outcome.
+- **`get_info` instructions updated** to list `session_efficiency` alongside the
+  other tools, so the served tool description stays in sync with the registry.
+
+### Deviations
+
+- **Cap semantics differ from `session_read`'s: withhold, not truncate.**
+  `session_read` cuts its message window short and returns partial data with
+  `truncated: true`. A nested JSON document cannot be cut mid-structure and stay
+  valid, so an over-cap efficiency blob is WITHHELD entirely (`Oversized` state,
+  reporting `chars`/`cap`) and the caller is pointed at `clyde efficiency session
+  <id>`. Same cap CONSTANT and same "stay within the tool-result budget" effect,
+  correct seam for an atomic-document payload.
+- **Data source is the persisted blob, not a fresh compute.** `session_read`
+  reads the on-disk transcript fresh each call; `session_efficiency` reads the
+  persisted catalog annotation (see Design decisions -- the dependency direction
+  forbids computing in `sessions`). Consequence: a session not yet reindexed
+  returns `not-computed` (the honest state) rather than an on-the-fly result;
+  `clyde session reindex` populates it. Same effect the doc intends ("returns
+  signals for a known session id"), correct seam given Phase 6's persistence and
+  the `efficiency -> sessions` dep direction.
+
+### Tradeoffs
+
+- **Reused `SessionRef` for the request rather than a bespoke
+  `SessionEfficiencyRequest`.** `session_read`/`session_grep` have their own request
+  types because they carry extra params (offset/limit, query/context); efficiency
+  takes only an id, exactly like `session_open`, which already reuses `SessionRef`.
+  Reusing it keeps the id-only tools symmetric; the cost is the tool's input schema
+  carries `SessionRef`'s generic "id or unique prefix" description rather than an
+  efficiency-specific one (acceptable -- the resolution semantics ARE identical).
+- **`Oversized` withholds instead of paging.** A paged/summarized large-blob path
+  was rejected as scope the design does not name (Phase 7 is "mirror `session_read`
+  incl. its cap", not "add efficiency pagination"). Withhold-and-redirect is the
+  minimal fail-loud honoring of the shared cap; a pagination surface can follow if
+  a real over-cap blob becomes an observed problem ("make it be a problem first").
+
+### Open questions
+
+None. The one genuine ambiguity (read persisted vs. recompute) was resolved by the
+code, not judgment: `sessions` cannot depend on `efficiency` (Phase 6 dep direction),
+so recompute-in-`sessions` is impossible and reading the persisted blob is forced.
+Cross-repo / system-mutating bullets: none in Phase 7 (clyde-only).

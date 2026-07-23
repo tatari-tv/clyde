@@ -7,7 +7,7 @@ use serde_json::json;
 use session::ParsedSession;
 
 use super::*;
-use crate::db::{Db, EnrichSuccess};
+use crate::db::{Db, EfficiencyWrite, EnrichSuccess};
 
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
@@ -838,6 +838,227 @@ async fn session_read_ambiguous_prefix_is_invalid() {
         .await
         .expect_err("ambiguous prefix must be invalid_params");
     assert!(err.message.contains("is ambiguous"), "got: {}", err.message);
+}
+
+// --- Phase 7 (efficiency): session_efficiency ---
+
+/// Seed a session's persisted `efficiency_json` (schema v6) with an arbitrary valid-JSON blob so the
+/// `session_efficiency` tool has something to read back. Mirrors the real write path
+/// (`Db::set_efficiency_many`) exactly.
+fn set_efficiency(db: &Db, session_id: &str, efficiency_json: &str) {
+    let written = db
+        .set_efficiency_many(&[EfficiencyWrite {
+            session_id,
+            efficiency_json,
+            cache_read_share: Some(0.42),
+            tool_errors: 0,
+            cost_usd: 1.23,
+        }])
+        .unwrap();
+    assert_eq!(written, 1, "efficiency write must update exactly the seeded row");
+}
+
+/// Success criterion (registered + listed): the tool_router (the same registry the MCP handler
+/// serves `list_tools` from) carries a `session_efficiency` route and lists it by name.
+#[test]
+fn session_efficiency_is_registered_and_listed() {
+    let router = SessionsMcpServer::tool_router();
+    assert!(
+        router.has_route("session_efficiency"),
+        "session_efficiency must be a registered route"
+    );
+    let names: Vec<String> = router.list_all().into_iter().map(|t| t.name.to_string()).collect();
+    assert!(
+        names.iter().any(|n| n == "session_efficiency"),
+        "session_efficiency must appear in the listed tools: {names:?}"
+    );
+}
+
+/// Success criterion (returns signals for a known id): a session with a persisted efficiency blob
+/// reads back as state `computed` with the nested signals passed through verbatim.
+#[tokio::test]
+async fn session_efficiency_returns_signals_for_known_id() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl", "marquee", "x"), "desk")
+        .unwrap();
+    // A plausible (opaque, passed-through) SessionEfficiency shape — the tool never interprets it.
+    let blob = json!({
+        "session-id": UUID_A,
+        "aggregate": { "raw": { "input-tokens": 100, "tool-errors": 2 }, "cache-read-share": 0.42 },
+        "subagents": [],
+        "flags": [],
+    })
+    .to_string();
+    set_efficiency(&db, UUID_A, &blob);
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("session_efficiency", json!({"id": UUID_A}))
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true));
+    let v = first_content_as_json(&result);
+    assert_eq!(v["state"], "computed", "{v}");
+    assert_eq!(v["session-id"], UUID_A);
+    // The opaque blob is passed through verbatim (its own kebab-case keys, untouched).
+    assert_eq!(v["efficiency"]["aggregate"]["cache-read-share"], 0.42, "{v}");
+    assert_eq!(v["efficiency"]["aggregate"]["raw"]["tool-errors"], 2, "{v}");
+}
+
+/// Success criterion (returns signals via a UNIQUE PREFIX, like session_read/open): resolving by a
+/// prefix returns the same computed signals.
+#[tokio::test]
+async fn session_efficiency_resolves_by_unique_prefix() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl", "marquee", "x"), "desk")
+        .unwrap();
+    set_efficiency(
+        &db,
+        UUID_A,
+        &json!({"aggregate": {"cache-read-share": 0.9}}).to_string(),
+    );
+    let server = SessionsMcpServer::new(db);
+
+    // UUID_A starts "9d4c..."; a short unique prefix must resolve to it.
+    let result = server
+        .dispatch("session_efficiency", json!({"id": "9d4c"}))
+        .await
+        .expect("dispatch");
+    let v = first_content_as_json(&result);
+    assert_eq!(v["state"], "computed", "{v}");
+    assert_eq!(v["session-id"], UUID_A);
+}
+
+/// Success criterion (response cap): the efficiency response respects the SAME cap session_read
+/// enforces — `EFFICIENCY_RESPONSE_MAX_CHARS` is defined AS `READ_RESPONSE_MAX_CHARS`, and a blob
+/// larger than that cap is WITHHELD (state `oversized`) rather than dumped over the tool-result
+/// budget. Naming both constants here pins that the two read tools share one cap and cannot diverge.
+#[tokio::test]
+async fn session_efficiency_enforces_the_same_response_cap_as_session_read() {
+    // The efficiency cap IS session_read's response cap (one definition, siblings behave identically).
+    assert_eq!(
+        tools::EFFICIENCY_RESPONSE_MAX_CHARS,
+        tools::READ_RESPONSE_MAX_CHARS,
+        "session_efficiency must reuse session_read's READ_RESPONSE_MAX_CHARS cap verbatim"
+    );
+
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl", "marquee", "x"), "desk")
+        .unwrap();
+    // A valid JSON blob whose serialized length exceeds the cap by a wide margin.
+    let big = "a".repeat(tools::EFFICIENCY_RESPONSE_MAX_CHARS + 50);
+    let blob = json!({ "aggregate": big }).to_string();
+    assert!(
+        blob.chars().count() > tools::EFFICIENCY_RESPONSE_MAX_CHARS,
+        "fixture blob must exceed the cap to exercise the withholding path"
+    );
+    set_efficiency(&db, UUID_A, &blob);
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("session_efficiency", json!({"id": UUID_A}))
+        .await
+        .expect("dispatch");
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "over-cap is a SUCCESS payload, not an error"
+    );
+    let v = first_content_as_json(&result);
+    assert_eq!(v["state"], "oversized", "an over-cap blob must be withheld: {v}");
+    assert_eq!(v["session-id"], UUID_A);
+    assert_eq!(
+        v["cap"],
+        tools::READ_RESPONSE_MAX_CHARS as u64,
+        "the reported cap must be session_read's READ_RESPONSE_MAX_CHARS: {v}"
+    );
+    assert_eq!(
+        v["chars"],
+        blob.chars().count() as u64,
+        "the reported size must be the withheld blob's char length: {v}"
+    );
+    assert!(
+        v["chars"].as_u64().unwrap() > v["cap"].as_u64().unwrap(),
+        "the withheld blob must exceed the cap: {v}"
+    );
+    assert!(
+        v.get("efficiency").is_none(),
+        "an oversized payload must WITHHOLD the blob (no efficiency key): {v}"
+    );
+}
+
+/// A session with no computed efficiency yet (`efficiency_json` NULL) returns a SUCCESS
+/// `not-computed` payload carrying the record and, deliberately, NO `efficiency` key.
+#[tokio::test]
+async fn session_efficiency_not_computed_when_efficiency_json_null() {
+    let db = Db::open_memory().unwrap();
+    // Upsert but never write efficiency: efficiency_json stays NULL.
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl", "marquee", "x"), "desk")
+        .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let result = server
+        .dispatch("session_efficiency", json!({"id": UUID_A}))
+        .await
+        .expect("dispatch");
+    assert_ne!(result.is_error, Some(true));
+    let v = first_content_as_json(&result);
+    assert_eq!(v["state"], "not-computed", "{v}");
+    assert_eq!(v["record"]["session-id"], UUID_A);
+    assert!(
+        v.get("efficiency").is_none(),
+        "a not-computed payload must carry NO efficiency key: {v}"
+    );
+}
+
+/// Unknown id is a caller error (invalid_params), identical to session_read/grep/open.
+#[tokio::test]
+async fn session_efficiency_unknown_id_is_invalid() {
+    let db = Db::open_memory().unwrap();
+    let server = SessionsMcpServer::new(db);
+    let err = server
+        .dispatch("session_efficiency", json!({"id": "nope"}))
+        .await
+        .expect_err("unknown id must be invalid_params");
+    assert!(err.message.contains("no session matches"), "got: {}", err.message);
+}
+
+/// An ambiguous prefix is a caller error (invalid_params), identical to the sibling read tools.
+#[tokio::test]
+async fn session_efficiency_ambiguous_prefix_is_invalid() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_DEAD_1, "/tmp/a.jsonl", "marquee", "x"), "desk")
+        .unwrap();
+    db.upsert_session(&parsed(UUID_DEAD_2, "/tmp/other.jsonl", "loopr", "y"), "desk")
+        .unwrap();
+    let server = SessionsMcpServer::new(db);
+
+    let err = server
+        .dispatch("session_efficiency", json!({"id": "deadbeef"}))
+        .await
+        .expect_err("ambiguous prefix must be invalid_params");
+    assert!(err.message.contains("is ambiguous"), "got: {}", err.message);
+}
+
+/// A corrupt (non-JSON) persisted blob fails LOUDLY (server-fault error), never a silent null —
+/// mirrors the export contract's fail-closed parse of `efficiency_json`.
+#[tokio::test]
+async fn session_efficiency_corrupt_blob_errors_loudly() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl", "marquee", "x"), "desk")
+        .unwrap();
+    set_efficiency(&db, UUID_A, "{ this is not valid json");
+    let server = SessionsMcpServer::new(db);
+
+    let err = server
+        .dispatch("session_efficiency", json!({"id": UUID_A}))
+        .await
+        .expect_err("a corrupt efficiency blob must surface as an error, not a silent null");
+    assert!(
+        err.message.contains("unparseable efficiency_json"),
+        "got: {}",
+        err.message
+    );
 }
 
 #[tokio::test]

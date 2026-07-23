@@ -686,6 +686,32 @@ impl Db {
         Ok(rec)
     }
 
+    /// The persisted `efficiency_json` blob (schema v6) for one session, or `None` when the row
+    /// carries no computed efficiency yet (`efficiency_json` NULL) or the session id is absent.
+    ///
+    /// This is the READ half of the v6 annotation `set_efficiency_many` writes: the `session_efficiency`
+    /// MCP tool (and any other read-side consumer in `sessions`, which — per the design's dependency
+    /// direction `efficiency -> sessions` — cannot name the `efficiency` crate's types) pulls the stored
+    /// blob back out as an opaque string, exactly as the export contract does. The caller parses it into
+    /// a `serde_json::Value`, failing loudly on a corrupt blob.
+    pub fn get_efficiency_json(&self, session_id: &str) -> Result<Option<String>> {
+        debug!("Db::get_efficiency_json: session_id={session_id}");
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT efficiency_json FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        debug!(
+            "Db::get_efficiency_json: session_id={session_id} present={}",
+            json.is_some()
+        );
+        Ok(json)
+    }
+
     /// Resolve a session id from an exact id or a unique prefix (fuzzy `open`).
     pub fn resolve_id(&self, needle: &str) -> Result<Vec<String>> {
         let like = format!("{needle}%");
