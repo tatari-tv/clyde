@@ -65,6 +65,50 @@ fn with_body_fixture_pins_the_contract() {
     assert_fixture_round_trips("with-body.json");
 }
 
+/// Schema v6: a record carrying a POPULATED `efficiency` block round-trips losslessly through the
+/// contract types (the block is an opaque `serde_json::Value` the `efficiency` crate owns, so a
+/// deserialize->reserialize must reproduce the nested aggregate/subagents/flags shape byte-for-shape).
+#[test]
+fn with_efficiency_fixture_pins_the_contract() {
+    assert_fixture_round_trips("with-efficiency.json");
+}
+
+/// Schema v6, structural half: the populated `efficiency` block is present (not `null`) and carries
+/// the nested `SessionEfficiency` top-level keys. BITES: emit `efficiency` as absent/`null` for an
+/// annotated row (e.g. drop the column from the export query) and `efficiency.is_some()` fails; drop a
+/// nested key from the fixture and the key-set assertion fails.
+#[test]
+fn with_efficiency_block_carries_the_nested_session_efficiency_shape() {
+    let text = std::fs::read_to_string(fixture_dir().join("with-efficiency.json")).expect("read with-efficiency.json");
+    let env: ExportEnvelope = serde_json::from_str(&text).expect("with-efficiency.json deserializes");
+    let eff = env.sessions[0]
+        .efficiency
+        .as_ref()
+        .expect("the annotated record must carry a non-null efficiency block");
+    let keys: BTreeSet<&str> = eff
+        .as_object()
+        .expect("efficiency is a JSON object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let expected: BTreeSet<&str> = ["session-id", "aggregate", "subagents", "flags"].into_iter().collect();
+    assert_eq!(
+        keys, expected,
+        "efficiency block must carry the nested SessionEfficiency shape (session-id/aggregate/subagents/flags)"
+    );
+}
+
+/// Schema v6: `EXPORT_SCHEMA_VERSION` stays 1 — the efficiency block is ADDITIVE within the frozen
+/// envelope, not a breaking change (design: keep the version at 1). BITES: bump it to 2 and this fails.
+#[test]
+fn export_schema_version_stays_one_after_efficiency_block() {
+    assert_eq!(
+        sessions::EXPORT_SCHEMA_VERSION,
+        1,
+        "the additive efficiency block must NOT bump the export contract version"
+    );
+}
+
 /// The four `enrich-status` non-null values plus `null` are contract; each must deserialize. This is
 /// the structural half of "removing an enrich-status value breaks a named test" — the value set is
 /// exercised as strings the contract type accepts.

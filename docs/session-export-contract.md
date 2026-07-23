@@ -166,6 +166,50 @@ renaming or removing one of the five values above is a breaking, major-version c
 | `staged-path` | string or null | Path to a durable staged copy of the transcript, if one was made before the live transcript could be reaped. Null if the session was never staged. |
 | `archived` | boolean | Whether this session has been TTL-reaped from the live catalog's normal retention window. Archived sessions are excluded from bulk results unless `--include-archived` is passed. |
 
+### Efficiency block
+
+| Field | Type | Meaning |
+|---|---|---|
+| `efficiency` | object or null | The full nested session efficiency signals (cache-reuse ratios, token/cost totals, tool-error counts, turn-duration percentiles, per-subagent breakdown, and any scored threshold flags), or `null` when the session has no computed efficiency yet. Always present as a key (emitted as `null` when absent), so a consumer never has to infer the field. |
+
+`efficiency` is `null` for a session that has not been through the efficiency annotation pass yet:
+a freshly-indexed session before the next reindex, an archived/TTL-reaped session (no transcript to
+compute from), or a session whose transcript just grew and awaits recompute. When non-null it is the
+`SessionEfficiency` object clyde computes and stores; its nested shape (all kebab-case) is:
+
+```json
+{
+  "session-id": "…",
+  "aggregate": {
+    "raw": { "input-tokens": 0, "output-tokens": 0, "cache-read-tokens": 0,
+             "cache-5m-write-tokens": 0, "cache-1h-write-tokens": 0, "cost-usd": 0.0,
+             "turns": 0, "turn-durations-ms": [], "compactions": [],
+             "tool-calls": 0, "tool-errors": 0, "bash-command-failures": 0,
+             "interrupts-structured": 0, "interrupts-text": 0,
+             "web-search-requests": 0, "web-fetch-requests": 0,
+             "effort-high": 0, "effort-xhigh": 0,
+             "model-mix": {}, "by-skill": {}, "by-mcp-tool": {} },
+    "cache-read-share": null, "cache-1h-write-fraction": null,
+    "tokens-per-turn": null, "cost-per-turn-usd": null, "tool-error-rate": null,
+    "turn-ms-p50": null, "turn-ms-p90": null, "turn-ms-max": null
+  },
+  "subagents": [ { "agent-id": "…", "agent-type": "…", "signals": { "…": "same shape as aggregate" } } ],
+  "flags": [ { "kind": "low-cache-read-share", "observed": 0.0, "floor": 0.6 } ]
+}
+```
+
+The `aggregate` is recomputed from the union of the parent transcript and every subagent's raw
+counters (ratios are ratios-of-sums, percentiles recomputed over the unioned sample), never
+field-summed from the sub-scope derived metrics. Each `flags` element is internally tagged by `kind`
+(`low-cache-read-share` | `high-tool-error-rate` | `auto-compaction`) and carries the observed value
+plus the threshold it crossed. Derived ratio fields are `null` (never `NaN`) when their denominator
+is zero.
+
+The nested shape is OWNED by clyde's `efficiency` computation, not frozen field-by-field by this
+contract: within `schema-version` 1 a new signal may be ADDED inside `efficiency` (the additive,
+forward-compatible-envelope rule), so a consumer must tolerate unknown keys inside the block. The
+block's PRESENCE (the `efficiency` key itself) and `null`-when-absent behavior are the stable part.
+
 ### Body (only with `--with-body`)
 
 These three fields are present together, or not at all: a bulk metadata record (no `--with-body`)
@@ -215,6 +259,13 @@ database schema. The promise:
   shrink or rename under it.
 - There is no minor/patch component: additive changes do not bump the number at all; only breaking
   changes do.
+
+The `efficiency` block (added alongside clyde's v6 internal DB schema) is exactly such an additive
+change: it did NOT bump `schema-version`, which stays `1`. A `schema-version: 1` consumer written
+before the block existed keeps working (it ignores the new `efficiency` key); a consumer that reads
+it must treat the block's inner shape as forward-compatible (new nested signals may be added within
+v1). Note the two "schema versions" remain independent: clyde's on-disk DB schema advanced to v6,
+while this WIRE contract stayed at v1.
 
 ## Example: reading the contract without touching internals
 

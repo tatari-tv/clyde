@@ -1,0 +1,31 @@
+[package]
+name = "efficiency"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Session efficiency & behavior signals mined from Claude Code JSONL session logs"
+
+[lib]
+name = "efficiency"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+clap = { workspace = true, features = ["derive"] }
+claude-pricing = { version = "2.0.0", path = "../pricing" }
+common = { path = "../common" }
+eyre = { workspace = true }
+log = { workspace = true }
+rayon.workspace = true
+regex = "1.13.1"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_yaml.workspace = true
+sessions = { path = "../sessions" }
+
+[dev-dependencies]
+session = { path = "../session" }
+tempfile.workspace = true

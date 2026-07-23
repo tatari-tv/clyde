@@ -1,0 +1,118 @@
+{
+  "schema-version": 1,
+  "generated-at": "2026-07-17T00:00:00+00:00",
+  "host": "host-01",
+  "cursor": 478,
+  "sessions": [
+    {
+      "session-id": "00000000-0000-4000-8000-000000000001",
+      "host": "host-01",
+      "scope": "work",
+      "cwd": "/home/alice/repos/example-org/widget",
+      "project-dir": "/home/alice/.claude/projects/-home-alice-repos-example-org-widget",
+      "repo": "example-org/widget",
+      "git-branch": "main",
+      "created": "2026-06-27T21:39:42.310+00:00",
+      "modified": "2026-06-28T16:38:05.788399466+00:00",
+      "updated-at": 478,
+      "duration-secs": 68303,
+      "dormant": true,
+      "title": "Phase 1 complete: harness and vendor vertical",
+      "first-prompt": "Another agent sent a message:\n<teammate-message teammate_id=\"phase1\" ...",
+      "n-msgs": 2041,
+      "model": "example-model-large",
+      "summary": "Orchestrated a phased 5-phase Rust port of an API client CLI ... ready for merge to the next release tag post-merge per gated release flow.",
+      "tags": ["rust", "cli", "port", "api-client", "phased-implementation"],
+      "tags-source": "enrich",
+      "enriched-at": "2026-07-06T10:04:07.075906295+00:00",
+      "enrich-status": "ok",
+      "enrich-model": "example-model-mini",
+      "prompt-version": 1,
+      "redaction-count": 4,
+      "transcript-path": "/home/alice/.claude/projects/-home-alice-repos-example-org-widget/00000000-0000-4000-8000-000000000001.jsonl",
+      "staged-path": null,
+      "archived": false,
+      "efficiency": {
+        "session-id": "00000000-0000-4000-8000-000000000001",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 12000,
+            "output-tokens": 8000,
+            "cache-read-tokens": 300000,
+            "cache-5m-write-tokens": 40000,
+            "cache-1h-write-tokens": 10000,
+            "cost-usd": 1.2345,
+            "turns": 42,
+            "turn-durations-ms": [1200, 4500, 44268, 90000],
+            "compactions": [
+              { "trigger": "auto", "pre-tokens": 180000, "post-tokens": 25000, "duration-ms": 15230 }
+            ],
+            "tool-calls": 120,
+            "tool-errors": 7,
+            "bash-command-failures": 3,
+            "interrupts-structured": 0,
+            "interrupts-text": 1,
+            "web-search-requests": 2,
+            "web-fetch-requests": 1,
+            "effort-high": 5,
+            "effort-xhigh": 1,
+            "model-mix": { "example-model-large": 40, "example-model-mini": 2 },
+            "by-skill": { "design-review": { "tokens": 50000, "cost-usd": 0.4 } },
+            "by-mcp-tool": { "oracle__query": { "tokens": 12000, "cost-usd": 0.1 } }
+          },
+          "cache-read-share": 0.83,
+          "cache-1h-write-fraction": 0.2,
+          "tokens-per-turn": 8095.24,
+          "cost-per-turn-usd": 0.0294,
+          "tool-error-rate": 0.0583,
+          "turn-ms-p50": 4500,
+          "turn-ms-p90": 90000,
+          "turn-ms-max": 90000
+        },
+        "subagents": [
+          {
+            "agent-id": "aphase6-cd19f6aa",
+            "agent-type": "phase-implementer",
+            "signals": {
+              "raw": {
+                "input-tokens": 3000,
+                "output-tokens": 2000,
+                "cache-read-tokens": 80000,
+                "cache-5m-write-tokens": 10000,
+                "cache-1h-write-tokens": 2000,
+                "cost-usd": 0.3,
+                "turns": 10,
+                "turn-durations-ms": [1200, 4500],
+                "compactions": [],
+                "tool-calls": 30,
+                "tool-errors": 2,
+                "bash-command-failures": 1,
+                "interrupts-structured": 0,
+                "interrupts-text": 0,
+                "web-search-requests": 0,
+                "web-fetch-requests": 0,
+                "effort-high": 1,
+                "effort-xhigh": 0,
+                "model-mix": { "example-model-large": 10 },
+                "by-skill": {},
+                "by-mcp-tool": {}
+              },
+              "cache-read-share": 0.84,
+              "cache-1h-write-fraction": 0.1667,
+              "tokens-per-turn": 9700.0,
+              "cost-per-turn-usd": 0.03,
+              "tool-error-rate": 0.0667,
+              "turn-ms-p50": 4500,
+              "turn-ms-p90": 4500,
+              "turn-ms-max": 4500
+            }
+          }
+        ],
+        "flags": [
+          { "kind": "high-tool-error-rate", "observed": 0.0583, "ceiling": 0.05 },
+          { "kind": "auto-compaction", "count": 1 }
+        ]
+      }
+    }
+  ]
+}

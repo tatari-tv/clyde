@@ -192,6 +192,11 @@ fn run(cli: Cli) -> Result<()> {
         Command::Report(args) => dispatch_tool(report::run(args, globals), debug),
         Command::Cost(args) => dispatch_tool(cost::run(args, globals), debug),
         Command::Permit(args) => dispatch_tool(permit::run(args, globals), debug),
+        // `efficiency` is clyde-native (not an absorbed legacy shim): it owns no logger of its
+        // own and relies on clyde's own logger, already installed above. `dispatch_tool` is still
+        // the right shape here since `efficiency::run` returns `Result<i32>` like the absorbed
+        // tools, not because it needs the same own-logging treatment.
+        Command::Efficiency(args) => dispatch_tool(efficiency::run(args, globals), debug),
         // clyde-native migration/health commands.
         Command::Bootstrap(args) => bootstrap::run(&args),
         Command::Doctor => std::process::exit(doctor::run()?),
@@ -646,8 +651,19 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
         .projects_dir
         .or_else(session::paths::claude_projects_dir)
         .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects (set HOME)"))?;
+    // Load and validate clyde.yml BEFORE the content reindex mutates the catalog: an invalid
+    // `efficiency:` section (a typo'd key, an out-of-range threshold) must fail closed, before any
+    // write happens, not after the catalog has already been rewritten. Config supplies the scoring
+    // thresholds for the efficiency pass below.
+    let cfg = common::config::load().context("failed to load clyde config for the efficiency pass")?;
     let stats = sessions::reindex(db, &projects_dir)?;
-    print_reindex(&stats);
+    // Phase 6: after the content reindex, annotate every un-annotated session (`efficiency_json
+    // IS NULL`) with its computed efficiency signals. This writes a derived read-side annotation and
+    // deliberately does NOT advance the export `updated_at` cursor. Wired here (the explicit reindex),
+    // not into `lazy_reindex`, so a query's cheap incremental refresh never pays the transcript
+    // re-read the efficiency compute costs.
+    let eff = efficiency::reindex_efficiency(db, &projects_dir, cfg.efficiency())?;
+    print_reindex(&stats, &eff);
     Ok(())
 }
 
@@ -855,18 +871,29 @@ fn msgs_column_width(counts: impl Iterator<Item = i64>) -> usize {
     counts.map(|n| n.to_string().len()).max().unwrap_or(1)
 }
 
-fn print_reindex(stats: &ReindexStats) {
+/// Report the content-reindex AND the Phase 6 efficiency-annotation pass together. TTY -> two human
+/// summary lines; piped -> ONE combined JSON object (`{"reindex": ..., "efficiency": ...}`). Emitting
+/// a single object matters: two separate `print_json` calls would concatenate two top-level JSON
+/// documents to stdout, which is not valid JSON a consumer can parse in one read.
+fn print_reindex(reindex: &ReindexStats, eff: &efficiency::PersistStats) {
     if std::io::stdout().is_terminal() {
         println!(
             "{} scanned {}, upserted {}, skipped {}, archived {}",
             "✓".green(),
-            stats.scanned,
-            stats.upserted,
-            stats.skipped_unchanged,
-            stats.archived,
+            reindex.scanned,
+            reindex.upserted,
+            reindex.skipped_unchanged,
+            reindex.archived,
+        );
+        println!(
+            "{} efficiency: candidates {}, computed {}, written {}",
+            "✓".green(),
+            eff.candidates,
+            eff.computed,
+            eff.written,
         );
     } else {
-        print_json(stats);
+        print_json(&serde_json::json!({ "reindex": reindex, "efficiency": eff }));
     }
 }
 

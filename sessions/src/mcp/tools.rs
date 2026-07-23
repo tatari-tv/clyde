@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::model::SessionRecord;
 
@@ -238,4 +239,50 @@ pub enum ReadResult {
     /// stay size-balanced (the `Read` variant is small); `Box<SessionRecord>` serializes
     /// transparently, so the wire shape is unchanged.
     Unavailable { record: Box<SessionRecord> },
+}
+
+/// Hard cap on the total serialized efficiency blob `session_efficiency` returns, in chars.
+///
+/// MIRRORS `session_read`'s total-response cap ([`READ_RESPONSE_MAX_CHARS`]) exactly — the two
+/// read-side tools share ONE tool-result budget so they can never diverge (siblings behave
+/// identically; one definition kills the class). When the persisted blob would exceed this, the
+/// blob is WITHHELD (the [`EfficiencyResult::Oversized`] state) rather than truncated: unlike a
+/// message-text window, a nested JSON document cannot be cut mid-structure and stay valid, so the
+/// cap is enforced by pointing the caller at the full-detail CLI (`clyde efficiency session <id>`).
+pub const EFFICIENCY_RESPONSE_MAX_CHARS: usize = READ_RESPONSE_MAX_CHARS;
+
+/// The outcome of `session_efficiency`, modeled as an explicit tagged union (tag = `state`,
+/// mirroring [`OpenResult`]/[`GrepResult`]/[`ReadResult`]).
+///
+/// The signals are read back from the catalog's persisted `efficiency_json` (schema v6) rather than
+/// recomputed: the `sessions` crate cannot depend on the `efficiency` crate (the design's dependency
+/// direction is `efficiency -> sessions`), so — exactly like the export contract — it passes the
+/// blob through as an opaque [`Value`] whose nested shape is owned by the `efficiency` crate.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case", tag = "state")]
+pub enum EfficiencyResult {
+    /// Computed efficiency present in the catalog and within the response cap: the opaque nested
+    /// `SessionEfficiency` blob, passed through verbatim (kebab-case, `efficiency`-crate-owned).
+    Computed {
+        session_id: String,
+        /// The opaque `SessionEfficiency` document (aggregate + per-subagent breakdown + flags).
+        efficiency: Value,
+    },
+    /// Computed efficiency present but its serialized size exceeds [`EFFICIENCY_RESPONSE_MAX_CHARS`]
+    /// (the same cap `session_read` enforces): the blob is WITHHELD to stay within the tool-result
+    /// budget; the char size and the cap are reported so the caller falls back to
+    /// `clyde efficiency session <id>` for the full detail.
+    Oversized {
+        session_id: String,
+        /// Serialized char length of the withheld blob.
+        chars: usize,
+        /// The cap it exceeded ([`EFFICIENCY_RESPONSE_MAX_CHARS`]).
+        cap: usize,
+    },
+    /// No efficiency computed for this session yet (`efficiency_json` NULL): a freshly-indexed
+    /// session before the reindex pass, or an archived/reaped session with nothing on disk to
+    /// recompute from. The id is valid; run `clyde session reindex` to populate. Carries the record
+    /// and, deliberately, no `efficiency` key. The record is boxed so the enum's variants stay
+    /// size-balanced; `Box<SessionRecord>` serializes transparently, so the wire shape is unchanged.
+    NotComputed { record: Box<SessionRecord> },
 }

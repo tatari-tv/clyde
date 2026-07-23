@@ -83,7 +83,11 @@ pub const EXPORT_SCHEMA_VERSION: u32 = 1;
 /// pinning is enforced instead by the fixture round-trip contract test in `tests/export.rs`, which
 /// deserializes each golden fixture and asserts it re-serializes structurally identically -- that
 /// catches any rename, drop, or (within the frozen fixture set) addition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Eq` is intentionally NOT derived (dropped at schema v6): [`ExportRecord`] now carries the
+/// `efficiency` block (an opaque JSON value with `f64` leaves), and neither `serde_json::Value` nor
+/// `f64` is `Eq`. `PartialEq` (what the fixture round-trip test needs) is retained.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ExportEnvelope {
     /// Contract version ([`EXPORT_SCHEMA_VERSION`]).
@@ -108,7 +112,10 @@ pub struct ExportEnvelope {
 /// additions regardless. The flattened `Option<ExportBody>` deserializes to `None` when no body keys
 /// are present (metadata mode) and serializes to no body keys when `None`, so metadata records and
 /// body-bearing records round-trip cleanly through the one type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Eq` is intentionally NOT derived (schema v6): the `efficiency` block is an opaque JSON value with
+/// `f64` leaves, and neither `serde_json::Value` nor `f64` is `Eq`. `PartialEq` is retained.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ExportRecord {
     // identity
@@ -160,6 +167,22 @@ pub struct ExportRecord {
     pub transcript_path: String,
     pub staged_path: Option<String>,
     pub archived: bool,
+    // efficiency block (schema v6)
+    /// The full nested `SessionEfficiency` (aggregate + per-subagent breakdown + scored flags) as
+    /// computed by the `efficiency` crate and stored verbatim in the catalog's `efficiency_json`
+    /// column; `null` when the session has no computed efficiency yet (`efficiency_json` NULL — a
+    /// freshly-indexed session before the efficiency reindex pass, an archived/reaped session, or one
+    /// whose transcript just grew and awaits recompute).
+    ///
+    /// Carried as an opaque `serde_json::Value` on purpose: the nested shape is OWNED by the
+    /// `efficiency` crate (kebab-case), and this contract passes it through unchanged rather than
+    /// re-declaring it, so an efficiency-internal field addition rides the additive envelope with no
+    /// export-contract type change (the forward-compatible-envelope carve-out). Additive within
+    /// [`EXPORT_SCHEMA_VERSION`] 1 — always emitted (`null` when absent) so a consumer always sees the
+    /// key. The catalog's flat `cache_read_share`/`tool_errors`/`cost_usd` scalar columns exist for
+    /// server-side ranking only and are deliberately NOT re-emitted here (they are derivable from this
+    /// block, and a field derived from another must never be duplicated where it could diverge).
+    pub efficiency: Option<serde_json::Value>,
     /// The `--with-body` block: absent (all three keys omitted) in metadata mode; present (all three
     /// keys emitted) when a body was requested. Flattened so the keys sit at the record's top level.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]

@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "clyde"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "clap",
@@ -274,6 +274,7 @@ dependencies = [
  "common",
  "cost",
  "dirs",
+ "efficiency",
  "env_logger",
  "eyre",
  "gethostname",
@@ -339,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -405,7 +406,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cost"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "clap",
@@ -637,6 +638,26 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "efficiency"
+version = "0.11.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "claude-pricing",
+ "common",
+ "eyre",
+ "log",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "session",
+ "sessions",
+ "tempfile",
+]
 
 [[package]]
 name = "either"
@@ -1569,7 +1590,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permit"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1850,9 +1871,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.12.4"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1292b7759ae1cb9ec195452d1390a074f0cd8541ab7a5a8c31cd6db45d4a6ba"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -1862,9 +1883,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.14"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
+checksum = "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -1901,7 +1922,7 @@ dependencies = [
 
 [[package]]
 name = "report"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "clap",
@@ -2328,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -2343,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "sessions"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "common",

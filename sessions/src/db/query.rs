@@ -29,7 +29,7 @@ use crate::transcript::transcript_layout_parts;
 const EXPORT_COLS: &str = "s.session_id, s.host, s.cwd, s.project_dir, s.git_branch, s.created, \
      s.modified, s.updated_at, s.title, s.first_prompt, s.n_msgs, s.model, s.summary, s.tags, \
      s.tags_source, s.enriched_at, s.enrich_status, s.enrich_model, s.prompt_version, \
-     s.redaction_count, s.transcript_path, s.staged_path, s.archived";
+     s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.efficiency_json";
 
 impl Db {
     /// Bulk metadata export: the versioned envelope of [`ExportRecord`] for every row matching
@@ -247,6 +247,8 @@ struct ExportRaw {
     transcript_path: String,
     staged_path: Option<String>,
     archived: bool,
+    /// The full nested `SessionEfficiency` JSON blob (schema v6); `None` when un-annotated.
+    efficiency_json: Option<String>,
 }
 
 /// Map one row to [`ExportRaw`]. Index order mirrors [`EXPORT_COLS`] exactly.
@@ -275,6 +277,7 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
         transcript_path: row.get(20)?,
         staged_path: row.get(21)?,
         archived: row.get::<_, i64>(22)? != 0,
+        efficiency_json: row.get(23)?,
     })
 }
 
@@ -309,9 +312,24 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
     // treated as NOT dormant rather than silently "dormant".
     let dormant = modified_dt.map(|m| now - m > dormant_after).unwrap_or(false);
     let tags: Vec<String> = raw.tags.split_whitespace().map(str::to_string).collect();
+    // Parse the stored efficiency blob into an opaque JSON value (the `efficiency` crate owns the
+    // shape). Fail LOUDLY (fail closed) on a corrupt/non-JSON blob rather than silently emitting a
+    // `null` efficiency for an annotated row — a non-JSON value must never reach the wire. `NULL`
+    // (un-annotated) maps to `None`.
+    let efficiency = raw
+        .efficiency_json
+        .as_deref()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .with_context(|| format!("session {} has an unparseable efficiency_json blob", raw.session_id))?;
     trace!(
-        "db::build_export_record: session_id={} scope={} repo={:?} dormant={} duration_secs={}",
-        raw.session_id, scope, repo, dormant, duration_secs
+        "db::build_export_record: session_id={} scope={} repo={:?} dormant={} duration_secs={} efficiency={}",
+        raw.session_id,
+        scope,
+        repo,
+        dormant,
+        duration_secs,
+        efficiency.is_some()
     );
     Ok(ExportRecord {
         session_id: raw.session_id,
@@ -341,6 +359,7 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
         transcript_path: raw.transcript_path,
         staged_path: raw.staged_path,
         archived: raw.archived,
+        efficiency,
         body: None,
     })
 }

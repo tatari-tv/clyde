@@ -31,7 +31,8 @@
       "redaction-count": 0,
       "transcript-path": "/home/alice/.claude/projects/-home-alice/00000000-0000-4000-8000-000000000002.jsonl",
       "staged-path": "/home/alice/.local/share/clyde/staged/00000000-0000-4000-8000-000000000002",
-      "archived": true
+      "archived": true,
+      "efficiency": null
     }
   ]
 }
