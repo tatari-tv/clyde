@@ -467,6 +467,9 @@ Cross-repo / system-mutating bullets: none in Phase 3 (clyde-only).
   established pattern and did NOT sweep it into the Phase 4 commit. The parent
   orchestrator should decide whether the design doc gets committed (likely at
   finalization) -- flagging it so it does not stay orphaned. Not a code blocker.
+  **[Finalization update: RESOLVED. The design doc was committed with the feature
+  (Status flipped Approved -> Implemented); it is no longer untracked. This note
+  records the point-in-time state during Phase 4.]**
 
 ## Phase 5: Output surfaces (subcommand)
 
@@ -591,7 +594,8 @@ Cross-repo / system-mutating bullets: none in Phase 3 (clyde-only).
 None. `--path`/`--json` global-flag placement was a live clap parsing failure,
 not a judgment call -- resolved directly, documented above. The pre-existing
 open question (design doc untracked in git) is unchanged by this phase; still
-the parent orchestrator's to resolve at finalization.
+the parent orchestrator's to resolve at finalization. **[Finalization update:
+RESOLVED -- the design doc was committed with the feature.]**
 
 ## Phase 6: Catalog persistence + export contract
 
@@ -715,7 +719,8 @@ the parent orchestrator's to resolve at finalization.
   finalization checklist). Not a code blocker.
 - The pre-existing open question (design doc still UNTRACKED in git) is unchanged;
   this phase did NOT commit the design doc, per the phase boundary -- still the
-  parent's to resolve at finalization.
+  parent's to resolve at finalization. **[Finalization update: RESOLVED -- the
+  design doc was committed with the feature and is no longer untracked.]**
 
 ## Phase 7: MCP tool
 
@@ -899,4 +904,5 @@ a sibling `Narrator` port on the same client. Cross-repo / system-mutating bulle
 none in Phase 8 (clyde-only). The pre-existing open question (design doc still
 UNTRACKED in git through Phases 0-7) is unchanged; this phase did NOT commit or
 modify the design doc, per the phase boundary -- still the parent orchestrator's to
-resolve at finalization.
+resolve at finalization. **[Finalization update: RESOLVED -- the parent committed
+the design doc with the feature (Status -> Implemented); it is no longer untracked.]**

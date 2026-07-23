@@ -3,7 +3,6 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use regex::Regex;
 use serde_json::Value;
 
 use super::*;
@@ -120,28 +119,6 @@ fn assert_no_json_numbers(value: &Value, path: &str) {
     }
 }
 
-/// Extract every numeric token (`42`, `4.12`, `155`) from `text`.
-fn numeric_tokens(text: &str) -> Vec<String> {
-    let re = Regex::new(r"\d+(?:\.\d+)?").unwrap();
-    re.find_iter(text).map(|m| m.as_str().to_string()).collect()
-}
-
-/// The set of numeric tokens present verbatim anywhere in the input's fact strings.
-fn input_numbers(input: &NarrationInput) -> Vec<String> {
-    let json = serde_json::to_string(input).unwrap();
-    numeric_tokens(&json)
-}
-
-/// Numbers in `prose` that do NOT appear in the input's fact strings -- i.e. numbers the LLM
-/// invented. This is the verification the design's success criterion calls for.
-fn foreign_numbers(prose: &str, input: &NarrationInput) -> Vec<String> {
-    let present = input_numbers(input);
-    numeric_tokens(prose)
-        .into_iter()
-        .filter(|n| !present.contains(n))
-        .collect()
-}
-
 #[test]
 fn narration_input_carries_only_string_facts() {
     // The type-level guard, proven at runtime: no field of NarrationInput serializes as a number.
@@ -248,6 +225,21 @@ fn foreign_number_checker_bites_on_an_invented_figure() {
     let bad_reply = "Inefficient; you could realize projected savings of $99 by splitting it.";
     let foreign = foreign_numbers(bad_reply, &input);
     assert_eq!(foreign, vec!["99".to_string()]);
+}
+
+#[test]
+fn narrate_rejects_prose_that_invents_a_number() {
+    // The runtime half of the guard: a model reply carrying an invented "$99" is REJECTED, not
+    // returned. This is the production enforcement, not just the test-only checker above.
+    let eff = fixture_efficiency();
+    let input = narration_input(&eff);
+    let fake = FakeNarrator::new("Inefficient; projected savings of $99 if you split the session.");
+    let err = narrate(&fake, &input).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("99") && msg.contains("math"),
+        "rejection error must name the invented number and the contract: {msg}"
+    );
 }
 
 #[test]

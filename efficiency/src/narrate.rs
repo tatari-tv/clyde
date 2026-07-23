@@ -8,7 +8,8 @@
 //! raw ratio; `worst_signal: "auto-compacted twice, reclaiming 155k tokens"`, not token counts). The
 //! model has no raw operands to compute with -- its job is to SELECT and PHRASE, never to derive a
 //! rate, a cost-per-turn, or a "projected savings." The prompt's output contract additionally
-//! forbids introducing any numeric claim not present verbatim in the facts.
+//! forbids introducing any numeric claim not present verbatim in the facts, and [`narrate`] ENFORCES
+//! that at runtime: prose carrying a number absent from the facts is rejected, not returned.
 //!
 //! The LLM-client seam is the `sessions` enrichment path reused verbatim: [`narrate`] is generic
 //! over [`sessions::Narrator`] (the prose-completion sibling of the enrichment `Completer`,
@@ -17,8 +18,11 @@
 //! and adds no new LLM dependency. The `efficiency -> sessions` dependency direction (Phase 6) makes
 //! this reuse direct; no new integration is invented.
 
+use std::sync::OnceLock;
+
 use eyre::Result;
 use log::debug;
+use regex::Regex;
 use sessions::Narrator;
 
 use crate::fold::{EfficiencyFlag, SessionEfficiency};
@@ -80,7 +84,10 @@ pub struct NarrationInput {
 /// real `AnthropicClient` runs in production and tests inject a deterministic fake (no network).
 ///
 /// The LLM does ZERO math: it receives only `input`'s pre-formatted strings and is instructed to
-/// introduce no number absent from them. Returns the model's trimmed prose.
+/// introduce no number absent from them. The instruction is advisory, so this ENFORCES the contract
+/// at runtime: after the model replies, any numeric token in the prose that is not present verbatim
+/// in the input facts means the model invented a figure, and `narrate` rejects the prose with an
+/// error rather than returning it. Fail closed -- a poisoned narrative never escapes.
 pub fn narrate<N: Narrator>(narrator: &N, input: &NarrationInput) -> Result<String> {
     debug!(
         "narrate: session_id={} cache_read_share={} tokens={:?} cost={:?} turn_durations={:?} \
@@ -99,12 +106,47 @@ pub fn narrate<N: Narrator>(narrator: &N, input: &NarrationInput) -> Result<Stri
     );
     let user = format_facts(input);
     let prose = narrator.narrate(NARRATE_SYSTEM_PROMPT, &user)?;
+    let foreign = foreign_numbers(&prose, input);
+    if !foreign.is_empty() {
+        return Err(eyre::eyre!(
+            "narration introduced number(s) absent from the computed facts: {foreign:?} -- the \
+             LLM-does-no-math contract was violated; rejecting the prose for session {}",
+            input.session_id
+        ));
+    }
     debug!(
         "narrate: session_id={} produced prose_chars={}",
         input.session_id,
         prose.chars().count()
     );
     Ok(prose)
+}
+
+/// Every numeric token (`42`, `4.12`, `155`) in `text`.
+fn numeric_tokens(text: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\d+(?:\.\d+)?").expect("numeric-token pattern is a valid regex"))
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect()
+}
+
+/// The numeric tokens present verbatim anywhere in the input's pre-formatted fact strings. Serializing
+/// to JSON is a cheap way to scan every field at once; on the (impossible for an all-string type)
+/// serialize failure this yields no present numbers, so `foreign_numbers` fails closed.
+fn input_numbers(input: &NarrationInput) -> Vec<String> {
+    let json = serde_json::to_string(input).unwrap_or_default();
+    numeric_tokens(&json)
+}
+
+/// Numbers in `prose` that do NOT appear anywhere in `input`'s fact strings -- i.e. numbers the LLM
+/// invented. A non-empty result is the math-free-contract violation `narrate` rejects on.
+fn foreign_numbers(prose: &str, input: &NarrationInput) -> Vec<String> {
+    let present = input_numbers(input);
+    numeric_tokens(prose)
+        .into_iter()
+        .filter(|n| !present.contains(n))
+        .collect()
 }
 
 /// Format the pre-computed facts into the user message. Line-per-fact so the model sees each string

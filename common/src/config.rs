@@ -77,11 +77,11 @@ pub struct RenderConfig {
 pub struct EfficiencyConfig {
     /// `cache-read-share` below this fraction flags the session as cache-wasteful — but ONLY when
     /// the session is eligible (see the two gates below). Default `0.6`.
-    #[serde(default = "default_cache_read_share_floor")]
+    #[serde(default = "default_cache_read_share_floor", deserialize_with = "de_fraction")]
     cache_read_share_floor: f64,
     /// `tool-error rate` (`tool_errors / tool_calls`) above this fraction flags the session as
     /// error-prone. Default `0.05`.
-    #[serde(default = "default_tool_error_rate_ceiling")]
+    #[serde(default = "default_tool_error_rate_ceiling", deserialize_with = "de_fraction")]
     tool_error_rate_ceiling: f64,
     /// When `true`, ANY auto-compaction in the session raises a flag (a session that ran the context
     /// to the wall). Independent of the eligibility gates. Default `true`.
@@ -109,6 +109,23 @@ impl Default for EfficiencyConfig {
             minimum_turns: default_minimum_turns(),
         }
     }
+}
+
+/// Deserialize a threshold that must be a finite fraction in `0.0..=1.0`. `cache-read-share-floor`
+/// and `tool-error-rate-ceiling` are both compared against ratios that live in `[0, 1]`; a typo like
+/// `1.1` (flag nothing) or `-0.1` (flag everything) or a non-finite `.nan`/`.inf` would silently
+/// invert the scoring. Reject it loudly at parse time (fail closed) rather than quietly mis-scoring.
+fn de_fraction<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = f64::deserialize(deserializer)?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom(format!(
+            "must be a finite fraction in 0.0..=1.0, got {value}"
+        )));
+    }
+    Ok(value)
 }
 
 /// Serde default for `cache-read-share-floor`: below 60% cache reuse is the cache-waste line.

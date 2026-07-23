@@ -49,7 +49,7 @@ There is no way to look at a session (or a day, or the whole tree) and answer "w
 - New workspace lib crate `efficiency` (sibling to `cost`/`report`), clap-free, returns typed data. The `clyde` binary prints.
 - Discovery reuses `common::scan` (`find_session_files`, `filter_by_date_range`, `default_projects_dir`, subagent-fold via `SessionFileKind`).
 - Token totals reuse `claude_pricing::parse_jsonl_file` → `AssistantEntry.usage` (no pricing change).
-- The behavioral extractor copies the proven structure of `report/src/outcome.rs`: per-file `extract` inside the collect `par_iter`, `tool_use`→`tool_result` pairing keyed by `tool_use_id`, `is_error` gating, producing a `FileEfficiency` PER SCOPE (parent transcript + each subagent, keyed by `agentId`). `fold` builds the per-subagent breakdown and the recomputed aggregate (see Aggregation invariant). MANDATORY: copy the per-line `warn!`-and-skip guard (`outcome.rs:226-234`) so one malformed `compactMetadata`/`usage` line cannot panic the `par_iter` and fail the whole catalog refresh (house skip-and-log robustness contract).
+- The behavioral extractor copies the proven structure of `report/src/outcome.rs`: per-file `extract` inside the collect `par_iter`, `is_error` gating on `tool_result` blocks, producing a `FileEfficiency` PER SCOPE (parent transcript + each subagent, keyed by `agentId`). NOTE: unlike `outcome.rs`, tool-error classification needs NO `tool_use_id` pending map -- the errored `tool_result` block and the top-level `toolUseResult` string that carries the `"Error: Exit code N"` shape live on the SAME user record, so classification is per-record (confirmed in implementation; the keyed pairing `outcome.rs` uses is only to recover the tool name, which this extractor does not need). `fold` builds the per-subagent breakdown and the recomputed aggregate (see Aggregation invariant). MANDATORY: copy the per-line `warn!`-and-skip guard (`outcome.rs:226-234`) so one malformed `compactMetadata`/`usage` line cannot panic the `par_iter` and fail the whole catalog refresh (house skip-and-log robustness contract).
 - Non-pricing fields (`server_tool_use`, `service_tier`, `iterations`, `compactMetadata`, `turn_duration`, `is_error`, interrupts, attribution, `effort`) are parsed by the new crate's OWN raw serde structs. Never by extending `pricing`.
 
 ### Signals (full scope)
@@ -74,7 +74,7 @@ Behavioral:
 
 ### Architecture
 
-```
+```text
 efficiency/                     # new lib crate, clap-free
   src/lib.rs                    # run(args, Globals) -> typed EfficiencyReport
   src/cli.rs                    # EfficiencyArgs (derive Args, nests under clyde)
@@ -177,7 +177,8 @@ Small, independently-committable, otto-ci-green, deterministic-first. External b
 **Model:** sonnet (zero production code)
 - Harvest golden JSONL fixtures from live logs exercising every predicate: `is_error==true` (including an `"Error: Exit code N"` Bash failure and a non-Bash framework error); `toolUseResult.interrupted==true` + a text-marker interrupt; `compact_boundary` with `compactMetadata.{trigger,preTokens,postTokens,durationMs}`; `turn_duration` `durationMs`; a `usage` block with 5m/1h cache fields; a clean (all-zero) session for negative tests.
 - Document exact field paths. Lock the `tool_errors` predicate and the `bash_command_failures` subset shape into the fixtures.
-- **Success criteria:** fixture set covers all signal classes + a clean-session negative; a throwaway `jq` script asserts every documented path resolves; the `bash_command_failures` fixture is a strict subset of the `tool_errors` fixture (no double-count).
+- Provenance caveat (recorded during Phase 0): two positive values do NOT occur anywhere in the sampled live corpus -- `toolUseResult.interrupted==true` (39,358 occurrences of the field, all `false`) and `compactMetadata.trigger=="manual"` (every sampled compaction was `auto`). Their fixture records are SYNTHESIZED from the verified-real record shape with only that one value hand-set; every other fixture value is harvested. `fixtures/efficiency/README.md` documents which records are synthesized vs harvested.
+- **Success criteria:** fixture set covers all signal classes + a clean-session negative; a throwaway `jq` script asserts every documented path resolves; the `bash_command_failures` fixture is a strict subset of the `tool_errors` fixture (no double-count). (Fixtures for the two values absent from the corpus are synthesized from the real shape, per the provenance caveat above -- not overstated as harvested.)
 - **Blast radius:** none.
 
 #### Phase 1: Scaffold `efficiency` lib crate + umbrella wiring

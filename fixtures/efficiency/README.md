@@ -50,9 +50,9 @@ below by session id only -- no session content is quoted).
      ABSENT on the `tool_result` block (never `false` -- Claude Code omits the
      key entirely on success) and `toolUseResult` is the full success object.
      Counts toward NEITHER predicate.
-- Verified against (redacted, not quoted): `-home-saidler/0055fcaa-eca2-42c7-b8c4-d06cdb689da4.jsonl`
+- Verified against (redacted, not quoted): `<redacted-session-path>`
   (bash exit-code shape) and
-  `-home-saidler-repos-scottidler-bump/0fa193c7-c8d9-4a40-9db5-c93ad4599467/subagents/agent-a57ed1f8a6da7903b.jsonl`
+  `<redacted-session-path>`
   (framework-error shape).
 
 ### `interrupts.jsonl` -- `interrupts_structured` / `interrupts_text`
@@ -71,11 +71,11 @@ below by session id only -- no session content is quoted).
   (`grep -o '"interrupted":[a-z]*' -r ~/.claude/projects`) found 39,358
   occurrences of the field and ZERO with value `true`. The record shape
   itself IS verified real (built from a genuine `interrupted:false` record at
-  `-home-saidler-repos-scottidler-bump/cca77e62-8423-4c69-8cf2-6bbf80dbf26d.jsonl`,
+  `<redacted-session-path>`,
   field flipped to `true`). The two text-marker records ARE harvested
   verbatim -- the marker text is a fixed Claude Code framework string, not
   user-authored content, so quoting it carries no session content -- from
-  `-home-saidler-repos-scottidler-bump/0fa193c7-c8d9-4a40-9db5-c93ad4599467.jsonl`.
+  `<redacted-session-path>`.
 
 ### `compaction.jsonl` -- compaction signal
 
@@ -88,7 +88,7 @@ below by session id only -- no session content is quoted).
   '"trigger":"[a-z]*"' -r ~/.claude/projects` found only `"auto"` across every
   sampled file -- no manual compaction occurred in the sampled window. Field
   names and nesting are real (verified real record shape from
-  `-home-saidler-repos-tatari-tv-drata-cli/7114f1fa-833e-46d7-9e88-c0f387fde9c9/subagents/agent-aphase4-cd19f6398b7c80f1.jsonl`,
+  `<redacted-session-path>`,
   the `auto` record here), `trigger` value hand-set to `manual`.
 
 ### `turn-duration.jsonl` -- turn-duration percentiles
@@ -97,10 +97,13 @@ below by session id only -- no session content is quoted).
   `durationMs` (integer, milliseconds).
 - Seven REAL `durationMs` values (numbers carry no sensitive content, no
   redaction needed), harvested verbatim from
-  `-home-saidler-repos-scottidler-bump/0fa193c7-c8d9-4a40-9db5-c93ad4599467.jsonl`:
-  `16869, 27794, 41132, 44268, 82432, 92568, 694845` -- chosen for a
-  non-trivial p50/p90/max spread (median 44268, includes a high outlier at
-  694845 to exercise `turn_ms_max` distinctly from `turn_ms_p90`).
+  `<redacted-session-path>`:
+  `16869, 27794, 41132, 44268, 82432, 92568, 694845` -- seven values giving a
+  distinct p50 (nearest-rank `ceil(0.5*7)=4` -> `44268`). NOTE: with only
+  seven samples nearest-rank puts p90 at `ceil(0.9*7)=7`, the last element,
+  so for THIS fixture `turn_ms_p90 == turn_ms_max == 694845` by construction.
+  The distinct-p90-vs-max case is covered separately by the in-code 10-sample
+  test `turn_duration_percentiles_p50_p90_max_are_distinct`, not this file.
 
 ### `usage.jsonl` -- cost-efficiency signals
 
@@ -110,10 +113,10 @@ below by session id only -- no session content is quoted).
   cache_creation.{ephemeral_5m_input_tokens,ephemeral_1h_input_tokens}}`.
 - Two assistant turns with REAL token counts (harvested verbatim, numbers are
   non-sensitive): one 5m-only cache write (`ephemeral_5m_input_tokens:202003`,
-  from `-home-saidler-repos-scottidler-bump/0fa193c7-.../subagents/agent-a57ed1f8a6da7903b.jsonl`)
+  from `<redacted-session-path>`)
   and one 1h-only cache write with a nonzero cache read
   (`ephemeral_1h_input_tokens:19067`, `cache_read_input_tokens:21134`, from
-  `-home-saidler-repos-scottidler-bump/4cb8b05d-3443-4932-9db6-f780e72057b7.jsonl`).
+  `<redacted-session-path>`).
 - **Finding (not a defect, informs Phase 2/3):** a full-corpus scan for a
   single `usage` record with BOTH `ephemeral_5m_input_tokens > 0` AND
   `ephemeral_1h_input_tokens > 0` found none. Each turn pays at most one
@@ -130,7 +133,7 @@ below by session id only -- no session content is quoted).
   must be all-zero except the real usage-token fields (which are nonzero --
   a session can have real cost with a clean behavioral record).
 - Redacted from a real 13-line harvested session,
-  `-home-saidler-repos-scottidler-gx/b719d1fa-b121-4e0d-931a-d61c1b47b2b9.jsonl`
+  `<redacted-session-path>`
   (a `gx` code-review session); prompt/diff/finding text replaced with
   placeholders, `queue-operation`/`attachment`/`ai-title`/`last-prompt`
   bookkeeping records (not consumed by any signal) dropped for brevity.

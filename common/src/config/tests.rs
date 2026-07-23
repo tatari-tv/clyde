@@ -244,6 +244,57 @@ fn efficiency_rejects_bad_type() {
 }
 
 #[test]
+fn efficiency_rejects_cache_read_share_floor_above_one() {
+    // A fraction threshold above 1.0 would flag nothing; reject it at parse time (fail closed).
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "efficiency:\n  cache-read-share-floor: 1.1\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "a cache-read-share-floor above 1.0 must be rejected"
+    );
+}
+
+#[test]
+fn efficiency_rejects_negative_tool_error_ceiling() {
+    // A negative fraction would flag everything; reject it.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "efficiency:\n  tool-error-rate-ceiling: -0.1\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "a negative tool-error-rate-ceiling must be rejected"
+    );
+}
+
+#[test]
+fn efficiency_rejects_non_finite_threshold() {
+    // A non-finite (.nan/.inf) threshold would defeat every comparison; reject it.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "efficiency:\n  cache-read-share-floor: .nan\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "a non-finite cache-read-share-floor must be rejected"
+    );
+}
+
+#[test]
+fn efficiency_accepts_valid_boundary_fractions() {
+    // The valid range is inclusive of both ends: 0.0 and 1.0 must parse.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(
+        &path,
+        "efficiency:\n  cache-read-share-floor: 0.0\n  tool-error-rate-ceiling: 1.0\n",
+    )
+    .unwrap();
+    let cfg = load_from(&path).unwrap();
+    assert_eq!(cfg.efficiency().cache_read_share_floor(), 0.0);
+    assert_eq!(cfg.efficiency().tool_error_rate_ceiling(), 1.0);
+}
+
+#[test]
 fn xdg_config_dir_honors_env_and_falls_back() {
     let guard = ENV_LOCK.lock().unwrap();
     let prior = std::env::var("XDG_CONFIG_HOME").ok();
