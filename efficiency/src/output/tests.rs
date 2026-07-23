@@ -34,11 +34,13 @@ fn render_json_is_valid_and_omits_absent_subagents() {
         aggregate: (&signals_with_share(Some(0.5))).into(),
         flags: Vec::new(),
         subagents: None,
+        narrative: None,
     };
     let text = render(true, &view).expect("render json");
     let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
     assert_eq!(value["session_id"].as_str(), Some("sid"));
     assert!(value.get("subagents").is_none(), "subagents key omitted when None");
+    assert!(value.get("narrative").is_none(), "narrative key omitted when None");
 }
 
 #[test]
@@ -48,6 +50,7 @@ fn render_yaml_is_valid() {
         aggregate: (&signals_with_share(Some(0.5))).into(),
         flags: Vec::new(),
         subagents: None,
+        narrative: None,
     };
     let text = render(false, &view).expect("render yaml");
     let value: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid yaml");
@@ -67,13 +70,47 @@ fn session_json_includes_subagents_only_with_by_subagent() {
         flags: vec![EfficiencyFlag::AutoCompaction { count: 2 }],
     };
 
-    let without = session_json(&session, false);
+    let without = session_json(&session, false, None);
     assert!(without.subagents.is_none());
 
-    let with = session_json(&session, true);
+    let with = session_json(&session, true, None);
     let subs = with.subagents.expect("subagents present");
     assert_eq!(subs.len(), 1);
     assert_eq!(subs[0].agent_id, "agentX");
+}
+
+#[test]
+fn session_json_carries_the_narrative_only_when_present() {
+    let session = SessionEfficiency {
+        session_id: "sid".to_string(),
+        aggregate: signals_with_share(Some(0.4)),
+        subagents: Vec::new(),
+        flags: Vec::new(),
+    };
+
+    // Without --narrate: no narrative field, and the JSON omits the key entirely.
+    let plain = session_json(&session, false, None);
+    assert!(plain.narrative.is_none());
+    let json = render(true, &plain).expect("render json");
+    assert!(!json.contains("narrative"), "narrative key omitted when None: {json}");
+
+    // With --narrate: the canned verdict rides along in both JSON and YAML, numbers untouched.
+    let verdict = "This session looks efficient: its cache-read share is healthy.";
+    let narrated = session_json(&session, false, Some(verdict.to_string()));
+    assert_eq!(narrated.narrative.as_deref(), Some(verdict));
+
+    let json = render(true, &narrated).expect("render json");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    assert_eq!(value["narrative"].as_str(), Some(verdict));
+    // The numbers are still there -- prose is additive, nothing removed.
+    assert!(
+        value.get("aggregate").is_some(),
+        "signals still present alongside prose"
+    );
+
+    let yaml = render(false, &narrated).expect("render yaml");
+    let yvalue: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("valid yaml");
+    assert_eq!(yvalue["narrative"].as_str(), Some(verdict));
 }
 
 #[test]

@@ -112,6 +112,13 @@ efficiency:
 The two `minimum-*` gates also govern `clyde efficiency --worst N`: ineligible short one-shots are
 never ranked as "worst," since a structurally-low cache-read share there is expected, not waste.
 
+`clyde efficiency session <id> --narrate` adds a one-paragraph LLM prose verdict on *why* the
+session was (in)efficient, alongside the numbers (nothing is removed; JSON gains a `narrative`
+field, the human/YAML view gets a `narrative:` block). It needs `ANTHROPIC_API_KEY` and makes one
+LLM call; without the flag nothing touches the network. The model only phrases the Rust-computed
+facts — it is handed pre-formatted display strings, not raw numbers, and any prose that introduces
+a figure absent from those facts is rejected.
+
 Config readers prefer the clyde location and fall back to the legacy path until `bootstrap`
 migrates, so a tool invoked before bootstrap still finds its existing state. Raw transcripts are
 never copied here; they stay Claude-owned and are referenced.

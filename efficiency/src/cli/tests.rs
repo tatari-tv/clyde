@@ -47,9 +47,14 @@ fn parses_path_override() {
 fn parses_session_subcommand_aggregate_by_default() {
     let args = parse(&["session", "abc123"]);
     match args.command {
-        Some(Command::Session { id, by_subagent }) => {
+        Some(Command::Session {
+            id,
+            by_subagent,
+            narrate,
+        }) => {
             assert_eq!(id, "abc123");
             assert!(!by_subagent);
+            assert!(!narrate, "narrate is off unless --narrate is passed");
         }
         other => panic!("expected Session command, got {other:?}"),
     }
@@ -59,9 +64,48 @@ fn parses_session_subcommand_aggregate_by_default() {
 fn parses_session_subcommand_with_by_subagent() {
     let args = parse(&["session", "abc123", "--by-subagent"]);
     match args.command {
-        Some(Command::Session { id, by_subagent }) => {
+        Some(Command::Session {
+            id,
+            by_subagent,
+            narrate,
+        }) => {
             assert_eq!(id, "abc123");
             assert!(by_subagent);
+            assert!(!narrate);
+        }
+        other => panic!("expected Session command, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_session_subcommand_with_narrate() {
+    let args = parse(&["session", "abc123", "--narrate"]);
+    match args.command {
+        Some(Command::Session {
+            id,
+            by_subagent,
+            narrate,
+        }) => {
+            assert_eq!(id, "abc123");
+            assert!(!by_subagent);
+            assert!(narrate, "--narrate sets the flag");
+        }
+        other => panic!("expected Session command, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_session_subcommand_with_narrate_and_by_subagent() {
+    let args = parse(&["session", "abc123", "--narrate", "--by-subagent"]);
+    match args.command {
+        Some(Command::Session {
+            id,
+            by_subagent,
+            narrate,
+        }) => {
+            assert_eq!(id, "abc123");
+            assert!(by_subagent);
+            assert!(narrate);
         }
         other => panic!("expected Session command, got {other:?}"),
     }

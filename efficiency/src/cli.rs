@@ -42,6 +42,12 @@ pub enum Command {
         /// Expand the N-subagent breakdown alongside the aggregate.
         #[arg(long)]
         by_subagent: bool,
+
+        /// Add an LLM prose verdict on the session's efficiency, alongside the numbers. Runs one
+        /// LLM call, and only when the id resolves to exactly one session. Needs `ANTHROPIC_API_KEY`;
+        /// off by default (no network without it).
+        #[arg(long)]
+        narrate: bool,
     },
     /// Daily efficiency rollup (mirrors `cost daily`).
     Daily {

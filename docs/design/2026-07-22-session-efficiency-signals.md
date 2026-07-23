@@ -309,3 +309,15 @@ None. Both prior confirmations are Scott-confirmed (2026-07-22): tool-error as o
 - `cost/src/lib.rs`, `cost/src/output.rs` -- aggregation shape to mirror
 - `common/src/scan.rs`, `common/src/config.rs` -- shared discovery + config
 - Memory: `rust-does-math-llm-does-prose`
+
+## Addendum
+
+- **2026-07-23 (Scott): `--narrate` given a CLI surface.** Phase 8 shipped the LLM narrative as a
+  library capability with NO CLI surface (a disclosed deviation: the "API Design" section named no
+  narrate command, so building one would have been unrequested scope). Post-implementation, Scott
+  asked to expose it. Added `clyde efficiency session <id> --narrate`: a flag on the existing
+  `session` drill-down (not a new subcommand), output is prose + numbers (the `narrative` field is
+  additive; nothing removed). It reuses the Phase 8 `narrate` path verbatim -- constructs the same
+  `sessions::llm::AnthropicClient` the enrichment path uses (`ANTHROPIC_API_KEY`, one LLM call, only
+  when the flag is set), builds a `NarrationInput`, and relies on `narrate`'s existing runtime
+  math-free guard. No change to the numeric pipeline, the load-bearing invariant, or `pricing`.

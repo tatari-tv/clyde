@@ -54,6 +54,7 @@ fn run_session_reports_no_match_on_an_empty_projects_dir() {
     let command = Some(Command::Session {
         id: "none-such".to_string(),
         by_subagent: false,
+        narrate: false,
     });
     let code = run(
         args(tmp.path().to_path_buf(), true, None, command),
