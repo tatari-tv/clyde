@@ -9,12 +9,14 @@
 
 pub mod atomic;
 pub mod config;
+pub mod metrics;
 pub mod scan;
 pub mod since;
 pub mod tools;
 
 pub use atomic::write_atomic;
 pub use config::Config;
+pub use metrics::cache_read_share;
 pub use scan::{SessionFile, SessionFileKind};
 pub use since::{DateTz, parse_since};
 pub use tools::{Tool, required_tools_help};

@@ -174,12 +174,16 @@ pub fn compute(report: &Report, outliers_n: usize, pricing: &Pricing) -> Aggrega
 /// Cache-efficiency rollup and the sanctioned list-price counterfactual (design Definitions).
 ///
 /// `cache-read-share` is `cache_read / (input + cache_read + cache_5m_write + cache_1h_write)`
-/// summed across all models, one decimal. The counterfactual reprices each model as if every
-/// cache token (reads AND 5m/1h writes) had been fresh `input` with the cache fields zeroed,
-/// reusing the crate's own >200k tiering via `Pricing::calculate_usd`, summed across priced
-/// models; `cache-savings` is that minus the report's actual priced spend. If ANY model with
-/// nonzero cache tokens is unpriced, BOTH counterfactual fields are `None` (fail closed: never a
-/// `$0` stand-in for an unknown).
+/// summed across all models, one decimal -- computed via the shared `common::cache_read_share`
+/// helper so this crate and `efficiency` cannot drift on the same formula/name (design:
+/// `docs/design/2026-07-22-session-efficiency-signals.md`, Phase 2). The helper returns `None`
+/// only on a zero denominator; `report` preserves its own pre-existing convention of rendering
+/// that as `"0.0%"` (never blank), while `efficiency` keeps the `None` and renders `n/a`. The
+/// counterfactual reprices each model as if every cache token (reads AND 5m/1h writes) had been
+/// fresh `input` with the cache fields zeroed, reusing the crate's own >200k tiering via
+/// `Pricing::calculate_usd`, summed across priced models; `cache-savings` is that minus the
+/// report's actual priced spend. If ANY model with nonzero cache tokens is unpriced, BOTH
+/// counterfactual fields are `None` (fail closed: never a `$0` stand-in for an unknown).
 fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
     debug!(
         "aggregate::compute_cache_stats: models={} actual-spend={}",
@@ -224,12 +228,9 @@ fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
         }
     }
 
-    let denom = total_input + total_cache_read + total_cache_5m + total_cache_1h;
-    let share_pct = if denom == 0 {
-        0.0
-    } else {
-        (total_cache_read as f64 / denom as f64) * 100.0
-    };
+    let share_pct = common::cache_read_share(total_input, total_cache_read, total_cache_5m, total_cache_1h)
+        .map(|r| r * 100.0)
+        .unwrap_or(0.0);
 
     let (list_price_equivalent, cache_savings) = if counterfactual_ok {
         (

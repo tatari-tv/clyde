@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
+claude-pricing = { version = "2.0.0", path = "../pricing" }
 common = { path = "../common" }
 eyre = { workspace = true }
 log = { workspace = true }

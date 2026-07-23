@@ -19,15 +19,18 @@
 //! own-logging skip-list (`clyde/src/main.rs`, the `matches!(cli.command, Command::Report(_) |
 //! Command::Cost(_) | Command::Permit(_))` check).
 //!
-//! Phase 1 scaffold only: wiring the crate + the `clyde efficiency` dispatch path. Token
-//! aggregation, extraction, scoring, output, persistence, MCP, and narrative land in Phases 2-8.
+//! Phase 1 scaffolded the crate + the `clyde efficiency` dispatch path. Phase 2 adds pure Rust
+//! per-session token/cost aggregation (`metrics`). Extraction, scoring, output, persistence, MCP,
+//! and narrative land in Phases 3-8.
 
 pub mod cli;
+pub mod metrics;
 
 use eyre::Result;
 use log::debug;
 
 pub use cli::EfficiencyArgs;
+pub use metrics::{EfficiencySignals, RawCounters, aggregate_tokens};
 
 /// Entry point the clyde umbrella dispatches to:
 /// `Command::Efficiency(args) => dispatch_tool(efficiency::run(args, globals), debug)`

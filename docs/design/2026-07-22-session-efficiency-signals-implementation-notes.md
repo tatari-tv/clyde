@@ -162,3 +162,100 @@ None. Phase 1 is a pure scaffold with no design ambiguity: `clyde efficiency`
 runs and exits 0, `otto ci` is green, and every choice above follows directly
 from "match the sibling crates' idioms" plus "`efficiency` is clyde-native,
 not absorbed."
+
+## Phase 2: Per-session token aggregation (pure Rust math)
+
+### Design decisions
+
+- **Shared-helper refactor (disclosed, in-scope per the design doc):** extracted
+  `cache_read_share` into a new `common::metrics` module
+  (`common/src/metrics.rs`, `pub fn cache_read_share(input, cache_read,
+  cache_5m_write, cache_1h_write) -> Option<f64>`), re-exported as
+  `common::cache_read_share`. Repointed `report::aggregate::compute_cache_stats`
+  (`report/src/aggregate.rs`) to call it instead of hand-rolling the ratio
+  inline. `report`'s pre-existing zero-denominator convention (render `"0.0%"`,
+  never blank) is preserved at the call site via
+  `.map(|r| r * 100.0).unwrap_or(0.0)` -- the shared helper itself returns
+  `None` on a zero denominator (what `efficiency` needs to render `n/a`);
+  `report` chooses to fold that `None` back to `0.0` for its own display
+  convention. Verified by TEMPORARILY perturbing the formula
+  (`+ 1.0` on the percentage) and confirming `report`'s existing
+  `cache_counterfactual_equals_hand_computed_value` test failed
+  (`left: "91.0%" right: "90.0%"`), then reverting -- proves the repoint is
+  real wiring, not a no-op, and that `report`'s tests stay green UNCHANGED
+  against the shared helper.
+- `efficiency::metrics` (`efficiency/src/metrics.rs`) holds `RawCounters`
+  (token/cost fields only -- see Deviations), `EfficiencySignals`, and
+  `aggregate_tokens(entries: &[AssistantEntry]) -> EfficiencySignals`, which
+  sums one scope's `claude_pricing::AssistantEntry`s (as returned by the
+  crate's existing `parse_jsonl_file`) into `RawCounters` and derives:
+  `cache_read_share` (via the shared `common::cache_read_share` helper),
+  `cache_1h_write_fraction`, `tokens_per_turn`, `cost_per_turn_usd`.
+  `RawCounters::total_tokens()` mirrors `report::session::TokenTotals::total`
+  (sum of input/output/cache-read/cache-5m/cache-1h) for consistency with the
+  existing in-house pattern.
+- Cost is computed via the existing free function
+  `claude_pricing::calculate_usd(model, usage)` (embedded default pricing, no
+  `fetch` feature, no network) -- per entry, summed. An unpriced model
+  contributes `$0` to `cost_usd` and logs a `warn!` once per occurrence,
+  matching the exact skip-and-warn pattern already used at `cost/src/lib.rs:360`
+  and `report/src/report.rs:90` (never a hard failure over one unknown model
+  id; no new invented behavior).
+- `claude-pricing` was added to `efficiency/Cargo.toml` via
+  `cargo add --path ../pricing` (no `fetch` feature enabled), confirmed by
+  `git diff 41153a1 --stat -- pricing/` showing zero pricing-crate changes.
+- Tests load the Phase 0 golden fixtures directly from disk via
+  `concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/efficiency/<name>.jsonl")`
+  and `claude_pricing::parse_jsonl_file`, rather than embedding fixture text
+  with `include_str!` + a temp file -- one fewer moving part, and it exercises
+  the real parse path end-to-end (same as `pricing`'s own test pattern, minus
+  the temp-file step since the fixtures already live on disk at a fixed
+  relative path).
+
+### Deviations
+
+- **Partial `RawCounters`/`EfficiencySignals`, not the full Data Model struct.**
+  Per the task's explicit "your call, document it": Phase 2's `RawCounters`
+  carries ONLY the token/cost fields this phase computes
+  (`input_tokens`, `output_tokens`, `cache_read_tokens`,
+  `cache_5m_write_tokens`, `cache_1h_write_tokens`, `cost_usd`, `turns`). The
+  design doc's full `RawCounters` (Data Model section) also lists
+  `turn_durations_ms`, `compactions`, `tool_errors`, `bash_command_failures`,
+  `interrupts_structured`, `interrupts_text`, `web_search_requests`,
+  `web_fetch_requests`, `effort_high`, `effort_xhigh`, `model_mix`,
+  `by_skill`, `by_mcp_tool` -- all behavioral counters Phase 3's extractor
+  populates. Adding those fields now with nothing to write them would be dead
+  weight (and `#![deny(dead_code)]` would flag them). Same reasoning for
+  `EfficiencySignals`: Phase 2 has `cache_read_share`,
+  `cache_1h_write_fraction`, `tokens_per_turn`, `cost_per_turn_usd`; the
+  design's `turn_ms_p50`/`turn_ms_p90`/`turn_ms_max` land in Phase 3 alongside
+  turn-duration extraction. Phase 3 should EXTEND these same two structs
+  (not invent parallel ones) so the "one struct per scope" shape in the
+  design doc holds by the time Phase 3 lands.
+- **`tokens_per_turn`/`cost_per_turn_usd` are not named in the design doc's
+  `EfficiencySignals` struct** (the doc's Data Model only shows
+  `cache_read_share`/`cache_1h_write_fraction`/`turn_ms_*`), but the Phase 2
+  bullet explicitly requires "per-turn token and cost figures." Added as two
+  more `Option<f64>` fields on the same struct rather than a separate type --
+  same scope (per-session derived metric), same None-on-zero-turns rule.
+
+### Tradeoffs
+
+- Cost aggregation calls `claude_pricing::calculate_usd` (the free function,
+  embedded pricing) rather than `Pricing::calculate_usd` (the `fetch`-feature
+  method `report`/`cost` use for a possibly-refreshed feed). Tradeoff: no
+  live-feed fetch means `efficiency`'s cost figures use whatever pricing data
+  is embedded in the pinned `claude-pricing` crate at build time, not a
+  network-refreshed feed. Chose this because (a) the Phase 2 bullet names
+  `claude_pricing::calculate_usd` literally, (b) it avoids pulling in the
+  `fetch` feature's `ureq`/`tempfile` network dependency for a lib crate whose
+  own design doc states "no new pricing blast radius," and (c) cost here is a
+  secondary signal (behavioral efficiency is the point), not the primary
+  billing source of truth clyde already has in `cost`.
+
+### Open questions
+
+None. The struct-scoping call (partial vs. full `RawCounters`) was resolved
+per the task's own "your call, document it" instruction; Phase 3 has enough
+here (the exact field names deferred, and the reasoning) to extend rather
+than redesign.

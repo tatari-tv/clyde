@@ -644,6 +644,7 @@ name = "efficiency"
 version = "0.10.2"
 dependencies = [
  "clap",
+ "claude-pricing",
  "common",
  "eyre",
  "log",
