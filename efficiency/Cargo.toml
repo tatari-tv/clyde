@@ -13,14 +13,17 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 claude-pricing = { version = "2.0.0", path = "../pricing" }
 common = { path = "../common" }
 eyre = { workspace = true }
 log = { workspace = true }
+rayon.workspace = true
 regex = "1.13.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_yaml.workspace = true
 
 [dev-dependencies]
-serde_yaml.workspace = true
+tempfile.workspace = true

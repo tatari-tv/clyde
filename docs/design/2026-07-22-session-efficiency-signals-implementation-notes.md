@@ -467,3 +467,128 @@ Cross-repo / system-mutating bullets: none in Phase 3 (clyde-only).
   established pattern and did NOT sweep it into the Phase 4 commit. The parent
   orchestrator should decide whether the design doc gets committed (likely at
   finalization) -- flagging it so it does not stay orphaned. Not a code blocker.
+
+## Phase 5: Output surfaces (subcommand)
+
+### Design decisions
+
+- **New modules, not a monolithic `output.rs`:** `collect.rs` (discovery: scan ->
+  group-by-`group_id` -> `extract`+`fold`+`scored` per session, `collect_all` and
+  `collect_matching`), `rank.rs` (`--worst N` ordering), `rollup.rs`
+  (`daily`/`weekly` bucketing), and `output.rs` (render-only: `*Json` view types +
+  `wants_json`/`render`). `collect` is the one seam every surface shares (mirrors
+  `cost::compute_summaries`'s single-seam shape); `rank`/`rollup` each own their
+  one concern so `output.rs` stays render-only and under the 1500-line limit.
+- **`CollectedSession { session_id, last_active, efficiency }`** (`collect.rs`)
+  is the unit every surface operates on. `last_active` is the MAX file `mtime`
+  across the session's group (parent + subagents), converted to
+  `chrono::DateTime<Local>`. This is a NEW field the Data Model never named --
+  see Deviations.
+- **`wants_json`/`render` copy `cost::wants_json` (`cost/src/lib.rs:637`) EXACTLY**:
+  `explicit_json || !stdout().is_terminal()`. Human output is YAML, not a
+  hand-rolled table -- the house rule ("yaml for humans, json when piped, one
+  `--format` override, no boolean format flags") over-rides the "copy cost's
+  literal table shape" instinct, since the design doc names `wants_json` +
+  `IsTerminal` as the pattern to copy, not `cost`'s specific text renderer.
+  Verified live (`script -qec ... /dev/null` to force a real TTY): TTY renders
+  YAML, a pipe renders JSON, and `--json` forces JSON on a TTY.
+- **`--path` and `--json` are `global = true`** on `EfficiencyArgs` (`cli.rs`).
+  Discovered live: without `global`, clap rejects `--json` typed AFTER a
+  subcommand (`clyde efficiency session <id> --json` errored `unexpected
+  argument`) because a non-global parent flag only parses BEFORE the
+  subcommand token. `cost`'s own `--offline` uses the same `global = true`
+  escape for exactly this reason; `--worst` stays non-global since it is
+  meaningless with a subcommand present.
+- **Domain types (`EfficiencySignals`/`RawCounters`/...) still carry no `serde`
+  derive** (per the Phase 3 decision -- Phase 6 owns persistence's shape).
+  `output.rs` owns its OWN lightweight `Serialize`-deriving view types
+  (`SignalsJson`, `SessionJson`, `WorstEntryJson`, `PeriodJson`, ...) built via
+  `From`/helper functions, the same split `cost::output` keeps between
+  `SessionSummary`/`DaySummary` (internal) and `TodayJson`/`DailyJson`
+  (rendered) -- avoids coupling Phase 6's export/persistence schema to Phase 5's
+  CLI rendering schema.
+- **`FlagJson`** is a tagged enum (`#[serde(tag = "kind", rename_all =
+  "kebab-case")]`) so a rendered flag is self-describing (`{"kind":
+  "low-cache-read-share", "observed": ..., "floor": ...}`) without the reader
+  re-deriving which threshold fired, matching the design's "self-describing"
+  intent for `EfficiencyFlag` itself.
+- **`session <id>` matching reuses `SessionFile.group_id` prefix matching**,
+  mirroring `cost`'s `Command::Session` id-prefix match exactly (0 matches ->
+  "No session found matching '<id>'"; 1 -> render; >1 -> list every matching
+  id). Only the matched group's files are extracted (not the whole catalog),
+  so a single-session lookup does not pay the full-catalog scan cost.
+- **`--worst N` ranking** (`rank.rs`): `sort_by` a comparator where `None`
+  (`Ordering::Greater` against every `Some`) always sorts last, and `Some`
+  values compare via `f64::total_cmp` (ascending, so `Some(0.0)` -- wrote
+  cache, never read it, genuine waste -- sorts first). Verified against the
+  REAL catalog on this machine (1557 sessions, `--worst <total>`): 26
+  `None`-share sessions all landed at the tail, contiguous, never interleaved
+  with a computable share.
+- **`daily`/`weekly` bucket by `CollectedSession::last_active`'s local date**,
+  union each bucket's `RawCounters` via the existing `merge`, and `finalize`
+  ONCE per bucket -- the same Aggregation invariant `fold` enforces per
+  session, applied one level up (never a field-sum/average of per-session
+  derived metrics). Week bucketing mirrors `cost::dispatch`'s Sunday-start
+  logic (`days_since_sunday`) exactly.
+
+### Deviations
+
+- **`CollectedSession.last_active` (a file-mtime-derived date) is not in the
+  design's Data Model.** The Phase 3 `RawCounters`/`EfficiencySignals` (by
+  design) retain no per-record timestamp -- only aggregated counters and the
+  turn-duration SAMPLE survive per scope, so there is no session-level
+  timestamp to bucket `daily`/`weekly` by by construction. The session's own
+  files' mtime is the correct-seam substitute: it is the SAME signal
+  `common::scan::filter_by_date_range`'s existing date prefilter already
+  relies on (a file's mtime is a safe proxy for "when this session was last
+  touched" under the scan module's own append-only-file assumption). Same
+  effect as the doc's "aggregate rollups (mirror cost)" intent, correct seam
+  given what Phase 3 actually retained.
+- **No `--since`/date-range flag on `session <id>`.** The design's API Design
+  section does not name one for the single-session drill-down (only `--worst`
+  and `daily`/`weekly` are period-scoped), so `session <id>` scans the WHOLE
+  catalog for a matching group id rather than a bounded recent window (unlike
+  `cost session <id>`'s 30-day window). This is more correct for efficiency
+  drill-down (a session's efficiency doesn't change if queried later) at the
+  cost of a full scan per lookup; acceptable since only the MATCHED group's
+  files are extracted, not the whole catalog's signals.
+- **`--path`/`--json` promoted to `global = true`** (see Design decisions) --
+  not explicitly specified by the design doc's flag list, but required for
+  `--json` to parse on either side of a subcommand; same effect intended
+  ("`--json` -- force JSON; TTY-detect otherwise"), correct seam for clap's
+  subcommand-argument scoping rules.
+
+### Tradeoffs
+
+- **YAML (not a hand-rolled ASCII table) for the human/TTY branch.** `cost`'s
+  own text renderer is a `comfy-table`-style table; efficiency's session
+  signals are a nested structure (totals, ratios, per-workflow maps,
+  compaction list) that does not flatten cleanly into table rows. YAML renders
+  the full nested shape with zero extra formatting code and matches the
+  general "yaml for humans" convention; the tradeoff is `clyde efficiency`'s
+  human output looks different from `clyde cost`'s (table) rather than
+  visually uniform across the two sibling tools. Chosen because building a
+  second table renderer just to look like `cost` would duplicate effort the
+  house rule already resolves in YAML's favor for exactly this multi-level
+  case.
+- **`collect_all` parallelizes over `rayon`'s `par_iter` on the session-group
+  map** (one `extract`+`fold`+`scored` per session, in parallel), rather than
+  parallelizing at the per-file level like `report`'s collect pass. Simpler
+  (one parallel unit = one full session's worth of work, no separate
+  reassembly step) at a slight cost: a session with many subagent files does
+  its multi-file `extract` sequentially within that one session's rayon task.
+  Acceptable since a single session's subagent file count is small relative
+  to the session count driving `--worst`/`daily`/`weekly`'s catalog-wide scans.
+- **`session <id>`'s "ambiguous prefix" branch prints session ids only** (no
+  score/signals per candidate), mirroring `cost`'s own ambiguous-match listing
+  shape (`cost` prints `id  $cost (entries)` per candidate; efficiency prints
+  just the id) -- kept minimal since disambiguating on id alone is the
+  standard fix (retype a longer prefix), and printing full signals for every
+  candidate would bury the actual disambiguation prompt.
+
+### Open questions
+
+None. `--path`/`--json` global-flag placement was a live clap parsing failure,
+not a judgment call -- resolved directly, documented above. The pre-existing
+open question (design doc untracked in git) is unchanged by this phase; still
+the parent orchestrator's to resolve at finalization.
