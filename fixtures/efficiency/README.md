@@ -179,8 +179,9 @@ below by session id only -- no session content is quoted).
   subagent by the name embedded in its `agentId` (`a<name>-<hash>`).
 - One parent record spawns three named agents via tool_use: `Agent`
   (`dataviz-worker` -> `general-purpose`), `Task` (`phase3` -> `phase-implementer`), and
-  `Agent` (`trickydriver` -> `general-purpose`, a decoy). Then five subagent records, each
-  lacking `attributionAgent`, exercise the four-tier `fold::resolve_agent_type` chain:
+  `Agent` (`trickydriver` -> `general-purpose`, a decoy). Then five subagent records exercise
+  the four-tier `fold::resolve_agent_type` chain (the first four lack `attributionAgent`; the
+  fifth carries one, to prove tier 1 wins):
   - `adataviz-worker-0123456789abcdef` -> type RECOVERED `general-purpose` (spawn-map match)
   - `aphase3-fedcba9876543210` -> type RECOVERED `phase-implementer` (Task spawn)
   - `anamed-only-1111222233334444` -> NAME-ONLY label `named-only` (no spawn in group)
