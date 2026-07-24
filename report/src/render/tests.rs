@@ -475,6 +475,9 @@ fn render_run_writes_markdown_file_with_custom_template() {
     let cfg = Config {
         log_level: "info".into(),
         command: ResolvedCommand::Render(RenderConfig {
+            llm: crate::cli::Llm::Auto,
+            markdown_model: "claude-opus-4-8".into(),
+            html_model: "claude-opus-4-8".into(),
             input: json_path.clone(),
             output: Some(md.clone()),
             format: crate::cli::Format::Markdown,
@@ -501,6 +504,9 @@ fn render_run_rejects_yaml_input_extension() {
     let cfg = Config {
         log_level: "info".into(),
         command: ResolvedCommand::Render(RenderConfig {
+            llm: crate::cli::Llm::Auto,
+            markdown_model: "claude-opus-4-8".into(),
+            html_model: "claude-opus-4-8".into(),
             input: yml,
             output: None,
             format: crate::cli::Format::Markdown,
@@ -604,6 +610,9 @@ fn route_html_artifact_writes_local_file() {
     let out = tmp.path().join("report.html");
     let report = sample_report();
     let cfg = RenderConfig {
+        llm: crate::cli::Llm::Auto,
+        markdown_model: "claude-opus-4-8".into(),
+        html_model: "claude-opus-4-8".into(),
         input: tmp.path().join("claude-report.json"),
         output: Some(out.clone()),
         format: crate::cli::Format::Html,
@@ -628,6 +637,9 @@ fn route_html_artifact_writes_local_file() {
 fn route_html_artifact_honors_stdout_sigil() {
     let report = sample_report();
     let cfg = RenderConfig {
+        llm: crate::cli::Llm::Auto,
+        markdown_model: "claude-opus-4-8".into(),
+        html_model: "claude-opus-4-8".into(),
         input: std::path::PathBuf::from("./claude-report.json"),
         output: Some(std::path::PathBuf::from("-")),
         format: crate::cli::Format::Html,
@@ -967,6 +979,9 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
     .unwrap();
 
     let cfg = RenderConfig {
+        llm: crate::cli::Llm::Auto,
+        markdown_model: "claude-opus-4-8".into(),
+        html_model: "claude-opus-4-8".into(),
         input: input.clone(),
         output: Some(tmp.path().join("out.md")),
         format: crate::cli::Format::Markdown,
@@ -1067,6 +1082,9 @@ fn offline_template_path_requires_no_anthropic_key() {
     let cfg = Config {
         log_level: "info".into(),
         command: ResolvedCommand::Render(RenderConfig {
+            llm: crate::cli::Llm::Auto,
+            markdown_model: "claude-opus-4-8".into(),
+            html_model: "claude-opus-4-8".into(),
             input: json_path,
             output: Some(md.clone()),
             format: crate::cli::Format::Markdown,

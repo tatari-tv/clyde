@@ -50,15 +50,72 @@ pub enum FormatConfig {
     MarqueeMarkdown,
 }
 
+/// The serde view of `render.llm`: which transport performs `report render`'s two model calls.
+///
+/// `auto` prefers the `claude` CLI, so the keyless path is the default for everyone and the api key
+/// becomes the exception rather than the entry fee. It is a PRESENCE check on the binary, never a
+/// success check: once a transport is chosen there is no fallback, so a broken login fails loudly
+/// instead of silently billing a different credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LlmConfig {
+    #[default]
+    Auto,
+    Api,
+    Cli,
+}
+
+/// Default pin for the markdown job (`render.markdown-model`).
+///
+/// Both jobs default to `claude-opus-4-8` (Scott, 2026-07-24: "just use claude opus 4-8"), which is
+/// the model the keyless spike verified on both jobs. This is the ONE home for the default: the
+/// `report` crate reads it from here rather than carrying its own copy, so the two cannot drift.
+pub const DEFAULT_MARKDOWN_MODEL: &str = "claude-opus-4-8";
+/// Default pin for the html job (`render.html-model`). See [`DEFAULT_MARKDOWN_MODEL`].
+pub const DEFAULT_HTML_MODEL: &str = "claude-opus-4-8";
+
+fn default_markdown_model() -> String {
+    DEFAULT_MARKDOWN_MODEL.to_string()
+}
+
+fn default_html_model() -> String {
+    DEFAULT_HTML_MODEL.to_string()
+}
+
 /// The `render:` section of `clyde.yml`: defaults for `report render`. Every field defaults, so an
 /// absent section is all-defaults.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+///
+/// `Default` is HAND-WRITTEN (not derived): the two model pins have meaningful non-empty defaults,
+/// and a derived `Default` would substitute `String::new()` — an empty `--model` argument, which is
+/// not a valid model and would fail at the transport instead of resolving to the documented pin.
+/// Hand-writing keeps `RenderConfig::default()` and a from-scratch deserialize in lock step.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[serde(deny_unknown_fields)]
 pub struct RenderConfig {
     /// Default output format when `--format` is omitted on the command line. Defaults to markdown.
     #[serde(default)]
     format: FormatConfig,
+    /// Which transport performs the two model calls when `--llm` is omitted. Defaults to `auto`.
+    #[serde(default)]
+    llm: LlmConfig,
+    /// Model pin for the markdown job. Defaults to [`DEFAULT_MARKDOWN_MODEL`].
+    #[serde(default = "default_markdown_model")]
+    markdown_model: String,
+    /// Model pin for the html job. Defaults to [`DEFAULT_HTML_MODEL`].
+    #[serde(default = "default_html_model")]
+    html_model: String,
+}
+
+impl Default for RenderConfig {
+    fn default() -> Self {
+        Self {
+            format: FormatConfig::default(),
+            llm: LlmConfig::default(),
+            markdown_model: default_markdown_model(),
+            html_model: default_html_model(),
+        }
+    }
 }
 
 /// The `efficiency:` section of `clyde.yml`: the thresholds `clyde efficiency` scores a session's
@@ -253,6 +310,21 @@ impl Config {
     /// The configured default output format for `report render` (`markdown` when unset).
     pub fn render_format(&self) -> FormatConfig {
         self.render.format
+    }
+
+    /// The configured transport selection for `report render` (`auto` when unset).
+    pub fn render_llm(&self) -> LlmConfig {
+        self.render.llm
+    }
+
+    /// The configured model pin for the markdown job ([`DEFAULT_MARKDOWN_MODEL`] when unset).
+    pub fn render_markdown_model(&self) -> &str {
+        &self.render.markdown_model
+    }
+
+    /// The configured model pin for the html job ([`DEFAULT_HTML_MODEL`] when unset).
+    pub fn render_html_model(&self) -> &str {
+        &self.render.html_model
     }
 
     /// The resolved projects root for `clyde mcp serve`: the configured `projects-dir`, else the

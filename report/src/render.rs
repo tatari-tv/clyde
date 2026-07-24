@@ -1,6 +1,6 @@
 use crate::aggregate::{self, Aggregates};
 use crate::cli::Format;
-use crate::config::RenderConfig;
+use crate::config::{RenderConfig, TransportKind};
 use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::persona::{self, PersonaBlock};
 use crate::proc::run_bounded;
@@ -88,7 +88,7 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
             pricing,
             cfg.outliers,
         )?;
-        render_via_opus_markdown(&context, &prompt)
+        render_via_opus_markdown(&context, &prompt, cfg)
     }
 }
 
@@ -104,7 +104,7 @@ fn generate_html(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Resu
         pricing,
         cfg.outliers,
     )?;
-    render_via_opus_html(&context, &prompt)
+    render_via_opus_html(&context, &prompt, cfg)
 }
 
 /// Route an already-generated markdown artifact to its destination (local file / stdout / PDF /
@@ -228,18 +228,33 @@ pub enum Template {
     Custom(String),
 }
 
-fn render_via_opus_markdown(json_body: &str, prompt: &str) -> Result<String> {
+/// Resolve the configured transport selection against this host: is `claude` on PATH, and is a key
+/// set? The impure half of the decision, kept to one line each so `config::resolve_transport` stays
+/// pure and its whole precedence matrix is unit-testable.
+///
+/// `which::which` mirrors `clyde::resolve_claude`, which already canonicalizes a relative PATH hit.
+fn resolve_transport_for(cfg: &RenderConfig) -> Result<TransportKind> {
+    crate::config::resolve_transport(
+        cfg.llm,
+        which::which("claude").is_ok(),
+        summarize::api_key_from_env().is_some(),
+        cfg.format,
+    )
+}
+
+fn render_via_opus_markdown(json_body: &str, prompt: &str, cfg: &RenderConfig) -> Result<String> {
     debug!(
-        "render::render_via_opus_markdown: context bytes={} prompt bytes={}",
+        "render::render_via_opus_markdown: context bytes={} prompt bytes={} model={}",
         json_body.len(),
-        prompt.len()
+        prompt.len(),
+        cfg.markdown_model
     );
-    let prose = summarize::markdown(
-        &summarize::ApiTransport::from_env()?,
-        summarize::MARKDOWN_MODEL,
-        prompt,
-        json_body,
-    )?;
+    let model = &cfg.markdown_model;
+    // Monomorphized per transport; no Box<dyn Transport>, per the house generics-for-DI rule.
+    let prose = match resolve_transport_for(cfg)? {
+        TransportKind::Api => summarize::markdown(&summarize::ApiTransport::from_env()?, model, prompt, json_body)?,
+        TransportKind::Cli => summarize::markdown(&summarize::CliTransport::resolve()?, model, prompt, json_body)?,
+    };
     // Render invents nothing: the whole markdown document is prose over the string-only facts, so
     // every numeric token in it must appear verbatim in the context (which carries only pre-formatted
     // display strings). A fabricated figure means the model computed or invented a number -> reject.
@@ -250,18 +265,18 @@ fn render_via_opus_markdown(json_body: &str, prompt: &str) -> Result<String> {
 /// The html-source counterpart to [`render_via_opus_markdown`]. There is NO offline HTML path, so
 /// the missing-key error deliberately does NOT recommend `--template` (which produces markdown and
 /// is rejected for html-source formats).
-fn render_via_opus_html(context: &str, prompt: &str) -> Result<String> {
+fn render_via_opus_html(context: &str, prompt: &str, cfg: &RenderConfig) -> Result<String> {
     debug!(
-        "render::render_via_opus_html: context bytes={} prompt bytes={}",
+        "render::render_via_opus_html: context bytes={} prompt bytes={} model={}",
         context.len(),
-        prompt.len()
+        prompt.len(),
+        cfg.html_model
     );
-    let html = summarize::html(
-        &summarize::ApiTransport::from_env()?,
-        summarize::HTML_MODEL,
-        prompt,
-        context,
-    )?;
+    let model = &cfg.html_model;
+    let html = match resolve_transport_for(cfg)? {
+        TransportKind::Api => summarize::html(&summarize::ApiTransport::from_env()?, model, prompt, context)?,
+        TransportKind::Cli => summarize::html(&summarize::CliTransport::resolve()?, model, prompt, context)?,
+    };
     // Render invents nothing (html): CSS/JS geometry is legitimate authored markup full of numbers
     // that are NOT data (px, breakpoints, colors), so the guard runs over the VISIBLE TEXT only
     // (style/script blocks and tag markup stripped). Every data figure a reader sees must appear

@@ -60,6 +60,78 @@ pub struct RenderConfig {
     /// Number of top-spend sessions in the outlier table (`--outliers <N>`, default
     /// `aggregate::DEFAULT_OUTLIERS`).
     pub outliers: usize,
+    /// Which transport to use for the two model calls, as SELECTED (`auto` is not yet resolved).
+    /// Resolve with [`resolve_transport`] at the point of use, where the environment can be probed.
+    pub llm: crate::cli::Llm,
+    /// Model pin for the markdown job, from `render.markdown-model` (default
+    /// `common::config::DEFAULT_MARKDOWN_MODEL`).
+    pub markdown_model: String,
+    /// Model pin for the html job, from `render.html-model` (default
+    /// `common::config::DEFAULT_HTML_MODEL`).
+    pub html_model: String,
+}
+
+/// The RESOLVED transport: which backend actually performs the call.
+///
+/// Distinct from [`crate::cli::Llm`] because `auto` is a request, not an answer. Keeping them
+/// separate types means a resolved value can never still be `Auto`, so no call site has to handle a
+/// case that cannot happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportKind {
+    Api,
+    Cli,
+}
+
+/// Resolve a transport SELECTION against the environment.
+///
+/// Pure: the two environment facts are passed in, so the whole precedence matrix is unit-testable
+/// without touching PATH or the process env.
+///
+/// `auto` asks exactly ONE question -- does a `claude` binary exist? -- and commits. It is a PRESENCE
+/// check, never a success check (Scott, 2026-07-24: "fail loud"). A host with a stale or logged-out
+/// `claude` on PATH AND a valid key will therefore FAIL rather than quietly rendering via the api.
+/// That is deliberate: a silent fallback would make one command nondeterministic across two
+/// transports and two billing paths, and would mask a broken login indefinitely instead of surfacing
+/// it once. Automated callers must pin `--llm api` rather than trust `auto`.
+///
+/// An explicit `--llm cli` or `--llm api` is honored as given, including when the corresponding
+/// credential is missing -- the transport itself then produces the loud, specific error.
+pub fn resolve_transport(
+    selection: crate::cli::Llm,
+    claude_present: bool,
+    key_present: bool,
+    format: crate::cli::Format,
+) -> Result<TransportKind> {
+    use crate::cli::Llm;
+    let resolved = match selection {
+        Llm::Cli => TransportKind::Cli,
+        Llm::Api => TransportKind::Api,
+        Llm::Auto if claude_present => TransportKind::Cli,
+        Llm::Auto if key_present => TransportKind::Api,
+        // Neither door is open. Name BOTH remedies, because there are two now — the pre-flip error
+        // named only the api key, which is exactly the dead end that started this design.
+        Llm::Auto => bail!(
+            "no LLM transport available for --format {}: set ANTHROPIC_API_KEY (--llm api), or install \
+             the `claude` CLI and log in once (--llm cli)",
+            format_name(format)
+        ),
+    };
+    log::debug!(
+        "config::resolve_transport: selection={selection:?} claude_present={claude_present} \
+         key_present={key_present} -> {resolved:?}"
+    );
+    Ok(resolved)
+}
+
+/// The `--format` value as the user would have typed it, for error messages.
+fn format_name(format: crate::cli::Format) -> &'static str {
+    match format {
+        crate::cli::Format::Markdown => "markdown",
+        crate::cli::Format::Pdf => "pdf",
+        crate::cli::Format::Html => "html",
+        crate::cli::Format::MarqueeHtml => "marquee-html",
+        crate::cli::Format::MarqueeMarkdown => "marquee-markdown",
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -88,12 +160,21 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
             ResolvedCommand::Collect(collect_config_from_args(args, tz)?)
         }
         crate::cli::Command::Render(args) => {
-            // Effective format precedence: `--format` on the CLI, else the `render.format` default
-            // from `clyde.yml`, else the built-in markdown. Config is only read when the flag is
-            // absent, so a `--format` invocation never depends on (or is broken by) the config file.
+            // Config is now loaded UNCONDITIONALLY, which is a deliberate behavior change from the
+            // previous "only when --format is absent" laziness. The model pins live in `clyde.yml`
+            // and render always needs one, so there is no flag that opts out of reading config. The
+            // consequence, accepted and tested: a malformed `clyde.yml` now breaks a `--format html
+            // --llm cli` invocation that previously worked. A config key that is not read is not
+            // config, so the load moves rather than the keys.
+            let file = common::config::load()?;
+            // Precedence, house convention: flag > config > default.
             let format = match args.format {
                 Some(f) => f,
-                None => common::config::load()?.render_format().into(),
+                None => file.render_format().into(),
+            };
+            let llm = match args.llm {
+                Some(l) => l,
+                None => file.render_llm().into(),
             };
             // A marquee post's output is a published URL, not a path; `-o` has no meaning there.
             // Reject against the RESOLVED format (so a config-set marquee default is caught too).
@@ -123,6 +204,9 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 include_tradeoffs: args.include_tradeoffs,
                 pdf_engine: args.pdf_engine,
                 outliers: args.outliers,
+                llm,
+                markdown_model: file.render_markdown_model().to_string(),
+                html_model: file.render_html_model().to_string(),
             })
         }
         crate::cli::Command::Merge(args) => {

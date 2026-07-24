@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
-use super::super::{HTML_MODEL, HTML_SYSTEM_PROMPT, MARKDOWN_MODEL, MARKDOWN_SYSTEM_PROMPT};
+use super::super::{HTML_SYSTEM_PROMPT, MARKDOWN_SYSTEM_PROMPT};
 use super::*;
+use common::config::{DEFAULT_HTML_MODEL as HTML_MODEL, DEFAULT_MARKDOWN_MODEL as MARKDOWN_MODEL};
 use std::sync::Mutex;
 
 /// Serialize every env-var-touching test; `set_var`/`remove_var` are process-global and the test

@@ -59,16 +59,6 @@ impl Job {
     }
 }
 
-/// Default model pin for the markdown job.
-///
-/// Both jobs pin `claude-opus-4-8` (Scott, 2026-07-24: "just use claude opus 4-8"), re-pinning the
-/// markdown job off its former `claude-opus-4-7`. These are the values `clyde.yml`'s
-/// `render.markdown-model` / `render.html-model` resolve to when unset, and they are what the
-/// 2026-07-24 keyless spike measured on both jobs.
-pub const MARKDOWN_MODEL: &str = "claude-opus-4-8";
-/// Default model pin for the html job. See [`MARKDOWN_MODEL`].
-pub const HTML_MODEL: &str = "claude-opus-4-8";
-
 const MARKDOWN_SYSTEM_PROMPT: &str = "You are a precise technical writer producing markdown documents from structured data. Output exactly what is asked - no preamble, no commentary, no fenced code block wrapping the whole output.";
 /// Phase 0-verified wording. The `\`-continued string is one logical line (no embedded newlines
 /// beyond the single spaces the continuations preserve).
