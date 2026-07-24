@@ -15,30 +15,25 @@ use std::time::Duration;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
-/// Non-streaming markdown-source ceiling (unchanged from the pre-HTML design). The markdown path
-/// stays byte-identical, so this value and the system prompt must not move.
-const MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 16_000;
-/// Streaming html-source ceiling. Phase 0 of the html design observed a max 26.5K output on a
-/// 5x-synthetic month, and the 2026-07-24 cli spike observed 19.6K on a real 1,310-session month, so
-/// the named-exhaustion bail is a backstop that will not fire for realistic months.
-const HTML_MAX_OUTPUT_TOKENS: u32 = 64_000;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
 
 impl Job {
-    /// This job's api-private knobs: `(max_tokens, stream)`.
+    /// Whether this job's response is delivered as SSE.
     ///
-    /// Streaming is derived from the JOB, not from a threshold over `max_tokens`. An earlier draft
-    /// compared the ceiling against a `STREAM_ABOVE_TOKENS` const, which made one value carry two
-    /// meanings (how much output is allowed, and how it is delivered); those are independent facts
-    /// and are now stated independently. The cli transport never sees either of them.
+    /// API-PRIVATE, and the reason it is not on `Job` itself: the cli transport has no delivery
+    /// choice to make, so a shared `stream` field would be one it must ignore. The output ceiling is
+    /// the opposite case — both transports use it — so it lives on `Job`.
+    ///
+    /// Html streams so the connection keeps flowing bytes and the 300s idle wall never fires on a
+    /// long generation; markdown reads a single JSON body. Derived from the JOB, not from a
+    /// threshold over `max_tokens`, so one value never carries two meanings.
+    fn streams(self) -> bool {
+        matches!(self, Job::Html)
+    }
+
+    /// This job's api call knobs: the shared ceiling, plus the api-private streaming choice.
     fn api_limits(self) -> (u32, bool) {
-        match self {
-            // Markdown: 16K ceiling, single JSON response body.
-            Job::Markdown => (MARKDOWN_MAX_OUTPUT_TOKENS, false),
-            // Html: 64K ceiling, SSE so the connection keeps flowing bytes and the 300s idle wall
-            // never fires on a long generation.
-            Job::Html => (HTML_MAX_OUTPUT_TOKENS, true),
-        }
+        (self.max_output_tokens(), self.streams())
     }
 }
 

@@ -14,10 +14,18 @@
 
 use eyre::{Context, Result, bail};
 use log::debug;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
+
+/// Wall-clock ceiling for the `claude -p` LLM call. Its own const, deliberately NOT
+/// [`SUBPROCESS_TIMEOUT`]: the 2026-07-24 keyless spike measured 145s (markdown) and 204s (html) on a
+/// real 1,310-session month, so the 120s pandoc/marquee ceiling would have killed every real render.
+///
+/// 900s is ~4.4x the worst observed. The margin is deliberately wide because an overrun discards a
+/// generation that has already been billed (~$3), which is the expensive direction to be wrong in.
+pub(crate) const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// Wall-clock ceiling for non-interactive external commands (pandoc, `marquee whoami`/`publish`).
 /// A stalled network publish or a wedged pandoc must not hang `report render` indefinitely.
@@ -82,3 +90,93 @@ pub(crate) fn run_bounded(
     );
     Ok(Output { status, stdout, stderr })
 }
+
+/// Run `cmd` with `payload` on stdin and both output streams captured, all three wired to temp FILES
+/// rather than pipes, under the [`CLAUDE_TIMEOUT`] wall clock. No pipe exists, so no pipe can fill
+/// and no drain can deadlock. For large payloads and large output (the `claude -p` LLM call).
+///
+/// [`run_bounded`] cannot be reused here and the reason is a deadlock, not a preference. It sets
+/// `stdin(Stdio::null())` — there is nowhere to put a 500KB payload — and it drains stdout only
+/// AFTER the child exits. Writing a large payload into a pipe while not draining stdout deadlocks
+/// (child blocks writing output, parent blocks writing input), and a post-exit drain deadlocks the
+/// moment the child fills the ~64KB stdout pipe. This extends the pattern `write_pdf` already uses
+/// for pandoc, whose own comment says large output goes to a file.
+///
+/// `spawn_err` maps a spawn failure (e.g. binary-not-found) to a caller-specific message.
+pub(crate) fn run_with_payload(
+    label: &str,
+    cmd: &mut Command,
+    payload: &str,
+    spawn_err: impl FnOnce(std::io::Error) -> eyre::Report,
+) -> Result<Output> {
+    debug!(
+        "proc::run_with_payload: label={label} payload bytes={} timeout={:?}",
+        payload.len(),
+        CLAUDE_TIMEOUT
+    );
+
+    // stdin: write the payload, flush, then reopen the path READ-ONLY so the child gets a handle
+    // positioned at byte 0. Handing over the write handle would leave it at EOF.
+    let mut stdin_file =
+        tempfile::NamedTempFile::new().with_context(|| format!("failed to create stdin temp for {label}"))?;
+    stdin_file
+        .write_all(payload.as_bytes())
+        .with_context(|| format!("failed to write stdin payload for {label}"))?;
+    stdin_file
+        .flush()
+        .with_context(|| format!("failed to flush stdin payload for {label}"))?;
+    let stdin_read = std::fs::File::open(stdin_file.path())
+        .with_context(|| format!("failed to reopen stdin payload for {label}"))?;
+
+    let stdout_file =
+        tempfile::NamedTempFile::new().with_context(|| format!("failed to create stdout temp for {label}"))?;
+    let stderr_file =
+        tempfile::NamedTempFile::new().with_context(|| format!("failed to create stderr temp for {label}"))?;
+    let stdout_path = stdout_file.path().to_path_buf();
+    let stderr_path = stderr_file.path().to_path_buf();
+    let stdout_handle = stdout_file
+        .reopen()
+        .with_context(|| format!("failed to reopen stdout temp for {label}"))?;
+    let stderr_handle = stderr_file
+        .reopen()
+        .with_context(|| format!("failed to reopen stderr temp for {label}"))?;
+
+    let mut child = cmd
+        .stdin(Stdio::from(stdin_read))
+        .stdout(Stdio::from(stdout_handle))
+        .stderr(Stdio::from(stderr_handle))
+        .spawn()
+        .map_err(spawn_err)?;
+
+    let status = match child.wait_timeout(CLAUDE_TIMEOUT) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            log::warn!("proc::run_with_payload: {label} timed out after {CLAUDE_TIMEOUT:?}, killing child");
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "{label} timed out after {CLAUDE_TIMEOUT:?} and was killed; the generation did not \
+                 complete, so no artifact was written"
+            );
+        }
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{label}: failed while waiting: {e}");
+        }
+    };
+
+    // The child has exited and both streams were files, so these reads cannot block.
+    let stdout = std::fs::read(&stdout_path).with_context(|| format!("failed to read stdout of {label}"))?;
+    let stderr = std::fs::read(&stderr_path).with_context(|| format!("failed to read stderr of {label}"))?;
+    debug!(
+        "proc::run_with_payload: label={label} status={:?} stdout bytes={} stderr bytes={}",
+        status.code(),
+        stdout.len(),
+        stderr.len()
+    );
+    Ok(Output { status, stdout, stderr })
+}
+
+#[cfg(test)]
+mod tests;

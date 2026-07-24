@@ -1,6 +1,8 @@
 pub mod api;
+pub mod cli;
 
 pub use api::{ApiTransport, api_key_from_env};
+pub use cli::CliTransport;
 
 use eyre::{Context, Result, bail};
 use log::debug;
@@ -29,6 +31,32 @@ pub trait Transport {
 pub enum Job {
     Markdown,
     Html,
+}
+
+/// Non-streaming markdown-source ceiling (unchanged from the pre-HTML design). The markdown path
+/// stays byte-identical, so this value and the system prompt must not move.
+const MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 16_000;
+/// Html-source ceiling. The html design's Phase 0 observed a max 26.5K output on a 5x-synthetic
+/// month, and the 2026-07-24 cli spike observed 19.6K on a real 1,310-session month, so the
+/// named-exhaustion bail is a backstop that will not fire for realistic months.
+const HTML_MAX_OUTPUT_TOKENS: u32 = 64_000;
+
+impl Job {
+    /// How much output this job's artifact may legitimately need.
+    ///
+    /// SHARED by both transports, and deliberately not api-private: the api transport SETS it as
+    /// `max_tokens` on the wire, and the cli transport — which cannot set a ceiling at all — CHECKS
+    /// the returned `usage.output_tokens` against it. Both genuinely use it, so it is a fact about
+    /// the job rather than a field one transport would have to ignore.
+    ///
+    /// Streaming, by contrast, IS api-private and lives in `api.rs`: the cli transport has no
+    /// delivery choice to make, and a `stream` field it ignored would be a lying field.
+    pub fn max_output_tokens(self) -> u32 {
+        match self {
+            Job::Markdown => MARKDOWN_MAX_OUTPUT_TOKENS,
+            Job::Html => HTML_MAX_OUTPUT_TOKENS,
+        }
+    }
 }
 
 /// Default model pin for the markdown job.
