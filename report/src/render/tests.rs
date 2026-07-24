@@ -5,7 +5,7 @@ use crate::config::{Config, RenderConfig, ResolvedCommand};
 use crate::report::{ModelTokens, Report, SessionEntry, Totals};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
-use efficiency::{RawCounters, SessionEfficiency, finalize};
+use efficiency::{RawCounters, SessionEfficiency, WorkloadCost, finalize};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 
@@ -764,4 +764,221 @@ fn build_context_block_omits_outcomes_key_when_rollup_absent() {
         sessions.iter().all(|s| s.get("outcomes").is_none()),
         "no session may carry an outcomes key when none were observed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: render invents nothing (string-only context + foreign-number guard)
+// ---------------------------------------------------------------------------
+
+/// Serialize all env-var-touching tests behind one lock (edition 2024, parallel test races).
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Phase 5: the context is STRING-ONLY. The raw numeric OPERANDS the pre-Phase-5 context carried
+/// (`totals.tokens`, per-model `spend-usd`, per-session raw `spend`) are GONE, so the model has no
+/// operand to recombine into a fabricated total. This inverts the pre-Phase-5 shape (which pinned
+/// those raw fields present).
+#[test]
+fn context_block_carries_no_raw_numeric_operands() {
+    let report = sample_report();
+    let block = build_context_block(&report, true, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+
+    let totals = parsed.get("totals").expect("totals key");
+    assert!(
+        totals.get("tokens").is_none(),
+        "raw totals.tokens operand must be gone (tokens-human only): {totals}"
+    );
+    assert!(totals.get("tokens-human").and_then(|v| v.as_str()).is_some());
+
+    for m in totals.get("models").and_then(|v| v.as_array()).expect("models") {
+        assert!(
+            m.get("spend-usd").is_none(),
+            "raw per-model spend-usd operand must be gone: {m}"
+        );
+        assert!(
+            m.get("spend").and_then(|v| v.as_str()).is_some(),
+            "display spend string kept: {m}"
+        );
+    }
+    for s in parsed.get("sessions").and_then(|v| v.as_array()).expect("sessions") {
+        assert!(
+            s.get("spend").is_none(),
+            "raw per-session spend operand must be gone: {s}"
+        );
+        assert!(
+            s.get("spend-display").and_then(|v| v.as_str()).is_some(),
+            "display spend-display string kept: {s}"
+        );
+    }
+}
+
+/// A v2 report carrying efficiency signals: report-wide ratios on `totals`, plus per-session
+/// curated buckets/counts that `build_efficiency_view` rolls up.
+fn report_with_efficiency() -> Report {
+    let mut report = sample_report();
+    report.totals.cache_read_share = Some(0.96);
+    report.totals.tool_error_rate = Some(0.024);
+    let entry = report.sessions.get_mut("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042").unwrap();
+    entry.interrupts = 3;
+    entry.compactions = 2;
+    entry.agent_type_costs.insert(
+        "researcher".into(),
+        WorkloadCost {
+            tokens: 1_000_000,
+            cost_usd: 4.50,
+        },
+    );
+    entry.agent_type_costs.insert(
+        "implementer".into(),
+        WorkloadCost {
+            tokens: 500_000,
+            cost_usd: 9.00,
+        },
+    );
+    entry.by_skill.insert(
+        "graphify".into(),
+        WorkloadCost {
+            tokens: 200_000,
+            cost_usd: 1.25,
+        },
+    );
+    entry.by_mcp.insert(
+        "slack".into(),
+        WorkloadCost {
+            tokens: 50_000,
+            cost_usd: 0.30,
+        },
+    );
+    report
+}
+
+/// Phase 5: the new efficiency signals surface in the context as pre-formatted display strings and
+/// the agent-type headline is pre-sorted by spend descending with no raw operand on its rows.
+#[test]
+fn build_context_block_surfaces_efficiency_signals_as_strings() {
+    let report = report_with_efficiency();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+
+    let eff = parsed.get("efficiency").expect("efficiency key");
+    assert_eq!(eff.get("cache-read-share").and_then(|v| v.as_str()), Some("96.0%"));
+    assert_eq!(eff.get("tool-error-rate").and_then(|v| v.as_str()), Some("2.4%"));
+    assert_eq!(eff.get("interrupts").and_then(|v| v.as_u64()), Some(3));
+    assert_eq!(eff.get("compactions").and_then(|v| v.as_u64()), Some(2));
+
+    let agents = eff
+        .get("agent-type-costs")
+        .and_then(|v| v.as_array())
+        .expect("agent-type-costs list");
+    assert_eq!(agents.len(), 2);
+    // Pre-sorted by spend descending: implementer ($9.00) before researcher ($4.50).
+    assert_eq!(agents[0].get("name").and_then(|v| v.as_str()), Some("implementer"));
+    assert_eq!(agents[0].get("spend").and_then(|v| v.as_str()), Some("$9.00"));
+    assert!(agents[0].get("tokens-human").and_then(|v| v.as_str()).is_some());
+    assert!(
+        agents[0].get("tokens").is_none() && agents[0].get("cost-usd").is_none(),
+        "agent-type row must carry no raw numeric operand: {}",
+        agents[0]
+    );
+
+    assert_eq!(eff.get("by-skill").and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
+    assert_eq!(eff.get("by-mcp").and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
+}
+
+/// Break-the-code (markdown path): a semantically-fabricated figure (a plausible dollar amount NOT
+/// in the facts) injected into generated prose is REJECTED, naming the foreign number; prose that
+/// quotes only facts numbers passes. If the foreign-number filter is removed, the first assertion
+/// (expects Err) fails -- the test bites.
+#[test]
+fn markdown_guard_rejects_fabricated_number_accepts_verbatim() {
+    let facts = r#"{"totals":{"spend":"$4.12","tokens-human":"5,650"},"period":{"since":"2026-07-01"}}"#;
+
+    let fabricated = "Spend was $4.12 this period, saving the team $9,999 in engineering time.";
+    let err = reject_foreign_numbers("markdown", fabricated, facts).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("markdown") && msg.contains("render-invents-nothing"),
+        "error must name the path and the contract: {msg}"
+    );
+    assert!(
+        msg.contains("999"),
+        "the foreign number must be reported in the error: {msg}"
+    );
+
+    let clean = "Spend was $4.12 across the period beginning 2026-07-01; tokens totaled 5,650.";
+    reject_foreign_numbers("markdown", clean, facts).expect("verbatim prose must pass the guard");
+}
+
+/// Break-the-code (html path): the guard runs over VISIBLE TEXT, so CSS/JS geometry (px,
+/// breakpoints, hex colors, a verbatim bar-width percent inside a `style=` attribute) never
+/// false-positives, but a fabricated figure in visible text IS rejected. Positive + negative; the
+/// Err assertion fails if the guard is removed.
+#[test]
+fn html_guard_checks_visible_text_not_css_geometry() {
+    let facts = r#"{"totals":{"spend":"$4.12"},"models":[{"spend-percent-of-max":43.7}]}"#;
+
+    let good = "<!doctype html><html><head><style>body{padding:24px;color:#1a1a1a}\
+        @media(max-width:768px){body{font-size:14px}}</style></head>\
+        <body><h1>Total Spend: $4.12</h1><div style=\"width: 43.7%\"></div></body></html>";
+    reject_foreign_numbers("html", &visible_text(good), facts)
+        .expect("css geometry and a verbatim data figure must pass the html guard");
+
+    let bad = "<!doctype html><html><head><style>body{padding:24px}</style></head>\
+        <body><h1>Saved $9,999 this month</h1></body></html>";
+    let err = reject_foreign_numbers("html", &visible_text(bad), facts).unwrap_err();
+    assert!(format!("{err}").contains("html"), "html path error expected: {err}");
+}
+
+/// `visible_text` strips `<style>`/`<script>` block contents and all tag markup, keeping only the
+/// reader-visible text nodes -- so the html guard scans data figures, not authored CSS/JS numbers.
+#[test]
+fn visible_text_strips_style_script_and_tags() {
+    let html = "<!doctype html><html><head><style>.a{width:50px}</style>\
+        <script>var x=42;</script></head><body><p>Hello 7 world</p></body></html>";
+    let text = visible_text(html);
+    assert!(text.contains("Hello 7 world"), "visible text kept: {text:?}");
+    assert!(!text.contains("50"), "style block contents stripped: {text:?}");
+    assert!(!text.contains("42"), "script block contents stripped: {text:?}");
+    assert!(!text.contains("doctype"), "tag markup stripped: {text:?}");
+}
+
+/// Phase 5 success criterion: the offline `--template` path renders with NO Anthropic key. The key
+/// is removed from the environment for the duration; the render must still succeed.
+#[test]
+fn offline_template_path_requires_no_anthropic_key() {
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior = std::env::var("ANTHROPIC_API_KEY").ok();
+    unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+
+    let tmp = TempDir::new().unwrap();
+    let json_path = tmp.path().join("claude-report.json");
+    let md = tmp.path().join("out.md");
+    let template_path = tmp.path().join("t.md");
+    let report = sample_report();
+    fs::write(&json_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    fs::write(&template_path, "sessions={{session-count}}").unwrap();
+
+    let cfg = Config {
+        log_level: "info".into(),
+        command: ResolvedCommand::Render(RenderConfig {
+            input: json_path,
+            output: Some(md.clone()),
+            format: crate::cli::Format::Markdown,
+            space: None,
+            template: Some(template_path),
+            prompt: None,
+            include_tradeoffs: false,
+            pdf_engine: "wkhtmltopdf".into(),
+            outliers: crate::aggregate::DEFAULT_OUTLIERS,
+        }),
+    };
+    let result = crate::run_with_config(&cfg).expect("offline template render must not need a key");
+    assert_eq!(result.sessions_emitted, 2);
+    assert_eq!(fs::read_to_string(&md).unwrap(), "sessions=2");
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("ANTHROPIC_API_KEY", v) },
+        None => unsafe { std::env::remove_var("ANTHROPIC_API_KEY") },
+    }
+    drop(guard);
 }

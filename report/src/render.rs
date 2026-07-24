@@ -8,8 +8,10 @@ use crate::{OutputDest, RunResult};
 use crate::{summarize, title};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
+use efficiency::{RawCounters, WorkloadCost, finalize};
 use eyre::{Context, Result, bail};
 use log::debug;
+use regex::Regex;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -17,6 +19,7 @@ use std::fs;
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
@@ -239,7 +242,12 @@ fn render_via_opus_markdown(json_body: &str, prompt: &str) -> Result<String> {
             "ANTHROPIC_API_KEY is required for Opus rendering; pass --template <path> for the offline markdown path"
         )
     })?;
-    summarize::markdown(prompt, json_body, &api_key)
+    let prose = summarize::markdown(prompt, json_body, &api_key)?;
+    // Render invents nothing: the whole markdown document is prose over the string-only facts, so
+    // every numeric token in it must appear verbatim in the context (which carries only pre-formatted
+    // display strings). A fabricated figure means the model computed or invented a number -> reject.
+    reject_foreign_numbers("markdown", &prose, json_body)?;
+    Ok(prose)
 }
 
 /// The html-source counterpart to [`render_via_opus_markdown`]. There is NO offline HTML path, so
@@ -254,7 +262,130 @@ fn render_via_opus_html(context: &str, prompt: &str) -> Result<String> {
     let api_key = title::api_key_from_env().ok_or_else(|| {
         eyre::eyre!("ANTHROPIC_API_KEY is required for --format html/marquee-html; there is no offline HTML path")
     })?;
-    summarize::html(prompt, context, &api_key)
+    let html = summarize::html(prompt, context, &api_key)?;
+    // Render invents nothing (html): CSS/JS geometry is legitimate authored markup full of numbers
+    // that are NOT data (px, breakpoints, colors), so the guard runs over the VISIBLE TEXT only
+    // (style/script blocks and tag markup stripped). Every data figure a reader sees must appear
+    // verbatim in the string-only facts; a fabricated figure is rejected.
+    reject_foreign_numbers("html", &visible_text(&html), context)?;
+    Ok(html)
+}
+
+/// Reject generated prose that introduced a numeric token absent from the string-only `facts` (the
+/// serialized context block). This is the RUNTIME half of the render-invents-nothing guard, copied
+/// from `efficiency/src/narrate.rs` (`narrate`/`foreign_numbers`): the prompt-level "no arithmetic"
+/// rule is advisory, so a poisoned narrative is caught here and never escapes. `kind` names the path
+/// (markdown / html) for the operator-facing error and WARN. Fail closed.
+fn reject_foreign_numbers(kind: &str, prose: &str, facts: &str) -> Result<()> {
+    debug!(
+        "render::reject_foreign_numbers: kind={kind} prose_chars={} facts_chars={}",
+        prose.chars().count(),
+        facts.chars().count()
+    );
+    let foreign = foreign_numbers(prose, facts);
+    if !foreign.is_empty() {
+        log::warn!(
+            "render::reject_foreign_numbers: {kind} path REJECTED -- generated prose introduced \
+             number(s) absent from the string-only facts: {foreign:?}"
+        );
+        bail!(
+            "{kind} rendering introduced number(s) absent from the computed facts: {foreign:?} -- the \
+             render-invents-nothing contract was violated; refusing to emit the artifact"
+        );
+    }
+    debug!("render::reject_foreign_numbers: kind={kind} clean");
+    Ok(())
+}
+
+/// Every numeric token (`42`, `4.12`, `155`) in `text`. Copied verbatim from `narrate.rs`, which
+/// already correctly treats a date (`2026-07-01` -> `2026`, `07`, `01`) and a version as separate
+/// tokens that each match the facts, so legitimate dates/versions never read as fabricated.
+fn numeric_tokens(text: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\d+(?:\.\d+)?").expect("numeric-token pattern is a valid regex"))
+        .find_iter(text)
+        .map(|m| m.as_str().to_string())
+        .collect()
+}
+
+/// Numbers in `prose` that do NOT appear anywhere in the string-only `facts` -- i.e. numbers the
+/// model invented (a sum, a projection, a fabricated figure). A non-empty result is the
+/// render-invents-nothing violation [`reject_foreign_numbers`] fails on. The `facts` are the
+/// serialized context block, so any figure the binary pre-formatted into it is permitted and any
+/// figure NOT in it is rejected -- checking against the curated string-only facts, never the raw
+/// report (which would widen the whitelist with recombinable operands, design Phase 5).
+fn foreign_numbers(prose: &str, facts: &str) -> Vec<String> {
+    let present = numeric_tokens(facts);
+    numeric_tokens(prose)
+        .into_iter()
+        .filter(|n| !present.contains(n))
+        .collect()
+}
+
+/// The reader-visible text of an HTML document: `<style>`/`<script>` block CONTENTS and all tag
+/// markup (attributes included) removed, leaving only text nodes. The foreign-number guard runs
+/// over THIS, not the raw HTML, because CSS/JS are legitimately full of authored numbers (px,
+/// breakpoints, hex colors, bar-width percentages in `style=`) that are geometry, not data. A
+/// fabricated DATA figure always surfaces in visible text (a headline, a label, a table cell); the
+/// pre-formatted display strings the model may quote also live there. Byte-slice-free (char-based)
+/// per the crate lint.
+fn visible_text(html: &str) -> String {
+    let stripped = strip_blocks(&strip_blocks(html, "script"), "style");
+    let mut out = String::with_capacity(stripped.len());
+    let mut in_tag = false;
+    for ch in stripped.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                out.push(' ');
+            }
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Remove every `<tag>...</tag>` block (contents included), case-insensitively, for a single tag
+/// name (`style` / `script`). A missing closing tag drops the rest of the document from that opener
+/// (fail closed: unmatched markup never leaks unchecked into the visible-text scan). Char-based, no
+/// byte slicing.
+fn strip_blocks(html: &str, tag: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let chars: Vec<char> = html.chars().collect();
+    let lower_chars: Vec<char> = lower.chars().collect();
+    let open_pat: Vec<char> = open.chars().collect();
+    let close_pat: Vec<char> = close.chars().collect();
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if matches_at(&lower_chars, i, &open_pat) {
+            match find_from(&lower_chars, i + open_pat.len(), &close_pat) {
+                Some(end) => i = end + close_pat.len(),
+                None => break, // no closing tag: drop the remainder
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// True when `pat` occurs in `hay` starting exactly at index `i`.
+fn matches_at(hay: &[char], i: usize, pat: &[char]) -> bool {
+    i + pat.len() <= hay.len() && hay[i..i + pat.len()] == *pat
+}
+
+/// The index in `hay` at or after `start` where `pat` begins, if any.
+fn find_from(hay: &[char], start: usize, pat: &[char]) -> Option<usize> {
+    if pat.is_empty() || start > hay.len() {
+        return None;
+    }
+    (start..=hay.len().saturating_sub(pat.len())).find(|&i| hay[i..i + pat.len()] == *pat)
 }
 
 pub(crate) fn resolve_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> Result<String> {
@@ -298,12 +429,52 @@ struct ContextBlock<'a> {
     period: PeriodView,
     totals: TotalsView,
     aggregates: &'a Aggregates,
+    /// The v2 efficiency signal set, all pre-formatted display strings (design Phase 5): the
+    /// agent-type cost headline plus the report-wide cache/tool/interrupt/compaction signals and the
+    /// by-skill / by-mcp attribution. Carries no raw numeric operand, so the model can only quote it.
+    efficiency: EfficiencyView,
     /// Absent (never `null`, never zeroed) when the report carries no outcome rollup
     /// (`--no-outcomes`, pre-outcomes JSONs, mixed-capability merges). The prompt omits the
     /// Quantified Output section when this key is missing.
     #[serde(skip_serializing_if = "Option::is_none")]
     outcomes: Option<OutcomesView>,
     sessions: Vec<SessionView<'a>>,
+}
+
+/// The report-wide efficiency headline, string-only (design Phase 5). `agent-type-costs` is the
+/// HEADLINE (cost + tokens attributed to each subagent TYPE, pre-sorted by spend descending); the
+/// ratios are pre-formatted percents (`"96.0%"` / `"n/a"`); `interrupts` and `compactions` are the
+/// report-wide observed counts (sanctioned context counts, never operands the model recombines).
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct EfficiencyView {
+    /// Report-wide cache-read share (ratio-of-sums from `totals`), e.g. `"96.0%"` or `"n/a"`.
+    cache_read_share: String,
+    /// Report-wide tool-error rate (ratio-of-sums from `totals`), e.g. `"2.4%"` or `"n/a"`.
+    tool_error_rate: String,
+    /// Report-wide share of cache writes that paid the 1h premium, e.g. `"18.0%"` or `"n/a"`.
+    cache_1h_write_fraction: String,
+    /// Total interrupts observed across the window (structured + text markers).
+    interrupts: u64,
+    /// Total context compactions observed across the window.
+    compactions: u64,
+    /// HEADLINE: tokens + `$` attributed to each subagent TYPE, pre-sorted by spend descending.
+    agent_type_costs: Vec<WorkloadRow>,
+    /// Tokens + `$` grouped by skill (`attributionSkill`), pre-sorted by spend descending.
+    by_skill: Vec<WorkloadRow>,
+    /// Tokens + `$` grouped by MCP tool (`attributionMcpTool`), pre-sorted by spend descending.
+    by_mcp: Vec<WorkloadRow>,
+}
+
+/// One agent-type / skill / mcp-tool attribution row, string-only. `spend` is the catalog's
+/// embedded-priced figure formatted as a display string (see `report::SessionEntry` notes on why
+/// these differ from the fetched-feed model spend).
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct WorkloadRow {
+    name: String,
+    tokens_human: String,
+    spend: String,
 }
 
 /// `outcomes.totals` per the prompt's context-block schema: the persisted [`OutcomeTotals`]
@@ -358,7 +529,6 @@ struct TotalsView {
     sessions: usize,
     repo_count: usize,
     spend: String,
-    tokens: u64,
     tokens_human: String,
     untracked_models: Vec<String>,
     /// Sorted by spend descending by this builder; `Report.totals.models` is a name-keyed
@@ -374,8 +544,10 @@ struct ModelRow {
     model: String,
     sessions_using: usize,
     tokens_human: String,
-    /// Raw, nullable (`null` when the model is unpriced); part of the prompt's documented
-    /// context-block schema alongside the `(untracked)` display string.
+    /// Raw per-model spend, kept ONLY to compute this row's `spend-percent-of-max` and pre-sort the
+    /// list; NOT serialized (`skip`) so no raw numeric operand reaches the model (design Phase 5,
+    /// string-only context). The display string `spend` / `(untracked)` is what the model sees.
+    #[serde(skip)]
     spend_usd: Option<f64>,
     spend: String,
     /// Bar-chart geometry (design "Chart truthfulness"): see [`aggregate::percent_of_max`],
@@ -395,11 +567,11 @@ struct TotalRow {
     spend: String,
 }
 
-/// Slim per-session view: `short-id`, `title`, `repo`, `begin`/`end`, `tokens-human`, a raw
-/// nullable `spend` alongside `spend-display`, and model NAMES only (no per-model token detail).
-/// No `jsonl-paths`. The raw `spend` (null when unpriced) and `short-id` fields are part of the
-/// prompt's documented context-block schema: sessions feed THEMES and CITATIONS only (never
-/// counting or summing), and `short-id` backs the untitled-session fallback.
+/// Slim per-session view: `short-id`, `title`, `repo`, `begin`/`end`, `tokens-human`,
+/// `spend-display`, and model NAMES only (no per-model token detail). No `jsonl-paths`, and NO raw
+/// `spend` operand (design Phase 5, string-only context): sessions feed THEMES and CITATIONS only
+/// (never counting or summing), so the display string is all the model needs; `short-id` backs the
+/// untitled-session fallback.
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct SessionView<'a> {
@@ -409,7 +581,6 @@ struct SessionView<'a> {
     begin: DateTime<Utc>,
     end: DateTime<Utc>,
     tokens_human: String,
-    spend: Option<f64>,
     spend_display: String,
     models: Vec<&'a str>,
     /// The session's observed outcomes (commit shas, PR refs, write counts), absent when
@@ -440,6 +611,7 @@ pub(crate) fn build_context_block(
         period: build_period_view(report, &aggregates),
         totals: build_totals_view(report),
         aggregates: &aggregates,
+        efficiency: build_efficiency_view(report),
         outcomes: build_outcomes_view(report),
         sessions: report
             .sessions
@@ -508,7 +680,6 @@ fn build_totals_view(report: &Report) -> TotalsView {
         sessions: report.totals.sessions,
         repo_count,
         spend: format_usd(report.totals.spend_usd),
-        tokens: total_tokens,
         tokens_human: format_tokens_human(total_tokens),
         untracked_models: report.totals.untracked_models.clone(),
         models,
@@ -547,11 +718,98 @@ fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a>
         begin: entry.begin,
         end: entry.end,
         tokens_human: format_tokens_human(entry.total_tokens()),
-        spend: entry.spend_usd,
         spend_display: format_optional_usd(entry.spend_usd),
         models: entry.models.keys().map(String::as_str).collect(),
         outcomes: entry.outcomes.as_ref(),
     }
+}
+
+/// Build the report-wide [`EfficiencyView`] from the collected sessions' curated signals + raw
+/// passthrough (design Phase 5). The two ratios `totals` already carries authoritatively
+/// (`cache-read-share`, `tool-error-rate`, both ratio-of-sums from Phase 4) are formatted straight
+/// from `totals`; `cache-1h-write-fraction` is recomputed via the SAME `finalize` path over the
+/// union of every session's raw counters (so it stays consistent with those two). Interrupts,
+/// compactions, and the agent-type / by-skill / by-mcp buckets are additive, so they sum across the
+/// report's rows. In the default (rollup) view each session is one row and these sums are exact; in
+/// `--no-rollup` they sum over the displayed decomposition (documented tradeoff).
+fn build_efficiency_view(report: &Report) -> EfficiencyView {
+    debug!(
+        "render::build_efficiency_view: sessions={} cache-read-share={:?} tool-error-rate={:?}",
+        report.sessions.len(),
+        report.totals.cache_read_share,
+        report.totals.tool_error_rate
+    );
+    let mut grand = RawCounters::default();
+    let mut agent: BTreeMap<String, WorkloadCost> = BTreeMap::new();
+    let mut by_skill: BTreeMap<String, WorkloadCost> = BTreeMap::new();
+    let mut by_mcp: BTreeMap<String, WorkloadCost> = BTreeMap::new();
+    let mut interrupts: u64 = 0;
+    let mut compactions: u64 = 0;
+    for entry in report.sessions.values() {
+        grand.merge(&entry.efficiency.aggregate.raw);
+        interrupts += entry.interrupts;
+        compactions += entry.compactions;
+        merge_workload(&mut agent, &entry.agent_type_costs);
+        merge_workload(&mut by_skill, &entry.by_skill);
+        merge_workload(&mut by_mcp, &entry.by_mcp);
+    }
+    let grand_signals = finalize(grand);
+    let view = EfficiencyView {
+        cache_read_share: fmt_ratio_pct(report.totals.cache_read_share),
+        tool_error_rate: fmt_ratio_pct(report.totals.tool_error_rate),
+        cache_1h_write_fraction: fmt_ratio_pct(grand_signals.cache_1h_write_fraction),
+        interrupts,
+        compactions,
+        agent_type_costs: workload_rows(agent),
+        by_skill: workload_rows(by_skill),
+        by_mcp: workload_rows(by_mcp),
+    };
+    debug!(
+        "render::build_efficiency_view: agent-types={} skills={} mcp-tools={} interrupts={} compactions={}",
+        view.agent_type_costs.len(),
+        view.by_skill.len(),
+        view.by_mcp.len(),
+        view.interrupts,
+        view.compactions
+    );
+    view
+}
+
+/// A ratio in `[0, 1]` as a one-decimal percent string; `None` -> `"n/a"` (never `NaN`). One decimal
+/// matches the existing `aggregates.cache.cache-read-share` display convention.
+fn fmt_ratio_pct(x: Option<f64>) -> String {
+    match x {
+        Some(v) => format!("{:.1}%", v * 100.0),
+        None => "n/a".to_string(),
+    }
+}
+
+/// Accumulate a per-key `WorkloadCost` map into `base` (tokens + `$` both additive).
+fn merge_workload(base: &mut BTreeMap<String, WorkloadCost>, add: &BTreeMap<String, WorkloadCost>) {
+    for (k, v) in add {
+        let bucket = base.entry(k.clone()).or_default();
+        bucket.tokens += v.tokens;
+        bucket.cost_usd += v.cost_usd;
+    }
+}
+
+/// Convert an accumulated `WorkloadCost` map into pre-formatted display rows, pre-sorted by spend
+/// descending (ties broken by name for determinism) so the model copies the order, never re-sorts.
+fn workload_rows(map: BTreeMap<String, WorkloadCost>) -> Vec<WorkloadRow> {
+    let mut rows: Vec<(String, WorkloadCost)> = map.into_iter().collect();
+    rows.sort_by(|a, b| {
+        b.1.cost_usd
+            .partial_cmp(&a.1.cost_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    rows.into_iter()
+        .map(|(name, wc)| WorkloadRow {
+            name,
+            tokens_human: format_tokens_human(wc.tokens),
+            spend: format_usd(wc.cost_usd),
+        })
+        .collect()
 }
 
 fn load_template(custom: Option<&Path>) -> Result<Template> {

@@ -1,8 +1,9 @@
-You are authoring a recurring monthly Claude Enterprise spend justification report as a single,
-self-contained, dashboard-quality HTML document. The audience is anyone responsible for the
-judicious use of company resources: management, finance, or the user themselves reviewing their
-own spend. The report explains what the AI spend produced over the period and lets the reader
-judge whether it was worth it.
+You are authoring a recurring monthly Claude Enterprise usage report as a single, self-contained,
+dashboard-quality HTML document. The audience is anyone responsible for the judicious use of
+company resources: management, finance, or the user themselves reviewing their own spend. The
+report presents, accurately, what the AI spend produced over the period and how efficiently the
+tokens were used, and lets the reader judge for themselves. You present the data; you never argue
+that the spend was justified.
 
 This is a recurring monthly report. The reader will see a similar report every month. Do not
 replicate prior-month structure verbatim within sections; structure each section around what is
@@ -114,11 +115,12 @@ The JSON context block contains:
 - `options.include-tradeoffs`: boolean; controls the Tradeoffs section.
 - `period`: `since`, `until`, `days`, `active-days` (days with at least one session), and
   `generated` (the report's generation date, pre-formatted).
-- `totals`: `sessions`, `repo-count`, `spend` (display string), `tokens` (raw +
-  `tokens-human`), `untracked-models`, and `models`, a LIST pre-sorted by spend descending
-  where each row carries `model`, `sessions-using`, `tokens-human`, `spend` (display), and a
-  raw `spend-usd` (null when unpriced), plus a `total-row` with `sessions-using`,
-  `tokens-human`, and `spend`.
+- `totals`: `sessions`, `repo-count`, `spend` (display string), `tokens-human` (display string),
+  `untracked-models`, and `models`, a LIST pre-sorted by spend descending where each row carries
+  `model`, `sessions-using`, `tokens-human`, and `spend` (display), plus a `total-row` with
+  `sessions-using`, `tokens-human`, and `spend`. Every figure here is a pre-formatted display
+  string; there are no raw numeric operands to recompute from. (Bar-chart geometry comes from the
+  separate `*-percent-of-max` fields described below, never from these strings.)
 - `aggregates.by-org`: one row per source org (e.g. the employer GitHub org, the user's personal
   org, third-party), each with `org`, `repos`, `sessions`, `tokens-human`, `spend`.
 - `aggregates.by-repo`: one row per repo, pre-sorted by spend descending, each with `repo`,
@@ -129,11 +131,20 @@ The JSON context block contains:
 - `aggregates.cache`: `cache-read-share` (display string), `input-tokens-human`,
   `cache-read-tokens-human`, and when present `list-price-equivalent` and `cache-savings`
   (display strings computed by the binary from published rates).
+- `efficiency`: the report-wide efficiency signal set, all pre-formatted display strings/counts:
+  `cache-read-share`, `tool-error-rate`, and `cache-1h-write-fraction` (each a percent display
+  string like `"96.0%"`, or `"n/a"`); `interrupts` and `compactions` (report-wide observed counts);
+  `agent-type-costs` (the HEADLINE: a LIST pre-sorted by spend descending, each row `name`,
+  `tokens-human`, `spend`, attributing cost to a subagent TYPE); and `by-skill` / `by-mcp` (the
+  same row shape, for skill and MCP-tool attribution). Empty lists mean nothing of that kind was
+  observed. These spend figures are catalog-embedded prices and may not sum to `totals.spend`;
+  present them as attribution, never reconcile them against the model spend. There is NO
+  `*-percent-of-max` on these rows, so they are rendered as TABLES, never charts.
 - `outcomes.totals`: observed, verifiable counts extracted from session transcripts; any of:
   `sessions-with-commits`, `commits`, `prs-opened`, `confluence-writes`, `jira-writes`,
   `slack-messages`, `files-edited`. Only fields present were observed.
 - `sessions`: per-session entries with `short-id`, `title`, `repo`, `begin`, `end`,
-  `tokens-human`, `spend` (raw, null when unpriced), `spend-display`, `models`, and an
+  `tokens-human`, `spend-display` (display string, `(untracked)` when unpriced), `models`, and an
   optional `outcomes` object (`commits`: list of shas; `prs`: list of
   `{number, url, repository}`; `confluence-writes`, `jira-writes`, `slack-messages`,
   `files-edited` counts). Use these for THEMES and CITATIONS, never for counting or summing.
@@ -172,13 +183,20 @@ Produce ONE complete, self-contained HTML document.
   string in an `auto` column steals width from the shared space and slides that row's bar-track
   left edge, so the bars stop lining up. All bars must start and end on the same two vertical lines.
 - Tables for every non-chartable series - the cost-by-model detail, the outlier sessions table,
-  the quantified-output counts.
-- Every section of the markdown report has an HTML counterpart: an executive summary, quantified
-  output (the outcome counts), a cost summary, the efficiency story (cache), what-this-funded
-  (organized by org tier: employer org first, then the user's personal org and open-source, then
-  third-party), a usage profile (temporal shape, model mix, outliers), a forward-looking note,
-  and a conclusion. Omit any section whose data is absent (e.g. quantified output when there is
-  no `outcomes` block; the efficiency story when there is no `aggregates.cache`).
+  the quantified-output counts, and the efficiency attribution tables (agent-type, by-skill,
+  by-mcp).
+- Every section has an HTML counterpart: an executive summary, quantified output (the outcome
+  counts), a cost summary, an agent-type cost attribution table (the HEADLINE breakdown from
+  `efficiency.agent-type-costs`, rows in the order given, with a lead-in naming the top row), the
+  efficiency story (cache-read-share plus the `efficiency` signals -- tool-error-rate,
+  cache-1h-write-fraction, interrupts, compactions -- and optional by-skill / by-mcp tables),
+  what-this-funded (organized by org tier: employer org first, then the user's personal org and
+  open-source, then third-party), a usage profile (temporal shape, model mix, outliers), a
+  forward-looking note, and a conclusion. Omit any section whose data is absent (e.g. quantified
+  output when there is no `outcomes` block; the agent-type table when `efficiency.agent-type-costs`
+  is empty; a signal clause when its value is `n/a` or zero). Every figure in these sections is
+  copied verbatim from the context; never sum, average, or reconcile the attribution prices against
+  `totals.spend`.
 - HTML-escape every interpolated string (titles, repo slugs) so a stray character cannot break
   the markup.
 - Never use an em-dash (the Unicode character U+2014) anywhere in the document: not in the title,

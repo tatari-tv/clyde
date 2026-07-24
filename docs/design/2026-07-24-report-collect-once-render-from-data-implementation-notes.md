@@ -363,3 +363,58 @@ Zero-code spike; findings only (read-only against the live `sessions.db`).
 ### Open questions
 - None. All Phase 4 bullets are implemented; the titling/CLI-flag changes are forced consequences of
   "No JSONL path remains" and are recorded as deviations, not open items.
+
+## Phase 5: Render invents nothing + copy the guard
+
+### Design decisions
+- Runtime foreign-number guard copied from `narrate.rs` into `report::render`
+  (`numeric_tokens`, `foreign_numbers`, `reject_foreign_numbers`) and wired into BOTH Opus paths
+  after generation: `render_via_opus_markdown` and `render_via_opus_html`. The "facts" whitelist is
+  the serialized string-only context block itself (`json_body` / `context`), so any figure the
+  binary pre-formatted is permitted and any other numeric token is rejected -- checking against the
+  curated facts, never the raw report (design Phase 5: a "somewhere in the JSON" check is too weak).
+- WARN on rejection names the foreign number(s) before the loud bail (logging rule: the causing
+  values are in the log, not just "render failed").
+- String-only context: dropped the three cited raw operands so the model has nothing to recombine --
+  `TotalsView.tokens: u64` removed (kept `tokens-human`); `ModelRow.spend_usd` marked `#[serde(skip)]`
+  (kept for internal percent-of-max + sort, not serialized); `SessionView.spend` removed (kept
+  `spend-display`). `render.rs` view structs, `build_totals_view`/`build_session_view`.
+- New efficiency signals surfaced via a report-wide `EfficiencyView` (`render::build_efficiency_view`),
+  all pre-formatted strings: agent-type cost attribution as the HEADLINE (pre-sorted by spend desc),
+  `cache-read-share`/`tool-error-rate`/`cache-1h-write-fraction` as percent strings, `interrupts`/
+  `compactions` counts, and `by-skill`/`by-mcp` attribution rows. The two report-wide ratios come
+  straight from Phase 4's `totals`; `cache-1h-write-fraction` is recomputed via the SAME `finalize`
+  path over the unioned per-session raw counters so it stays consistent.
+- Templates: `report.pmt`/`report-html.pmt` schema docs updated to the string-only shape (no raw
+  `tokens`/`spend-usd`/`spend`), an `efficiency` block documented, an Agent-Type Cost Attribution
+  section (headline) added, and The Efficiency Story expanded to surface the new signals.
+
+### Deviations
+- HTML guard runs over VISIBLE TEXT, not the raw HTML (`visible_text` strips `<style>`/`<script>`
+  block contents and all tag markup). Copying `narrate`'s whole-string check verbatim onto an HTML
+  document would reject nearly every artifact, because CSS/JS are legitimately full of authored
+  numbers (px, breakpoints, hex colors, bar-width percentages inside `style=`) that are geometry,
+  not data. Same effect (a fabricated DATA figure a reader sees is rejected), correct seam for the
+  HTML medium. Markdown stays a whole-document check, exactly as `narrate`.
+- Chart-geometry `*-percent-of-max` and the sanctioned context COUNTS (`totals.sessions`,
+  `by-org`/`by-repo` row `sessions`/`repos`, outcome counts) remain numeric rather than being
+  stringified. They are final display/geometry values already present verbatim in the facts (so the
+  runtime guard permits quoting them and rejects any fabricated recombination regardless), the HTML
+  bar-width contract REQUIRES the percent as a number, and prohibition-1 explicitly licenses those
+  counts. "String-only" is applied to the numeric OPERANDS the design cited (per-model/per-session
+  tokens & spend that invite a fabricated total), which is where recombination risk lives.
+
+### Tradeoffs
+- Report-wide efficiency rollup (`interrupts`, `compactions`, agent-type/by-skill/by-mcp) is summed
+  over `report.sessions` rows. In the default (rollup) view each session is one row and the sums are
+  exact; under `--no-rollup` they sum over the displayed decomposition, and the parent-residual row
+  drops its un-splittable compaction samples (a Phase 4 decomposition artifact), so a `--no-rollup`
+  compaction count can undercount. Chose exact-in-default over threading a separate pre-expand source
+  into render (render only sees post-expand entries).
+- Guard tested at the pure-function seam (`reject_foreign_numbers` / `foreign_numbers` /
+  `visible_text`) rather than through a live Opus call: the enforcement logic is what bites, and it
+  is deterministic and network-free. Break-the-code tests assert Err on a fabricated figure on BOTH
+  paths (they fail if the foreign-number filter is removed) and Ok on verbatim prose / CSS geometry.
+
+### Open questions
+- None.
