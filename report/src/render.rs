@@ -3,6 +3,7 @@ use crate::cli::Format;
 use crate::config::RenderConfig;
 use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::persona::{self, PersonaBlock};
+use crate::proc::run_bounded;
 use crate::report::{Report, SCHEMA_VERSION, SessionEntry};
 use crate::{OutputDest, RunResult};
 use crate::{summarize, title};
@@ -16,17 +17,12 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
-use std::time::Duration;
-use wait_timeout::ChildExt;
 
 const STDOUT_SIGIL: &str = "-";
-/// Wall-clock ceiling for non-interactive external commands (pandoc, `marquee whoami`/`publish`).
-/// A stalled network publish or a wedged pandoc must not hang `report render` indefinitely.
-const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
 const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
 pub const DEFAULT_HTML_PROMPT: &str = include_str!("../templates/report-html.pmt");
@@ -984,56 +980,6 @@ fn render_custom(report: &Report, body: &str) -> String {
         .replace("{{session-count}}", &report.totals.sessions.to_string())
         .replace("{{total-tokens}}", &format_int(total_tokens))
         .replace("{{total-spend}}", &format_usd(report.totals.spend_usd))
-}
-
-/// Spawn a non-interactive external command with piped stdio and a wall-clock ceiling
-/// ([`SUBPROCESS_TIMEOUT`]); on timeout, kill and reap the child rather than blocking forever
-/// (per the repo's subprocess-hygiene rule; mirrors `persona::whoami_via`). `spawn_err` maps a
-/// spawn failure (e.g. binary-not-found) to a caller-specific message. Only for commands whose
-/// combined output stays well under the OS pipe buffer (URLs, short stderr) — large stdout must go
-/// to a file, not a pipe, to avoid a fill-the-buffer deadlock.
-fn run_bounded(
-    label: &str,
-    cmd: &mut Command,
-    spawn_err: impl FnOnce(std::io::Error) -> eyre::Report,
-) -> Result<Output> {
-    debug!("render::run_bounded: label={label} timeout={:?}", SUBPROCESS_TIMEOUT);
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(spawn_err)?;
-    let status = match child.wait_timeout(SUBPROCESS_TIMEOUT) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            log::warn!("render::run_bounded: {label} timed out after {SUBPROCESS_TIMEOUT:?}, killing child");
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("{label} timed out after {SUBPROCESS_TIMEOUT:?}");
-        }
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("{label}: failed while waiting: {e}");
-        }
-    };
-    // `wait_timeout` has already reaped the child, so `wait_with_output()` (a second wait on the
-    // same PID) would fail with ECHILD. Read the piped handles directly instead — the process has
-    // exited, and callers only route commands whose output stays well under the pipe buffer here
-    // (large output, e.g. the pandoc PDF, goes to a file), so a post-exit drain cannot deadlock.
-    // Mirrors `persona::whoami_via`.
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
-        out.read_to_end(&mut stdout)
-            .with_context(|| format!("failed to read stdout of {label}"))?;
-    }
-    if let Some(mut err) = child.stderr.take() {
-        err.read_to_end(&mut stderr)
-            .with_context(|| format!("failed to read stderr of {label}"))?;
-    }
-    Ok(Output { status, stdout, stderr })
 }
 
 fn write_pdf(markdown: &str, output: &Path, pdf_engine: &str) -> Result<()> {

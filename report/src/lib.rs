@@ -10,6 +10,7 @@ pub mod fmt;
 pub mod merge;
 pub mod outcome;
 pub mod persona;
+pub mod proc;
 pub mod render;
 pub mod repo;
 pub mod report;
