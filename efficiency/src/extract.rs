@@ -352,11 +352,12 @@ pub(crate) fn name_from_agent_id(agent_id: &str) -> Option<&str> {
 
 /// True the FIRST time this assistant turn's `message.id` is seen, recording it so later
 /// content-block records of the same turn (which repeat the identical message-level `usage`) are
-/// skipped. A record with no `message.id` -- not expected in a real transcript -- is always applied:
-/// there is nothing to dedupe on, and dropping it would silently lose real usage (fail open on the
-/// count, never zero it).
+/// skipped. A record with no `message.id` -- OR an empty one -- is always applied: there is nothing
+/// to dedupe on, and dropping it would silently lose real usage (fail open on the count, never zero
+/// it). An empty id must NOT be inserted into the set, or the second empty-id record would collide
+/// with the first and be wrongly skipped.
 fn first_seen_usage(message: &Message, seen: &mut HashSet<String>) -> bool {
-    match message.id.as_deref() {
+    match message.id.as_deref().filter(|id| !id.is_empty()) {
         Some(id) => seen.insert(id.to_string()),
         None => true,
     }

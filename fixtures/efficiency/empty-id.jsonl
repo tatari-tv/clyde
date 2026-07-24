@@ -1,0 +1,2 @@
+{"isSidechain":false,"message":{"model":"claude-opus-4-8","id":"","type":"message","role":"assistant","content":[{"type":"text","text":"a"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"isSidechain":false,"message":{"model":"claude-opus-4-8","id":"","type":"message","role":"assistant","content":[{"type":"text","text":"b"}],"stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":13,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}

@@ -282,3 +282,21 @@ fn message_level_usage_counted_once_per_message_id_not_per_block() {
     // Per-model split reconstructs the DEDUPED aggregate (input+output+5m+read; 1h is 0 here).
     assert_eq!(p.by_model["claude-opus-4-8"].total, 110 + 220 + 50 + 1000);
 }
+
+/// An EMPTY `message.id` is treated as absent (fail open): every empty-id record's usage is applied,
+/// never deduped against a prior empty id. BITES: insert empty ids into the seen-set and the second
+/// empty-id turn collides with the first and is dropped (turns=1, input=5 instead of 2 / 16).
+#[test]
+fn empty_message_id_is_never_deduped_fails_open() {
+    let f = ex(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fixtures/efficiency/empty-id.jsonl"
+    ));
+    let p = &f.parent;
+    assert_eq!(
+        p.turns, 2,
+        "two empty-id turns both count (empty id is not a dedupe key)"
+    );
+    assert_eq!(p.input_tokens, 16, "5 + 11, both applied");
+    assert_eq!(p.output_tokens, 20, "7 + 13, both applied");
+}
