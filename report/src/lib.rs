@@ -178,6 +178,31 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
         .context("failed to read the session catalog window")?;
     log::info!("run_collect: catalog returned {} sessions in the window", entries.len());
 
+    // Fail closed on a catalog that was never built. An empty window on an EMPTY catalog is NOT a
+    // zero-usage month, it is a fresh install whose catalog does not exist yet; emitting a valid
+    // artifact reading `sessions: 0` there answers "you had no activity", which is confidently
+    // wrong. This is the first-run state on every machine other than the author's, and the `missing`
+    // guard below cannot catch it: with zero rows in the window there is no NULL `efficiency_json`
+    // left to count. "Never indexed" is a third case alongside "no data" and "bad data", and it gets
+    // its own loud error with the remedy. A populated catalog with a genuinely empty window still
+    // emits a valid empty report and exits zero, per the design's resolved decision.
+    if entries.is_empty() {
+        let indexed = db.count().context("failed to count the sessions in the catalog")?;
+        if indexed == 0 {
+            eprintln!(
+                "error: the session catalog at {} is empty; no sessions have been indexed yet, so \
+                 there is nothing to report for any window. Run `clyde session reindex` to build \
+                 the catalog from ~/.claude/projects, then re-run `report collect`. No report was \
+                 written.",
+                cfg.db_path.display()
+            );
+            return Err(eyre::eyre!(
+                "empty catalog: no sessions indexed; run `clyde session reindex`"
+            ));
+        }
+        log::info!("run_collect: window is empty but the catalog holds {indexed} sessions; emitting an empty report");
+    }
+
     // Fail closed: any windowed session not yet reindexed (NULL efficiency_json) means the catalog
     // is incomplete. Never zero-fill or emit a partial artifact; point the operator at the remedy.
     let missing = entries.iter().filter(|e| e.efficiency_json.is_none()).count();
