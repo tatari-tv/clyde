@@ -885,6 +885,112 @@ fn build_context_block_surfaces_efficiency_signals_as_strings() {
     assert_eq!(eff.get("by-mcp").and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
 }
 
+/// A stale schema-v1 artifact is rejected by VERSION, naming both versions and the re-collect
+/// remedy, rather than by a serde error about an internal field.
+///
+/// Rendering a leftover v1 `./claude-report.json` (the pre-v2 `cr` default output path, which is
+/// still sitting in people's home directories) previously failed with
+/// `missing field "efficiency" at line 91 column 5`. That reads as clyde crashing, not as the
+/// documented v1 -> v2 break, and it sent people looking for a bug in the wrong place.
+///
+/// BITES: remove the `check_schema_version` call in `run` and the error reverts to the serde
+/// message, so the `schema v1` / `report collect` assertions fail.
+#[test]
+fn render_rejects_v1_artifact_by_version_not_serde_error() {
+    // A v1-shaped report: the envelope parses, but sessions carry no `efficiency` field.
+    let v1 = r#"{
+        "schema-version": 1,
+        "generated": "2026-07-01T00:00:00Z",
+        "host": "somehost",
+        "since": "2026-07-01T00:00:00Z",
+        "until": "2026-07-24T00:00:00Z",
+        "totals": {"sessions": 1, "spend-usd": 12.5, "models": {}},
+        "sessions": {"9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042": {"title": "t", "spend-usd": 12.5}}
+    }"#;
+    let err = check_schema_version(v1, Path::new("./claude-report.json")).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("schema v1"),
+        "the error must name the artifact's version: {msg}"
+    );
+    assert!(
+        msg.contains("schema v2"),
+        "the error must name the expected version: {msg}"
+    );
+    assert!(
+        msg.contains("report collect"),
+        "the error must name the re-collect remedy: {msg}"
+    );
+    assert!(
+        !msg.contains("missing field"),
+        "the version gate must fire BEFORE serde reports an internal field: {msg}"
+    );
+
+    // A current v2 envelope passes the gate.
+    let v2 = r#"{"schema-version": 2}"#;
+    check_schema_version(v2, Path::new("./claude-report.json")).expect("a v2 artifact must pass the gate");
+
+    // Something that is not a clyde report at all is named as such, not as a version mismatch.
+    let junk = r#"{"hello": "world"}"#;
+    let err = check_schema_version(junk, Path::new("./nope.json")).unwrap_err();
+    assert!(
+        format!("{err}").contains("does not look like"),
+        "a non-report must be named as a non-report: {err}"
+    );
+}
+
+/// WIRING: the version gate is actually reached by `render::run`, not merely present as a function.
+///
+/// The unit test above proves `check_schema_version` works in isolation, which would still pass if
+/// the call site were deleted. This drives the real entry point against a v1 file on disk and
+/// asserts the version error surfaces. It needs no `ANTHROPIC_API_KEY` and makes no network call:
+/// the gate fires before any format dispatch or API use, which is itself part of the contract.
+///
+/// BITES: delete the `check_schema_version(&body, &cfg.input)?` line in `run` and the failure
+/// reverts to serde's `missing field` message, tripping the final assertion.
+#[test]
+fn render_run_gates_on_schema_version_before_touching_the_api() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("claude-report.json");
+    fs::write(
+        &input,
+        r#"{
+            "schema-version": 1,
+            "generated": "2026-07-01T00:00:00Z",
+            "host": "somehost",
+            "since": "2026-07-01T00:00:00Z",
+            "until": "2026-07-24T00:00:00Z",
+            "totals": {"sessions": 1, "spend-usd": 12.5, "models": {}},
+            "sessions": {}
+        }"#,
+    )
+    .unwrap();
+
+    let cfg = RenderConfig {
+        input: input.clone(),
+        output: Some(tmp.path().join("out.md")),
+        format: crate::cli::Format::Markdown,
+        space: None,
+        template: None,
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+    };
+
+    let err = run(&cfg, &pricing()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("schema v1") && msg.contains("report collect"),
+        "run must surface the version error and the remedy: {msg}"
+    );
+    assert!(!msg.contains("missing field"), "the gate must fire before serde: {msg}");
+    assert!(
+        !tmp.path().join("out.md").exists(),
+        "no output may be written for a rejected artifact"
+    );
+}
+
 /// Break-the-code (markdown path): a semantically-fabricated figure (a plausible dollar amount NOT
 /// in the facts) injected into generated prose is REJECTED, naming the foreign number; prose that
 /// quotes only facts numbers passes. If the foreign-number filter is removed, the first assertion

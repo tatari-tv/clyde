@@ -3,7 +3,7 @@ use crate::cli::Format;
 use crate::config::RenderConfig;
 use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::persona::{self, PersonaBlock};
-use crate::report::{Report, SessionEntry};
+use crate::report::{Report, SCHEMA_VERSION, SessionEntry};
 use crate::{OutputDest, RunResult};
 use crate::{summarize, title};
 use chrono::{DateTime, Utc};
@@ -52,6 +52,7 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
 
     let body =
         fs::read_to_string(&cfg.input).with_context(|| format!("failed to read report at {}", cfg.input.display()))?;
+    check_schema_version(&body, &cfg.input)?;
     let report: Report =
         serde_json::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
 
@@ -269,6 +270,48 @@ fn render_via_opus_html(context: &str, prompt: &str) -> Result<String> {
     // verbatim in the string-only facts; a fabricated figure is rejected.
     reject_foreign_numbers("html", &visible_text(&html), context)?;
     Ok(html)
+}
+
+/// Gate on the artifact's `schema-version` BEFORE the full parse, so a wrong-shaped report is named
+/// as such instead of surfacing as a serde error about an internal field.
+///
+/// Without this, rendering a leftover v1 `claude-report.json` (from the pre-v2 `cr`, or any older
+/// clyde) failed with `missing field "efficiency" at line 91 column 5`, which reads as a crash in
+/// clyde rather than as the DOCUMENTED v1 -> v2 break. The design's Rollout Plan is explicit that
+/// this break must "read as expected, not a bug", and it deliberately ships no compat shim: the
+/// remedy is to re-collect. So say exactly that, and name both versions.
+///
+/// Probes ONLY `schema-version` so none of a v1 file's other differences ever reach serde.
+fn check_schema_version(body: &str, path: &Path) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct SchemaProbe {
+        #[serde(rename = "schema-version")]
+        schema_version: u32,
+    }
+
+    let probe: SchemaProbe = serde_json::from_str(body).with_context(|| {
+        format!(
+            "could not read a `schema-version` from {}; it does not look like a `clyde report collect` artifact",
+            path.display()
+        )
+    })?;
+    debug!(
+        "render::check_schema_version: path={} found=v{} expected=v{}",
+        path.display(),
+        probe.schema_version,
+        SCHEMA_VERSION
+    );
+    if probe.schema_version != SCHEMA_VERSION {
+        bail!(
+            "the report at {} is schema v{}, but this clyde reads schema v{}. There is no \
+             backward-compatible render path for an older artifact: re-run `clyde report collect` \
+             to regenerate it, then render again.",
+            path.display(),
+            probe.schema_version,
+            SCHEMA_VERSION
+        );
+    }
+    Ok(())
 }
 
 /// Reject generated prose that introduced a numeric token absent from the string-only `facts` (the

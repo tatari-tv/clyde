@@ -295,6 +295,90 @@ fn collect_empty_window_writes_valid_empty_artifact() {
     assert!(report.sessions.is_empty());
 }
 
+/// A catalog with ZERO rows is "never indexed", NOT "zero usage": collect fails closed with the
+/// reindex remedy and writes no artifact.
+///
+/// This is the first-run state on every machine where clyde has just been installed, and it is the
+/// gap that let a fresh install report `sessions: 0` / `spend-usd: -0.0` and exit 0, which reads as
+/// "you spent nothing this month" when the truth is "the catalog does not exist yet". Note the
+/// contrast with `collect_empty_window_writes_valid_empty_artifact` above: that one inserts a row
+/// OUTSIDE the window, so the catalog is populated and an empty window is legitimately an empty
+/// report. Every other collect test seeds a row first, which is exactly why this case escaped.
+///
+/// BITES: drop the `db.count()` check in `run_collect` and this test gets `Ok` with a written
+/// artifact instead of an error.
+#[test]
+fn collect_on_empty_catalog_fails_closed_with_reindex_remedy() {
+    let tmp = TempDir::new().unwrap();
+    // Open and drop, so the schema exists but not a single session row does.
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    assert_eq!(db.count().unwrap(), 0, "precondition: the catalog must be empty");
+    drop(db);
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-07-01T00:00:00Z",
+        "2026-07-31T23:59:59Z",
+        false,
+    );
+    let err = run(&cfg).unwrap_err().to_string();
+    assert!(
+        err.contains("empty catalog") && err.contains("reindex"),
+        "the error must name the empty catalog and the reindex remedy, got: {err}"
+    );
+    assert!(
+        !output.exists(),
+        "no artifact may be written when the catalog was never indexed"
+    );
+}
+
+/// A zero-session report serializes `spend-usd` as `0.0`, never `-0.0`.
+///
+/// Rust's `Sum for f64` folds from `-0.0`, so summing an empty set of priced models yields negative
+/// zero and it survives rounding straight into the JSON. Asserted on the serialized TEXT, because
+/// `-0.0 == 0.0` compares true and a value assertion cannot see the defect.
+///
+/// BITES: revert `round_cents` to `(x * 100.0).round() / 100.0` and the emitted JSON contains
+/// `"spend-usd": -0.0`.
+#[test]
+fn zero_session_report_spend_is_positive_zero_in_json() {
+    let tmp = TempDir::new().unwrap();
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    // Populated catalog, empty window: the valid-empty-artifact path, which is where the -0.0 showed.
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
+    );
+    drop(db);
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-07-01T00:00:00Z",
+        "2026-07-31T23:59:59Z",
+        false,
+    );
+    run(&cfg).unwrap();
+    let body = std::fs::read_to_string(&output).unwrap();
+    assert!(
+        body.contains("\"spend-usd\": 0.0"),
+        "a zero-spend total must serialize as 0.0; got: {}",
+        body.lines()
+            .find(|l| l.contains("spend-usd"))
+            .unwrap_or("<no spend-usd line>")
+    );
+    assert!(
+        !body.contains("-0.0"),
+        "no negative zero may appear anywhere in the artifact: {body}"
+    );
+}
+
 /// An unparseable `efficiency_json` is a LOUD error (bad data ≠ no data): collect fails rather than
 /// silently dropping the session.
 #[test]
