@@ -19,12 +19,14 @@ pub struct SessionSummary {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct TodayJson {
     pub today: f64,
     pub sessions: usize,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct DailyJson {
     pub days: Vec<DayEntryJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,6 +36,7 @@ pub struct DailyJson {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct DayEntryJson {
     pub date: String,
     pub cost: f64,
@@ -41,6 +44,7 @@ pub struct DayEntryJson {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct WeeklyJson {
     pub weeks: Vec<WeekEntryJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,6 +54,7 @@ pub struct WeeklyJson {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct WeekEntryJson {
     pub week: String,
     pub cost: f64,
@@ -57,6 +62,7 @@ pub struct WeekEntryJson {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct MonthlyJson {
     pub months: Vec<MonthEntryJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,6 +72,7 @@ pub struct MonthlyJson {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct MonthEntryJson {
     pub month: String,
     pub cost: f64,
@@ -90,6 +97,7 @@ pub fn format_today_json(summary: &DaySummary) -> String {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct YesterdayJson {
     pub yesterday: f64,
     pub sessions: usize,
@@ -345,5 +353,19 @@ mod tests {
     fn test_round_cents() {
         assert!((round_cents(14.236) - 14.24).abs() < f64::EPSILON);
         assert!((round_cents(14.234) - 14.23).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_daily_json_average_key_is_kebab_case() {
+        // The one multi-word field in cost's JSON output: it must serialize kebab-case
+        // (`effective-periods`), NOT snake_case, to match every other clyde JSON surface.
+        let days = vec![DaySummary {
+            date: NaiveDate::from_ymd_opt(2026, 3, 10).expect("valid date"),
+            cost: 10.0,
+            sessions: 2,
+        }];
+        let json = format_daily_json(&days, Some((10.0, 1.0)));
+        assert!(json.contains("\"effective-periods\":1.0"), "kebab key present: {json}");
+        assert!(!json.contains("effective_periods"), "no snake_case key: {json}");
     }
 }

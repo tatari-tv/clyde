@@ -26,6 +26,7 @@ const SKIP_TOOLS: &[&str] = &[
 
 /// A suggestion row for output.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct SuggestEntry {
     pub pattern: String,
     pub count: i64,

@@ -31,11 +31,15 @@ pub fn xdg_data_dir() -> Option<PathBuf> {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct Config {
-    /// Override the Claude projects directory
+    /// Override the Claude projects directory. Canonical key `projects-dir`; the legacy snake_case
+    /// `projects_dir` is still accepted (alias) so pre-existing configs keep loading.
+    #[serde(alias = "projects_dir")]
     pub projects_dir: Option<PathBuf>,
-    /// Log level (trace, debug, info, warn, error)
+    /// Log level (trace, debug, info, warn, error). Canonical key `log-level`; the legacy snake_case
+    /// `log_level` is still accepted (alias) so pre-existing configs keep loading.
+    #[serde(alias = "log_level")]
     pub log_level: Option<String>,
 }
 
@@ -122,9 +126,19 @@ mod tests {
 
     #[test]
     fn test_config_deserialize_with_log_level() {
+        // Legacy snake_case key still loads (serde alias -> backward-compatible migration).
         let yaml = "log_level: debug\n";
         let config: Config = serde_yaml::from_str(yaml).expect("parse yaml");
         assert_eq!(config.log_level.as_deref(), Some("debug"));
+    }
+
+    #[test]
+    fn test_config_deserialize_canonical_kebab_key() {
+        // Canonical kebab-case key is the going-forward form (consistent with every clyde surface).
+        let yaml = "log-level: debug\nprojects-dir: /tmp/p\n";
+        let config: Config = serde_yaml::from_str(yaml).expect("parse yaml");
+        assert_eq!(config.log_level.as_deref(), Some("debug"));
+        assert_eq!(config.projects_dir.as_deref(), Some(std::path::Path::new("/tmp/p")));
     }
 
     #[test]

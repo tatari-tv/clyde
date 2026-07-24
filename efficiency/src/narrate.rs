@@ -53,6 +53,7 @@ session looks efficient.
 ///
 /// Build one with [`narration_input`], which does all formatting in Rust.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct NarrationInput {
     /// The session id (opaque identifier, not a quantity to compute with).
     pub session_id: String,
