@@ -11,9 +11,41 @@ const MULTI_SUBAGENT: &str = concat!(
     "/../fixtures/efficiency/multi-subagent.jsonl"
 );
 const USAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/efficiency/usage.jsonl");
+const NAMED_SUBAGENTS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../fixtures/efficiency/named-subagents.jsonl"
+);
 
 fn ex(path: &str) -> crate::extract::FileEfficiency {
     extract(Path::new(path)).unwrap_or_else(|e| panic!("extract {path} failed: {e}"))
+}
+
+/// End-to-end recovery: extract the named-subagents fixture, fold it, and assert every tier of the
+/// `resolve_agent_type` chain resolves as documented. This is the regression that pins the fix — a
+/// named subagent whose sidecar lacks `attributionAgent` recovers its type from the spawn map, and
+/// `attributionAgent` still wins over a decoy spawn-map entry.
+#[test]
+fn fold_recovers_named_subagent_types_from_spawn_map() {
+    let session = fold("s", &[ex(NAMED_SUBAGENTS)]);
+    let ty = |id: &str| -> Option<&str> {
+        session
+            .subagents
+            .iter()
+            .find(|s| s.agent_id == id)
+            .unwrap_or_else(|| panic!("subagent {id} present"))
+            .agent_type
+            .as_deref()
+    };
+
+    // Tier 2: type recovered from the spawn map by the name embedded in the agentId.
+    assert_eq!(ty("adataviz-worker-0123456789abcdef"), Some("general-purpose"));
+    assert_eq!(ty("aphase3-fedcba9876543210"), Some("phase-implementer"));
+    // Tier 3: no spawn in the group -> name-only label.
+    assert_eq!(ty("anamed-only-1111222233334444"), Some("named-only"));
+    // Tier 4: hash-only agentId, no recoverable name -> stays unknown.
+    assert_eq!(ty("a00aabbccddeeff99"), None);
+    // Tier 1: attributionAgent WINS over the decoy `general-purpose` spawn entry for `trickydriver`.
+    assert_eq!(ty("atrickydriver-9999888877776666"), Some("release-driver"));
 }
 
 /// Independently recompute the aggregate from a file's per-scope raw counters (parent ⊎ every
@@ -148,6 +180,7 @@ fn fold_unions_parent_scope_across_multiple_files() {
             ..RawCounters::default()
         },
         subagents: Default::default(),
+        spawn_types: Default::default(),
     };
     let mut subagents = std::collections::BTreeMap::new();
     subagents.insert(
@@ -168,6 +201,7 @@ fn fold_unions_parent_scope_across_multiple_files() {
             ..RawCounters::default()
         },
         subagents,
+        spawn_types: Default::default(),
     };
 
     let session = fold("s", &[parent_file, subagent_file]);

@@ -170,6 +170,26 @@ below by session id only -- no session content is quoted).
   skipped, and the two good lines still count (parent `turns` 1, `tool_errors` 1,
   `bash_command_failures` 1). Asserted in `efficiency/src/extract/tests.rs`.
 
+### `named-subagents.jsonl` -- named-subagent type recovery
+
+- A named/orchestration subagent (herdr / workflow / `Agent`-with-a-`name`) runs as a
+  sidecar whose own records NEVER carry `attributionAgent`, so its type is unrecoverable
+  from the sidecar alone -- it collapses to `unknown`. The fix recovers the type from the
+  spawning `Agent`/`Task` tool_use (`input.name` + `input.subagent_type`), keyed to the
+  subagent by the name embedded in its `agentId` (`a<name>-<hash>`).
+- One parent record spawns three named agents via tool_use: `Agent`
+  (`dataviz-worker` -> `general-purpose`), `Task` (`phase3` -> `phase-implementer`), and
+  `Agent` (`trickydriver` -> `general-purpose`, a decoy). Then five subagent records exercise
+  the four-tier `fold::resolve_agent_type` chain (the first four lack `attributionAgent`; the
+  fifth carries one, to prove tier 1 wins):
+  - `adataviz-worker-0123456789abcdef` -> type RECOVERED `general-purpose` (spawn-map match)
+  - `aphase3-fedcba9876543210` -> type RECOVERED `phase-implementer` (Task spawn)
+  - `anamed-only-1111222233334444` -> NAME-ONLY label `named-only` (no spawn in group)
+  - `a00aabbccddeeff99` -> stays `unknown` / `None` (hash-only `agentId`, no name)
+  - `atrickydriver-9999888877776666` carries `attributionAgent=release-driver` -> resolves
+    `release-driver`, proving `attributionAgent` WINS over the (decoy `general-purpose`)
+    spawn-map entry. Asserted in `efficiency/src/extract/tests.rs` and `fold/tests.rs`.
+
 ## Verification
 
 `bin/verify-fixtures.sh` (throwaway `jq` script, Phase 0 only) asserts every

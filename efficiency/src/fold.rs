@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use log::debug;
 use serde::{Deserialize, Serialize};
 
-use crate::extract::{FileEfficiency, SubagentRaw};
+use crate::extract::{FileEfficiency, SubagentRaw, name_from_agent_id};
 use crate::metrics::{EfficiencySignals, RawCounters, finalize};
 
 /// Signals for one subagent scope, tagged with its `agentId` and (if known) its `attributionAgent`
@@ -78,11 +78,17 @@ pub fn fold(session_id: &str, files: &[FileEfficiency]) -> SessionEfficiency {
 
     let mut parent_own = RawCounters::default();
     let mut subagents: BTreeMap<String, SubagentRaw> = BTreeMap::new();
+    // Union the name->type spawn map across the group (the parent file spawns most named agents; a
+    // subagent that itself spawns contributes too). First value for a name wins.
+    let mut spawn_types: BTreeMap<String, String> = BTreeMap::new();
 
     for file in files {
         parent_own.merge(&file.parent);
         for (agent_id, sub) in &file.subagents {
             subagents.entry(agent_id.clone()).or_default().merge(sub);
+        }
+        for (name, stype) in &file.spawn_types {
+            spawn_types.entry(name.clone()).or_insert_with(|| stype.clone());
         }
     }
 
@@ -96,17 +102,24 @@ pub fn fold(session_id: &str, files: &[FileEfficiency]) -> SessionEfficiency {
 
     let subagent_breakdown: Vec<SubagentEfficiency> = subagents
         .into_iter()
-        .map(|(agent_id, sub)| SubagentEfficiency {
-            agent_id,
-            agent_type: sub.agent_type,
-            signals: finalize(sub.raw),
+        .map(|(agent_id, sub)| {
+            let SubagentRaw { agent_type, raw } = sub;
+            let agent_type = resolve_agent_type(&agent_id, agent_type.as_deref(), &spawn_types);
+            SubagentEfficiency {
+                agent_id,
+                agent_type,
+                signals: finalize(raw),
+            }
         })
         .collect();
 
+    let unknown = subagent_breakdown.iter().filter(|s| s.agent_type.is_none()).count();
     debug!(
-        "fold: session_id={session_id} subagents={} aggregate-turns={} aggregate-tool-errors={} \
-         aggregate-cost-usd={}",
+        "fold: session_id={session_id} subagents={} spawn-types={} unknown-agent-types={} \
+         aggregate-turns={} aggregate-tool-errors={} aggregate-cost-usd={}",
         subagent_breakdown.len(),
+        spawn_types.len(),
+        unknown,
         aggregate.raw.turns,
         aggregate.raw.tool_errors,
         aggregate.raw.cost_usd,
@@ -118,6 +131,28 @@ pub fn fold(session_id: &str, files: &[FileEfficiency]) -> SessionEfficiency {
         subagents: subagent_breakdown,
         flags: Vec::new(),
     }
+}
+
+/// Resolve a subagent's TYPE with a four-tier fallback chain:
+///
+/// 1. an `attributionAgent` observed on the subagent's own records — authoritative, and how a
+///    classic inline subagent (e.g. `phase-implementer`) is already labeled;
+/// 2. else the `subagent_type` of the matching NAMED spawn, keyed by the name embedded in the
+///    `agentId` (`a<name>-<hash>`) — recovers herdr / workflow / `Agent`-with-a-`name` subagents
+///    whose sidecar records never carry `attributionAgent`;
+/// 3. else the bare spawn name as a name-only label, when the spawn tool_use is not in the group
+///    (e.g. a teammate launched outside the `Agent` tool, so no `subagent_type` was ever recorded);
+/// 4. else `None` — a hash-only `agentId` (`a<hex>`) with no recoverable name stays `unknown`.
+fn resolve_agent_type(
+    agent_id: &str,
+    attribution: Option<&str>,
+    spawn_types: &BTreeMap<String, String>,
+) -> Option<String> {
+    if let Some(a) = attribution {
+        return Some(a.to_string());
+    }
+    let name = name_from_agent_id(agent_id)?;
+    Some(spawn_types.get(name).cloned().unwrap_or_else(|| name.to_string()))
 }
 
 #[cfg(test)]
