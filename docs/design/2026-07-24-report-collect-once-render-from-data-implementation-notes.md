@@ -256,3 +256,110 @@ Zero-code spike; findings only (read-only against the live `sessions.db`).
 - None. The design doc's Phase 3 scope (bulk read + `until` bound + no-cycle) is fully specified and
   the boundary semantics were a concrete implementation decision (inclusive/inclusive), not a gap
   needing Scott's input.
+
+## Phase 4: Rewrite report collect to read the catalog
+
+### Design decisions
+- **`run_collect` reads the catalog, never JSONL** (`report/src/lib.rs`, `run_collect`): opens
+  `Db::open_at(cfg.db_path)`, reads the window via `Db::catalog(&Filters{ since, until,
+  include_archived: false, .. })`, then parses each row's RAW `efficiency_json` /`outcome_json`
+  with `efficiency`'s own types (`to_collected`). NO `parse_jsonl_file` / `find_session_files` /
+  `outcome::extract` / `session::fold` / `title::*` call remains in the collect path (grep-proof).
+- **New builder over a pure `CollectedSession`** (`report/src/report.rs`, `build_report`): the
+  builder is pure over `CollectedSession` (session row fields + parsed `SessionEfficiency` +
+  parsed `Outcomes`), so it is unit-testable without SQLite; `run_collect` owns the DB read + blob
+  parse. `write_json`/`build_json` gained an `outcomes_enabled` + `no_rollup` arg pair.
+- **Schema v1 -> v2** (`report/src/report.rs`, `SCHEMA_VERSION = 2`). `SessionEntry` gained the
+  curated render-contract set (`agent_type_costs` headline, `cache_read_share`, `tool_error_rate`,
+  `cache_1h_write_fraction`, `interrupts`, `compactions`, `by_skill`, `by_mcp`) PLUS the full raw
+  `efficiency: SessionEfficiency` passthrough (Resolved Decision). `Totals` gained
+  `cache_read_share` + `tool_error_rate`, RECOMPUTED via `finalize(union of every session's
+  aggregate raw counters)` -- a ratio-of-sums, never an average of per-session shares
+  (`build_report`, `grand`). A `totals_ratios_are_ratio_of_sums_not_average` test bites on that.
+- **Per-model tokens re-priced with report's FETCHED feed** (`ModelTokens::from_totals` over
+  `efficiency.aggregate.raw.by_model`): `models`/`spend-usd` reflect the live feed (v1 parity),
+  priced LAST over the unioned per-model `TokenTotals`. Sub-session buckets (`by_skill`/`by_mcp`/
+  `agent_type_costs`) carry the catalog's EMBEDDED-priced `cost_usd` -- the only per-bucket cost
+  the catalog stores; the catalog does not persist per-bucket token splits to re-price. Recorded
+  under Tradeoffs.
+- **Fail-closed on incomplete catalog** (`run_collect`): any windowed session with NULL
+  `efficiency_json` -> a `clyde session reindex` remedy + affected count to STDERR, `Err` (non-zero
+  exit), NO artifact written (the atomic `write_json` is never reached, so the target is untouched).
+  Empty window (zero rows) is a VALID empty v2 artifact, exit 0. An unparseable blob is a LOUD
+  `Err` naming `efficiency_json` (bad data != no data). Four bite tests pin these.
+- **Titles come from the catalog row** (`record.title`); Haiku titling and its cross-run title
+  cache are gone from collect (see Deviations). Repo is still resolved from `record.cwd` via
+  `repo::Resolver` (path/git resolution, not a JSONL read). `begin = created ?? modified`,
+  `end = modified`.
+- **`report::outcome` retargeted** (`report/src/outcome.rs`): re-exports `efficiency::{Outcomes,
+  PrRef}` (one definition, catalog-owned) and keeps ONLY the report-side `OutcomeTotals` + global
+  `rollup` (deliberately NOT relocated to efficiency). Extraction + `FileOutcomes` deleted.
+- **`Report.notes`**: every v2 report carries `WINDOW_NOTE` (the M2 session-level redefinition), so
+  a boundary-straddling count that differs from a v1 report reads as expected, not a bug.
+
+### Per-field v2 merge disposition (`report/src/merge.rs`)
+| v2 field | merge disposition |
+|----------|-------------------|
+| `SessionEntry.agent_type_costs` | rides as-is under the re-keyed `<host>/<sid>` session (per-session, no cross-host combine) |
+| `SessionEntry.by_skill` / `by_mcp` | ride as-is under the re-keyed session |
+| `SessionEntry.cache_read_share` / `tool_error_rate` / `cache_1h_write_fraction` | ride as-is (per-session scope values) |
+| `SessionEntry.interrupts` / `compactions` | ride as-is |
+| `SessionEntry.efficiency` (raw passthrough) | rides as-is; also the SOURCE merge unions for the global ratio recompute |
+| `Totals.cache_read_share` / `tool_error_rate` | RECOMPUTED as ratio-of-sums over `union(entry.efficiency.aggregate.raw)` across merged sessions; NEVER averaged (`recompute_totals`, `grand`) |
+| `Totals.models` / `spend_usd` | re-summed from each entry's already-priced `ModelTokens` (unchanged v1 behavior; inputs trusted as priced-at-collect) |
+| `Totals.outcomes` | rebuilt by `outcome::rollup` with global dedupe, gated by `outcomes_enabled` (unchanged) |
+| `Report.notes` | set to `[WINDOW_NOTE]` on a merged report |
+- Nothing in v2 is un-mergeable: every per-session field rides through and every global ratio
+  recomputes from the passthrough, so no field is omitted/zeroed. (The design's "omission stated in
+  the artifact" clause has no trigger here; it would only fire if a future field lacked a merge story.)
+
+### Deviations
+- **Haiku titling removed from collect** ("No JSONL path remains", Architecture): `title::extract_prefix`
+  reads the parent transcript JSONL, which is exactly the path this redesign kills, and the catalog
+  already resolves a title (`record.title`, ai-title-else-first-prompt). So collect sources titles
+  from the catalog and no longer calls Haiku. Same effect (a titled report), correct seam (catalog),
+  no JSONL. Consequently the cross-run title cache and its helpers (`resolve_titles_source`,
+  `latest_prior_report_in`, `title_untitled_sessions`, `report::load_existing_titles`,
+  `Output::title_cache_dir`, `default_collect_dir`) were removed as dead. `title.rs` stays for
+  `api_key_from_env` (used by render) and its Haiku helpers remain as library API (not called by
+  collect). Not named in the Phase 4 bullets, but forced by "No JSONL path remains".
+- **CLI: `--projects-dir` and `--skip-title` removed; `--db` added** (`report/src/cli.rs`,
+  `config.rs`). Collect no longer reads a projects dir (it reads `sessions.db`), and there is no
+  Haiku call to skip. `--db` overrides the canonical `session::paths::sessions_db_path()` (tests
+  inject a temp path). `--no-outcomes` kept: it now gates whether catalog outcomes are CARRIED, not
+  whether a scan runs. `--no-rollup` kept, reinterpreted (below).
+- **`--no-rollup` is a VIEW via subtraction, not a re-fold** (`report/src/report.rs`,
+  `expand_entries` + `subtract_subagents`): the catalog holds the canonical rollup, so no_rollup
+  decomposes each session WITHOUT overlap into a parent-residual row (`<sid>`) plus one row per
+  subagent (`<sid>/<agent-id>`), where residual = `aggregate − Σ subagents` (saturating field
+  subtraction). Parts sum to the aggregate on tokens/cost/models, so downstream by-org/by-repo/
+  by-day/totals never double-count and need no change. The concatenated turn-duration/compaction
+  SAMPLES cannot be split back out, so the residual row carries no percentile/compaction signal
+  (its duration sample is empty -> `None`). Report-wide totals are view-independent (unioned once
+  per session's aggregate). Old JSONL semantics (parent-only-file + separate subagent sessions) are
+  approximated; the money fields match exactly.
+- **v1 backward-compat dropped** (per the design's Rollout Plan: "no compat shim; re-collect to get
+  v2"). `SessionEntry.efficiency` is a required field, so a v1 JSON (no per-session efficiency) no
+  longer deserializes into the v2 `Report`, and `merge` refuses a v1 input at parse time. The old
+  "v1 deserializes cleanly" tests were INVERTED to pin this (`report/tests`, `merge/tests`).
+- **`session.rs` + `scan.rs` removed** (`rkvr rmrf`): the JSONL fold/scan path had no remaining
+  caller. `report::session`/`report::scan` were internal API only (grep-confirmed no external use).
+
+### Tradeoffs
+- Sub-session bucket costs (agent-type / by-skill / by-mcp) are embedded-priced (from the catalog)
+  while the session/model spend is fetched-priced (report's live feed), so agent-type costs will not
+  sum exactly to session spend. Re-pricing buckets is impossible from the catalog (it stores a
+  bucket `cost_usd`, not the per-bucket token split), and these buckets are NEW in v2 (no v1 parity
+  to hold). Chose the catalog's embedded figure over dropping the headline.
+- `no_rollup` residual via subtraction (chosen) vs. reconstructing parent-only from a separate
+  stored scope (the catalog stores no parent-only scope; the aggregate already folds subagents in).
+  Subtraction is exact for the additive fields and only loses the un-splittable Vec samples; the
+  alternative would need a schema change (out of Phase 4 scope).
+- `build_report`/`write_json`/`build_json` grew past clippy's arg-count default, so they carry a
+  local `#[allow(clippy::too_many_arguments)]` rather than a params struct -- the window/host/
+  pricing/flags set is a stable, self-documenting call shape and a struct would add indirection for
+  no readability gain at these few call sites.
+
+### Open questions
+- None. All Phase 4 bullets are implemented; the titling/CLI-flag changes are forced consequences of
+  "No JSONL path remains" and are recorded as deviations, not open items.

@@ -2,8 +2,10 @@
 
 use super::*;
 use crate::outcome::{Outcomes, PrRef};
-use crate::report::{ModelTokens, Report, SCHEMA_VERSION, SessionEntry};
+use crate::report::{ModelTokens, Report, SCHEMA_VERSION, SessionEntry, WINDOW_NOTE};
 use chrono::{DateTime, Utc};
+use common::metrics::TokenTotals;
+use efficiency::{RawCounters, SessionEfficiency, finalize};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 
@@ -27,6 +29,38 @@ fn model_tokens(input: u64, spend: Option<f64>) -> ModelTokens {
     }
 }
 
+/// A v2 `SessionEfficiency` passthrough whose aggregate raw counters mirror `mt` for one model — the
+/// merge seam unions THIS across sessions to recompute the report-wide ratios, so it must carry the
+/// same token split the entry's `models` table shows.
+fn efficiency_for(model: &str, mt: &ModelTokens) -> SessionEfficiency {
+    let mut raw = RawCounters {
+        input_tokens: mt.input,
+        output_tokens: mt.output,
+        cache_5m_write_tokens: mt.cache_5m_write,
+        cache_1h_write_tokens: mt.cache_1h_write,
+        cache_read_tokens: mt.cache_read,
+        cost_usd: mt.spend_usd.unwrap_or(0.0),
+        ..Default::default()
+    };
+    raw.by_model.insert(
+        model.to_string(),
+        TokenTotals {
+            input: mt.input,
+            output: mt.output,
+            cache_5m_write: mt.cache_5m_write,
+            cache_1h_write: mt.cache_1h_write,
+            cache_read: mt.cache_read,
+            total: mt.total,
+        },
+    );
+    SessionEfficiency {
+        session_id: "x".into(),
+        aggregate: finalize(raw),
+        subagents: Vec::new(),
+        flags: Vec::new(),
+    }
+}
+
 fn entry_with_outcomes(model: &str, mt: ModelTokens, outcomes: Option<Outcomes>) -> SessionEntry {
     let mut models = BTreeMap::new();
     let session_spend = mt.spend_usd;
@@ -35,6 +69,7 @@ fn entry_with_outcomes(model: &str, mt: ModelTokens, outcomes: Option<Outcomes>)
     } else {
         Vec::new()
     };
+    let efficiency = efficiency_for(model, &mt);
     models.insert(model.to_string(), mt);
     SessionEntry {
         title: None,
@@ -46,12 +81,21 @@ fn entry_with_outcomes(model: &str, mt: ModelTokens, outcomes: Option<Outcomes>)
         jsonl_paths: vec![],
         models,
         outcomes,
+        agent_type_costs: BTreeMap::new(),
+        cache_read_share: efficiency.aggregate.cache_read_share,
+        tool_error_rate: efficiency.aggregate.tool_error_rate,
+        cache_1h_write_fraction: efficiency.aggregate.cache_1h_write_fraction,
+        interrupts: 0,
+        compactions: 0,
+        by_skill: BTreeMap::new(),
+        by_mcp: BTreeMap::new(),
+        efficiency,
     }
 }
 
 /// Build a one-session report for a host with a single model+spend. Defaults
-/// `outcomes-enabled` to `Some(true)` (today's collect always runs extraction, per Phase 4);
-/// tests exercising the coverage rules override it after construction.
+/// `outcomes-enabled` to `Some(true)` (collect always carries catalog outcomes unless
+/// `--no-outcomes`, per Phase 4); tests exercising the coverage rules override it after construction.
 fn report(host: &str, sid: &str, since: &str, until: &str, model: &str, mt: ModelTokens) -> Report {
     report_with_outcomes(host, sid, since, until, model, mt, None)
 }
@@ -76,6 +120,7 @@ fn report_with_outcomes(
         since: ts(since),
         until: ts(until),
         outcomes_enabled: Some(true),
+        notes: vec![WINDOW_NOTE.to_string()],
         totals,
         sessions,
     }
@@ -430,9 +475,10 @@ fn merge_with_one_input_outcomes_disabled_yields_absent_rollup_and_false_flag() 
     assert!(merged.totals.outcomes.is_none());
 }
 
-/// A hand-written v1 (pre-Phase-4) report JSON: no `outcomes-enabled` at the report level, no
-/// `outcomes` key on `totals`, no `outcomes` key on the session entry. `#[serde(default)]` must
-/// deserialize it cleanly, and it must merge (and, per `render/tests.rs`, render) green.
+/// A hand-written v1 (pre-Phase-4) report JSON: a session entry with NO per-session `efficiency`
+/// object (v1 never had one). v2 makes `efficiency` a required field and drops the v1 compat shim
+/// (design Rollout Plan: "no backward-compat shim for reading a lone historical v1 artifact;
+/// re-collect to get v2"), so this must NOT deserialize as a v2 `Report`.
 fn v1_report_json(host: &str, sid: &str) -> String {
     format!(
         r#"{{
@@ -442,61 +488,44 @@ fn v1_report_json(host: &str, sid: &str) -> String {
             "since": "2026-04-01T00:00:00Z",
             "until": "2026-04-30T00:00:00Z",
             "totals": {{
-                "sessions": 1,
-                "spend-usd": 1.0,
-                "untracked-models": [],
-                "models": {{
-                    "claude-opus-4-7": {{
-                        "input": 100, "output": 100, "cache-5m-write": 0, "cache-1h-write": 0,
-                        "cache-read": 0, "total": 200, "spend-usd": 1.0
-                    }}
-                }}
+                "sessions": 1, "spend-usd": 1.0, "untracked-models": [],
+                "models": {{}}
             }},
             "sessions": {{
                 "{sid}": {{
                     "title": null, "repo": null,
                     "begin": "2026-04-10T10:00:00Z", "end": "2026-04-10T11:00:00Z",
-                    "spend-usd": 1.0, "untracked-models": [],
-                    "models": {{
-                        "claude-opus-4-7": {{
-                            "input": 100, "output": 100, "cache-5m-write": 0, "cache-1h-write": 0,
-                            "cache-read": 0, "total": 200, "spend-usd": 1.0
-                        }}
-                    }}
+                    "spend-usd": 1.0, "untracked-models": [], "models": {{}}
                 }}
             }}
         }}"#
     )
 }
 
+/// Inverts the pre-Phase-4 "v1 deserializes cleanly" test: a v1 report (no per-session `efficiency`)
+/// must NOT parse as v2. Pins the "no v1 compat shim" decision.
 #[test]
-fn v1_report_json_deserializes_with_new_fields_defaulted_absent() {
+fn v1_report_json_does_not_deserialize_as_v2() {
     let body = v1_report_json("desk", SID_SHARED);
-    let report: Report = serde_json::from_str(&body).unwrap();
-    assert_eq!(report.outcomes_enabled, None);
-    assert!(report.totals.outcomes.is_none());
-    let entry = report.sessions.values().next().unwrap();
-    assert!(entry.outcomes.is_none());
+    assert!(
+        serde_json::from_str::<Report>(&body).is_err(),
+        "a v1 report (no per-session efficiency) must not parse as v2"
+    );
 }
 
+/// And merge REFUSES a v1 input (it fails to parse in `read_reports`), rather than silently
+/// producing a degraded report — a v1+v2 mix cannot merge; re-collect to v2 first.
 #[test]
-fn v1_report_json_merges_green_with_absent_outcomes_enabled() {
+fn v1_report_json_is_refused_by_merge() {
     let tmp = TempDir::new().unwrap();
     let p1 = tmp.path().join("desk.json");
-    let p2 = tmp.path().join("laptop.json");
     fs::write(&p1, v1_report_json("desk", SID_SHARED)).unwrap();
-    fs::write(&p2, v1_report_json("laptop", SID_UNIQUE)).unwrap();
     let out = tmp.path().join("merged.json");
 
     let cfg = MergeConfig {
-        inputs: vec![p1, p2],
+        inputs: vec![p1],
         output: Output::File(out.clone()),
     };
-    let result = run(&cfg).unwrap();
-    assert_eq!(result.sessions_emitted, 2);
-
-    let body = fs::read_to_string(&out).unwrap();
-    let merged: Report = serde_json::from_str(&body).unwrap();
-    assert_eq!(merged.outcomes_enabled, Some(false));
-    assert!(merged.totals.outcomes.is_none());
+    assert!(run(&cfg).is_err(), "a v1 artifact must be refused, not merged");
+    assert!(!out.exists(), "no merged artifact on a refused input");
 }

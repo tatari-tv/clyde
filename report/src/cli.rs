@@ -55,12 +55,14 @@ pub struct ReportArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Scan session JSONL files and emit a per-host JSON usage report.
+    /// Read the session catalog (`sessions.db`) and emit a per-host JSON usage report.
     ///
-    /// Reads `~/.claude/projects/` (or `--projects-dir`), filters sessions by the
-    /// `--since`/`--until` window, and optionally titles untitled sessions via Haiku.
-    /// With `-o <path>`, writes the JSON report to that file; without `-o`, streams
-    /// the JSON to stdout so `report collect | jq` works.
+    /// Reads whole sessions whose catalog row falls in the `--since`/`--until` window (session-level,
+    /// on `modified`) from `sessions.db` (or `--db`) — tokens, cost, cache/tool/agent-type efficiency
+    /// signals, and outcomes, all catalog-sourced (no JSONL scan). With `-o <path>`, writes the JSON
+    /// report to that file; without `-o`, streams the JSON to stdout so `report collect | jq` works.
+    /// Fails (writing nothing) if any session in the window has not been indexed — run
+    /// `clyde session reindex` first.
     Collect(CollectArgs),
     /// Render a collected JSON report into Markdown, PDF, HTML, or a published marquee post
     /// (`--format`).
@@ -95,24 +97,20 @@ pub struct CollectArgs {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Override the Claude projects directory (default: `~/.claude/projects`).
+    /// Override the session catalog path (default: `<xdg-data>/clyde/sessions.db`).
     #[arg(long)]
-    pub projects_dir: Option<PathBuf>,
+    pub db: Option<PathBuf>,
 
-    /// Suppress sub-agent session rollup: count each sub-agent JSONL as its own
-    /// session rather than folding it into the parent session's totals.
+    /// Present the per-subagent breakdown as its own rows rather than the per-session rollup: the
+    /// catalog already holds the canonical rollup, so this is a VIEW over each session's subagents
+    /// (a parent-residual row plus one row per subagent), never a re-fold of JSONL.
     #[arg(long)]
     pub no_rollup: bool,
 
-    /// Skip the Haiku API call that titles untitled sessions. Useful when
-    /// `ANTHROPIC_API_KEY` is not set or to avoid Haiku billing.
-    #[arg(long)]
-    pub skip_title: bool,
-
-    /// Skip the outcome extraction pass (commits, PRs opened, Confluence/Jira writes, Slack
-    /// messages, files edited) mined from session transcripts. Skips the extra per-file read;
-    /// the produced report carries `outcomes-enabled: false` and no `outcomes` fields anywhere.
-    /// Default: extraction on.
+    /// Omit outcomes (commits, PRs opened, Confluence/Jira writes, Slack messages, files edited)
+    /// from the report. Outcomes are read from the catalog (not rescanned); with this flag the
+    /// produced report carries `outcomes-enabled: false` and no `outcomes` fields anywhere.
+    /// Default: outcomes on.
     #[arg(long)]
     pub no_outcomes: bool,
 }

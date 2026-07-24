@@ -101,9 +101,8 @@ fn collect_accepts_relative_span_since() {
         since: Some("2d".to_string()),
         until: None,
         output: Some(PathBuf::from("/tmp/r.json")),
-        projects_dir: Some(std::env::temp_dir()),
+        db: None,
         no_rollup: false,
-        skip_title: false,
         no_outcomes: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
@@ -116,9 +115,8 @@ fn collect_accepts_rfc3339_and_bare_date_since() {
         since: Some("2026-04-01".to_string()),
         until: Some("2026-04-02T00:00:00Z".to_string()),
         output: Some(PathBuf::from("/tmp/r.json")),
-        projects_dir: Some(std::env::temp_dir()),
+        db: None,
         no_rollup: false,
-        skip_title: false,
         no_outcomes: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
@@ -132,9 +130,8 @@ fn collect_rejects_garbage_since() {
         since: Some("not a date".to_string()),
         until: None,
         output: Some(PathBuf::from("/tmp/r.json")),
-        projects_dir: Some(std::env::temp_dir()),
+        db: None,
         no_rollup: false,
-        skip_title: false,
         no_outcomes: false,
     };
     assert!(collect_config_from_args(args, DateTz::Utc).is_err());
@@ -156,32 +153,13 @@ use std::sync::Mutex;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn default_collect_dir_is_under_xdg_data() {
-    let guard = ENV_LOCK.lock().unwrap();
-    let prior = std::env::var("XDG_DATA_HOME").ok();
-
-    let dir = tempfile::TempDir::new().unwrap();
-    unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
-
-    let out = default_collect_dir().unwrap();
-    assert_eq!(out, dir.path().join("claude-report"));
-
-    match prior {
-        Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
-        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
-    }
-    drop(guard);
-}
-
-#[test]
 fn explicit_output_selects_file_target() {
     let args = CollectArgs {
         since: None,
         until: None,
         output: Some(PathBuf::from("/tmp/custom-report.json")),
-        projects_dir: Some(std::env::temp_dir()),
+        db: None,
         no_rollup: false,
-        skip_title: false,
         no_outcomes: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
@@ -198,9 +176,8 @@ fn omitting_output_selects_stdout() {
         since: None,
         until: None,
         output: None,
-        projects_dir: Some(std::env::temp_dir()),
+        db: None,
         no_rollup: false,
-        skip_title: false,
         no_outcomes: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
@@ -213,9 +190,8 @@ fn collect_config_carries_no_outcomes_flag() {
         since: None,
         until: None,
         output: None,
-        projects_dir: Some(std::env::temp_dir()),
+        db: None,
         no_rollup: false,
-        skip_title: false,
         no_outcomes: true,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
@@ -228,9 +204,8 @@ fn collect_config_no_outcomes_defaults_false() {
         since: None,
         until: None,
         output: None,
-        projects_dir: Some(std::env::temp_dir()),
+        db: None,
         no_rollup: false,
-        skip_title: false,
         no_outcomes: false,
     };
     let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
@@ -388,9 +363,8 @@ fn resolve_command_collect_threads_no_outcomes_into_config() {
         since: None,
         until: None,
         output: None,
-        projects_dir: Some(std::env::temp_dir()),
+        db: None,
         no_rollup: false,
-        skip_title: false,
         no_outcomes: true,
     };
     let resolved = resolve_command(crate::cli::Command::Collect(args)).unwrap();
@@ -398,24 +372,4 @@ fn resolve_command_collect_threads_no_outcomes_into_config() {
         ResolvedCommand::Collect(cfg) => assert!(cfg.no_outcomes),
         other => panic!("expected Collect, got {other:?}"),
     }
-}
-
-#[test]
-fn stdout_title_cache_dir_is_default_report_dir() {
-    // HAZARD 2: stdout mode must still point at a real title-cache directory so the paid Haiku
-    // titling carries forward instead of re-billing every run.
-    let guard = ENV_LOCK.lock().unwrap();
-    let prior = std::env::var("XDG_DATA_HOME").ok();
-
-    let dir = tempfile::TempDir::new().unwrap();
-    unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
-
-    let cache_dir = Output::Stdout.title_cache_dir().unwrap();
-    assert_eq!(cache_dir, dir.path().join("claude-report"));
-
-    match prior {
-        Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
-        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
-    }
-    drop(guard);
 }

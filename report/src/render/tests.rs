@@ -5,6 +5,7 @@ use crate::config::{Config, RenderConfig, ResolvedCommand};
 use crate::report::{ModelTokens, Report, SessionEntry, Totals};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
+use efficiency::{RawCounters, SessionEfficiency, finalize};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 
@@ -14,6 +15,64 @@ fn ts(s: &str) -> DateTime<Utc> {
 
 fn pricing() -> Pricing {
     Pricing::embedded()
+}
+
+/// An empty v2 efficiency passthrough for render fixtures (render reads tokens/spend/outcomes; the
+/// efficiency object is passthrough the built-in/template paths don't yet surface).
+fn empty_efficiency() -> SessionEfficiency {
+    SessionEfficiency {
+        session_id: "x".into(),
+        aggregate: finalize(RawCounters::default()),
+        subagents: Vec::new(),
+        flags: Vec::new(),
+    }
+}
+
+/// A v2 `SessionEntry` with the curated efficiency fields at their empty defaults — render fixtures
+/// only exercise title/repo/tokens/spend/outcomes, so the efficiency signals stay zero.
+#[allow(clippy::too_many_arguments)]
+fn session_entry(
+    title: Option<&str>,
+    repo: Option<&str>,
+    begin: DateTime<Utc>,
+    end: DateTime<Utc>,
+    spend_usd: Option<f64>,
+    models: BTreeMap<String, ModelTokens>,
+    outcomes: Option<crate::outcome::Outcomes>,
+) -> SessionEntry {
+    SessionEntry {
+        title: title.map(str::to_string),
+        repo: repo.map(str::to_string),
+        begin,
+        end,
+        spend_usd,
+        untracked_models: Vec::new(),
+        jsonl_paths: Vec::new(),
+        models,
+        outcomes,
+        agent_type_costs: BTreeMap::new(),
+        cache_read_share: None,
+        tool_error_rate: None,
+        cache_1h_write_fraction: None,
+        interrupts: 0,
+        compactions: 0,
+        by_skill: BTreeMap::new(),
+        by_mcp: BTreeMap::new(),
+        efficiency: empty_efficiency(),
+    }
+}
+
+/// A v2 `Totals` with the new ratio fields defaulted absent.
+fn totals(sessions: usize, spend_usd: f64, models: BTreeMap<String, ModelTokens>) -> Totals {
+    Totals {
+        sessions,
+        spend_usd,
+        untracked_models: Vec::new(),
+        models,
+        outcomes: None,
+        cache_read_share: None,
+        tool_error_rate: None,
+    }
 }
 
 fn opus_tokens() -> ModelTokens {
@@ -46,34 +105,30 @@ fn sample_report() -> Report {
     s1_models.insert("claude-opus-4-7".into(), opus_tokens());
     sessions.insert(
         "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042".into(),
-        SessionEntry {
-            title: Some("ship the report tool".into()),
-            repo: Some("tatari-tv/claude-report".into()),
-            begin: ts("2026-04-10T10:00:00Z"),
-            end: ts("2026-04-10T11:00:00Z"),
-            spend_usd: Some(0.50),
-            untracked_models: Vec::new(),
-            jsonl_paths: Vec::new(),
-            models: s1_models,
-            outcomes: None,
-        },
+        session_entry(
+            Some("ship the report tool"),
+            Some("tatari-tv/claude-report"),
+            ts("2026-04-10T10:00:00Z"),
+            ts("2026-04-10T11:00:00Z"),
+            Some(0.50),
+            s1_models,
+            None,
+        ),
     );
 
     let mut s2_models = BTreeMap::new();
     s2_models.insert("claude-sonnet-4-6".into(), sonnet_tokens());
     sessions.insert(
         "8b21c34d-1e22-4f5a-b91c-1234567890ab".into(),
-        SessionEntry {
-            title: None,
-            repo: None,
-            begin: ts("2026-04-12T14:00:00Z"),
-            end: ts("2026-04-12T14:30:00Z"),
-            spend_usd: Some(0.10),
-            untracked_models: Vec::new(),
-            jsonl_paths: Vec::new(),
-            models: s2_models,
-            outcomes: None,
-        },
+        session_entry(
+            None,
+            None,
+            ts("2026-04-12T14:00:00Z"),
+            ts("2026-04-12T14:30:00Z"),
+            Some(0.10),
+            s2_models,
+            None,
+        ),
     );
 
     let mut totals_models = BTreeMap::new();
@@ -81,19 +136,14 @@ fn sample_report() -> Report {
     totals_models.insert("claude-sonnet-4-6".into(), sonnet_tokens());
 
     Report {
-        schema_version: 1,
+        schema_version: 2,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
         until: ts("2026-04-30T00:00:00Z"),
         outcomes_enabled: Some(true),
-        totals: Totals {
-            sessions: 2,
-            spend_usd: 0.60,
-            untracked_models: Vec::new(),
-            models: totals_models,
-            outcomes: None,
-        },
+        notes: Vec::new(),
+        totals: totals(2, 0.60, totals_models),
         sessions,
     }
 }
@@ -132,19 +182,14 @@ fn built_in_template_renders_header_totals_repo_table_and_sessions() {
 #[test]
 fn empty_report_renders_safe_message() {
     let report = Report {
-        schema_version: 1,
+        schema_version: 2,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
         until: ts("2026-04-30T00:00:00Z"),
         outcomes_enabled: None,
-        totals: Totals {
-            sessions: 0,
-            spend_usd: 0.0,
-            untracked_models: Vec::new(),
-            models: BTreeMap::new(),
-            outcomes: None,
-        },
+        notes: Vec::new(),
+        totals: totals(0, 0.0, BTreeMap::new()),
         sessions: BTreeMap::new(),
     };
     let md = to_markdown(&report, &Template::BuiltIn, &pricing());
@@ -361,33 +406,26 @@ fn report_with_n_sessions(n: usize) -> Report {
         );
         sessions.insert(
             format!("session-{i:02}"),
-            SessionEntry {
-                title: Some(format!("session {i}")),
-                repo: Some("tatari-tv/claude-report".into()),
-                begin: ts("2026-04-10T10:00:00Z"),
-                end: ts("2026-04-10T11:00:00Z"),
-                spend_usd: Some(1.0 + i as f64),
-                untracked_models: Vec::new(),
-                jsonl_paths: Vec::new(),
+            session_entry(
+                Some(&format!("session {i}")),
+                Some("tatari-tv/claude-report"),
+                ts("2026-04-10T10:00:00Z"),
+                ts("2026-04-10T11:00:00Z"),
+                Some(1.0 + i as f64),
                 models,
-                outcomes: None,
-            },
+                None,
+            ),
         );
     }
     Report {
-        schema_version: 1,
+        schema_version: 2,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
         until: ts("2026-04-30T00:00:00Z"),
         outcomes_enabled: None,
-        totals: Totals {
-            sessions: n,
-            spend_usd: (0..n).map(|i| 1.0 + i as f64).sum(),
-            untracked_models: Vec::new(),
-            models: BTreeMap::new(),
-            outcomes: None,
-        },
+        notes: Vec::new(),
+        totals: totals(n, (0..n).map(|i| 1.0 + i as f64).sum(), BTreeMap::new()),
         sessions,
     }
 }

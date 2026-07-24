@@ -1,310 +1,338 @@
 #![allow(clippy::unwrap_used)]
 
+//! Phase 4 end-to-end tests: `run_collect` reads the catalog (`sessions.db`), never JSONL. Each test
+//! builds a temp catalog via `sessions::Db` (`upsert_session` + `set_efficiency_many`, the same seam
+//! the reindex path writes through), then runs collect against that db path.
+
 use crate::OutputDest;
 use crate::config::{CollectConfig, Config, Output, ResolvedCommand};
 use crate::report::Report;
-use std::fs;
-use std::io::Write;
-use std::path::Path;
+use chrono::{DateTime, Utc};
+use claude_pricing::{Pricing, TokenUsage};
+use efficiency::{Outcomes, RawCounters, SessionEfficiency, finalize};
+use session::ParsedSession;
+use sessions::{Db, EfficiencyWrite};
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 const SID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const SID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
 
-fn write_jsonl(path: &Path, lines: &[&str]) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    let mut f = fs::File::create(path).unwrap();
-    for line in lines {
-        writeln!(f, "{}", line).unwrap();
+fn dt(s: &str) -> DateTime<Utc> {
+    s.parse().unwrap()
+}
+
+fn parsed(sid: &str, modified: &str) -> ParsedSession {
+    ParsedSession {
+        session_id: sid.to_string(),
+        cwd: Some(PathBuf::from("/home/saidler/repos/tatari-tv/clyde")),
+        project_dir: PathBuf::from("/home/saidler/.claude/projects/-home-saidler-repos-tatari-tv-clyde"),
+        ai_title: Some("a catalog title".to_string()),
+        first_prompt: Some("the first prompt".to_string()),
+        command_name: None,
+        git_branch: Some("main".to_string()),
+        model: Some("claude-opus-4-8".to_string()),
+        n_msgs: 5,
+        created: Some(dt("2026-06-01T00:00:00Z")),
+        modified: dt(modified),
+        body: "body".to_string(),
+        jsonl_paths: vec![PathBuf::from(format!("/tmp/{sid}.jsonl"))],
     }
 }
 
-fn make_collect_config(projects_dir: &Path, output: &Path) -> Config {
+/// A serialized `SessionEfficiency` blob for one model's usage, plus the three indexed scalars — the
+/// exact shape `reindex_efficiency` persists, so collect parses it back with `efficiency`'s types.
+fn efficiency_blob(model: &str, usage: TokenUsage) -> (String, Option<f64>, i64, f64) {
+    let mut raw = RawCounters::default();
+    raw.add_usage(model, &usage);
+    let eff = SessionEfficiency {
+        session_id: "x".into(),
+        aggregate: finalize(raw),
+        subagents: Vec::new(),
+        flags: Vec::new(),
+    };
+    let json = serde_json::to_string(&eff).unwrap();
+    (
+        json,
+        eff.aggregate.cache_read_share,
+        eff.aggregate.raw.tool_errors as i64,
+        eff.aggregate.raw.cost_usd,
+    )
+}
+
+fn outcome_blob(o: &Outcomes) -> String {
+    serde_json::to_string(o).unwrap()
+}
+
+/// Insert a fully-reindexed session (session row + efficiency + outcome blobs).
+fn insert_indexed(db: &Db, sid: &str, modified: &str, usage: TokenUsage, outcomes: &Outcomes) {
+    db.upsert_session(&parsed(sid, modified), "desk").unwrap();
+    let (eff_json, share, tool_errors, cost) = efficiency_blob("claude-opus-4-8", usage);
+    let out_json = outcome_blob(outcomes);
+    db.set_efficiency_many(&[EfficiencyWrite {
+        session_id: sid,
+        efficiency_json: &eff_json,
+        cache_read_share: share,
+        tool_errors,
+        cost_usd: cost,
+        outcome_json: &out_json,
+    }])
+    .unwrap();
+}
+
+fn usage(input: u64, output: u64, cache_read: u64) -> TokenUsage {
+    TokenUsage {
+        input_tokens: input,
+        output_tokens: output,
+        cache_5m_write_tokens: 0,
+        cache_1h_write_tokens: 0,
+        cache_read_tokens: cache_read,
+    }
+}
+
+fn collect_config(db_path: &Path, output: &Path, since: &str, until: &str, no_outcomes: bool) -> Config {
     Config {
         log_level: "info".into(),
         command: ResolvedCommand::Collect(CollectConfig {
-            since: "2026-01-01T00:00:00Z".parse().unwrap(),
-            until: "2030-01-01T00:00:00Z".parse().unwrap(),
+            since: dt(since),
+            until: dt(until),
             output: Output::File(output.to_path_buf()),
-            projects_dir: projects_dir.to_path_buf(),
+            db_path: db_path.to_path_buf(),
             no_rollup: false,
-            skip_title: true,
-            no_outcomes: false,
+            no_outcomes,
         }),
     }
 }
 
+fn run(cfg: &Config) -> eyre::Result<crate::RunResult> {
+    // Embedded pricing keeps the test off the network (report's live path fetches; that is not what
+    // Phase 4 exercises).
+    crate::run_with_pricing(cfg, &Pricing::embedded())
+}
+
 #[test]
-fn end_to_end_collect_writes_json() {
+fn collect_reads_catalog_and_emits_schema_v2() {
     let tmp = TempDir::new().unwrap();
-    let projects = tmp.path().join("projects");
-    let project_a = projects.join("-home-saidler-repos-foo-bar");
-
-    write_jsonl(
-        &project_a.join(format!("{}.jsonl", SID_A)),
-        &[
-            r#"{"type":"user","cwd":"/home/saidler/repos/foo/bar","message":{"role":"user","content":"hi"}}"#,
-            r#"{"type":"assistant","sessionId":"abc","timestamp":"2026-04-10T10:00:00Z","cwd":"/home/saidler/repos/foo/bar","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":5}}}"#,
-        ],
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(100, 200, 1000),
+        &Outcomes::default(),
     );
-    write_jsonl(
-        &project_a.join(SID_A).join("subagents").join("agent-aabbccdd.jsonl"),
-        &[
-            r#"{"type":"assistant","sessionId":"sub","timestamp":"2026-04-10T10:30:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4-6","usage":{"input_tokens":20,"output_tokens":15}}}"#,
-        ],
+    insert_indexed(
+        &db,
+        SID_B,
+        "2026-06-20T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
     );
-
-    let project_b = projects.join("-home-saidler-scratch");
-    write_jsonl(
-        &project_b.join(format!("{}.jsonl", SID_B)),
-        &[
-            r#"{"type":"assistant","sessionId":"abc2","timestamp":"2026-04-15T12:00:00Z","requestId":"r3","message":{"id":"m3","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":2}}}"#,
-        ],
-    );
+    drop(db);
 
     let output = tmp.path().join("claude-report.json");
-    let cfg = make_collect_config(&projects, &output);
-
-    let result = crate::run_with_config(&cfg).unwrap();
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T23:59:59Z",
+        false,
+    );
+    let result = run(&cfg).unwrap();
     assert_eq!(result.sessions_emitted, 2);
     match result.output {
         OutputDest::File(p) => assert_eq!(p, output),
         other => panic!("expected file output, got {other:?}"),
     }
 
-    let body = fs::read_to_string(&output).unwrap();
-    let report: Report = serde_json::from_str(&body).unwrap();
+    let report: Report = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(report.schema_version, 2);
     assert_eq!(report.totals.sessions, 2);
     assert!(report.sessions.contains_key(SID_A));
-    assert!(report.sessions.contains_key(SID_B));
-
-    let a = &report.sessions[SID_A];
-    assert_eq!(a.models.len(), 2);
-    let opus = a.models.get("claude-opus-4-7").unwrap();
-    let sonnet = a.models.get("claude-sonnet-4-6").unwrap();
-    assert_eq!(opus.input, 10);
-    assert_eq!(opus.output, 5);
-    assert_eq!(sonnet.input, 20);
-    assert_eq!(sonnet.output, 15);
-    assert!(a.title.is_none());
+    // Title comes from the catalog row (no Haiku call in collect).
+    assert_eq!(report.sessions[SID_A].title.as_deref(), Some("a catalog title"));
+    let opus = report.sessions[SID_A].models.get("claude-opus-4-8").unwrap();
+    assert_eq!(opus.input, 100);
+    assert_eq!(opus.output, 200);
+    assert_eq!(opus.cache_read, 1000);
 }
 
-fn make_collect_config_with_no_outcomes(projects_dir: &Path, output: &Path, no_outcomes: bool) -> Config {
-    Config {
-        log_level: "info".into(),
-        command: ResolvedCommand::Collect(CollectConfig {
-            since: "2026-01-01T00:00:00Z".parse().unwrap(),
-            until: "2030-01-01T00:00:00Z".parse().unwrap(),
-            output: Output::File(output.to_path_buf()),
-            projects_dir: projects_dir.to_path_buf(),
-            no_rollup: false,
-            skip_title: true,
-            no_outcomes,
-        }),
-    }
-}
-
-/// Phase 5, end to end: `clyde report collect --no-outcomes` must skip extraction entirely and
-/// produce a report with `outcomes-enabled: false` and no `outcomes` field anywhere, even when
-/// the transcript contains a signal (a commit) that extraction would otherwise pick up.
+/// Parity: outcomes surface from the catalog's `outcome_json`, matching the stored content for the
+/// window (proving collect reads catalog outcomes, not a rescan).
 #[test]
-fn collect_with_no_outcomes_skips_extraction_and_disables_the_flag() {
+fn collect_carries_catalog_outcomes() {
     let tmp = TempDir::new().unwrap();
-    let projects = tmp.path().join("projects");
-    let project = projects.join("-home-saidler-repos-foo-bar");
-
-    write_jsonl(
-        &project.join(format!("{}.jsonl", SID_A)),
-        &[
-            r#"{"type":"assistant","sessionId":"abc","timestamp":"2026-04-10T10:00:00Z","cwd":"/home/saidler/repos/foo/bar","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":5}}}"#,
-            r#"{"type":"user","timestamp":"2026-04-10T10:05:00Z","toolUseResult":{"gitOperation":{"commit":{"sha":"abc123","kind":"committed"}}}}"#,
-        ],
-    );
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    let outcomes = Outcomes {
+        commits: vec!["abc123".to_string()],
+        prs: vec![],
+        confluence_writes: 0,
+        jira_writes: 0,
+        slack_messages: 0,
+        files_edited: 2,
+    };
+    insert_indexed(&db, SID_A, "2026-06-15T10:00:00Z", usage(10, 5, 0), &outcomes);
+    drop(db);
 
     let output = tmp.path().join("claude-report.json");
-    let cfg = make_collect_config_with_no_outcomes(&projects, &output, true);
-    crate::run_with_config(&cfg).unwrap();
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T23:59:59Z",
+        false,
+    );
+    run(&cfg).unwrap();
 
-    let body = fs::read_to_string(&output).unwrap();
-    assert!(!body.contains("\"outcomes\":"), "no outcomes key anywhere: {}", body);
-    assert!(body.contains("\"outcomes-enabled\": false"), "body:\n{}", body);
+    let report: Report = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(report.outcomes_enabled, Some(true));
+    assert_eq!(
+        report.sessions[SID_A].outcomes.as_ref().unwrap().commits,
+        vec!["abc123".to_string()]
+    );
+    assert_eq!(report.totals.outcomes.as_ref().unwrap().commits, 1);
+    assert_eq!(report.totals.outcomes.as_ref().unwrap().files_edited, 2);
+}
+
+/// `--no-outcomes`: no `outcomes` field anywhere, even though the catalog stores a commit.
+#[test]
+fn collect_no_outcomes_drops_outcomes() {
+    let tmp = TempDir::new().unwrap();
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    let outcomes = Outcomes {
+        commits: vec!["abc123".to_string()],
+        prs: vec![],
+        confluence_writes: 0,
+        jira_writes: 0,
+        slack_messages: 0,
+        files_edited: 1,
+    };
+    insert_indexed(&db, SID_A, "2026-06-15T10:00:00Z", usage(10, 5, 0), &outcomes);
+    drop(db);
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T23:59:59Z",
+        true,
+    );
+    run(&cfg).unwrap();
+
+    let body = std::fs::read_to_string(&output).unwrap();
+    assert!(!body.contains("\"outcomes\":"), "no outcomes key anywhere:\n{body}");
     let report: Report = serde_json::from_str(&body).unwrap();
     assert_eq!(report.outcomes_enabled, Some(false));
     assert!(report.totals.outcomes.is_none());
-    let entry = &report.sessions[SID_A];
+    assert!(report.sessions[SID_A].outcomes.is_none());
+}
+
+/// Fail closed: a window session with NULL `efficiency_json` (never reindexed) makes collect exit
+/// non-zero with the reindex remedy, write NO artifact, and leave the target untouched. BITES:
+/// remove the fail-closed guard in `run_collect` and this would write a partial report and exit 0.
+#[test]
+fn collect_fails_closed_on_null_efficiency_and_writes_no_artifact() {
+    let tmp = TempDir::new().unwrap();
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    // A reindexed session AND an un-reindexed one both in-window: the NULL one must trip the guard.
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
+    );
+    db.upsert_session(&parsed(SID_B, "2026-06-16T10:00:00Z"), "desk")
+        .unwrap(); // no set_efficiency -> NULL
+    drop(db);
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T23:59:59Z",
+        false,
+    );
+    let err = run(&cfg).unwrap_err();
     assert!(
-        entry.outcomes.is_none(),
-        "the commit must not be observed when extraction is skipped"
+        err.to_string().contains("reindex"),
+        "error must name the reindex remedy: {err}"
     );
+    assert!(!output.exists(), "no artifact may be written on the fail-closed path");
 }
 
-/// Defaults unchanged: the same transcript WITHOUT `--no-outcomes` still extracts the commit,
-/// proving the flag actually gates extraction rather than always suppressing the field.
+/// An empty window (zero sessions) is a VALID empty v2 artifact, exit 0 — distinct from the
+/// fail-closed "bad/missing data" path above.
 #[test]
-fn collect_without_no_outcomes_still_extracts_by_default() {
+fn collect_empty_window_writes_valid_empty_artifact() {
     let tmp = TempDir::new().unwrap();
-    let projects = tmp.path().join("projects");
-    let project = projects.join("-home-saidler-repos-foo-bar");
-
-    write_jsonl(
-        &project.join(format!("{}.jsonl", SID_A)),
-        &[
-            r#"{"type":"assistant","sessionId":"abc","timestamp":"2026-04-10T10:00:00Z","cwd":"/home/saidler/repos/foo/bar","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":5}}}"#,
-            r#"{"type":"user","timestamp":"2026-04-10T10:05:00Z","toolUseResult":{"gitOperation":{"commit":{"sha":"abc123","kind":"committed"}}}}"#,
-        ],
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    // A session OUTSIDE the July window (modified in June) -> the window selects nothing.
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
     );
+    drop(db);
 
     let output = tmp.path().join("claude-report.json");
-    let cfg = make_collect_config_with_no_outcomes(&projects, &output, false);
-    crate::run_with_config(&cfg).unwrap();
-
-    let body = fs::read_to_string(&output).unwrap();
-    let report: Report = serde_json::from_str(&body).unwrap();
-    assert_eq!(report.outcomes_enabled, Some(true));
-    let entry = &report.sessions[SID_A];
-    assert_eq!(entry.outcomes.as_ref().unwrap().commits, vec!["abc123".to_string()]);
-}
-
-#[test]
-fn latest_prior_report_picks_newest_excluding_self() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    for name in [
-        "claude-report-2026-06-20-101010.json",
-        "claude-report-2026-06-21-090000.json",
-        "claude-report-2026-06-21-235959.json",
-        "not-a-report.json",
-        "claude-report-latest.txt",
-    ] {
-        fs::write(dir.join(name), "{}").unwrap();
-    }
-    // The output we are about to write (does not exist yet).
-    let output = Output::File(dir.join("claude-report-2026-06-22-000000.json"));
-    let prior = crate::latest_prior_report_in(dir, &output).unwrap();
-    assert_eq!(prior, dir.join("claude-report-2026-06-21-235959.json"));
-}
-
-#[test]
-fn latest_prior_report_none_when_no_prior() {
-    let tmp = TempDir::new().unwrap();
-    let output = Output::File(tmp.path().join("claude-report-2026-06-22-000000.json"));
-    assert!(crate::latest_prior_report_in(tmp.path(), &output).is_none());
-}
-
-#[test]
-fn latest_prior_report_excludes_output_itself() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    let path = dir.join("claude-report-2026-06-22-000000.json");
-    fs::write(&path, "{}").unwrap();
-    let output = Output::File(path);
-    // Only the output file is present; it must be excluded, so no prior.
-    assert!(crate::latest_prior_report_in(dir, &output).is_none());
-}
-
-#[test]
-fn title_carries_forward_across_timestamped_outputs() {
-    let tmp = TempDir::new().unwrap();
-    let projects = tmp.path().join("projects");
-    let project = projects.join("-home-saidler-repos-foo");
-    write_jsonl(
-        &project.join(format!("{}.jsonl", SID_A)),
-        &[
-            r#"{"type":"assistant","sessionId":"abc","timestamp":"2026-04-10T10:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1}}}"#,
-        ],
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-07-01T00:00:00Z",
+        "2026-07-31T23:59:59Z",
+        false,
     );
-
-    let reports = tmp.path().join("reports");
-    let first = reports.join("claude-report-2026-06-21-090000.json");
-    let cfg1 = make_collect_config(&projects, &first);
-    crate::run_with_config(&cfg1).unwrap();
-
-    // Hand-edit the first (older) report to carry a title.
-    let mut report: Report = serde_json::from_str(&fs::read_to_string(&first).unwrap()).unwrap();
-    report.sessions.get_mut(SID_A).unwrap().title = Some("carried title".into());
-    fs::write(&first, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-
-    // A later run with a *different* timestamped output must inherit the title.
-    let second = reports.join("claude-report-2026-06-21-235959.json");
-    let cfg2 = make_collect_config(&projects, &second);
-    crate::run_with_config(&cfg2).unwrap();
-
-    let report: Report = serde_json::from_str(&fs::read_to_string(&second).unwrap()).unwrap();
-    assert_eq!(report.sessions[SID_A].title.as_deref(), Some("carried title"));
+    let result = run(&cfg).unwrap();
+    assert_eq!(result.sessions_emitted, 0);
+    let report: Report = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.totals.sessions, 0);
+    assert!(report.sessions.is_empty());
 }
 
+/// An unparseable `efficiency_json` is a LOUD error (bad data ≠ no data): collect fails rather than
+/// silently dropping the session.
 #[test]
-fn end_to_end_title_preserved_across_runs() {
+fn collect_errors_loudly_on_unparseable_efficiency_json() {
     let tmp = TempDir::new().unwrap();
-    let projects = tmp.path().join("projects");
-    let project = projects.join("-home-saidler-repos-foo");
-
-    write_jsonl(
-        &project.join(format!("{}.jsonl", SID_A)),
-        &[
-            r#"{"type":"assistant","sessionId":"abc","timestamp":"2026-04-10T10:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1}}}"#,
-        ],
-    );
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    db.upsert_session(&parsed(SID_A, "2026-06-15T10:00:00Z"), "desk")
+        .unwrap();
+    db.set_efficiency_many(&[EfficiencyWrite {
+        session_id: SID_A,
+        efficiency_json: "{ this is not valid json",
+        cache_read_share: None,
+        tool_errors: 0,
+        cost_usd: 0.0,
+        outcome_json: "{}",
+    }])
+    .unwrap();
+    drop(db);
 
     let output = tmp.path().join("claude-report.json");
-    let cfg = make_collect_config(&projects, &output);
-    crate::run_with_config(&cfg).unwrap();
-
-    let body = fs::read_to_string(&output).unwrap();
-    let mut report: Report = serde_json::from_str(&body).unwrap();
-    let entry = report.sessions.get_mut(SID_A).unwrap();
-    entry.title = Some("hand-written title".into());
-    let edited = serde_json::to_string_pretty(&report).unwrap();
-    fs::write(&output, edited).unwrap();
-
-    crate::run_with_config(&cfg).unwrap();
-
-    let body = fs::read_to_string(&output).unwrap();
-    let report: Report = serde_json::from_str(&body).unwrap();
-    assert_eq!(report.sessions[SID_A].title.as_deref(), Some("hand-written title"));
-}
-
-// Serialize env-var-touching tests (XDG_DATA_HOME) so parallel runs can't race.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-#[test]
-fn stdout_mode_resolves_title_cache_source() {
-    // HAZARD 2 (financial): Stdout mode (no `-o`) must still resolve a title-cache SOURCE so the
-    // paid Haiku titling carries forward and does NOT re-bill the Anthropic API every run. The
-    // source is the newest prior report in the default report dir under XDG data.
-    let guard = ENV_LOCK.lock().unwrap();
-    let prior_xdg = std::env::var("XDG_DATA_HOME").ok();
-
-    let tmp = TempDir::new().unwrap();
-    unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-
-    let report_dir = tmp.path().join("claude-report");
-    fs::create_dir_all(&report_dir).unwrap();
-    let prior = report_dir.join("claude-report-2026-06-21-235959.json");
-    fs::write(&prior, "{}").unwrap();
-    // An older prior, to confirm the newest is chosen.
-    fs::write(report_dir.join("claude-report-2026-06-20-101010.json"), "{}").unwrap();
-
-    let resolved = crate::resolve_titles_source(&Output::Stdout).unwrap();
-    assert_eq!(
-        resolved,
-        Some(prior),
-        "stdout mode must seed the title cache from the newest prior report in the default dir"
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T23:59:59Z",
+        false,
     );
-
-    match prior_xdg {
-        Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
-        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
-    }
-    drop(guard);
+    let err = run(&cfg).unwrap_err();
+    assert!(
+        err.to_string().contains("efficiency_json") || err.chain().any(|c| c.to_string().contains("efficiency_json")),
+        "error must name the unparseable blob: {err}"
+    );
 }
 
 #[test]
 fn log_file_path_resolves_under_unified_clyde_logs_dir() {
-    // Phase 8 (D3): report's log moves off the legacy `claude-report/logs/` dir onto the unified
-    // `<xdg-data>/clyde/logs/report.log` location shared with cost and permit.
+    // report's log lives at `<xdg-data>/clyde/logs/report.log`.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let guard = ENV_LOCK.lock().unwrap();
     let prior_xdg = std::env::var("XDG_DATA_HOME").ok();
 

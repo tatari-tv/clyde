@@ -4,6 +4,7 @@ use super::*;
 use crate::report::{ModelTokens, SessionEntry, Totals};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
+use efficiency::{RawCounters, SessionEfficiency, finalize};
 
 fn ts(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
@@ -11,6 +12,17 @@ fn ts(s: &str) -> DateTime<Utc> {
 
 fn pricing() -> Pricing {
     Pricing::embedded()
+}
+
+/// An empty v2 efficiency passthrough — aggregate rollups read tokens/spend from `models`, never the
+/// efficiency object, so an all-zero scope is enough for these fixtures.
+fn empty_efficiency() -> SessionEfficiency {
+    SessionEfficiency {
+        session_id: "x".into(),
+        aggregate: finalize(RawCounters::default()),
+        subagents: Vec::new(),
+        flags: Vec::new(),
+    }
 }
 
 fn tokens(total: u64, spend_usd: Option<f64>) -> ModelTokens {
@@ -49,6 +61,15 @@ fn entry(
         jsonl_paths: Vec::new(),
         models,
         outcomes: None,
+        agent_type_costs: BTreeMap::new(),
+        cache_read_share: None,
+        tool_error_rate: None,
+        cache_1h_write_fraction: None,
+        interrupts: 0,
+        compactions: 0,
+        by_skill: BTreeMap::new(),
+        by_mcp: BTreeMap::new(),
+        efficiency: empty_efficiency(),
     }
 }
 
@@ -60,18 +81,21 @@ fn report_with(since: &str, until: &str, sessions: Vec<(&str, SessionEntry)>) ->
         map.insert(sid.to_string(), e);
     }
     Report {
-        schema_version: 1,
+        schema_version: 2,
         generated: ts("2026-07-01T00:00:00Z"),
         host: "desk".into(),
         since: ts(since),
         until: ts(until),
         outcomes_enabled: None,
+        notes: Vec::new(),
         totals: Totals {
             sessions: map.len(),
             spend_usd: totals_spend,
             untracked_models: Vec::new(),
             models: BTreeMap::new(),
             outcomes: None,
+            cache_read_share: None,
+            tool_error_rate: None,
         },
         sessions: map,
     }
@@ -369,18 +393,21 @@ fn report_with_totals(models: Vec<(&str, ModelTokens)>, actual_spend: f64) -> Re
         totals_models.insert(name.to_string(), mt);
     }
     Report {
-        schema_version: 1,
+        schema_version: 2,
         generated: ts("2026-07-01T00:00:00Z"),
         host: "desk".into(),
         since: ts("2026-06-01T00:00:00Z"),
         until: ts("2026-07-01T00:00:00Z"),
         outcomes_enabled: None,
+        notes: Vec::new(),
         totals: Totals {
             sessions: 0,
             spend_usd: actual_spend,
             untracked_models: Vec::new(),
             models: totals_models,
             outcomes: None,
+            cache_read_share: None,
+            tool_error_rate: None,
         },
         sessions: BTreeMap::new(),
     }

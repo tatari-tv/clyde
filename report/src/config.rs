@@ -27,34 +27,18 @@ pub enum Output {
     Stdout,
 }
 
-impl Output {
-    /// Directory used to seed the cross-run Haiku title cache. CRITICAL (review HAZARD 2,
-    /// financial): even when streaming to stdout there must be a real source directory, or the
-    /// paid Anthropic titling re-bills on every run because no prior titles carry forward. For
-    /// [`Output::File`] this is the output file's parent; for [`Output::Stdout`] it is the
-    /// default report dir under XDG data (the dir `collect` would otherwise have written to).
-    pub fn title_cache_dir(&self) -> Result<PathBuf> {
-        match self {
-            Output::File(p) => Ok(p
-                .parent()
-                .filter(|d| !d.as_os_str().is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))),
-            Output::Stdout => default_collect_dir(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct CollectConfig {
     pub since: DateTime<Utc>,
     pub until: DateTime<Utc>,
     pub output: Output,
-    pub projects_dir: PathBuf,
+    /// The session catalog collect reads (`sessions.db`). Defaults to the canonical
+    /// `session::paths::sessions_db_path()`; overridable via `--db` (and injected directly by tests).
+    pub db_path: PathBuf,
+    /// `true` for `--no-rollup`: present the per-subagent breakdown as its own rows (a VIEW over the
+    /// catalog's subagents) instead of the per-session rollup. Default `false` (rollup).
     pub no_rollup: bool,
-    pub skip_title: bool,
-    /// `true` for `--no-outcomes`: skip the outcome extraction pass entirely (mirrors
-    /// `skip_title`'s shape). Default `false` (extraction on).
+    /// `true` for `--no-outcomes`: omit catalog outcomes from the report. Default `false`.
     pub no_outcomes: bool,
 }
 
@@ -177,38 +161,16 @@ fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConf
         Some(p) => Output::File(p),
         None => Output::Stdout,
     };
-    let projects_dir = args
-        .projects_dir
-        .or_else(default_projects_dir)
-        .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects/ path"))?;
-    if !projects_dir.is_dir() {
-        bail!(
-            "projects directory does not exist: {}\nPass --projects-dir <path> to override.",
-            projects_dir.display()
-        );
-    }
+    // Collect reads the canonical catalog; `--db` overrides the path (tests inject one directly).
+    let db_path = args.db.unwrap_or_else(session::paths::sessions_db_path);
     Ok(CollectConfig {
         since,
         until,
         output,
-        projects_dir,
+        db_path,
         no_rollup: args.no_rollup,
-        skip_title: args.skip_title,
         no_outcomes: args.no_outcomes,
     })
-}
-
-fn default_projects_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".claude").join("projects"))
-}
-
-/// Default `report collect` report directory under the XDG data dir
-/// (`<xdg-data>/claude-report`). Used as the title-cache source for [`Output::Stdout`] so the
-/// paid Haiku titling carries forward across streaming runs instead of re-billing every time.
-fn default_collect_dir() -> Result<PathBuf> {
-    Ok(xdg_data_dir()
-        .ok_or_else(|| eyre::eyre!("could not determine XDG data dir (set HOME or XDG_DATA_HOME)"))?
-        .join("claude-report"))
 }
 
 /// XDG data dir, honoring `$XDG_DATA_HOME` and falling back to `$HOME/.local/share`.
