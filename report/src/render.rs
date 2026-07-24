@@ -5,8 +5,8 @@ use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_us
 use crate::persona::{self, PersonaBlock};
 use crate::proc::run_bounded;
 use crate::report::{Report, SCHEMA_VERSION, SessionEntry};
+use crate::summarize;
 use crate::{OutputDest, RunResult};
-use crate::{summarize, title};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
 use efficiency::{RawCounters, WorkloadCost, finalize};
@@ -234,12 +234,12 @@ fn render_via_opus_markdown(json_body: &str, prompt: &str) -> Result<String> {
         json_body.len(),
         prompt.len()
     );
-    let api_key = title::api_key_from_env().ok_or_else(|| {
-        eyre::eyre!(
-            "ANTHROPIC_API_KEY is required for Opus rendering; pass --template <path> for the offline markdown path"
-        )
-    })?;
-    let prose = summarize::markdown(prompt, json_body, &api_key)?;
+    let prose = summarize::markdown(
+        &summarize::ApiTransport::from_env()?,
+        summarize::MARKDOWN_MODEL,
+        prompt,
+        json_body,
+    )?;
     // Render invents nothing: the whole markdown document is prose over the string-only facts, so
     // every numeric token in it must appear verbatim in the context (which carries only pre-formatted
     // display strings). A fabricated figure means the model computed or invented a number -> reject.
@@ -256,10 +256,12 @@ fn render_via_opus_html(context: &str, prompt: &str) -> Result<String> {
         context.len(),
         prompt.len()
     );
-    let api_key = title::api_key_from_env().ok_or_else(|| {
-        eyre::eyre!("ANTHROPIC_API_KEY is required for --format html/marquee-html; there is no offline HTML path")
-    })?;
-    let html = summarize::html(prompt, context, &api_key)?;
+    let html = summarize::html(
+        &summarize::ApiTransport::from_env()?,
+        summarize::HTML_MODEL,
+        prompt,
+        context,
+    )?;
     // Render invents nothing (html): CSS/JS geometry is legitimate authored markup full of numbers
     // that are NOT data (px, breakpoints, colors), so the guard runs over the VISIBLE TEXT only
     // (style/script blocks and tag markup stripped). Every data figure a reader sees must appear

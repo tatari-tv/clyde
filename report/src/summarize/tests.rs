@@ -190,3 +190,128 @@ fn postprocess_rejects_websocket() {
     let err = postprocess_html(&raw).unwrap_err();
     assert!(format!("{err}").contains("network API"), "{err}");
 }
+
+// ---- Transport port: fake-driven end-to-end over markdown/html ---------------------------------
+
+/// One recorded trip through the port. A named struct rather than a tuple so each assertion reads
+/// as the field it is checking.
+#[derive(Clone, Debug)]
+struct Recorded {
+    job: Job,
+    model: String,
+    system: String,
+    prompt: String,
+    json_body: String,
+}
+
+/// Records what the port was handed and returns a canned reply. Mirrors how `sessions` and
+/// `efficiency` fake their `Completer`/`Narrator` ports: a fake that records, never a mock.
+struct FakeTransport {
+    reply: String,
+    seen: std::cell::RefCell<Vec<Recorded>>,
+}
+
+impl FakeTransport {
+    fn new(reply: impl Into<String>) -> Self {
+        Self {
+            reply: reply.into(),
+            seen: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The single recorded call, or a panic if the count is not exactly one.
+    fn only_call(&self) -> Recorded {
+        let seen = self.seen.borrow();
+        assert_eq!(seen.len(), 1, "expected exactly one transport call, got {}", seen.len());
+        seen[0].clone()
+    }
+}
+
+impl Transport for FakeTransport {
+    fn complete(&self, job: Job, model: &str, system: &str, prompt: &str, json_body: &str) -> Result<String> {
+        self.seen.borrow_mut().push(Recorded {
+            job,
+            model: model.to_string(),
+            system: system.to_string(),
+            prompt: prompt.to_string(),
+            json_body: json_body.to_string(),
+        });
+        Ok(self.reply.clone())
+    }
+}
+
+/// A transport that always fails, to prove the error propagates rather than yielding an artifact.
+struct FailingTransport;
+
+impl Transport for FailingTransport {
+    fn complete(&self, _: Job, _: &str, _: &str, _: &str, _: &str) -> Result<String> {
+        bail!("transport exploded")
+    }
+}
+
+#[test]
+fn markdown_passes_job_model_and_system_prompt_through() {
+    let t = FakeTransport::new("# Report\n\nprose");
+    let out = markdown(&t, "some-model", "instruction", "{\"k\":1}").unwrap();
+    assert_eq!(out, "# Report\n\nprose");
+    let call = t.only_call();
+    assert_eq!(call.job, Job::Markdown);
+    assert_eq!(call.model, "some-model");
+    assert_eq!(call.system, MARKDOWN_SYSTEM_PROMPT);
+    // prompt and json_body stay SEPARATE across the port; joining is the transport's business.
+    assert_eq!(call.prompt, "instruction");
+    assert_eq!(call.json_body, "{\"k\":1}");
+}
+
+#[test]
+fn html_passes_job_model_and_system_prompt_through() {
+    let t = FakeTransport::new(doc("<h1>hi</h1>"));
+    let out = html(&t, "other-model", "instruction", "{\"k\":1}").unwrap();
+    assert!(out.starts_with("<!doctype html>"));
+    let call = t.only_call();
+    assert_eq!(call.job, Job::Html);
+    assert_eq!(call.model, "other-model");
+    assert_eq!(call.system, HTML_SYSTEM_PROMPT);
+    assert_eq!(call.prompt, "instruction");
+    assert_eq!(call.json_body, "{\"k\":1}");
+}
+
+#[test]
+fn html_postprocesses_whatever_the_transport_returns() {
+    // The guard runs AFTER the transport, so it is transport-agnostic: a fenced reply is stripped
+    // no matter which transport produced it. This is the safety argument for a second transport.
+    let t = FakeTransport::new(format!("```html\n{}\n```", doc("<p>x</p>")));
+    let out = html(&t, "m", "p", "{}").unwrap();
+    assert!(out.starts_with("<!doctype html>"), "fence should be stripped: {out}");
+    assert!(out.trim_end().ends_with("</html>"));
+}
+
+#[test]
+fn html_bails_when_the_transport_returns_a_non_document() {
+    // Proven to bite: swap this reply for a valid document and the test fails.
+    let t = FakeTransport::new("Here is your dashboard!");
+    let err = html(&t, "m", "p", "{}").unwrap_err().to_string();
+    assert!(
+        err.contains("<!doctype html>"),
+        "should name the doctype requirement: {err}"
+    );
+}
+
+#[test]
+fn html_bails_when_the_transport_returns_an_externally_dependent_document() {
+    let t = FakeTransport::new(doc("<script src=\"https://cdn.example.com/x.js\"></script>"));
+    let err = html(&t, "m", "p", "{}").unwrap_err().to_string();
+    assert!(err.contains("self-contained"), "should name self-containment: {err}");
+}
+
+#[test]
+fn markdown_propagates_a_transport_failure() {
+    let err = markdown(&FailingTransport, "m", "p", "{}").unwrap_err().to_string();
+    assert!(err.contains("transport exploded"), "got: {err}");
+}
+
+#[test]
+fn html_propagates_a_transport_failure() {
+    let err = html(&FailingTransport, "m", "p", "{}").unwrap_err().to_string();
+    assert!(err.contains("transport exploded"), "got: {err}");
+}
