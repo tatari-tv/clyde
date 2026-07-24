@@ -343,6 +343,7 @@ name = "common"
 version = "0.12.3"
 dependencies = [
  "chrono",
+ "claude-pricing",
  "dirs",
  "eyre",
  "log",

@@ -11,8 +11,9 @@
 //! filesystem.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
-use claude_pricing::{AssistantEntry, TokenUsage, calculate_usd};
+use claude_pricing::{AssistantEntry, Pricing, TokenUsage};
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +119,19 @@ pub struct RawCounters {
     pub by_mcp_tool: BTreeMap<String, WorkloadCost>,
 }
 
+/// The pricing source efficiency's catalog reindex path prices against -- ALWAYS
+/// `Pricing::embedded()`, never a live/fetched feed (`Pricing::auto`). This is the Phase 1
+/// pricing-source seam decision (`docs/design/2026-07-24-report-collect-once-render-from-data.md`):
+/// a catalog value (`cost_usd` in a persisted `efficiency_json`) must be deterministic and
+/// reproducible from the same JSONL on a later reindex regardless of network state or feed
+/// staleness at that time. `report`, by contrast, prices via a fetched `Pricing` (`lib.rs:139`) so
+/// a report reflects the current feed. Cached once (`Pricing::embedded()` clones its tables on
+/// every call) since this is on the per-record hot path (`add_usage`).
+fn embedded_pricing() -> &'static Pricing {
+    static PRICING: OnceLock<Pricing> = OnceLock::new();
+    PRICING.get_or_init(Pricing::embedded)
+}
+
 impl RawCounters {
     /// Sum of every token field (mirrors `report::session::TokenTotals::total`).
     pub fn total_tokens(&self) -> u64 {
@@ -141,16 +155,14 @@ impl RawCounters {
         self.cache_1h_write_tokens += usage.cache_1h_write_tokens;
         self.turns += 1;
         *self.model_mix.entry(model.to_string()).or_default() += 1;
-        match calculate_usd(model, usage) {
-            Ok(cost) => {
-                self.cost_usd += cost;
-                cost
-            }
-            Err(e) => {
-                warn!("metrics::add_usage: unpriced model `{model}`, contributing $0 to cost_usd: {e}");
-                0.0
-            }
-        }
+        // Shared with `report` via `common::metrics::price` (Phase 1); `pricing` here is always
+        // `embedded_pricing()`, never a fetched feed -- see that function's doc for why.
+        let cost = common::metrics::price(model, usage, embedded_pricing()).unwrap_or_else(|| {
+            warn!("metrics::add_usage: unpriced model `{model}`, contributing $0 to cost_usd");
+            0.0
+        });
+        self.cost_usd += cost;
+        cost
     }
 
     /// Phase 2 seam: fold a parsed `claude_pricing::AssistantEntry` (as returned by

@@ -2,6 +2,7 @@ use crate::outcome::{self, OutcomeTotals, Outcomes};
 use crate::session::{SessionSummary, TokenTotals};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
+use common::metrics::price;
 use eyre::{Context, Result};
 use log::debug;
 use serde::{Deserialize, Serialize};
@@ -87,10 +88,11 @@ pub struct ModelTokens {
 
 impl ModelTokens {
     pub fn from_totals(model: &str, t: &TokenTotals, pricing: &Pricing) -> Self {
-        let spend_usd = match pricing.calculate_usd(model, &t.as_usage()) {
-            Ok(f) => Some(round_cents(f)),
-            Err(_) => None,
-        };
+        // Prices LAST: `t` is the fully-accumulated per-model `TokenTotals` (every entry already
+        // folded in via `add`/`merge`); `price` (common/src/metrics.rs) is called exactly once
+        // here, on the union, never per-record. `None` (a model absent from `pricing.yml`) is
+        // graceful degradation, not a panic -- surfaced downstream via `untracked_models`.
+        let spend_usd = price(model, &t.as_usage(), pricing).map(round_cents);
         Self {
             input: t.input,
             output: t.output,

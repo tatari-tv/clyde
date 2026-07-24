@@ -214,9 +214,9 @@ fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
             cache_1h_write_tokens: 0,
             cache_read_tokens: 0,
         };
-        match pricing.calculate_usd(model, &usage) {
-            Ok(cost) => list_price += cost,
-            Err(_) if cache_tokens > 0 => {
+        match common::metrics::price(model, &usage, pricing) {
+            Some(cost) => list_price += cost,
+            None if cache_tokens > 0 => {
                 // A cache-bearing model with no price makes the whole counterfactual unknowable.
                 debug!(
                     "aggregate::compute_cache_stats: unpriced cache-bearing model `{}`; counterfactual absent",
@@ -224,7 +224,7 @@ fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
                 );
                 counterfactual_ok = false;
             }
-            Err(_) => {}
+            None => {}
         }
     }
 

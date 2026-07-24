@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 chrono.workspace = true
+claude-pricing = { version = "2.0.0", path = "../pricing" }
 dirs.workspace = true
 eyre.workspace = true
 log.workspace = true

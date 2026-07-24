@@ -2,50 +2,16 @@ use crate::outcome::{FileOutcomes, Outcomes, PrRef};
 use crate::repo::Resolver;
 use crate::scan::{SessionFile, SessionFileKind};
 use chrono::{DateTime, Utc};
-use claude_pricing::{AssistantEntry, ParseResult, TokenUsage, normalize_model_id};
+use claude_pricing::{AssistantEntry, ParseResult, normalize_model_id};
 use log::debug;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Default)]
-pub struct TokenTotals {
-    pub input: u64,
-    pub output: u64,
-    pub cache_5m_write: u64,
-    pub cache_1h_write: u64,
-    pub cache_read: u64,
-    pub total: u64,
-}
-
-impl TokenTotals {
-    pub fn add(&mut self, usage: &TokenUsage) {
-        self.input += usage.input_tokens;
-        self.output += usage.output_tokens;
-        self.cache_5m_write += usage.cache_5m_write_tokens;
-        self.cache_1h_write += usage.cache_1h_write_tokens;
-        self.cache_read += usage.cache_read_tokens;
-        self.total = self.input + self.output + self.cache_5m_write + self.cache_1h_write + self.cache_read;
-    }
-
-    pub fn merge(&mut self, other: &TokenTotals) {
-        self.input += other.input;
-        self.output += other.output;
-        self.cache_5m_write += other.cache_5m_write;
-        self.cache_1h_write += other.cache_1h_write;
-        self.cache_read += other.cache_read;
-        self.total = self.input + self.output + self.cache_5m_write + self.cache_1h_write + self.cache_read;
-    }
-
-    pub fn as_usage(&self) -> TokenUsage {
-        TokenUsage {
-            input_tokens: self.input,
-            output_tokens: self.output,
-            cache_5m_write_tokens: self.cache_5m_write,
-            cache_1h_write_tokens: self.cache_1h_write,
-            cache_read_tokens: self.cache_read,
-        }
-    }
-}
+/// The shared token accumulator, lifted into `common` (Phase 1,
+/// `docs/design/2026-07-24-report-collect-once-render-from-data.md`) so `report` and `efficiency`
+/// share one `add`/`merge`/pricing path. Re-exported here so existing call sites in this crate
+/// (`crate::session::TokenTotals`) are unaffected by the move.
+pub use common::metrics::TokenTotals;
 
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
