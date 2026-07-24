@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use claude_pricing::{AssistantEntry, Pricing, TokenUsage};
+use common::metrics::TokenTotals;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 
@@ -113,6 +114,14 @@ pub struct RawCounters {
     pub effort_xhigh: u64,
     /// `message.model` distribution (count of assistant records per model id).
     pub model_mix: BTreeMap<String, u64>,
+    /// Per-model TOKEN breakdown (Phase 2, `report-collect-once-render-from-data`). Distinct from
+    /// `model_mix` (a record COUNT per model): this is the input/output/cache token split per model,
+    /// the missing signal report's "Totals by model" table needs and could not reconstruct from the
+    /// catalog before. Additive across scopes like every other raw counter -- unioned key-wise in
+    /// [`merge`](Self::merge), never a field-sum of a derived value (Aggregation invariant). Carries
+    /// NO `$` field: per-model cost is priced LAST from these unioned totals via
+    /// `common::metrics::price`, so a priced dollar can never be summed by accident.
+    pub by_model: BTreeMap<String, TokenTotals>,
     /// Tokens/`$` grouped by `attributionSkill`.
     pub by_skill: BTreeMap<String, WorkloadCost>,
     /// Tokens/`$` grouped by `attributionMcpTool`.
@@ -155,6 +164,10 @@ impl RawCounters {
         self.cache_1h_write_tokens += usage.cache_1h_write_tokens;
         self.turns += 1;
         *self.model_mix.entry(model.to_string()).or_default() += 1;
+        // Per-model token split (Phase 2): fold this turn's usage into the model's `TokenTotals`
+        // via the SAME `common::metrics::TokenTotals::add` report uses, so the per-model breakdown
+        // is byte-identical to report's JSONL-derived one and the two can never drift.
+        self.by_model.entry(model.to_string()).or_default().add(usage);
         // Shared with `report` via `common::metrics::price` (Phase 1); `pricing` here is always
         // `embedded_pricing()`, never a fetched feed -- see that function's doc for why.
         let cost = common::metrics::price(model, usage, embedded_pricing()).unwrap_or_else(|| {
@@ -197,6 +210,9 @@ impl RawCounters {
         self.effort_xhigh += other.effort_xhigh;
         for (model, count) in &other.model_mix {
             *self.model_mix.entry(model.clone()).or_default() += count;
+        }
+        for (model, totals) in &other.by_model {
+            self.by_model.entry(model.clone()).or_default().merge(totals);
         }
         for (skill, wc) in &other.by_skill {
             self.by_skill.entry(skill.clone()).or_default().merge(wc);

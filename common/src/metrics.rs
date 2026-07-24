@@ -12,6 +12,7 @@
 //! invariant, `efficiency/src/metrics.rs:9`, applied to money).
 
 use claude_pricing::{Pricing, TokenUsage};
+use serde::{Deserialize, Serialize};
 
 /// `cache_read / (input + cache_read + cache_5m_write + cache_1h_write)`.
 ///
@@ -31,7 +32,14 @@ pub fn cache_read_share(input: u64, cache_read: u64, cache_5m_write: u64, cache_
 ///
 /// Lifted from `report::session::TokenTotals` (Phase 1); `report` re-exports this type from
 /// `report::session` so existing call sites are unaffected.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// `Serialize`/`Deserialize` (kebab-case) is added in Phase 2 (`report-collect-once-render-from-data`):
+/// per-model `TokenTotals` land on `efficiency::RawCounters::by_model`, which serializes into the
+/// catalog's `efficiency_json` blob and re-parses out of it, so the wire shape is kebab-case to
+/// match the house convention and the efficiency export contract. `total` round-trips as a stored
+/// field but is always recomputed from the five components on `add`/`merge`, so it cannot drift.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct TokenTotals {
     pub input: u64,
     pub output: u64,

@@ -47,6 +47,7 @@ fn v6_set_efficiency_stores_columns_without_advancing_updated_at() {
             cache_read_share: Some(0.5),
             tool_errors: 4,
             cost_usd: 2.5,
+            outcome_json: "{}",
         }])
         .unwrap();
     assert_eq!(written, 1, "one row annotated");
@@ -98,6 +99,7 @@ fn v6_set_efficiency_none_share_stores_null() {
         cache_read_share: None,
         tool_errors: 0,
         cost_usd: 0.0,
+        outcome_json: "{}",
     }])
     .unwrap();
     let (_, share, errors, cost) = efficiency_of(&db, UUID_A);
@@ -120,6 +122,7 @@ fn v6_content_update_nulls_stale_efficiency() {
         cache_read_share: Some(0.9),
         tool_errors: 1,
         cost_usd: 0.5,
+        outcome_json: "{}",
     }])
     .unwrap();
     assert!(
@@ -169,6 +172,7 @@ fn v6_sessions_missing_efficiency_excludes_annotated_and_archived() {
         cache_read_share: None,
         tool_errors: 0,
         cost_usd: 0.0,
+        outcome_json: "{}",
     }])
     .unwrap();
     // C: un-annotated but archived (reaped transcript) -> excluded (nothing to recompute from).
@@ -264,14 +268,14 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
     let path = tmp.path().join("v5.db");
     build_v5_db(&path);
 
-    // Reopen: migrate v5 forward to the current schema (v7). from_version=5 (< 6), so the v7
-    // efficiency reset is skipped — there was never any v6 efficiency to invalidate — and the v5
-    // cursor backfill stays gated off, so revisions are preserved exactly as below.
+    // Reopen: migrate v5 forward to the current schema (v8). from_version=5 (< 6), so both the v7
+    // and v8 efficiency resets are skipped — there was never any v6 efficiency to invalidate — and
+    // the v5 cursor backfill stays gated off, so revisions are preserved exactly as below.
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 7,
+        SCHEMA_VERSION, 8,
         "this test pins the v5->current hop; bump me deliberately"
     );
 
@@ -303,6 +307,7 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
         cache_read_share: Some(0.7),
         tool_errors: 0,
         cost_usd: 0.0,
+        outcome_json: "{}",
     }])
     .unwrap();
     assert_eq!(
@@ -337,6 +342,7 @@ fn v6_migration_is_idempotent_on_reopen() {
             cache_read_share: Some(0.42),
             tool_errors: 3,
             cost_usd: 1.25,
+            outcome_json: "{}",
         }])
         .unwrap();
         assert_eq!(revision_counter(&db), 1, "efficiency write did not advance the cursor");
@@ -441,4 +447,135 @@ fn v7_migration_from_v6_invalidates_efficiency_without_advancing_cursor() {
             .unwrap()
     );
     assert_eq!(revision_counter(&db), 21, "first content write after v7 is MAX+1 = 21");
+}
+
+/// The stored `outcome_json` for one session (schema v8), or `None` when the column is `NULL`.
+fn outcome_json_of(db: &Db, session_id: &str) -> Option<String> {
+    db.conn
+        .query_row(
+            "SELECT outcome_json FROM sessions WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .unwrap()
+}
+
+/// Whether `column` exists on `sessions` (probe `PRAGMA table_info`), so a test can prove a column is
+/// ABSENT before a migration adds it (otherwise the post-migration "column exists" assertion could
+/// pass vacuously).
+fn has_column(db: &Db, column: &str) -> bool {
+    let mut stmt = db.conn.prepare("PRAGMA table_info(sessions)").unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|name| name == column)
+}
+
+/// Build a genuine v7 DB on disk: the v6 shape (rows A rev 10, B rev 20, counter 20, triggers, row A's
+/// efficiency populated) with `user_version = 7`. v7 added NO columns (it only invalidated stale
+/// efficiency), so a v7 DB is structurally a v6 DB whose efficiency was recomputed — for the v8
+/// migration test we only need populated efficiency, NO `outcome_json` column, and version 7.
+fn build_v7_db_with_efficiency(path: &Path) {
+    build_v6_db_with_efficiency(path);
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "user_version", 7i64).unwrap();
+}
+
+/// v7 -> v8 migration: ADDS the `outcome_json` column and INVALIDATES the existing efficiency
+/// annotation (NULLs `efficiency_json` + the three scalars + the new `outcome_json`) so the next
+/// `reindex_efficiency` repopulates BOTH per-model tokens and outcomes — WITHOUT advancing the export
+/// cursor (both are derived read-side annotations). BITES: drop the trigger suppression in
+/// `migrate_v8_extend_efficiency` and NULLing every row fires the revision trigger, advancing
+/// `updated_at` and the counter; drop the reset and the stale (per-model-less, outcome-less) blob
+/// survives.
+#[test]
+fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_advancing_cursor() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("v7.db");
+    build_v7_db_with_efficiency(&path);
+
+    // Sanity on the pre-migration v7 DB (a bare connection, so this peek does NOT trigger `migrate`):
+    // efficiency is populated and the `outcome_json` column does not exist yet.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT efficiency_json FROM sessions WHERE session_id = ?1",
+                rusqlite::params![UUID_A],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            json.as_deref(),
+            Some(r#"{"aggregate":{"cache-read-share":0.5}}"#),
+            "the v7 DB starts with efficiency populated",
+        );
+        let has_outcome: bool = conn
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|name| name == "outcome_json");
+        assert!(!has_outcome, "the v7 DB has no outcome_json column yet");
+    }
+
+    // Reopen: migrate v7 -> v8.
+    let db = Db::open_at(&path).unwrap();
+    let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to v8");
+    assert_eq!(SCHEMA_VERSION, 8, "this test pins the v7->v8 hop; bump me deliberately");
+
+    // The new column exists, and the stale efficiency + the fresh outcome column are BOTH NULL so
+    // reindex_efficiency recomputes per-model tokens and outcomes together.
+    assert!(has_column(&db, "outcome_json"), "v8 adds the outcome_json column");
+    assert_eq!(
+        efficiency_of(&db, UUID_A),
+        (None, None, None, None),
+        "v8 nulls the stale efficiency (no per-model tokens) so reindex recomputes it",
+    );
+    assert_eq!(
+        outcome_json_of(&db, UUID_A),
+        None,
+        "outcome_json starts NULL (not yet reindexed)"
+    );
+
+    // ...but the export cursor is UNTOUCHED: both revisions and the counter are preserved.
+    assert_eq!(updated_at_of(&db, UUID_A), 10, "row A revision preserved across v7->v8");
+    assert_eq!(updated_at_of(&db, UUID_B), 20, "row B revision preserved across v7->v8");
+    assert_eq!(
+        revision_counter(&db),
+        20,
+        "the export_meta counter is preserved (the v8 reset is cursor-neutral)",
+    );
+
+    // The schema still functions: a content write advances to MAX+1 = 21.
+    assert!(
+        db.record_enrich_skip(UUID_B, "work", crate::export::EnrichStatus::SkippedEmpty)
+            .unwrap()
+    );
+    assert_eq!(revision_counter(&db), 21, "first content write after v8 is MAX+1 = 21");
+
+    // And an efficiency+outcome write lands both blobs without moving the cursor.
+    db.set_efficiency_many(&[EfficiencyWrite {
+        session_id: UUID_A,
+        efficiency_json: r#"{"aggregate":{"raw":{"by-model":{}}}}"#,
+        cache_read_share: Some(0.5),
+        tool_errors: 0,
+        cost_usd: 0.0,
+        outcome_json: r#"{"commits":["abc"],"prs":[],"confluence-writes":0,"jira-writes":0,"slack-messages":0,"files-edited":1}"#,
+    }])
+    .unwrap();
+    assert_eq!(
+        outcome_json_of(&db, UUID_A).as_deref(),
+        Some(
+            r#"{"commits":["abc"],"prs":[],"confluence-writes":0,"jira-writes":0,"slack-messages":0,"files-edited":1}"#
+        ),
+        "outcome_json is written verbatim alongside efficiency",
+    );
+    assert_eq!(
+        revision_counter(&db),
+        21,
+        "writing efficiency+outcomes does not move the cursor"
+    );
 }

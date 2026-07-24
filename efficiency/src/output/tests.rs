@@ -143,11 +143,13 @@ fn worst_json_preserves_ranked_order_without_duplicated_share() {
             session_id: "worst".to_string(),
             last_active: Local::now(),
             efficiency: session_with(Some(0.0)),
+            outcomes: crate::outcome::Outcomes::default(),
         },
         CollectedSession {
             session_id: "healthy".to_string(),
             last_active: Local::now(),
             efficiency: session_with(Some(0.9)),
+            outcomes: crate::outcome::Outcomes::default(),
         },
     ];
 

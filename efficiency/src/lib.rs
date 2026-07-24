@@ -39,6 +39,7 @@ pub mod extract;
 pub mod fold;
 pub mod metrics;
 pub mod narrate;
+pub mod outcome;
 pub mod output;
 pub mod persist;
 pub mod rank;
@@ -60,6 +61,7 @@ pub use metrics::{
     Compaction, CompactionTrigger, EfficiencySignals, RawCounters, WorkloadCost, aggregate_tokens, finalize,
 };
 pub use narrate::{NarrationInput, narrate, narration_input};
+pub use outcome::{FileOutcomes, Outcomes, PrRef};
 pub use persist::{PersistStats, reindex_efficiency};
 pub use rollup::PeriodEfficiency;
 pub use score::{score, scored};
