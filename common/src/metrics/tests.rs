@@ -141,3 +141,53 @@ fn field_summing_priced_totals_diverges_from_pricing_the_union() {
     // The wrong sum priced each 150k-token half at the standard rate (each under threshold alone).
     assert_eq!(wrong, 2.0 * (150_000.0 / 1_000_000.0));
 }
+
+// `total` is derived; deserialize must RECOMPUTE it, never trust the wire value -- a stale or
+// hand-edited `efficiency_json` blob could otherwise carry a `total` that disagrees with its own
+// five counters and flow straight into report output. (Format-agnostic: exercised via serde_yaml,
+// which `common` already depends on; the custom Deserialize recomputes regardless of format.)
+#[test]
+fn deserialize_recomputes_total_ignoring_a_wrong_wire_value() {
+    let blob = "\
+input: 100
+output: 200
+cache-5m-write: 30
+cache-1h-write: 40
+cache-read: 50
+total: 999999
+";
+    let tt: TokenTotals = serde_yaml::from_str(blob).expect("deserialize");
+    assert_eq!(
+        tt.total, 420,
+        "total is recomputed from 100+200+30+40+50, not the wire's 999999"
+    );
+    // The five raw counters are preserved verbatim.
+    assert_eq!(
+        (tt.input, tt.output, tt.cache_5m_write, tt.cache_1h_write, tt.cache_read),
+        (100, 200, 30, 40, 50)
+    );
+}
+
+#[test]
+fn deserialize_tolerates_absent_total_and_computes_it() {
+    // A blob with no `total` key still yields the correct computed total (robustness).
+    let blob = "\
+input: 10
+output: 20
+cache-5m-write: 0
+cache-1h-write: 0
+cache-read: 70
+";
+    let tt: TokenTotals = serde_yaml::from_str(blob).expect("deserialize without total");
+    assert_eq!(tt.total, 100);
+}
+
+#[test]
+fn serialize_then_deserialize_round_trips_with_consistent_total() {
+    let mut tt = TokenTotals::default();
+    tt.add(&usage(11, 22, 33, 44, 55));
+    let wire = serde_yaml::to_string(&tt).expect("serialize");
+    let back: TokenTotals = serde_yaml::from_str(&wire).expect("deserialize");
+    assert_eq!(back, tt);
+    assert_eq!(back.total, 11 + 22 + 33 + 44 + 55);
+}

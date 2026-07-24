@@ -22,7 +22,7 @@ Zero-code spike; findings only (read-only against the live `sessions.db`).
 - None (all three gaps confirmed against real data; Phases 2/3/4 sized).
 
 ### Findings (carried forward)
-- **Catalog:** `/home/saidler/.local/share/clyde/sessions.db` (96M), `PRAGMA user_version = 7` (`sessions/src/db.rs:40`). 1882 rows, `modified` spans 2026-05-23..2026-07-24. Efficiency shape live: top-level `session-id`/`aggregate`/`subagents`/`flags`; `aggregate.raw` = 21 `RawCounters` fields (`efficiency/src/metrics.rs:82`).
+- **Catalog:** `~/.local/share/clyde/sessions.db` (96M), `PRAGMA user_version = 7` (`sessions/src/db.rs:40`). 1882 rows, `modified` spans 2026-05-23..2026-07-24. Efficiency shape live: top-level `session-id`/`aggregate`/`subagents`/`flags`; `aggregate.raw` = 21 `RawCounters` fields (`efficiency/src/metrics.rs:82`).
 - **Gap 1 (per-model tokens) CONFIRMED ABSENT:** `model-mix` is a record COUNT (e.g. `{"claude-opus-4-8": 480, "<synthetic>": 1}`), while tokens are single aggregate scalars with no per-model split. Report's `Totals.models`/`SessionEntry.models` (`report/src/report.rs:41,61`) are unreconstructable from the catalog today. -> Phase 2 adds per-model `TokenTotals` to `RawCounters` (v7->v8).
 - **Gap 2 (outcomes) CONFIRMED ABSENT:** zero `%outcome%` columns on the `sessions` table; `efficiency_json` carries no outcome keys. Outcomes exist ONLY via `report/src/outcome.rs`'s JSONL scan. -> Phase 2 relocation (add outcome store + move extraction into the reindex path).
 - **Gap 3 (window) CONFIRMED:** `Db::list` filters `s.modified >= since` only, no upper bound (`sessions/src/db.rs:746-749`); `Filters` (`sessions/src/model.rs:141`) has `since` but no `until`. -> Phase 3 adds an `until` bound; drives the M2 per-record -> session-level shift.
@@ -298,6 +298,7 @@ Zero-code spike; findings only (read-only against the live `sessions.db`).
   a boundary-straddling count that differs from a v1 report reads as expected, not a bug.
 
 ### Per-field v2 merge disposition (`report/src/merge.rs`)
+
 | v2 field | merge disposition |
 |----------|-------------------|
 | `SessionEntry.agent_type_costs` | rides as-is under the re-keyed `<host>/<sid>` session (per-session, no cross-host combine) |
@@ -309,6 +310,7 @@ Zero-code spike; findings only (read-only against the live `sessions.db`).
 | `Totals.models` / `spend_usd` | re-summed from each entry's already-priced `ModelTokens` (unchanged v1 behavior; inputs trusted as priced-at-collect) |
 | `Totals.outcomes` | rebuilt by `outcome::rollup` with global dedupe, gated by `outcomes_enabled` (unchanged) |
 | `Report.notes` | set to `[WINDOW_NOTE]` on a merged report |
+
 - Nothing in v2 is un-mergeable: every per-session field rides through and every global ratio
   recomputes from the passthrough, so no field is omitted/zeroed. (The design's "omission stated in
   the artifact" clause has no trigger here; it would only fire if a future field lacked a merge story.)

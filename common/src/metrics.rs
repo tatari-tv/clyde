@@ -36,9 +36,11 @@ pub fn cache_read_share(input: u64, cache_read: u64, cache_5m_write: u64, cache_
 /// `Serialize`/`Deserialize` (kebab-case) is added in Phase 2 (`report-collect-once-render-from-data`):
 /// per-model `TokenTotals` land on `efficiency::RawCounters::by_model`, which serializes into the
 /// catalog's `efficiency_json` blob and re-parses out of it, so the wire shape is kebab-case to
-/// match the house convention and the efficiency export contract. `total` round-trips as a stored
-/// field but is always recomputed from the five components on `add`/`merge`, so it cannot drift.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// match the house convention and the efficiency export contract. `total` is a DERIVED field: it is
+/// recomputed from the five components on `add`/`merge` AND on deserialize (see the hand-written
+/// `Deserialize` below), so it can never diverge from its parts however the value was constructed --
+/// a stale or hand-edited `total` in a blob is ignored, not trusted.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct TokenTotals {
     pub input: u64,
@@ -47,6 +49,37 @@ pub struct TokenTotals {
     pub cache_1h_write: u64,
     pub cache_read: u64,
     pub total: u64,
+}
+
+impl<'de> Deserialize<'de> for TokenTotals {
+    /// Deserialize only the five raw counters and RECOMPUTE `total`; the wire's `total` (if present)
+    /// is ignored. `total` is derived from its components, so trusting a serialized copy would let a
+    /// stale/malformed `efficiency_json` surface a `total` that disagrees with `input+..+cache_read`
+    /// and then flow straight into report output. This mirrors `add`/`merge` -- there is exactly one
+    /// definition of `total`, and it is the sum, everywhere.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        struct Raw {
+            input: u64,
+            output: u64,
+            cache_5m_write: u64,
+            cache_1h_write: u64,
+            cache_read: u64,
+        }
+        let r = Raw::deserialize(deserializer)?;
+        Ok(TokenTotals {
+            input: r.input,
+            output: r.output,
+            cache_5m_write: r.cache_5m_write,
+            cache_1h_write: r.cache_1h_write,
+            cache_read: r.cache_read,
+            total: r.input + r.output + r.cache_5m_write + r.cache_1h_write + r.cache_read,
+        })
+    }
 }
 
 impl TokenTotals {

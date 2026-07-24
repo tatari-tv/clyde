@@ -382,7 +382,11 @@ fn expand_entries(
 
     // Parent residual = aggregate − Σ subagents (non-overlapping decomposition).
     let residual_raw = subtract_subagents(&s.efficiency.aggregate.raw, &s.efficiency.subagents);
-    if scope_is_nonempty(&residual_raw) {
+    // Emit the parent-residual row when it carries token activity OR when the session has outcomes:
+    // session-level outcomes attach ONLY to this row (subagent rows carry none), so suppressing it on
+    // a fully-subagent-attributed session (empty residual) would silently drop that session's
+    // outcomes from both the per-session `outcomes` field and `Totals.outcomes`.
+    if scope_is_nonempty(&residual_raw) || session_outcomes.is_some() {
         let residual_eff = SessionEfficiency {
             session_id: s.session_id.clone(),
             aggregate: finalize(residual_raw.clone()),

@@ -424,6 +424,63 @@ fn no_rollup_explodes_into_residual_plus_subagents() {
     assert_eq!(rolled_total, exploded_total);
 }
 
+/// A session whose token activity is FULLY attributed to subagents (empty parent residual) still
+/// keeps its session-level outcomes under `--no-rollup`: the parent-residual row is emitted BECAUSE
+/// outcomes are present (they attach only to that row, never to subagent rows), so per-session
+/// `outcomes` and `Totals.outcomes` are not silently dropped. BITES: without the `|| outcomes`
+/// clause in `expand_entries`, the empty-residual parent row is suppressed and the outcomes vanish
+/// (Totals.outcomes would be None / zero commits).
+#[test]
+fn no_rollup_keeps_outcomes_for_fully_subagent_session() {
+    // aggregate == the single subagent (parent residual is empty: 0 tokens, 0 turns).
+    let sub = subagent("asub-1", Some("worker"), raw_with("claude-opus-4-7", small_usage(1000)));
+    let eff = session_eff(SID_A, raw_with("claude-opus-4-7", small_usage(0)), vec![sub]);
+    let outcomes = Outcomes {
+        commits: vec!["sha-x".to_string()],
+        prs: vec![pr(42, "https://github.com/tatari-tv/clyde/pull/42")],
+        confluence_writes: 0,
+        jira_writes: 0,
+        slack_messages: 0,
+        files_edited: 3,
+    };
+    let s = collected(SID_A, None, eff, Some(outcomes));
+
+    let exploded = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true, // outcomes_enabled
+        true, // no_rollup
+    );
+
+    // The parent-residual row is kept (for its outcomes) and carries them; the subagent row does not.
+    let parent = exploded
+        .sessions
+        .get(SID_A)
+        .expect("parent-residual row must be kept when the session has outcomes");
+    let po = parent
+        .outcomes
+        .as_ref()
+        .expect("session outcomes ride on the parent-residual row");
+    assert_eq!(po.commits, vec!["sha-x".to_string()]);
+    let sub_key = format!("{SID_A}/asub-1");
+    assert!(
+        exploded.sessions[&sub_key].outcomes.is_none(),
+        "outcomes are session-level, never attached to a subagent row"
+    );
+
+    // And they reach the report totals -- not silently undercounted.
+    let totals = exploded
+        .totals
+        .outcomes
+        .expect("Totals.outcomes must survive the explode");
+    assert_eq!(totals.commits, 1);
+    assert_eq!(totals.prs_opened, 1);
+    assert_eq!(totals.files_edited, 3);
+}
+
 #[test]
 fn build_report_rolls_up_outcomes_with_global_dedupe() {
     let shared_pr = "https://github.com/tatari-tv/clyde/pull/10";

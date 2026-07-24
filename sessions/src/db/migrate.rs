@@ -146,14 +146,19 @@ fn migrate_v6_efficiency(conn: &Connection) -> Result<()> {
 /// scalars to `NULL` for every row. The next `reindex_efficiency` pass — driven by the
 /// `efficiency_json IS NULL` predicate — then repopulates them from disk with the fix.
 ///
-/// Runs ONCE, gated on the PRE-migration `from_version`: a fresh DB (`< 6`, never had v6 data — the
-/// columns migrate_v6 just added are already all `NULL`) skips it, and an already-v7 DB never
-/// re-enters `migrate`. Mirrors `Db::set_efficiency_many`'s trigger suppression — DROP the UPDATE
-/// trigger, NULL, recreate — so invalidating a DERIVED read-side annotation does NOT advance
-/// `updated_at` and force every `session export --cursor` consumer to re-fetch the whole catalog.
+/// Runs ONCE, on the genuine v6->v7 hop only, gated on the PRE-migration `from_version == 6`. A
+/// fresh DB (`< 6`, never had v6 data — the columns migrate_v6 just added are already all `NULL`)
+/// skips it; and an already-v7+ DB (`> 6`) also skips it — since v8 landed, such a DB DOES re-enter
+/// `migrate`, but its efficiency invalidation is subsumed by `migrate_v8_extend_efficiency` below, so
+/// re-running this here would be a wasted full-table `UPDATE` + trigger churn on every later upgrade.
+/// Mirrors `Db::set_efficiency_many`'s trigger suppression — DROP the UPDATE trigger, NULL, recreate
+/// — so invalidating a DERIVED read-side annotation does NOT advance `updated_at` and force every
+/// `session export --cursor` consumer to re-fetch the whole catalog.
 fn migrate_v7_reset_efficiency(conn: &Connection, from_version: i64) -> Result<()> {
-    debug!("migrate_v7_reset_efficiency: from_version={from_version} (reset runs only when 6 <= v < 7)");
-    if from_version < 6 {
+    debug!(
+        "migrate_v7_reset_efficiency: from_version={from_version} (reset runs only on the genuine v6->v7 hop, from_version == 6)"
+    );
+    if from_version != 6 {
         return Ok(());
     }
     // Suppress the revision UPDATE trigger for the invalidation (see `Db::set_efficiency_many`).
