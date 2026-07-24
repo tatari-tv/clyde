@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 build = "build.rs"
-description = "Scan Claude Code session JSONL files and emit a per-host JSON report"
+description = "Read the session catalog and emit a per-host JSON usage report"
 
 [lib]
 name = "report"
@@ -20,6 +20,7 @@ claude-pricing = { path = "../pricing", features = ["fetch"] }
 colored = { workspace = true }
 common = { path = "../common" }
 dirs = { workspace = true }
+efficiency = { path = "../efficiency" }
 env_logger = { workspace = true }
 eyre = { workspace = true }
 gethostname = "1.1.0"
@@ -28,6 +29,8 @@ rayon = { workspace = true }
 regex = "1.12.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+session = { path = "../session" }
+sessions = { path = "../sessions" }
 tempfile = { workspace = true }
 thiserror.workspace = true
 ureq = { workspace = true, features = ["json"] }

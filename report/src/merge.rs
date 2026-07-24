@@ -14,9 +14,10 @@
 
 use crate::config::{MergeConfig, Output};
 use crate::outcome;
-use crate::report::{ModelTokens, Report, SessionEntry, Totals};
+use crate::report::{ModelTokens, Report, SessionEntry, Totals, WINDOW_NOTE};
 use crate::{OutputDest, RunResult};
 use chrono::{DateTime, Utc};
+use efficiency::{RawCounters, finalize};
 use eyre::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -169,6 +170,12 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
         since,
         until,
         outcomes_enabled: Some(all_outcomes_enabled),
+        // v2 merge disposition (design Phase 4): every per-session field (agent-type costs,
+        // by-skill/by-mcp, cache/tool signals, the full `efficiency` passthrough) rides through
+        // untouched under the re-keyed `<host>/<sid>` session, and the global ratios recompute from
+        // the unioned raw counters (see `recompute_totals`). Nothing in v2 is un-mergeable, so the
+        // merged report carries only the standard M2 window note — no field is silently zeroed.
+        notes: vec![WINDOW_NOTE.to_string()],
         totals,
         sessions,
     })
@@ -212,8 +219,13 @@ fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>, outcomes_enabled:
     let mut models: BTreeMap<String, ModelTokens> = BTreeMap::new();
     let mut untracked: BTreeSet<String> = BTreeSet::new();
     let mut total_spend = 0.0_f64;
+    // Union of every merged session's raw counters, taken from the `efficiency` passthrough each v2
+    // `SessionEntry` carries. The global ratios recompute from THIS union (ratio-of-sums), never an
+    // average of the inputs' per-report ratios — the Aggregation invariant across the merge seam.
+    let mut grand = RawCounters::default();
 
     for entry in sessions.values() {
+        grand.merge(&entry.efficiency.aggregate.raw);
         for name in &entry.untracked_models {
             untracked.insert(name.clone());
         }
@@ -239,12 +251,16 @@ fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>, outcomes_enabled:
         None
     };
 
+    let grand_signals = finalize(grand);
+
     Totals {
         sessions: sessions.len(),
         spend_usd: round_cents(total_spend),
         untracked_models: untracked.into_iter().collect(),
         models,
         outcomes,
+        cache_read_share: grand_signals.cache_read_share,
+        tool_error_rate: grand_signals.tool_error_rate,
     }
 }
 

@@ -39,30 +39,36 @@ pub struct PersistStats {
     pub written: usize,
 }
 
-/// One computed session's efficiency in owned form, so the borrowing [`EfficiencyWrite`]s handed to
-/// [`Db::set_efficiency_many`] can reference stable storage across the whole batch.
+/// One computed session's efficiency + outcomes in owned form, so the borrowing [`EfficiencyWrite`]s
+/// handed to [`Db::set_efficiency_many`] can reference stable storage across the whole batch.
 struct OwnedEfficiency {
     session_id: String,
     efficiency_json: String,
     cache_read_share: Option<f64>,
     tool_errors: i64,
     cost_usd: f64,
+    outcome_json: String,
 }
 
 impl OwnedEfficiency {
-    /// Serialize the whole nested [`SessionEfficiency`] to JSON and pull the three ranking scalars
-    /// from the SAME aggregate — the single computation path that keeps the indexed scalars and the
-    /// JSON in lock step.
+    /// Serialize the whole nested [`SessionEfficiency`] AND the per-session [`Outcomes`] to JSON, and
+    /// pull the three ranking scalars from the SAME aggregate — the single computation path that keeps
+    /// the indexed scalars and the efficiency JSON in lock step. `outcome_json` is always a concrete
+    /// object (the all-empty default for a session with no observed outcome), never NULL, so a
+    /// reindexed row is distinguishable from a not-yet-reindexed one.
     fn from_session(cs: &CollectedSession) -> Result<Self> {
         let aggregate = &cs.efficiency.aggregate;
         let efficiency_json = serde_json::to_string(&cs.efficiency)
             .with_context(|| format!("reindex_efficiency: serialize efficiency for session {}", cs.session_id))?;
+        let outcome_json = serde_json::to_string(&cs.outcomes)
+            .with_context(|| format!("reindex_efficiency: serialize outcomes for session {}", cs.session_id))?;
         Ok(Self {
             session_id: cs.session_id.clone(),
             efficiency_json,
             cache_read_share: aggregate.cache_read_share,
             tool_errors: aggregate.raw.tool_errors as i64,
             cost_usd: aggregate.raw.cost_usd,
+            outcome_json,
         })
     }
 
@@ -73,6 +79,7 @@ impl OwnedEfficiency {
             cache_read_share: self.cache_read_share,
             tool_errors: self.tool_errors,
             cost_usd: self.cost_usd,
+            outcome_json: &self.outcome_json,
         }
     }
 }

@@ -143,6 +143,10 @@ pub struct Filters {
     pub repo: Option<String>,
     /// Only sessions modified at or after this instant.
     pub since: Option<DateTime<Utc>>,
+    /// Only sessions modified at or before this instant (Phase 3, `report` M2 session-level
+    /// windowing: `since <= s.modified <= until`). `None` leaves the window open-ended, matching
+    /// today's `since`-only behavior.
+    pub until: Option<DateTime<Utc>>,
     /// Require this tag.
     pub tag: Option<String>,
     /// Substring match against the model id.
@@ -151,6 +155,28 @@ pub struct Filters {
     pub include_archived: bool,
     /// Cap on rows returned (most-recent first).
     pub limit: Option<usize>,
+}
+
+/// One session's catalog row plus its RAW `efficiency_json` / `outcome_json` blobs and the three
+/// indexed scalars, as returned by the Phase 3 bulk read ([`crate::db::Db::catalog`]). The blobs are
+/// opaque strings — `sessions` never depends on `efficiency` (would be a cycle: `efficiency` already
+/// depends on `sessions` to persist), so the caller (`report`, Phase 4) parses them with its own
+/// imported types. `None` on either blob means the session has not yet been reindexed; a reindexed
+/// session with no observed outcome stores an all-empty `outcome_json` object, distinct from `None`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CatalogEntry {
+    pub record: SessionRecord,
+    /// The full nested `SessionEfficiency` blob (schema v6/v8 shape), kebab-case JSON.
+    pub efficiency_json: Option<String>,
+    /// The per-session `Outcomes` blob (schema v8), kebab-case JSON.
+    pub outcome_json: Option<String>,
+    /// `aggregate.cache-read-share`; `None` for a zero-token scope or an un-reindexed session.
+    pub cache_read_share: Option<f64>,
+    /// `aggregate.raw.tool-errors`; `None` for an un-reindexed session.
+    pub tool_errors: Option<i64>,
+    /// `aggregate.raw.cost-usd`; `None` for an un-reindexed session.
+    pub cost_usd: Option<f64>,
 }
 
 /// Counts from a reindex pass.

@@ -1,7 +1,8 @@
-You are writing a recurring monthly Claude Enterprise spend justification report. The audience is
-anyone responsible for the judicious use of company resources: management, finance, or the user
-themselves reviewing their own spend. The report explains what the AI spend produced over the
-period and lets the reader judge whether it was worth it.
+You are writing a recurring monthly Claude Enterprise usage report. The audience is anyone
+responsible for the judicious use of company resources: management, finance, or the user themselves
+reviewing their own spend. The report presents, accurately, what the AI spend produced over the
+period and how efficiently the tokens were used, and lets the reader judge for themselves. You
+present the data; you never argue that the spend was justified.
 
 This is a recurring monthly report. The reader will see a similar report every month. Do not
 replicate prior-month structure verbatim within sections; structure each section around what is
@@ -64,11 +65,11 @@ The JSON context block contains:
 - `options.include-tradeoffs`: boolean; controls the Tradeoffs section.
 - `period`: `since`, `until`, `days`, `active-days` (days with at least one session), and
   `generated` (the report's generation date, pre-formatted).
-- `totals`: `sessions`, `repo-count`, `spend` (display string), `tokens` (raw +
-  `tokens-human`), `untracked-models`, and `models`, a LIST pre-sorted by spend descending
-  where each row carries `model`, `sessions-using`, `tokens-human`, `spend` (display), and a
-  raw `spend-usd` (null when unpriced), plus a `total-row` with `sessions-using`,
-  `tokens-human`, and `spend`.
+- `totals`: `sessions`, `repo-count`, `spend` (display string), `tokens-human` (display string),
+  `untracked-models`, and `models`, a LIST pre-sorted by spend descending where each row carries
+  `model`, `sessions-using`, `tokens-human`, and `spend` (display), plus a `total-row` with
+  `sessions-using`, `tokens-human`, and `spend`. Every figure here is a pre-formatted display
+  string; there are no raw numeric operands to recompute from.
 - `aggregates.by-org`: one row per source org (e.g. the employer GitHub org, the user's personal
   org, third-party), each with `org`, `repos`, `sessions`, `tokens-human`, `spend`.
 - `aggregates.by-repo`: one row per repo, pre-sorted by spend descending, each with `repo`,
@@ -79,11 +80,19 @@ The JSON context block contains:
 - `aggregates.cache`: `cache-read-share` (display string), `input-tokens-human`,
   `cache-read-tokens-human`, and when present `list-price-equivalent` and `cache-savings`
   (display strings computed by the binary from published rates).
+- `efficiency`: the report-wide efficiency signal set, all pre-formatted display strings/counts:
+  `cache-read-share`, `tool-error-rate`, and `cache-1h-write-fraction` (each a percent display
+  string like `"96.0%"`, or `"n/a"`); `interrupts` and `compactions` (report-wide observed counts);
+  `agent-type-costs` (the HEADLINE: a LIST pre-sorted by spend descending, each row `name`,
+  `tokens-human`, `spend`, attributing cost to a subagent TYPE); and `by-skill` / `by-mcp` (the
+  same row shape, attributing cost to a skill or an MCP tool). Empty lists mean nothing of that
+  kind was observed. These spend figures are catalog-embedded prices and may not sum to
+  `totals.spend`; present them as attribution, never reconcile them against the model spend.
 - `outcomes.totals`: observed, verifiable counts extracted from session transcripts; any of:
   `sessions-with-commits`, `commits`, `prs-opened`, `confluence-writes`, `jira-writes`,
   `slack-messages`, `files-edited`. Only fields present were observed.
 - `sessions`: per-session entries with `short-id`, `title`, `repo`, `begin`, `end`,
-  `tokens-human`, `spend` (raw, null when unpriced), `spend-display`, `models`, and an
+  `tokens-human`, `spend-display` (display string, `(untracked)` when unpriced), `models`, and an
   optional `outcomes` object (`commits`: list of shas; `prs`: list of
   `{number, url, repository}`; `confluence-writes`, `jira-writes`, `slack-messages`,
   `files-edited` counts). Use these for THEMES and CITATIONS, never for counting or summing.
@@ -94,7 +103,7 @@ The JSON context block contains:
 
 ```
 ---
-title: "Claude Usage Justification - <name-or-anonymous> - <period>"
+title: "Claude Usage Report - <name-or-anonymous> - <period>"
 date: <period.generated>
 type: note
 domain: work
@@ -103,11 +112,11 @@ tags:
   - claude
   - enterprise
   - usage
-  - justification
+  - report
 
 ---
 
-# Claude Enterprise Usage Justification
+# Claude Enterprise Usage Report
 
 **Author:** <persona.name or "[anonymous]">
 **Title:** <persona.title>          (omit this line if absent)
@@ -157,14 +166,33 @@ sentence:
 
 If `totals.untracked-models` is empty or absent, do not emit this line.
 
+## Agent-Type Cost Attribution
+Emit only if `efficiency.agent-type-costs` is non-empty. A markdown table (`Agent Type` | `Tokens`
+| `Spend`) with one row per entry in `efficiency.agent-type-costs`, IN THE ORDER GIVEN (pre-sorted
+by spend descending; do not re-sort). All values copied verbatim. This is the headline breakdown of
+where the tokens went by the KIND of work each subagent did. One lead-in sentence naming which
+agent type carried the most spend (the first row). Do not sum the rows or reconcile them against
+`totals.spend`: these are catalog-embedded attribution prices, presented as-is.
+
 ## The Efficiency Story
-Emit only if `aggregates.cache` is present. Two or three sentences plus at most one small table.
-State the cache-read share of input tokens and what it means in one plain sentence: most of the
-context the model reads each turn is re-read from cache at a fraction of the fresh-input rate,
-which is what makes sustained agentic sessions economical. If `list-price-equivalent` and
-`cache-savings` are present, state them as computed figures with a one-line methodology note
-("computed from published per-token rates"). This is the only counterfactual permitted in the
-document. Do not editorialize beyond the numbers; the share speaks for itself.
+Emit only if `aggregates.cache` OR `efficiency` is present. Present the efficiency signals the
+binary computed, each figure copied verbatim; do not editorialize beyond them.
+
+- Cache: state `aggregates.cache.cache-read-share` and what it means in one plain sentence -- most
+  of the context the model reads each turn is re-read from cache at a fraction of the fresh-input
+  rate, which is what makes sustained agentic sessions economical. If `list-price-equivalent` and
+  `cache-savings` are present, state them as computed figures with a one-line methodology note
+  ("computed from published per-token rates"). This is the only counterfactual permitted in the
+  document.
+- Signals from `efficiency`, each as a single factual clause when present and not `n/a`:
+  `tool-error-rate` (share of tool calls that errored), `cache-1h-write-fraction` (share of cache
+  writes that paid the 1h premium), `interrupts` (times the user interrupted), and `compactions`
+  (times the context was compacted). Omit any that are `n/a` or zero.
+- If `efficiency.by-skill` or `efficiency.by-mcp` is non-empty, you MAY add one small table each
+  (`Skill`/`MCP Tool` | `Tokens` | `Spend`), rows in the order given, values verbatim. Skip an
+  empty list.
+
+Do not sum, average, or recompute any of these; state only what is given.
 
 ## What This Funded
 The concrete output. Top-level organization is FIXED by org, in this order, using

@@ -34,6 +34,7 @@ fn session_with(id: &str, cache_read_share: Option<f64>, input_tokens: u64, turn
             subagents: Vec::new(),
             flags: Vec::new(),
         },
+        outcomes: crate::outcome::Outcomes::default(),
     }
 }
 

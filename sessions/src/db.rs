@@ -37,7 +37,13 @@ use crate::model::{
 ///    corrected named-subagent type-recovery logic recomputes it. A recompute-only migration — the
 ///    on-disk shape is unchanged; only the stored derived values were stale (see
 ///    [`migrate_v7_reset_efficiency`]).
-const SCHEMA_VERSION: i64 = 7;
+/// v8 added `outcome_json` (the per-session `Outcomes` blob relocated from `report/src/outcome.rs`
+///    into the catalog reindex path) AND extended the efficiency shape with per-model `TokenTotals`
+///    (`efficiency::RawCounters::by_model`). One migration, one reindex: it adds the `outcome_json`
+///    column and INVALIDATES the v6/v7 efficiency annotation (NULLs `efficiency_json` + the three
+///    scalars + `outcome_json`) so the next `reindex_efficiency` pass repopulates BOTH per-model
+///    tokens and outcomes. Like v7, cursor-neutral (see [`migrate_v8_extend_efficiency`]).
+const SCHEMA_VERSION: i64 = 8;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -121,7 +127,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     efficiency_json   TEXT,
     cache_read_share  REAL,
     tool_errors       INTEGER,
-    cost_usd          REAL
+    cost_usd          REAL,
+    outcome_json      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(title, tags, summary);
@@ -184,10 +191,13 @@ pub struct EnrichSuccess<'a> {
     pub tokens_out: u64,
 }
 
-/// One session's computed efficiency, ready to persist (schema v6). The `efficiency_json` is the full
-/// nested `SessionEfficiency` blob (the `efficiency` crate serializes it); the three scalars are the
-/// SAME aggregate values, materialized for indexed ranking. The caller pulls all four from ONE
-/// computed struct so the scalars can never diverge from the JSON — see [`Db::set_efficiency_many`].
+/// One session's computed efficiency + outcomes, ready to persist (schema v6 efficiency, v8
+/// outcomes). `efficiency_json` is the full nested `SessionEfficiency` blob (the `efficiency` crate
+/// serializes it) and the three scalars are the SAME aggregate values, materialized for indexed
+/// ranking; `outcome_json` is the per-session `Outcomes` blob (v8, relocated from `report::outcome`).
+/// The caller pulls efficiency + its scalars from ONE computed struct so the scalars can never
+/// diverge from the JSON, and both blobs are written together in one trigger-suppressed batch —
+/// see [`Db::set_efficiency_many`].
 pub struct EfficiencyWrite<'a> {
     pub session_id: &'a str,
     /// The full nested `SessionEfficiency` as kebab-case JSON.
@@ -198,6 +208,10 @@ pub struct EfficiencyWrite<'a> {
     pub tool_errors: i64,
     /// `aggregate.raw.cost-usd`.
     pub cost_usd: f64,
+    /// The per-session `Outcomes` as kebab-case JSON (v8). An all-empty object for a session with no
+    /// observed outcome (a stored, non-NULL value, distinct from NULL = "not yet reindexed"), so it
+    /// is written for every reindexed session alongside `efficiency_json`.
+    pub outcome_json: &'a str,
 }
 
 /// A handle to the navigational store. Single-writer by design (a CLI process at a time).
@@ -226,7 +240,7 @@ impl Db {
 
     fn init(conn: Connection) -> Result<Self> {
         apply_pragmas(&conn).context("failed to apply PRAGMAs")?;
-        migrate(&conn).context("failed to migrate schema")?;
+        migrate::migrate(&conn).context("failed to migrate schema")?;
         Ok(Self { conn })
     }
 
@@ -362,9 +376,10 @@ impl Db {
     /// suppresses that by DROPPING the `sessions_updated_at_update` trigger, doing the writes, and
     /// recreating it — all in ONE transaction, exactly mirroring the v5 "backfill before the triggers
     /// exist" precedent. On any error the transaction rolls back and the trigger is restored, so the
-    /// suppression can never leak past this call. The four columns (`efficiency_json` + the three
-    /// indexed scalars) are written together from the caller's single computed struct, so the indexed
-    /// scalars can never diverge from the JSON. Returns the number of rows actually updated (a
+    /// suppression can never leak past this call. The five columns (`efficiency_json` + the three
+    /// indexed scalars + `outcome_json`) are written together from the caller's single computed
+    /// struct, so the indexed scalars can never diverge from the JSON and outcomes land in the same
+    /// trigger-suppressed batch. Returns the number of rows actually updated (a
     /// `session_id` absent from the catalog updates 0 rows). Empty `writes` is a no-op.
     pub fn set_efficiency_many(&self, writes: &[EfficiencyWrite<'_>]) -> Result<usize> {
         debug!("Db::set_efficiency_many: writes={}", writes.len());
@@ -379,14 +394,15 @@ impl Db {
         let mut written = 0usize;
         for w in writes {
             let n = tx.execute(
-                "UPDATE sessions SET efficiency_json=?2, cache_read_share=?3, tool_errors=?4, cost_usd=?5 \
-                 WHERE session_id=?1",
+                "UPDATE sessions SET efficiency_json=?2, cache_read_share=?3, tool_errors=?4, cost_usd=?5, \
+                 outcome_json=?6 WHERE session_id=?1",
                 params![
                     w.session_id,
                     w.efficiency_json,
                     w.cache_read_share,
                     w.tool_errors,
-                    w.cost_usd
+                    w.cost_usd,
+                    w.outcome_json
                 ],
             )?;
             written += n;
@@ -716,6 +732,33 @@ impl Db {
         Ok(json)
     }
 
+    /// The persisted `outcome_json` blob (schema v8) for one session, or `None` when the row carries
+    /// no computed outcomes yet (`outcome_json` NULL = not reindexed) or the session id is absent. A
+    /// reindexed session with no observed outcome stores an all-empty `Outcomes` OBJECT, not NULL, so
+    /// `Some("{...}")` with empty fields is distinct from `None` "not yet reindexed".
+    ///
+    /// The read half of the v8 annotation `set_efficiency_many` writes. Like `get_efficiency_json`,
+    /// `sessions` returns the blob as an opaque string — the dependency direction is
+    /// `efficiency -> sessions`, so `sessions` cannot name the `Outcomes` type; the caller (report,
+    /// Phase 4) parses it. The Phase 3 bulk read returns this alongside `efficiency_json`.
+    pub fn get_outcome_json(&self, session_id: &str) -> Result<Option<String>> {
+        debug!("Db::get_outcome_json: session_id={session_id}");
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT outcome_json FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        debug!(
+            "Db::get_outcome_json: session_id={session_id} present={}",
+            json.is_some()
+        );
+        Ok(json)
+    }
+
     /// Resolve a session id from an exact id or a unique prefix (fuzzy `open`).
     pub fn resolve_id(&self, needle: &str) -> Result<Vec<String>> {
         let like = format!("{needle}%");
@@ -734,30 +777,7 @@ impl Db {
         debug!("Db::list: filters={:?}", filters);
         let mut sql = format!("SELECT {COLS} FROM sessions s WHERE 1=1");
         let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        if !filters.include_archived {
-            sql.push_str(" AND s.archived = 0");
-        }
-        if let Some(repo) = &filters.repo {
-            sql.push_str(" AND (s.cwd LIKE ? OR s.project_dir LIKE ?)");
-            let pat = format!("%{repo}%");
-            binds.push(Box::new(pat.clone()));
-            binds.push(Box::new(pat));
-        }
-        if let Some(since) = &filters.since {
-            sql.push_str(" AND s.modified >= ?");
-            binds.push(Box::new(since.to_rfc3339()));
-        }
-        if let Some(tag) = &filters.tag {
-            sql.push_str(" AND (s.tags = ? OR s.tags LIKE ? OR s.tags LIKE ? OR s.tags LIKE ?)");
-            binds.push(Box::new(tag.clone()));
-            binds.push(Box::new(format!("{tag} %")));
-            binds.push(Box::new(format!("% {tag}")));
-            binds.push(Box::new(format!("% {tag} %")));
-        }
-        if let Some(model) = &filters.model {
-            sql.push_str(" AND s.model LIKE ?");
-            binds.push(Box::new(format!("%{model}%")));
-        }
+        append_filters(&mut sql, &mut binds, filters);
         sql.push_str(" ORDER BY s.modified DESC");
         if let Some(limit) = filters.limit {
             sql.push_str(" LIMIT ?");
@@ -1065,181 +1085,53 @@ fn rebuild_high_signal_fts_on(
     Ok(())
 }
 
+/// Append the `repo`/`since`/`until`/`tag`/`model`/`include_archived` WHERE predicates shared by
+/// [`Db::list`] and the Phase 3 bulk catalog read (`db::catalog::Db::catalog`), so the
+/// window/metadata filtering logic exists in exactly one place — the two callers differ only in
+/// which columns they select over the same filtered row set. `sql` must already end in an open
+/// predicate (`... WHERE 1=1`) before this appends its `AND` clauses; ordering/`LIMIT` are the
+/// caller's own concern (added after this returns).
+fn append_filters(sql: &mut String, binds: &mut Vec<Box<dyn rusqlite::types::ToSql>>, filters: &Filters) {
+    if !filters.include_archived {
+        sql.push_str(" AND s.archived = 0");
+    }
+    if let Some(repo) = &filters.repo {
+        sql.push_str(" AND (s.cwd LIKE ? OR s.project_dir LIKE ?)");
+        let pat = format!("%{repo}%");
+        binds.push(Box::new(pat.clone()));
+        binds.push(Box::new(pat));
+    }
+    if let Some(since) = &filters.since {
+        sql.push_str(" AND s.modified >= ?");
+        binds.push(Box::new(since.to_rfc3339()));
+    }
+    if let Some(until) = &filters.until {
+        // Inclusive upper bound, mirroring `since`'s inclusive lower bound, so a window is the
+        // closed interval `[since, until]` (design doc M2: session-level windowing selects whole
+        // sessions whose row falls in `[since,until]`). A boundary session modified EXACTLY at
+        // `until` is included; one modified any instant after it is excluded.
+        sql.push_str(" AND s.modified <= ?");
+        binds.push(Box::new(until.to_rfc3339()));
+    }
+    if let Some(tag) = &filters.tag {
+        sql.push_str(" AND (s.tags = ? OR s.tags LIKE ? OR s.tags LIKE ? OR s.tags LIKE ?)");
+        binds.push(Box::new(tag.clone()));
+        binds.push(Box::new(format!("{tag} %")));
+        binds.push(Box::new(format!("% {tag}")));
+        binds.push(Box::new(format!("% {tag} %")));
+    }
+    if let Some(model) = &filters.model {
+        sql.push_str(" AND s.model LIKE ?");
+        binds.push(Box::new(format!("%{model}%")));
+    }
+}
+
 /// Apply the four mandatory PRAGMAs. WAL is per-database (sticky); the rest are per-connection.
 fn apply_pragmas(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    Ok(())
-}
-
-/// Create the schema and bump `user_version` in one transaction (idempotent DDL).
-fn migrate(conn: &Connection) -> Result<()> {
-    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version >= SCHEMA_VERSION {
-        return Ok(());
-    }
-    debug!("migrate: user_version {version} -> {SCHEMA_VERSION}");
-    let tx = conn.unchecked_transaction()?;
-    tx.execute_batch(SCHEMA_SQL).context("schema batch")?;
-    // v2: add staged_path to pre-existing v1 tables (no-op on fresh DBs / CREATE above).
-    ensure_column(&tx, "sessions", "staged_path", "TEXT")?;
-    // v3: Phase 2 enrichment state (no-op on fresh DBs / CREATE above). `attempts` is the only
-    // NOT NULL column; SQLite back-fills existing rows with the DEFAULT, so the ALTER is safe.
-    ensure_column(&tx, "sessions", "scope", "TEXT")?;
-    ensure_column(&tx, "sessions", "enriched_at", "TEXT")?;
-    ensure_column(&tx, "sessions", "enriched_modified", "TEXT")?;
-    ensure_column(&tx, "sessions", "enrich_model", "TEXT")?;
-    ensure_column(&tx, "sessions", "prompt_version", "INTEGER")?;
-    ensure_column(&tx, "sessions", "enrich_status", "TEXT")?;
-    ensure_column(&tx, "sessions", "last_error", "TEXT")?;
-    ensure_column(&tx, "sessions", "attempts", "INTEGER NOT NULL DEFAULT 0")?;
-    ensure_column(&tx, "sessions", "redaction_count", "INTEGER")?;
-    ensure_column(&tx, "sessions", "tokens_in", "INTEGER")?;
-    ensure_column(&tx, "sessions", "tokens_out", "INTEGER")?;
-    // v4: tag-ownership marker ('manual' / 'enrich' / NULL) for manual-tag preservation.
-    ensure_column(&tx, "sessions", "tags_source", "TEXT")?;
-    // v5: opaque monotonic revision cursor (column + counter + triggers), applied in the strict
-    // order add-column -> backfill -> seed -> create-triggers so the bulk backfill never fires them.
-    // `version` (the PRE-migration `user_version`) gates the one-shot backfill+seed so re-entering
-    // this step on a v5->v6 migration does NOT re-run it (which would reset every live revision).
-    migrate_v5_cursor(&tx, version)?;
-    // v6: efficiency annotation columns + ranking indexes. Idempotent; safe to run every migration.
-    migrate_v6_efficiency(&tx)?;
-    // v7: invalidate the stale v6 efficiency annotation so it recomputes with the corrected
-    // named-subagent type recovery. Gated on `version` so it runs ONCE (only on a genuine v6->v7).
-    migrate_v7_reset_efficiency(&tx, version)?;
-    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    tx.commit()?;
-    Ok(())
-}
-
-/// Apply the schema v5 revision cursor inside the caller's migration transaction. The ordering is
-/// itself part of the contract (design doc, Data Model): (1) add the `updated_at` column, (2)
-/// backfill revisions in `rowid` order, (3) seed the `export_meta` counter to `MAX(updated_at)`,
-/// (4) create the triggers LAST. Skipping the seed would make the next write collide or go
-/// backward; creating the triggers before the backfill would fire them once per backfilled row.
-///
-/// Every statement is idempotent (`ensure_column` probes `pragma_table_info`; the index, table, and
-/// triggers use `IF NOT EXISTS`; the counter row uses `INSERT OR IGNORE`), and `migrate` is
-/// version-gated, so re-running against an already-migrated DB is a no-op.
-///
-/// `from_version` is the PRE-migration `user_version`. The one-shot backfill+seed (steps 2-3) runs
-/// ONLY when `from_version < 5` — a genuine v4->v5 upgrade where `updated_at` did not yet exist.
-/// Without this gate a later migration (e.g. v5->v6) would re-enter this step and the unconditional
-/// rowid-order backfill would RESET every live revision to its rowid position, silently rewinding
-/// consumers' `--cursor` paging. (The column/index/counter/trigger creation is idempotent and safe
-/// to run every migration; only the backfill+seed is destructive on re-entry.)
-fn migrate_v5_cursor(conn: &Connection, from_version: i64) -> Result<()> {
-    debug!("migrate_v5_cursor: from_version={from_version} (backfill runs only when < 5)");
-    // (1) Add the revision column (no-op on a fresh DB whose CREATE TABLE already carries it).
-    ensure_column(conn, "sessions", "updated_at", "INTEGER NOT NULL DEFAULT 0")?;
-    // Index + one-row counter table. Seed the counter row at 0; the real seed happens in step (3).
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
-         CREATE TABLE IF NOT EXISTS export_meta (
-             id       INTEGER PRIMARY KEY CHECK (id = 0),
-             revision INTEGER NOT NULL DEFAULT 0
-         );
-         INSERT OR IGNORE INTO export_meta (id, revision) VALUES (0, 0);",
-    )
-    .context("v5: create updated_at index and export_meta counter")?;
-    if from_version < 5 {
-        // (2) Backfill revisions in rowid order (id == rowid here): each row's revision is its 1-based
-        // position, strictly increasing, distinct — a rowid-order dense rank, never a timestamp. This
-        // runs BEFORE the triggers exist (on a v4->v5 upgrade) so it does not fire them, and ONLY on
-        // that first upgrade so it never rewrites live revisions on a later migration.
-        let backfilled = conn
-            .execute(
-                "UPDATE sessions SET updated_at = (SELECT COUNT(*) FROM sessions s2 WHERE s2.id <= sessions.id)",
-                [],
-            )
-            .context("v5: backfill updated_at in rowid order")?;
-        // (3) Seed the counter to MAX(updated_at) so the first post-migration write is MAX+1 — never a
-        // collision, never going backward.
-        conn.execute(
-            "UPDATE export_meta SET revision = (SELECT COALESCE(MAX(updated_at), 0) FROM sessions) WHERE id = 0",
-            [],
-        )
-        .context("v5: seed export_meta counter to MAX(updated_at)")?;
-        debug!("migrate_v5_cursor: backfilled {backfilled} rows in rowid order");
-    }
-    // (4) Create the triggers LAST so the backfill above did not fire them. `IF NOT EXISTS` makes this
-    // a no-op when the triggers already exist (v5->v6 re-entry).
-    conn.execute_batch(V5_TRIGGERS_SQL)
-        .context("v5: create revision triggers")?;
-    Ok(())
-}
-
-/// Apply the schema v6 efficiency annotation inside the caller's migration transaction: the
-/// `efficiency_json` blob column plus the three flat scalar columns (`cache_read_share`,
-/// `tool_errors`, `cost_usd`) that back `--worst`/sort queries without parsing JSON per row, and
-/// their ranking indexes.
-///
-/// Idempotent: every `ensure_column` probes `pragma_table_info` before `ALTER`, the indexes use
-/// `IF NOT EXISTS`, and `migrate` is version-gated — re-running against an already-v6 DB is a no-op.
-/// The columns all default to `NULL` (no efficiency computed yet); the `efficiency::reindex_efficiency`
-/// pass populates them (via [`Db::set_efficiency_many`]), which is why the migration itself never
-/// computes anything — that is a separate, expensive, file-reading annotation pass.
-fn migrate_v6_efficiency(conn: &Connection) -> Result<()> {
-    debug!(
-        "migrate_v6_efficiency: add efficiency_json + indexed scalar columns (cache_read_share, tool_errors, cost_usd)"
-    );
-    ensure_column(conn, "sessions", "efficiency_json", "TEXT")?;
-    ensure_column(conn, "sessions", "cache_read_share", "REAL")?;
-    ensure_column(conn, "sessions", "tool_errors", "INTEGER")?;
-    ensure_column(conn, "sessions", "cost_usd", "REAL")?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_sessions_cache_read_share ON sessions(cache_read_share);
-         CREATE INDEX IF NOT EXISTS idx_sessions_tool_errors ON sessions(tool_errors);
-         CREATE INDEX IF NOT EXISTS idx_sessions_cost_usd ON sessions(cost_usd);",
-    )
-    .context("v6: create efficiency ranking indexes")?;
-    Ok(())
-}
-
-/// Invalidate the schema-v6 efficiency annotation on a genuine v6->v7 upgrade so the corrected
-/// named-subagent type-recovery logic recomputes it: set `efficiency_json` and the three indexed
-/// scalars to `NULL` for every row. The next [`reindex_efficiency`](../../efficiency) pass — driven
-/// by the `efficiency_json IS NULL` predicate — then repopulates them from disk with the fix.
-///
-/// Runs ONCE, gated on the PRE-migration `from_version`: a fresh DB (`< 6`, never had v6 data — the
-/// columns migrate_v6 just added are already all `NULL`) skips it, and an already-v7 DB never
-/// re-enters `migrate`. Mirrors [`Db::set_efficiency_many`]'s trigger suppression — DROP the UPDATE
-/// trigger, NULL, recreate — so invalidating a DERIVED read-side annotation does NOT advance
-/// `updated_at` and force every `session export --cursor` consumer to re-fetch the whole catalog.
-fn migrate_v7_reset_efficiency(conn: &Connection, from_version: i64) -> Result<()> {
-    debug!("migrate_v7_reset_efficiency: from_version={from_version} (reset runs only when 6 <= v < 7)");
-    if from_version < 6 {
-        return Ok(());
-    }
-    // Suppress the revision UPDATE trigger for the invalidation (see [`Db::set_efficiency_many`]).
-    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
-        .context("v7: suppress the revision UPDATE trigger")?;
-    let reset = conn
-        .execute(
-            "UPDATE sessions SET efficiency_json=NULL, cache_read_share=NULL, tool_errors=NULL, cost_usd=NULL",
-            [],
-        )
-        .context("v7: null efficiency columns to force recompute")?;
-    conn.execute_batch(V5_TRIGGERS_SQL)
-        .context("v7: restore the revision UPDATE trigger")?;
-    debug!("migrate_v7_reset_efficiency: invalidated efficiency on {reset} rows (updated_at unchanged)");
-    Ok(())
-}
-
-/// Idempotently add `column` to `table` if absent (probe `PRAGMA table_info` first). All three
-/// args are hardcoded identifiers — never user input — so interpolation is safe.
-fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let exists = stmt
-        .query_map([], |r| r.get::<_, String>(1))?
-        .filter_map(rusqlite::Result::ok)
-        .any(|name| name == column);
-    if !exists {
-        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
-    }
     Ok(())
 }
 
@@ -1453,6 +1345,16 @@ fn rerank_body(body: &mut Vec<SearchHit>, coverage_first: bool) {
 /// methods. Split out of `db.rs` to keep both files under the line-count limit; the export contract
 /// is a self-contained surface, so it lives in its own submodule.
 mod query;
+
+/// The Phase 3 bulk catalog read (`Db::catalog`): a window-scoped SELECT joining session rows with
+/// their RAW `efficiency_json`/`outcome_json` blobs and indexed scalars. Split out for file-size
+/// discipline, mirroring `query`'s own-columns-and-mapper shape.
+mod catalog;
+
+/// Schema creation + `PRAGMA user_version` migrations (the v1..v8 ladder + `ensure_column`). Split
+/// out of `db.rs` for file-size discipline; the schema/trigger consts and `SCHEMA_VERSION` stay here
+/// (referenced by the write path too) and are imported by the submodule.
+mod migrate;
 
 #[cfg(test)]
 mod tests;

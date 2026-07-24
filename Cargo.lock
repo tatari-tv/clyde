@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "clyde"
-version = "0.12.3"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "clap",
@@ -340,9 +340,10 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.12.3"
+version = "0.13.0"
 dependencies = [
  "chrono",
+ "claude-pricing",
  "dirs",
  "eyre",
  "log",
@@ -406,7 +407,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cost"
-version = "0.12.3"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "clap",
@@ -641,7 +642,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "efficiency"
-version = "0.12.3"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1590,7 +1591,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permit"
-version = "0.12.3"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1922,7 +1923,7 @@ dependencies = [
 
 [[package]]
 name = "report"
-version = "0.12.3"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1930,6 +1931,7 @@ dependencies = [
  "colored",
  "common",
  "dirs",
+ "efficiency",
  "env_logger",
  "eyre",
  "gethostname",
@@ -1938,6 +1940,8 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "session",
+ "sessions",
  "tempfile",
  "thiserror",
  "ureq",
@@ -2349,7 +2353,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.12.3"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -2364,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "sessions"
-version = "0.12.3"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "common",

@@ -27,6 +27,7 @@ fn session(id: &str, date: NaiveDate, input_tokens: u64) -> CollectedSession {
             subagents: Vec::new(),
             flags: Vec::new(),
         },
+        outcomes: crate::outcome::Outcomes::default(),
     }
 }
 

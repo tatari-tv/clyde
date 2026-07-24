@@ -17,6 +17,32 @@ fn load(path: &str) -> Vec<AssistantEntry> {
         .entries
 }
 
+/// Build a `TokenUsage` from the five raw token counts (input, output, cache_read, cache_5m_write,
+/// cache_1h_write) so the per-model tests read as compact hand-computed fixtures.
+fn usage(
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_5m_write: u64,
+    cache_1h_write: u64,
+) -> claude_pricing::TokenUsage {
+    claude_pricing::TokenUsage {
+        input_tokens: input,
+        output_tokens: output,
+        cache_read_tokens: cache_read,
+        cache_5m_write_tokens: cache_5m_write,
+        cache_1h_write_tokens: cache_1h_write,
+    }
+}
+
+/// The `TokenTotals` a single [`usage`] would accumulate to (five components + recomputed total),
+/// for asserting per-model expectations without restating the `total` arithmetic each time.
+fn token_totals(input: u64, output: u64, cache_read: u64, cache_5m_write: u64, cache_1h_write: u64) -> TokenTotals {
+    let mut t = TokenTotals::default();
+    t.add(&usage(input, output, cache_read, cache_5m_write, cache_1h_write));
+    t
+}
+
 #[test]
 fn usage_fixture_sums_to_hand_computed_token_totals() {
     // fixtures/efficiency/usage.jsonl: two assistant turns, hand-summed in
@@ -151,6 +177,7 @@ fn merge_sums_counters_concatenates_samples_and_merges_maps() {
                 cost_usd: 1.0,
             },
         )]),
+        by_model: BTreeMap::from([("m".to_string(), token_totals(10, 0, 0, 0, 0))]),
         ..RawCounters::default()
     };
     let b = RawCounters {
@@ -166,6 +193,10 @@ fn merge_sums_counters_concatenates_samples_and_merges_maps() {
                 cost_usd: 0.5,
             },
         )]),
+        by_model: BTreeMap::from([
+            ("m".to_string(), token_totals(5, 0, 0, 0, 0)),
+            ("n".to_string(), token_totals(7, 3, 0, 0, 0)),
+        ]),
         ..RawCounters::default()
     };
     a.merge(&b);
@@ -186,6 +217,42 @@ fn merge_sums_counters_concatenates_samples_and_merges_maps() {
             cost_usd: 1.5
         }
     );
+    // Per-model token totals union key-wise: shared model `m` sums, new model `n` carries over.
+    assert_eq!(a.by_model["m"], token_totals(15, 0, 0, 0, 0));
+    assert_eq!(a.by_model["n"], token_totals(7, 3, 0, 0, 0));
+}
+
+/// `add_usage` builds a per-model `TokenTotals` split, and the per-model totals reconstruct the
+/// aggregate token scalars EXACTLY (the parity the report "Totals by model" table needs). BITES:
+/// drop the `by_model.add(usage)` line in `add_usage` and the per-model map is empty, so the sum
+/// no longer equals the aggregate and the model-keyed assertions fail.
+#[test]
+fn add_usage_splits_tokens_by_model_and_reconstructs_the_aggregate() {
+    let mut raw = RawCounters::default();
+    // Two opus turns + one synthetic turn (the live multi-model shape Phase 0 confirmed).
+    raw.add_usage("claude-opus-4-8", &usage(2, 4251, 0, 202003, 0));
+    raw.add_usage("claude-opus-4-8", &usage(19269, 171, 21134, 0, 19067));
+    raw.add_usage("<synthetic>", &usage(100, 50, 0, 0, 0));
+
+    // Per-model tokens: opus is the sum of its two turns; synthetic its one.
+    assert_eq!(
+        raw.by_model["claude-opus-4-8"],
+        token_totals(2 + 19269, 4251 + 171, 21134, 202003, 19067)
+    );
+    assert_eq!(raw.by_model["<synthetic>"], token_totals(100, 50, 0, 0, 0));
+
+    // The per-model split reconstructs the aggregate scalars exactly (unioned, never field-summed
+    // from a derived value): summing every model's TokenTotals equals the whole-session counters.
+    let mut reconstructed = TokenTotals::default();
+    for totals in raw.by_model.values() {
+        reconstructed.merge(totals);
+    }
+    assert_eq!(reconstructed.input, raw.input_tokens);
+    assert_eq!(reconstructed.output, raw.output_tokens);
+    assert_eq!(reconstructed.cache_read, raw.cache_read_tokens);
+    assert_eq!(reconstructed.cache_5m_write, raw.cache_5m_write_tokens);
+    assert_eq!(reconstructed.cache_1h_write, raw.cache_1h_write_tokens);
+    assert_eq!(reconstructed.total, raw.total_tokens());
 }
 
 #[test]

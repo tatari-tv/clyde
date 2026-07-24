@@ -46,6 +46,7 @@ fn from_session_scalars_match_the_serialized_json() {
         session_id: SID.to_string(),
         last_active: chrono::Local::now(),
         efficiency: session,
+        outcomes: crate::outcome::Outcomes::default(),
     })
     .unwrap();
 
@@ -167,4 +168,85 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
         after2.sessions[0].updated_at, updated_at_before,
         "an idempotent second pass still does not move the cursor"
     );
+}
+
+const SID2: &str = "11111111-1111-4111-8111-111111111def";
+
+/// Reindex persists BOTH Phase 2 catalog extensions for a real session: per-model `TokenTotals` land
+/// inside `efficiency_json` (`aggregate.raw.by-model`), and the relocated per-session `Outcomes` land
+/// in the dedicated `outcome_json` column. BITES: drop the `by_model` fold in `add_usage` and the
+/// `by-model` map is empty; drop the `outcome::union` call in `build_session` and `outcome_json` is
+/// an empty object missing the commit/edit.
+#[test]
+fn reindex_persists_per_model_tokens_and_outcomes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let project = projects.join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let transcript = project.join(format!("{SID2}.jsonl"));
+    // A transcript mixing two models (per-model token split) with a commit + a confirmed Edit
+    // (outcomes). The token records carry `usage`; the outcome records carry gitOperation / tool_use.
+    let lines = [
+        format!(
+            r#"{{"type":"assistant","sessionId":"{SID2}","message":{{"role":"assistant","model":"claude-opus-4-8","usage":{{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":200}}}}}}"#
+        ),
+        format!(
+            r#"{{"type":"assistant","sessionId":"{SID2}","message":{{"role":"assistant","model":"<synthetic>","usage":{{"input_tokens":10,"output_tokens":5}}}}}}"#
+        ),
+        format!(
+            r#"{{"type":"user","sessionId":"{SID2}","toolUseResult":{{"gitOperation":{{"commit":{{"sha":"abc123","kind":"committed"}}}}}}}}"#
+        ),
+        format!(
+            r#"{{"type":"assistant","sessionId":"{SID2}","message":{{"content":[{{"type":"tool_use","id":"e1","name":"Edit","input":{{"file_path":"/r/a.rs"}}}}]}}}}"#
+        ),
+        format!(
+            r#"{{"type":"user","sessionId":"{SID2}","message":{{"content":[{{"type":"tool_result","tool_use_id":"e1","is_error":false,"content":"ok"}}]}}}}"#
+        ),
+    ];
+    std::fs::write(&transcript, lines.join("\n")).unwrap();
+
+    let db = Db::open_memory().unwrap();
+    let parsed = ParsedSession {
+        session_id: SID2.to_string(),
+        cwd: Some(PathBuf::from("/home/alice/repos/example-org/widget")),
+        project_dir: project.clone(),
+        ai_title: Some("widget work".to_string()),
+        first_prompt: Some("first".to_string()),
+        command_name: None,
+        git_branch: Some("main".to_string()),
+        model: Some("claude-opus-4-8".to_string()),
+        n_msgs: 5,
+        created: Some(dt("2026-06-20T10:00:00Z")),
+        modified: dt("2026-06-21T10:00:00Z"),
+        body: "indexed body".to_string(),
+        jsonl_paths: vec![transcript.clone()],
+    };
+    db.upsert_session(&parsed, "host-01").unwrap();
+
+    let stats = reindex_efficiency(&db, &projects, &config()).unwrap();
+    assert_eq!(stats.written, 1, "the session is annotated");
+
+    // Per-model tokens are inside efficiency_json (aggregate.raw.by-model), kebab-case.
+    let eff_json = db.get_efficiency_json(SID2).unwrap().expect("efficiency persisted");
+    let eff: serde_json::Value = serde_json::from_str(&eff_json).unwrap();
+    let by_model = &eff["aggregate"]["raw"]["by-model"];
+    assert_eq!(
+        by_model["claude-opus-4-8"]["input"].as_u64(),
+        Some(100),
+        "opus input tokens: {eff_json}"
+    );
+    assert_eq!(by_model["claude-opus-4-8"]["output"].as_u64(), Some(50));
+    assert_eq!(by_model["claude-opus-4-8"]["cache-5m-write"].as_u64(), Some(200));
+    assert_eq!(by_model["<synthetic>"]["input"].as_u64(), Some(10));
+    assert_eq!(by_model["<synthetic>"]["output"].as_u64(), Some(5));
+
+    // Outcomes are in the dedicated outcome_json column, parseable back into the relocated shape.
+    let outcome_json = db
+        .get_outcome_json(SID2)
+        .unwrap()
+        .expect("outcome_json persisted (non-NULL)");
+    let outcomes: crate::outcome::Outcomes = serde_json::from_str(&outcome_json).unwrap();
+    assert_eq!(outcomes.commits, vec!["abc123".to_string()], "committed sha persisted");
+    assert_eq!(outcomes.files_edited, 1, "one confirmed Edit persisted");
+    assert!(outcomes.prs.is_empty());
 }

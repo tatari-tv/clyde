@@ -81,6 +81,7 @@ fn fixture_efficiency() -> SessionEfficiency {
         effort_high: 0,
         effort_xhigh: 0,
         model_mix,
+        by_model: BTreeMap::new(),
         by_skill: BTreeMap::new(),
         by_mcp_tool: BTreeMap::new(),
     };

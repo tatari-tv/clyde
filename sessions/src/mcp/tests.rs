@@ -853,6 +853,7 @@ fn set_efficiency(db: &Db, session_id: &str, efficiency_json: &str) {
             cache_read_share: Some(0.42),
             tool_errors: 0,
             cost_usd: 1.23,
+            outcome_json: "{}",
         }])
         .unwrap();
     assert_eq!(written, 1, "efficiency write must update exactly the seeded row");
