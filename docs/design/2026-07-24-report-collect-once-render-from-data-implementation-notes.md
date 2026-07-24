@@ -418,3 +418,19 @@ Zero-code spike; findings only (read-only against the live `sessions.db`).
 
 ### Open questions
 - None.
+
+## Finalization fixups (orchestrator)
+
+Discovered during the version bump, not attributable to a single phase:
+
+- **report/Cargo.toml inter-crate deps were not bumpable.** Phase 4 added `report`'s new
+  `efficiency`/`session`/`sessions` edges with literal `version = "0.12.2"` requirements. That
+  matched the workspace version so `otto ci` stayed green, but it made the workspace un-bumpable:
+  `bump` to 0.13.0 failed `cargo update` with "failed to select a version for the requirement
+  `efficiency = ^0.12.2` ... candidate 0.13.0". Fixed by making the three edges PATH-ONLY
+  (`efficiency = { path = "../efficiency" }`), matching the house pattern used everywhere else
+  (`clyde`, `efficiency` deps are all path-only; `claude-pricing` is the one deliberately pinned
+  exception). This is a latent-defect fix, only surfaced by the release.
+- **report package description was stale.** Line 7 still read "Scan Claude Code session JSONL files
+  ..."; collect no longer scans JSONL. Updated to "Read the session catalog and emit a per-host JSON
+  usage report" so the manifest tells the truth (per taste.md "names tell the truth").
