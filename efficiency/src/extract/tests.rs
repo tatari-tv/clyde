@@ -20,9 +20,63 @@ const MALFORMED_LINE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../fixtures/efficiency/malformed-line.jsonl"
 );
+const NAMED_SUBAGENTS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../fixtures/efficiency/named-subagents.jsonl"
+);
 
 fn ex(path: &str) -> FileEfficiency {
     extract(Path::new(path)).unwrap_or_else(|e| panic!("extract {path} failed: {e}"))
+}
+
+#[test]
+fn name_from_agent_id_parses_named_and_rejects_hash_only() {
+    // Named agentId: `a<name>-<hash>`, name may itself contain hyphens (greedy up to the trailing
+    // `-<16+ hex>`); the leading `a` sigil and the `-<hash>` are stripped.
+    assert_eq!(
+        name_from_agent_id("adataviz-worker-0123456789abcdef"),
+        Some("dataviz-worker")
+    );
+    assert_eq!(
+        name_from_agent_id("aarchitect-review-2-c63468dddf46f134"),
+        Some("architect-review-2")
+    );
+    assert_eq!(name_from_agent_id("aphase3-fedcba9876543210"), Some("phase3"));
+    // Hash-only agentId (a classic inline subagent, no embedded name) -> None, so it stays unknown.
+    assert_eq!(name_from_agent_id("a00aabbccddeeff99"), None);
+    assert_eq!(name_from_agent_id("a08dc9a0712e011fd"), None);
+}
+
+#[test]
+fn spawn_types_harvested_and_named_subagents_unresolved_at_file_level() {
+    // The parent record spawns three named agents via Agent/Task tool_use; extract harvests the
+    // name->type map. Recovery itself is fold's job -- at the file level a named subagent that never
+    // carried attributionAgent still has agent_type == None (only the attribution path sets it here).
+    let f = ex(NAMED_SUBAGENTS);
+
+    assert_eq!(
+        f.spawn_types.get("dataviz-worker").map(String::as_str),
+        Some("general-purpose")
+    );
+    assert_eq!(
+        f.spawn_types.get("phase3").map(String::as_str),
+        Some("phase-implementer")
+    );
+    assert_eq!(
+        f.spawn_types.get("trickydriver").map(String::as_str),
+        Some("general-purpose")
+    );
+    assert_eq!(f.spawn_types.len(), 3, "exactly the three NAMED spawns are harvested");
+
+    // Named subagents lacking attributionAgent are unresolved at the file level.
+    assert_eq!(f.subagents["adataviz-worker-0123456789abcdef"].agent_type, None);
+    assert_eq!(f.subagents["anamed-only-1111222233334444"].agent_type, None);
+    assert_eq!(f.subagents["a00aabbccddeeff99"].agent_type, None);
+    // The one subagent that DID carry attributionAgent keeps it (attribution path, unchanged).
+    assert_eq!(
+        f.subagents["atrickydriver-9999888877776666"].agent_type.as_deref(),
+        Some("release-driver")
+    );
 }
 
 #[test]

@@ -264,11 +264,16 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
     let path = tmp.path().join("v5.db");
     build_v5_db(&path);
 
-    // Reopen: migrate v5 -> v6.
+    // Reopen: migrate v5 forward to the current schema (v7). from_version=5 (< 6), so the v7
+    // efficiency reset is skipped — there was never any v6 efficiency to invalidate — and the v5
+    // cursor backfill stays gated off, so revisions are preserved exactly as below.
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-    assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to v6");
-    assert_eq!(SCHEMA_VERSION, 6, "this test pins the v5->v6 hop");
+    assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
+    assert_eq!(
+        SCHEMA_VERSION, 7,
+        "this test pins the v5->current hop; bump me deliberately"
+    );
 
     // The live revisions are UNTOUCHED (not reset to rowid order), and the counter is preserved.
     assert_eq!(
@@ -351,4 +356,89 @@ fn v6_migration_is_idempotent_on_reopen() {
     let before = revision_counter(&db);
     assert!(db.record_enrich_failure(UUID_A, "work", "boom").unwrap());
     assert_eq!(revision_counter(&db), before + 1);
+}
+
+/// Build a genuine v6 DB on disk: start from the v5 shape (rows A rev 10, B rev 20, counter 20,
+/// triggers), add the v6 efficiency columns, POPULATE row A's efficiency trigger-suppressed (so its
+/// revision stays 10, exactly as a real v6 backfill leaves it), then `user_version = 6`.
+fn build_v6_db_with_efficiency(path: &Path) {
+    build_v5_db(path);
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE sessions ADD COLUMN efficiency_json TEXT;
+         ALTER TABLE sessions ADD COLUMN cache_read_share REAL;
+         ALTER TABLE sessions ADD COLUMN tool_errors INTEGER;
+         ALTER TABLE sessions ADD COLUMN cost_usd REAL;",
+    )
+    .unwrap();
+    // Populate row A's efficiency WITHOUT advancing its revision (mirror `set_efficiency_many`).
+    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
+        .unwrap();
+    conn.execute(
+        "UPDATE sessions SET efficiency_json='{\"aggregate\":{\"cache-read-share\":0.5}}', \
+         cache_read_share=0.5, tool_errors=4, cost_usd=2.5 WHERE session_id=?1",
+        rusqlite::params![UUID_A],
+    )
+    .unwrap();
+    conn.execute_batch(V5_TRIGGERS_SQL).unwrap();
+    conn.pragma_update(None, "user_version", 6i64).unwrap();
+}
+
+/// v6 -> v7 migration: INVALIDATES the stale efficiency annotation (NULLs the four columns) so it
+/// recomputes with the corrected named-subagent type recovery, WITHOUT advancing the export cursor
+/// (efficiency is a derived read-side annotation). BITES: drop the trigger suppression in
+/// `migrate_v7_reset_efficiency` and NULLing every row fires the revision trigger, advancing
+/// `updated_at` and the counter — failing the preservation assertions below.
+#[test]
+fn v7_migration_from_v6_invalidates_efficiency_without_advancing_cursor() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("v6.db");
+    build_v6_db_with_efficiency(&path);
+
+    // Sanity: the pre-migration v6 DB really does carry a populated efficiency annotation (a bare
+    // connection, so this peek does NOT trigger `migrate`). Without this the post-migration NULL
+    // assertion could pass vacuously.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT efficiency_json FROM sessions WHERE session_id = ?1",
+                rusqlite::params![UUID_A],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            json.as_deref(),
+            Some(r#"{"aggregate":{"cache-read-share":0.5}}"#),
+            "the v6 DB starts with efficiency populated",
+        );
+    }
+
+    // Reopen: migrate v6 -> v7.
+    let db = Db::open_at(&path).unwrap();
+    let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to v7");
+
+    // The stale efficiency annotation is invalidated (all four columns NULL) so reindex recomputes.
+    assert_eq!(
+        efficiency_of(&db, UUID_A),
+        (None, None, None, None),
+        "v7 nulls the stale efficiency so reindex_efficiency recomputes it",
+    );
+
+    // ...but the export cursor is UNTOUCHED: both revisions and the counter are preserved.
+    assert_eq!(updated_at_of(&db, UUID_A), 10, "row A revision preserved across v6->v7");
+    assert_eq!(updated_at_of(&db, UUID_B), 20, "row B revision preserved across v6->v7");
+    assert_eq!(
+        revision_counter(&db),
+        20,
+        "the export_meta counter is preserved (the efficiency reset is cursor-neutral)",
+    );
+
+    // The schema still functions: a content write advances to MAX+1 = 21.
+    assert!(
+        db.record_enrich_skip(UUID_B, "work", crate::export::EnrichStatus::SkippedEmpty)
+            .unwrap()
+    );
+    assert_eq!(revision_counter(&db), 21, "first content write after v7 is MAX+1 = 21");
 }

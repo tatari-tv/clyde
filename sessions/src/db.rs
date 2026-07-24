@@ -33,7 +33,11 @@ use crate::model::{
 ///    plus flat indexed scalars (`cache_read_share`, `tool_errors`, `cost_usd`) for ranking/filtering
 ///    without parsing JSON per row. Writing efficiency is a derived READ-side annotation, so it must
 ///    NOT advance `updated_at` (see [`Db::set_efficiency_many`]).
-const SCHEMA_VERSION: i64 = 6;
+/// v7 added NO columns: it INVALIDATES the v6 efficiency annotation (NULLs the four columns) so the
+///    corrected named-subagent type-recovery logic recomputes it. A recompute-only migration — the
+///    on-disk shape is unchanged; only the stored derived values were stale (see
+///    [`migrate_v7_reset_efficiency`]).
+const SCHEMA_VERSION: i64 = 7;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -1103,6 +1107,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     migrate_v5_cursor(&tx, version)?;
     // v6: efficiency annotation columns + ranking indexes. Idempotent; safe to run every migration.
     migrate_v6_efficiency(&tx)?;
+    // v7: invalidate the stale v6 efficiency annotation so it recomputes with the corrected
+    // named-subagent type recovery. Gated on `version` so it runs ONCE (only on a genuine v6->v7).
+    migrate_v7_reset_efficiency(&tx, version)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -1189,6 +1196,36 @@ fn migrate_v6_efficiency(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_sessions_cost_usd ON sessions(cost_usd);",
     )
     .context("v6: create efficiency ranking indexes")?;
+    Ok(())
+}
+
+/// Invalidate the schema-v6 efficiency annotation on a genuine v6->v7 upgrade so the corrected
+/// named-subagent type-recovery logic recomputes it: set `efficiency_json` and the three indexed
+/// scalars to `NULL` for every row. The next [`reindex_efficiency`](../../efficiency) pass — driven
+/// by the `efficiency_json IS NULL` predicate — then repopulates them from disk with the fix.
+///
+/// Runs ONCE, gated on the PRE-migration `from_version`: a fresh DB (`< 6`, never had v6 data — the
+/// columns migrate_v6 just added are already all `NULL`) skips it, and an already-v7 DB never
+/// re-enters `migrate`. Mirrors [`Db::set_efficiency_many`]'s trigger suppression — DROP the UPDATE
+/// trigger, NULL, recreate — so invalidating a DERIVED read-side annotation does NOT advance
+/// `updated_at` and force every `session export --cursor` consumer to re-fetch the whole catalog.
+fn migrate_v7_reset_efficiency(conn: &Connection, from_version: i64) -> Result<()> {
+    debug!("migrate_v7_reset_efficiency: from_version={from_version} (reset runs only when 6 <= v < 7)");
+    if from_version < 6 {
+        return Ok(());
+    }
+    // Suppress the revision UPDATE trigger for the invalidation (see [`Db::set_efficiency_many`]).
+    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
+        .context("v7: suppress the revision UPDATE trigger")?;
+    let reset = conn
+        .execute(
+            "UPDATE sessions SET efficiency_json=NULL, cache_read_share=NULL, tool_errors=NULL, cost_usd=NULL",
+            [],
+        )
+        .context("v7: null efficiency columns to force recompute")?;
+    conn.execute_batch(V5_TRIGGERS_SQL)
+        .context("v7: restore the revision UPDATE trigger")?;
+    debug!("migrate_v7_reset_efficiency: invalidated efficiency on {reset} rows (updated_at unchanged)");
     Ok(())
 }
 

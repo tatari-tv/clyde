@@ -88,6 +88,13 @@ pub struct FileEfficiency {
     pub session_id: Option<String>,
     pub parent: RawCounters,
     pub subagents: BTreeMap<String, SubagentRaw>,
+    /// `name` -> `subagent_type` for every NAMED `Agent`/`Task` spawn tool_use seen in this file.
+    /// This is the ONLY authoritative source of a named subagent's TYPE: a named subagent
+    /// (herdr / workflow / `Agent`-with-a-`name`) runs as an `isSidechain` sidecar whose own records
+    /// never carry `attributionAgent`, so its type is unrecoverable from the sidecar alone. `fold`
+    /// keys this map back to the subagent by the name embedded in its `agentId` (`a<name>-<hash>`).
+    /// Empty for a classic inline subagent whose type already rides `attributionAgent`.
+    pub spawn_types: BTreeMap<String, String>,
 }
 
 impl FileEfficiency {
@@ -267,6 +274,10 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
             }
         }
 
+        // Harvest the name->type spawn map (the only source of a NAMED subagent's type), independent
+        // of scope: the spawn tool_use lives on whichever scope did the spawning.
+        collect_spawn_types(&record, &mut out.spawn_types);
+
         apply_record(&record, &scope, out.counters_mut(&scope));
     }
 
@@ -279,6 +290,54 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
         out.parent.compactions.len(),
     );
     Ok(out)
+}
+
+/// Harvest `name` -> `subagent_type` from any NAMED `Agent`/`Task` spawn tool_use on one record.
+/// A named spawn (the tool_use input carries BOTH `name` and `subagent_type`) is the authoritative
+/// source of a named subagent's type, because that subagent's own sidecar records never carry
+/// `attributionAgent`. Keyed by `name` so `fold` can match it to the subagent's `agentId`
+/// (`a<name>-<hash>`). First value for a name wins (mirrors the `attributionAgent` first-wins rule).
+/// A `Task`/`Agent` spawn WITHOUT a `name` (a classic inline subagent) contributes nothing here —
+/// its type already rides `attributionAgent`.
+fn collect_spawn_types(record: &Record, spawn_types: &mut BTreeMap<String, String>) {
+    let Some(blocks) = record
+        .message
+        .as_ref()
+        .and_then(|m| m.content.as_ref())
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for block in blocks {
+        if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        if !matches!(block.get("name").and_then(Value::as_str), Some("Agent") | Some("Task")) {
+            continue;
+        }
+        let Some(input) = block.get("input") else {
+            continue;
+        };
+        let name = input.get("name").and_then(Value::as_str).filter(|s| !s.is_empty());
+        let stype = input
+            .get("subagent_type")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        if let (Some(name), Some(stype)) = (name, stype) {
+            spawn_types.entry(name.to_string()).or_insert_with(|| stype.to_string());
+            trace!("collect_spawn_types: name={name} subagent_type={stype}");
+        }
+    }
+}
+
+/// The spawn `name` embedded in a NAMED subagent's `agentId` (`a<name>-<16+ hex hash>`), or `None`
+/// for a hash-only `agentId` (`a<hex>`, a classic inline subagent that carries no name). The leading
+/// `a` sigil and the trailing `-<hash>` are stripped. `fold` uses this to key back into the
+/// spawn-type map and, failing that, as the name-only fallback label.
+pub(crate) fn name_from_agent_id(agent_id: &str) -> Option<&str> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^a(.+)-[0-9a-f]{16,}$").expect("agent-id name pattern is a valid regex"));
+    re.captures(agent_id).and_then(|c| c.get(1)).map(|m| m.as_str())
 }
 
 /// Apply one parsed record's signals to its scope's counters. Split out so the per-record logic is
