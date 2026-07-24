@@ -32,10 +32,10 @@ pub struct SubagentEfficiency {
 /// the observed value alongside the threshold it crossed, so a flag is self-describing and legible
 /// (fail loudly, per the house rule) — a consumer never has to re-derive why the session tripped.
 ///
-/// The persisted serde shape is the internally-tagged `{ "kind": "...", ... }` form -- byte-identical
-/// to the CLI's [`crate::output::FlagJson`] rendering -- so the flag reads the same whether it comes
-/// from the `efficiency_json` catalog column or a live `clyde efficiency` render (siblings behave
-/// identically).
+/// The serde shape is the internally-tagged `{ "kind": "...", ... }` form. This same type is
+/// serialized by BOTH the persisted `efficiency_json` catalog column and the live `clyde efficiency`
+/// render (the CLI borrows it directly -- see [`crate::output::SessionJson`]), so a flag reads the
+/// same on every surface (siblings behave identically).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum EfficiencyFlag {

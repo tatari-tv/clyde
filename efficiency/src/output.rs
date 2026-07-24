@@ -1,11 +1,15 @@
 //! Render surfaces: TTY-detected JSON vs. YAML, mirroring `cost::wants_json`
-//! (`cost/src/lib.rs:637`) EXACTLY and the house "yaml for humans, json when piped" rule. The
-//! domain types (`EfficiencySignals`, `RawCounters`, ...) deliberately carry no `serde` derive
-//! (Phase 3 decision -- persistence/export get their own shape in Phase 6); this module owns its
-//! OWN lightweight, `Serialize`-deriving view structs (`*Json`), the same split `cost::output`
-//! keeps between `SessionSummary`/`DaySummary` (internal) and `TodayJson`/`DailyJson` (rendered).
+//! (`cost/src/lib.rs:637`) EXACTLY and the house "yaml for humans, json when piped" rule.
+//!
+//! ONE serialized shape across every surface: the CLI serializes the SAME kebab-case domain types
+//! (`SessionEfficiency`, `EfficiencySignals`, `SubagentEfficiency`, `EfficiencyFlag`) that the
+//! persisted `efficiency_json`, the `session_efficiency` MCP tool, and the export contract emit.
+//! The view structs below are THIN borrowing wrappers (kebab-case) that only add what a surface
+//! genuinely needs -- the `--by-subagent` gate and the `--narrate` prose on `session`, the period
+//! metadata on `daily`/`weekly` -- never a re-cased or re-grouped copy of the signals. (Earlier this
+//! module owned a parallel snake_case `*Json` layer with a `totals` group; that made
+//! `clyde efficiency --json` diverge from every other surface and is gone.)
 
-use std::collections::BTreeMap;
 use std::io::IsTerminal;
 
 use eyre::Result;
@@ -14,7 +18,7 @@ use serde::Serialize;
 
 use crate::collect::CollectedSession;
 use crate::fold::{EfficiencyFlag, SessionEfficiency, SubagentEfficiency};
-use crate::metrics::{Compaction, CompactionTrigger, EfficiencySignals, WorkloadCost};
+use crate::metrics::EfficiencySignals;
 use crate::rollup::PeriodEfficiency;
 
 /// Decide whether output should be JSON. Mirrors `cost::wants_json` exactly: JSON when stdout is
@@ -39,179 +43,24 @@ pub fn render(json: bool, value: &impl Serialize) -> Result<String> {
     }
 }
 
+/// The `session <id>` view: the persisted [`SessionEfficiency`] shape (kebab-case `session-id` /
+/// `aggregate` / `subagents` / `flags`) BORROWED as-is, plus the two CLI-only extras -- the
+/// `--by-subagent` gate on `subagents` and the `--narrate` prose. It serializes byte-identically to
+/// the persisted `efficiency_json` / MCP / export shape for the fields they share; nothing is
+/// re-cased or re-grouped. `flags` reuses the real [`EfficiencyFlag`] (already `kind`-tagged
+/// kebab-case), so a flag reads the same on every surface.
 #[derive(Debug, Serialize)]
-pub struct TotalsJson {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_5m_write_tokens: u64,
-    pub cache_1h_write_tokens: u64,
-    pub total_tokens: u64,
-    pub cost_usd: f64,
-    pub turns: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CompactionJson {
-    pub trigger: String,
-    pub pre_tokens: u64,
-    pub post_tokens: u64,
-    pub reclaimed_tokens: u64,
-    pub duration_ms: u64,
-}
-
-impl From<&Compaction> for CompactionJson {
-    fn from(c: &Compaction) -> Self {
-        Self {
-            trigger: match c.trigger {
-                CompactionTrigger::Auto => "auto".to_string(),
-                CompactionTrigger::Manual => "manual".to_string(),
-            },
-            pre_tokens: c.pre_tokens,
-            post_tokens: c.post_tokens,
-            reclaimed_tokens: c.pre_tokens.saturating_sub(c.post_tokens),
-            duration_ms: c.duration_ms,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct WorkloadCostJson {
-    pub tokens: u64,
-    pub cost_usd: f64,
-}
-
-impl From<&WorkloadCost> for WorkloadCostJson {
-    fn from(w: &WorkloadCost) -> Self {
-        Self {
-            tokens: w.tokens,
-            cost_usd: w.cost_usd,
-        }
-    }
-}
-
-/// One scope's rendered [`EfficiencySignals`]: every field the design's "Signals (full scope)"
-/// section names, flattened for display. Raw counters ride alongside the derived ratios so no
-/// information is lost to the ratios (design: "Raw components ... all retained").
-#[derive(Debug, Serialize)]
-pub struct SignalsJson {
-    pub totals: TotalsJson,
-    pub cache_read_share: Option<f64>,
-    pub cache_1h_write_fraction: Option<f64>,
-    pub tokens_per_turn: Option<f64>,
-    pub cost_per_turn_usd: Option<f64>,
-    pub tool_calls: u64,
-    pub tool_errors: u64,
-    pub tool_error_rate: Option<f64>,
-    pub bash_command_failures: u64,
-    pub interrupts_structured: u64,
-    pub interrupts_text: u64,
-    pub web_search_requests: u64,
-    pub web_fetch_requests: u64,
-    pub effort_high: u64,
-    pub effort_xhigh: u64,
-    pub turn_ms_p50: Option<u64>,
-    pub turn_ms_p90: Option<u64>,
-    pub turn_ms_max: Option<u64>,
-    pub compactions: Vec<CompactionJson>,
-    pub model_mix: BTreeMap<String, u64>,
-    pub by_skill: BTreeMap<String, WorkloadCostJson>,
-    pub by_mcp_tool: BTreeMap<String, WorkloadCostJson>,
-}
-
-impl From<&EfficiencySignals> for SignalsJson {
-    fn from(s: &EfficiencySignals) -> Self {
-        Self {
-            totals: TotalsJson {
-                input_tokens: s.raw.input_tokens,
-                output_tokens: s.raw.output_tokens,
-                cache_read_tokens: s.raw.cache_read_tokens,
-                cache_5m_write_tokens: s.raw.cache_5m_write_tokens,
-                cache_1h_write_tokens: s.raw.cache_1h_write_tokens,
-                total_tokens: s.raw.total_tokens(),
-                cost_usd: s.raw.cost_usd,
-                turns: s.raw.turns,
-            },
-            cache_read_share: s.cache_read_share,
-            cache_1h_write_fraction: s.cache_1h_write_fraction,
-            tokens_per_turn: s.tokens_per_turn,
-            cost_per_turn_usd: s.cost_per_turn_usd,
-            tool_calls: s.raw.tool_calls,
-            tool_errors: s.raw.tool_errors,
-            tool_error_rate: s.tool_error_rate,
-            bash_command_failures: s.raw.bash_command_failures,
-            interrupts_structured: s.raw.interrupts_structured,
-            interrupts_text: s.raw.interrupts_text,
-            web_search_requests: s.raw.web_search_requests,
-            web_fetch_requests: s.raw.web_fetch_requests,
-            effort_high: s.raw.effort_high,
-            effort_xhigh: s.raw.effort_xhigh,
-            turn_ms_p50: s.turn_ms_p50,
-            turn_ms_p90: s.turn_ms_p90,
-            turn_ms_max: s.turn_ms_max,
-            compactions: s.raw.compactions.iter().map(CompactionJson::from).collect(),
-            model_mix: s.raw.model_mix.clone(),
-            by_skill: s.raw.by_skill.iter().map(|(k, v)| (k.clone(), v.into())).collect(),
-            by_mcp_tool: s.raw.by_mcp_tool.iter().map(|(k, v)| (k.clone(), v.into())).collect(),
-        }
-    }
-}
-
-/// A scored breach, rendered with its `kind` tag alongside the observed value and the threshold it
-/// crossed -- self-describing, never requiring the reader to re-derive why it fired.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum FlagJson {
-    LowCacheReadShare { observed: f64, floor: f64 },
-    HighToolErrorRate { observed: f64, ceiling: f64 },
-    AutoCompaction { count: u64 },
-}
-
-impl From<&EfficiencyFlag> for FlagJson {
-    fn from(f: &EfficiencyFlag) -> Self {
-        match f {
-            EfficiencyFlag::LowCacheReadShare { observed, floor } => Self::LowCacheReadShare {
-                observed: *observed,
-                floor: *floor,
-            },
-            EfficiencyFlag::HighToolErrorRate { observed, ceiling } => Self::HighToolErrorRate {
-                observed: *observed,
-                ceiling: *ceiling,
-            },
-            EfficiencyFlag::AutoCompaction { count } => Self::AutoCompaction { count: *count },
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct SubagentJson {
-    pub agent_id: String,
-    pub agent_type: Option<String>,
-    pub signals: SignalsJson,
-}
-
-impl From<&SubagentEfficiency> for SubagentJson {
-    fn from(s: &SubagentEfficiency) -> Self {
-        Self {
-            agent_id: s.agent_id.clone(),
-            agent_type: s.agent_type.clone(),
-            signals: (&s.signals).into(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct SessionJson {
-    pub session_id: String,
-    pub aggregate: SignalsJson,
-    pub flags: Vec<FlagJson>,
+#[serde(rename_all = "kebab-case")]
+pub struct SessionJson<'a> {
+    pub session_id: &'a str,
+    pub aggregate: &'a EfficiencySignals,
     /// Present only with `--by-subagent` (design: "aggregate by default; `--by-subagent` expands
     /// the N-subagent breakdown").
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub subagents: Option<Vec<SubagentJson>>,
-    /// The LLM prose verdict, present only with `--narrate`. Rendered below the signals (last field)
-    /// so the numbers lead and the prose closes. Named `narrative` in JSON and YAML alike (one name
-    /// per concept across layers); omitted entirely when the flag is off.
+    pub subagents: Option<&'a [SubagentEfficiency]>,
+    pub flags: &'a [EfficiencyFlag],
+    /// The LLM prose verdict, present only with `--narrate`. Named `narrative` in JSON and YAML
+    /// alike (one name per concept across layers); omitted entirely when the flag is off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub narrative: Option<String>,
 }
@@ -220,50 +69,56 @@ pub struct SessionJson {
 /// the per-subagent breakdown rides along; `narrative` (from `--narrate`) rides along when `Some`.
 /// The narrative string is computed by the caller (an LLM call) and injected here, so this stays a
 /// pure, network-free view builder that a test can drive with a canned string.
-pub fn session_json(session: &SessionEfficiency, by_subagent: bool, narrative: Option<String>) -> SessionJson {
+pub fn session_json(session: &SessionEfficiency, by_subagent: bool, narrative: Option<String>) -> SessionJson<'_> {
     SessionJson {
-        session_id: session.session_id.clone(),
-        aggregate: (&session.aggregate).into(),
-        flags: session.flags.iter().map(FlagJson::from).collect(),
-        subagents: by_subagent.then(|| session.subagents.iter().map(SubagentJson::from).collect()),
+        session_id: &session.session_id,
+        aggregate: &session.aggregate,
+        subagents: by_subagent.then_some(session.subagents.as_slice()),
+        flags: &session.flags,
         narrative,
     }
 }
 
+/// The `--worst N` view: one ranked entry per session, `session-id` + the same kebab-case
+/// `aggregate` signals. The old top-level `cache-read-share` is dropped -- it duplicated
+/// `aggregate.cache-read-share` (a field derived from another never diverges: drop it, don't sync
+/// it). Ranked (worst-first) order is preserved.
 #[derive(Debug, Serialize)]
-pub struct WorstEntryJson {
-    pub session_id: String,
-    pub cache_read_share: Option<f64>,
-    pub aggregate: SignalsJson,
+#[serde(rename_all = "kebab-case")]
+pub struct WorstEntryJson<'a> {
+    pub session_id: &'a str,
+    pub aggregate: &'a EfficiencySignals,
 }
 
 /// Build the `--worst N` view, preserving the ranked (already-sorted, worst-first) order.
-pub fn worst_json(sessions: &[CollectedSession]) -> Vec<WorstEntryJson> {
+pub fn worst_json(sessions: &[CollectedSession]) -> Vec<WorstEntryJson<'_>> {
     sessions
         .iter()
         .map(|s| WorstEntryJson {
-            session_id: s.session_id.clone(),
-            cache_read_share: s.efficiency.aggregate.cache_read_share,
-            aggregate: (&s.efficiency.aggregate).into(),
+            session_id: &s.session_id,
+            aggregate: &s.efficiency.aggregate,
         })
         .collect()
 }
 
+/// The `daily`/`weekly` rollup view: `period` + `session-count` + the same kebab-case `aggregate`
+/// signals. Newest period first (matches [`crate::rollup`]'s order).
 #[derive(Debug, Serialize)]
-pub struct PeriodJson {
-    pub period: String,
+#[serde(rename_all = "kebab-case")]
+pub struct PeriodJson<'a> {
+    pub period: &'a str,
     pub session_count: usize,
-    pub aggregate: SignalsJson,
+    pub aggregate: &'a EfficiencySignals,
 }
 
 /// Build the `daily`/`weekly` rollup view, newest period first (matches [`crate::rollup`]'s order).
-pub fn periods_json(periods: &[PeriodEfficiency]) -> Vec<PeriodJson> {
+pub fn periods_json(periods: &[PeriodEfficiency]) -> Vec<PeriodJson<'_>> {
     periods
         .iter()
         .map(|p| PeriodJson {
-            period: p.period.clone(),
+            period: &p.period,
             session_count: p.session_count,
-            aggregate: (&p.aggregate).into(),
+            aggregate: &p.aggregate,
         })
         .collect()
 }

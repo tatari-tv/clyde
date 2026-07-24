@@ -7,6 +7,7 @@ use crate::risk::{RiskTier, Rules};
 
 /// Summary of a session's permission activity.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct SessionReport {
     pub session_id: String,
     pub total_events: usize,
@@ -18,12 +19,14 @@ pub struct SessionReport {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct ToolCount {
     pub tool_name: String,
     pub count: usize,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct DangerousEvent {
     pub tool_name: String,
     pub tool_input: String,

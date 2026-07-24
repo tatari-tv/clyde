@@ -10,6 +10,7 @@ use crate::settings::load_settings;
 
 /// A single row in the audit output.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct AuditEntry {
     pub rule: String,
     pub list: String,

@@ -26,6 +26,7 @@ fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct CachedDay {
     pub cost: f64,
     pub sessions: usize,
