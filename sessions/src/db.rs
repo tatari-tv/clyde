@@ -43,7 +43,7 @@ use crate::model::{
 ///    column and INVALIDATES the v6/v7 efficiency annotation (NULLs `efficiency_json` + the three
 ///    scalars + `outcome_json`) so the next `reindex_efficiency` pass repopulates BOTH per-model
 ///    tokens and outcomes. Like v7, cursor-neutral (see [`migrate_v8_extend_efficiency`]).
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.

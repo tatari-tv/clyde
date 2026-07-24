@@ -189,7 +189,15 @@ fn clean_session_yields_all_zero_behavioral_counters() {
     // The negative fixture: real cost/tokens, but every behavioral predicate is zero/absent.
     let f = ex(CLEAN_SESSION);
     assert!(f.subagents.is_empty());
-    assert_eq!(f.parent.turns, 2, "two assistant turns carry real cost");
+    // ONE assistant turn, written as two content-block records (text + tool_use) that share a
+    // `message.id` and repeat the identical `usage`. It counts as one turn with its tokens folded in
+    // ONCE -- not two turns / double tokens (the real-transcript form of the double-count bug).
+    assert_eq!(
+        f.parent.turns, 1,
+        "one turn split across two blocks counts once, not per block"
+    );
+    assert_eq!(f.parent.input_tokens, 6, "message usage folded once (not 12)");
+    assert_eq!(f.parent.output_tokens, 213, "message usage folded once (not 426)");
     assert_eq!(f.parent.tool_errors, 0);
     assert_eq!(f.parent.bash_command_failures, 0);
     assert_eq!(f.parent.interrupts_structured, 0);
@@ -248,4 +256,47 @@ fn attribution_effort_and_web_tool_use_populate_from_multi_subagent_fixture() {
     assert_eq!(b.agent_type.as_deref(), Some("code-reviewer"));
     assert_eq!(b.raw.web_fetch_requests, 3);
     assert_eq!(b.raw.interrupts_structured, 1);
+}
+
+/// One assistant turn is written as MULTIPLE content-block records (thinking / text / tool_use), each
+/// stamped with the SAME message-level `usage`. The fold must count that usage ONCE per `message.id`,
+/// not once per block. BITES: drop the `first_seen_usage` gate in `apply_record` and the 3-block turn
+/// is counted 3x (turns=4, input=310, cost 3x) -- the exact ~2-3x cost inflation this fixes.
+#[test]
+fn message_level_usage_counted_once_per_message_id_not_per_block() {
+    let f = ex(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fixtures/efficiency/multiblock-turn.jsonl"
+    ));
+    let p = &f.parent;
+    // A 3-block turn (msg_multiblock...) + a 1-block turn (msg_single...) = 2 turns, NOT 4 records.
+    assert_eq!(p.turns, 2, "3-block turn counted once + 1-block turn = 2 turns, not 4");
+    assert_eq!(p.input_tokens, 110, "100 once (not 3x) + 10");
+    assert_eq!(p.output_tokens, 220, "200 once + 20");
+    assert_eq!(p.cache_read_tokens, 1000, "1000 once + 0");
+    assert_eq!(
+        p.cache_5m_write_tokens, 50,
+        "cache_creation w/o split -> 5m, counted once"
+    );
+    assert_eq!(p.model_mix.get("claude-opus-4-8"), Some(&2), "two turns of opus-4-8");
+    // Per-model split reconstructs the DEDUPED aggregate (input+output+5m+read; 1h is 0 here).
+    assert_eq!(p.by_model["claude-opus-4-8"].total, 110 + 220 + 50 + 1000);
+}
+
+/// An EMPTY `message.id` is treated as absent (fail open): every empty-id record's usage is applied,
+/// never deduped against a prior empty id. BITES: insert empty ids into the seen-set and the second
+/// empty-id turn collides with the first and is dropped (turns=1, input=5 instead of 2 / 16).
+#[test]
+fn empty_message_id_is_never_deduped_fails_open() {
+    let f = ex(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fixtures/efficiency/empty-id.jsonl"
+    ));
+    let p = &f.parent;
+    assert_eq!(
+        p.turns, 2,
+        "two empty-id turns both count (empty id is not a dedupe key)"
+    );
+    assert_eq!(p.input_tokens, 16, "5 + 11, both applied");
+    assert_eq!(p.output_tokens, 20, "7 + 13, both applied");
 }

@@ -190,6 +190,17 @@ below by session id only -- no session content is quoted).
     `release-driver`, proving `attributionAgent` WINS over the (decoy `general-purpose`)
     spawn-map entry. Asserted in `efficiency/src/extract/tests.rs` and `fold/tests.rs`.
 
+### `multiblock-turn.jsonl` -- per-message usage dedupe
+
+Two assistant turns. The first turn is written as THREE content-block records (thinking / text /
+tool_use) that all share `message.id` `msg_multiblockAAAAAAAAAAAA` and repeat the IDENTICAL
+message-level `usage`; the second is a single-block turn (`msg_singleBBBBBBBBBBBBBBB`). This is how
+Claude Code logs a multi-block assistant turn, and it is the shape that made the efficiency cost
+inflate ~2-3x before the fix. `extract` must fold message-level `usage` ONCE per `message.id`:
+`turns == 2` (not 4), `input_tokens == 110` (not 310). Asserted in
+`efficiency/src/extract/tests.rs::message_level_usage_counted_once_per_message_id_not_per_block`
+(and, on a real captured transcript, in `clean_session_yields_all_zero_behavioral_counters`).
+
 ## Verification
 
 `bin/verify-fixtures.sh` (throwaway `jq` script, Phase 0 only) asserts every

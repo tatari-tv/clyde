@@ -268,14 +268,14 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
     let path = tmp.path().join("v5.db");
     build_v5_db(&path);
 
-    // Reopen: migrate v5 forward to the current schema (v8). from_version=5 (< 6), so both the v7
-    // and v8 efficiency resets are skipped — there was never any v6 efficiency to invalidate — and
+    // Reopen: migrate v5 forward to the current schema (v9). from_version=5 (< 6), so the v7, v8, and
+    // v9 efficiency resets are all skipped — there was never any v6 efficiency to invalidate — and
     // the v5 cursor backfill stays gated off, so revisions are preserved exactly as below.
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 8,
+        SCHEMA_VERSION, 9,
         "this test pins the v5->current hop; bump me deliberately"
     );
 
@@ -523,8 +523,11 @@ fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_a
     // Reopen: migrate v7 -> v8.
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-    assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to v8");
-    assert_eq!(SCHEMA_VERSION, 8, "this test pins the v7->v8 hop; bump me deliberately");
+    assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
+    assert_eq!(
+        SCHEMA_VERSION, 9,
+        "this test pins the v7->current hop; bump me deliberately"
+    );
 
     // The new column exists, and the stale efficiency + the fresh outcome column are BOTH NULL so
     // reindex_efficiency recomputes per-model tokens and outcomes together.

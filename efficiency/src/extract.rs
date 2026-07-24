@@ -20,7 +20,7 @@
 //! `"Error: Exit code N"` only on a Bash non-zero exit), NOT `message.content[].content` (which
 //! reads `"Exit code N"` without the `Error:` prefix) -- see the Phase 0 implementation notes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -138,6 +138,11 @@ struct Record {
 
 #[derive(Debug, Deserialize)]
 struct Message {
+    /// The Anthropic message id (`message.id`). One assistant turn is written to the transcript as
+    /// MULTIPLE JSONL records -- one per content block (thinking / text / tool_use / ...) -- and every
+    /// one of those records carries the SAME message-level `usage`. This id is the dedupe key so a
+    /// turn's usage is counted ONCE, not once per block (see `apply_record`).
+    id: Option<String>,
     role: Option<String>,
     model: Option<String>,
     usage: Option<Usage>,
@@ -221,6 +226,11 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
 
     let mut out = FileEfficiency::default();
     let mut line_no: u64 = 0;
+    // Assistant `message.id`s whose message-level `usage` has already been folded in. One assistant
+    // turn spans N content-block records, each stamped with the SAME `usage`; without this, an
+    // N-block turn's tokens/cost/turns would be counted N times. Keyed globally per file: a message
+    // id belongs to exactly one scope, so a single set is sufficient and unambiguous.
+    let mut seen_usage_msg_ids: HashSet<String> = HashSet::new();
 
     for line in reader.lines() {
         line_no += 1;
@@ -278,7 +288,7 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
         // of scope: the spawn tool_use lives on whichever scope did the spawning.
         collect_spawn_types(&record, &mut out.spawn_types);
 
-        apply_record(&record, &scope, out.counters_mut(&scope));
+        apply_record(&record, &scope, out.counters_mut(&scope), &mut seen_usage_msg_ids);
     }
 
     debug!(
@@ -340,13 +350,33 @@ pub(crate) fn name_from_agent_id(agent_id: &str) -> Option<&str> {
     re.captures(agent_id).and_then(|c| c.get(1)).map(|m| m.as_str())
 }
 
+/// True the FIRST time this assistant turn's `message.id` is seen, recording it so later
+/// content-block records of the same turn (which repeat the identical message-level `usage`) are
+/// skipped. A record with no `message.id` -- OR an empty one -- is always applied: there is nothing
+/// to dedupe on, and dropping it would silently lose real usage (fail open on the count, never zero
+/// it). An empty id must NOT be inserted into the set, or the second empty-id record would collide
+/// with the first and be wrongly skipped.
+fn first_seen_usage(message: &Message, seen: &mut HashSet<String>) -> bool {
+    match message.id.as_deref().filter(|id| !id.is_empty()) {
+        Some(id) => seen.insert(id.to_string()),
+        None => true,
+    }
+}
+
 /// Apply one parsed record's signals to its scope's counters. Split out so the per-record logic is
 /// unit-testable and the `extract` loop stays a thin read-and-dispatch shell.
-fn apply_record(record: &Record, scope: &Scope, raw: &mut RawCounters) {
+fn apply_record(record: &Record, scope: &Scope, raw: &mut RawCounters, seen_usage_msg_ids: &mut HashSet<String>) {
     // Assistant record: token/cost + model-mix + effort + web tool use + per-workflow attribution.
+    // GATED on `first_seen_usage`: message-level `usage` is folded in ONCE per `message.id`, because
+    // one assistant turn spans N content-block records that all repeat the same `usage`. Everything
+    // below (tokens, cost, turns, model-mix, by_model, web tool use, effort, by-skill/by-mcp) derives
+    // from that message-level usage, so all of it belongs inside this once-per-turn gate. Per-block /
+    // per-result signals (tool_calls, tool_errors, compaction, turn-duration, interrupts) live OUTSIDE
+    // this branch and stay per-record.
     if let Some(message) = &record.message
         && let Some(usage) = &message.usage
         && message.role.as_deref() == Some("assistant")
+        && first_seen_usage(message, seen_usage_msg_ids)
     {
         let token_usage = usage.token_usage();
         let record_tokens = token_usage.input_tokens
