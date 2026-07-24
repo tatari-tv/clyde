@@ -1,0 +1,18 @@
+{
+  "name": "clyde",
+  "description": "Find, read, and analyze past Claude Code sessions, track Claude cost/token usage, and audit permission rules, via the clyde CLI and its session-catalog MCP tools: sessions (search/read/efficiency), cost (spend + usage reports), permit (permission-hygiene audit)",
+  "author": {
+    "name": "Scott Idler"
+  },
+  "keywords": [
+    "clyde",
+    "sessions",
+    "search",
+    "efficiency",
+    "cost",
+    "usage",
+    "report",
+    "permit",
+    "permissions"
+  ]
+}
