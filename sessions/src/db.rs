@@ -777,30 +777,7 @@ impl Db {
         debug!("Db::list: filters={:?}", filters);
         let mut sql = format!("SELECT {COLS} FROM sessions s WHERE 1=1");
         let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        if !filters.include_archived {
-            sql.push_str(" AND s.archived = 0");
-        }
-        if let Some(repo) = &filters.repo {
-            sql.push_str(" AND (s.cwd LIKE ? OR s.project_dir LIKE ?)");
-            let pat = format!("%{repo}%");
-            binds.push(Box::new(pat.clone()));
-            binds.push(Box::new(pat));
-        }
-        if let Some(since) = &filters.since {
-            sql.push_str(" AND s.modified >= ?");
-            binds.push(Box::new(since.to_rfc3339()));
-        }
-        if let Some(tag) = &filters.tag {
-            sql.push_str(" AND (s.tags = ? OR s.tags LIKE ? OR s.tags LIKE ? OR s.tags LIKE ?)");
-            binds.push(Box::new(tag.clone()));
-            binds.push(Box::new(format!("{tag} %")));
-            binds.push(Box::new(format!("% {tag}")));
-            binds.push(Box::new(format!("% {tag} %")));
-        }
-        if let Some(model) = &filters.model {
-            sql.push_str(" AND s.model LIKE ?");
-            binds.push(Box::new(format!("%{model}%")));
-        }
+        append_filters(&mut sql, &mut binds, filters);
         sql.push_str(" ORDER BY s.modified DESC");
         if let Some(limit) = filters.limit {
             sql.push_str(" LIMIT ?");
@@ -1108,6 +1085,47 @@ fn rebuild_high_signal_fts_on(
     Ok(())
 }
 
+/// Append the `repo`/`since`/`until`/`tag`/`model`/`include_archived` WHERE predicates shared by
+/// [`Db::list`] and the Phase 3 bulk catalog read (`db::catalog::Db::catalog`), so the
+/// window/metadata filtering logic exists in exactly one place — the two callers differ only in
+/// which columns they select over the same filtered row set. `sql` must already end in an open
+/// predicate (`... WHERE 1=1`) before this appends its `AND` clauses; ordering/`LIMIT` are the
+/// caller's own concern (added after this returns).
+fn append_filters(sql: &mut String, binds: &mut Vec<Box<dyn rusqlite::types::ToSql>>, filters: &Filters) {
+    if !filters.include_archived {
+        sql.push_str(" AND s.archived = 0");
+    }
+    if let Some(repo) = &filters.repo {
+        sql.push_str(" AND (s.cwd LIKE ? OR s.project_dir LIKE ?)");
+        let pat = format!("%{repo}%");
+        binds.push(Box::new(pat.clone()));
+        binds.push(Box::new(pat));
+    }
+    if let Some(since) = &filters.since {
+        sql.push_str(" AND s.modified >= ?");
+        binds.push(Box::new(since.to_rfc3339()));
+    }
+    if let Some(until) = &filters.until {
+        // Inclusive upper bound, mirroring `since`'s inclusive lower bound, so a window is the
+        // closed interval `[since, until]` (design doc M2: session-level windowing selects whole
+        // sessions whose row falls in `[since,until]`). A boundary session modified EXACTLY at
+        // `until` is included; one modified any instant after it is excluded.
+        sql.push_str(" AND s.modified <= ?");
+        binds.push(Box::new(until.to_rfc3339()));
+    }
+    if let Some(tag) = &filters.tag {
+        sql.push_str(" AND (s.tags = ? OR s.tags LIKE ? OR s.tags LIKE ? OR s.tags LIKE ?)");
+        binds.push(Box::new(tag.clone()));
+        binds.push(Box::new(format!("{tag} %")));
+        binds.push(Box::new(format!("% {tag}")));
+        binds.push(Box::new(format!("% {tag} %")));
+    }
+    if let Some(model) = &filters.model {
+        sql.push_str(" AND s.model LIKE ?");
+        binds.push(Box::new(format!("%{model}%")));
+    }
+}
+
 /// Apply the four mandatory PRAGMAs. WAL is per-database (sticky); the rest are per-connection.
 fn apply_pragmas(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -1327,6 +1345,11 @@ fn rerank_body(body: &mut Vec<SearchHit>, coverage_first: bool) {
 /// methods. Split out of `db.rs` to keep both files under the line-count limit; the export contract
 /// is a self-contained surface, so it lives in its own submodule.
 mod query;
+
+/// The Phase 3 bulk catalog read (`Db::catalog`): a window-scoped SELECT joining session rows with
+/// their RAW `efficiency_json`/`outcome_json` blobs and indexed scalars. Split out for file-size
+/// discipline, mirroring `query`'s own-columns-and-mapper shape.
+mod catalog;
 
 /// Schema creation + `PRAGMA user_version` migrations (the v1..v8 ladder + `ensure_column`). Split
 /// out of `db.rs` for file-size discipline; the schema/trigger consts and `SCHEMA_VERSION` stay here

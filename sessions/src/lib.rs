@@ -32,8 +32,8 @@ pub use llm::{
 };
 pub use mcp::{SessionsMcpServer, build_server};
 pub use model::{
-    EnrichDetail, EnrichStats, EnrichSummary, Fallback, Filters, MatchSource, ReindexStats, SearchHit, SearchResults,
-    SessionRecord, SortBy, StageStats,
+    CatalogEntry, EnrichDetail, EnrichStats, EnrichSummary, Fallback, Filters, MatchSource, ReindexStats, SearchHit,
+    SearchResults, SessionRecord, SortBy, StageStats,
 };
 pub use since::{DateTz, parse_since};
 pub use stage::stage_dormant;

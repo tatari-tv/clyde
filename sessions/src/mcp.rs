@@ -255,6 +255,9 @@ impl SessionsMcpServer {
         let filters = Filters {
             repo: req.repo,
             since,
+            // No MCP request field for `until` yet (Phase 3 adds the read-side bound only); a
+            // future `report`-facing tool call is the consumer that would populate it.
+            until: None,
             tag: req.tag,
             model: req.model,
             include_archived: req.include_archived.unwrap_or(false),

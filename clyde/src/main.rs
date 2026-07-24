@@ -277,6 +277,8 @@ fn cmd_ls(db: &Db, args: LsArgs, tz: common::DateTz) -> Result<()> {
     let filters = Filters {
         repo: args.repo,
         since,
+        // `clyde session ls` has no `--until` flag yet (Phase 3 adds the read-side bound only).
+        until: None,
         tag: args.tag,
         model: args.model,
         include_archived: args.include_archived,

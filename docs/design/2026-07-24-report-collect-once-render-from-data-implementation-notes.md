@@ -192,3 +192,67 @@ Zero-code spike; findings only (read-only against the live `sessions.db`).
 - None for the phase's code. Rollout note (already in the doc's Rollout Plan, not this
   phase's to execute): the v8 bump requires an operator `clyde session reindex` run before
   collect (Phase 4) can read the new per-model + outcome shape.
+
+## Phase 3: Bulk catalog read API in `sessions`
+
+### Design decisions
+- **`Db::catalog(&self, filters: &Filters) -> Result<Vec<CatalogEntry>>`** (new module
+  `sessions/src/db/catalog.rs`, mirroring `db/query.rs`'s own-columns-and-mapper shape): one SELECT
+  joining `db::COLS` (the same 19 session columns `Db::list`/`Db::get` use) with
+  `efficiency_json, outcome_json, cache_read_share, tool_errors, cost_usd` in a single query, ordered
+  `modified DESC`. Returns `CatalogEntry { record: SessionRecord, efficiency_json: Option<String>,
+  outcome_json: Option<String>, cache_read_share: Option<f64>, tool_errors: Option<i64>,
+  cost_usd: Option<f64> }` (new type, `sessions/src/model.rs`) -- the blobs are opaque strings, never
+  parsed, so `sessions` gains no `efficiency` dependency (verified: 0 `efficiency` refs in
+  `sessions/Cargo.toml`, and the only `efficiency::`-mentioning lines in `sessions/src` are pre-existing
+  Phase 2 doc comments, not code).
+- **`Filters` gains `until: Option<DateTime<Utc>>`** (`sessions/src/model.rs`). Semantics: INCLUSIVE
+  upper bound, `s.modified <= until`, mirroring `since`'s existing inclusive lower bound -- so a window
+  is the closed interval `[since, until]` per the design doc's M2 resolved decision ("session-level
+  windowing... whole sessions whose row falls in `[since,until]`"). A session modified EXACTLY at
+  `until` is included; one modified any instant after is excluded. Chosen over an exclusive bound so
+  `since == until` (a single-instant window) is not vacuously empty, and so the boundary session in the
+  Phase 0 fixture (a July-01T00:00:00Z session against a June-30T23:59:59Z `until`) sits unambiguously
+  outside the window without a day-granularity special case.
+- **Extracted `append_filters`** (`sessions/src/db.rs`, private free function): the
+  `repo`/`since`/`until`/`tag`/`model`/`include_archived` WHERE-clause construction that `Db::list`
+  already had, now shared verbatim by `Db::list` and `Db::catalog` so the filtering logic (including the
+  new `until` bound) exists in exactly one place -- the two callers differ only in which columns they
+  `SELECT`. `Db::list`'s own behavior is unchanged (same SQL, same tests green); this is a pure
+  extraction plus one new clause.
+- Column-index contract: `map_catalog_entry` calls `map_record` (which already documents `COLS` as
+  indices 0..=18) then reads the five appended catalog columns at fixed trailing indices 19..=23, in the
+  same order as the `SELECT`. No new mapper duplicating `map_record`'s 19-column parse.
+- Exported `CatalogEntry` from `sessions::lib` alongside the existing `model` re-exports, so `report`
+  (Phase 4) can name it without reaching into `sessions::model` directly.
+
+### Deviations
+- The design doc's API Design section left the read's exact Rust signature unpinned ("Seam named but
+  Rust signature not pinned here"). Named it `Db::catalog(&Filters) -> Result<Vec<CatalogEntry>>` --
+  same effect at the correct seam: a single window-scoped call returning session + efficiency + outcome
+  + scalars together, filters reuse the existing `Filters` type (extended, not a new bespoke request
+  struct) since `since`/`repo`/`tag`/`model`/`include_archived` are exactly what a catalog-window read
+  also wants.
+- Two existing call sites construct `Filters` without `..Default::default()` and would not compile
+  after adding the `until` field: `sessions/src/mcp.rs` (`sessions_ls` MCP tool) and
+  `clyde/src/main.rs` (`clyde session ls`). Both are explicitly set to `until: None` with a comment --
+  neither surface has an `--until`/`until` request field yet (out of scope for this phase, which only
+  adds the read-side bound), so this preserves their exact current behavior. Not a deviation from the
+  design (the doc scopes Phase 3 to the `sessions` read API only), but recorded since it touched two
+  files outside `sessions/`.
+
+### Tradeoffs
+- Reused `Filters` (extended with `until`) for the bulk catalog read rather than introducing a
+  dedicated `CatalogFilters`/window-only request type. `Filters` already carries every field a
+  window-scoped catalog read wants (`repo`, `since`, `tag`, `model`, `include_archived`, `limit`); a
+  second near-identical struct would drift from `Filters` the moment either gained a field, and the
+  design doc names no reason for a separate type. Cost: `Db::catalog` inherits `tag`/`model`/`repo`
+  filtering it may not need for Phase 4's use case, but those are additive no-ops (`None` when unused).
+- `append_filters` takes `&mut String` + `&mut Vec<Box<dyn ToSql>>` (append-in-place) rather than
+  returning a `(String, Vec<_>)` tuple, matching the exact mutation style `Db::list`/`Db::export`
+  already use for their own inline WHERE-building, so the extraction reads as a lift, not a new idiom.
+
+### Open questions
+- None. The design doc's Phase 3 scope (bulk read + `until` bound + no-cycle) is fully specified and
+  the boundary semantics were a concrete implementation decision (inclusive/inclusive), not a gap
+  needing Scott's input.
