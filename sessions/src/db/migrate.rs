@@ -52,6 +52,11 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
     // v8: add the `outcome_json` column and invalidate any existing efficiency annotation so the
     // next reindex repopulates per-model tokens AND outcomes. Idempotent + version-gated.
     migrate_v8_extend_efficiency(&tx, version)?;
+    // v9: invalidate efficiency computed by the pre-dedup extractor (it folded a multi-block
+    // assistant turn's message-level `usage` once PER content-block record instead of once per
+    // `message.id`, inflating tokens/cost ~2-3x) so the next reindex recomputes it correctly. Pure
+    // invalidation, no schema change. Gated on the genuine v8->v9 hop.
+    migrate_v9_reset_efficiency(&tx, version)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -189,9 +194,14 @@ fn migrate_v7_reset_efficiency(conn: &Connection, from_version: i64) -> Result<(
 /// `migrate_v7_reset_efficiency`'s trigger suppression — DROP the UPDATE trigger, NULL, recreate — so
 /// invalidating a DERIVED read-side annotation is cursor-neutral.
 fn migrate_v8_extend_efficiency(conn: &Connection, from_version: i64) -> Result<()> {
-    debug!("migrate_v8_extend_efficiency: from_version={from_version} (add outcome_json; reset runs when >= 6)");
+    debug!(
+        "migrate_v8_extend_efficiency: from_version={from_version} (add outcome_json; reset runs on the genuine 6<=v<8 hop)"
+    );
     ensure_column(conn, "sessions", "outcome_json", "TEXT")?;
-    if from_version < 6 {
+    // Invalidate only on a genuine pre-v8 upgrade. An already-v8 DB reaching a LATER version (v9+)
+    // has its invalidation handled by that hop's own reset (migrate_v9_reset_efficiency); re-running
+    // here would be a wasted second full-table UPDATE (same lesson as migrate_v7_reset_efficiency).
+    if !(6..8).contains(&from_version) {
         return Ok(());
     }
     // Suppress the revision UPDATE trigger for the invalidation (see `Db::set_efficiency_many`).
@@ -207,6 +217,38 @@ fn migrate_v8_extend_efficiency(conn: &Connection, from_version: i64) -> Result<
     conn.execute_batch(V5_TRIGGERS_SQL)
         .context("v8: restore the revision UPDATE trigger")?;
     debug!("migrate_v8_extend_efficiency: invalidated efficiency+outcomes on {reset} rows (updated_at unchanged)");
+    Ok(())
+}
+
+/// Invalidate efficiency computed by the PRE-DEDUP extractor. Claude Code writes one assistant turn
+/// as N content-block records that all repeat the same message-level `usage`; the old extractor
+/// folded that usage once per record instead of once per `message.id`, inflating tokens/cost ~2-3x.
+/// The fix (`efficiency/src/extract.rs::first_seen_usage`) dedupes, but an already-populated catalog
+/// keeps the inflated blobs until they are recomputed -- and the incremental reindex skips unchanged,
+/// non-NULL rows. NULL the efficiency annotation (indexed scalars included) so the next
+/// `reindex_efficiency` pass (`efficiency_json IS NULL` predicate) recomputes it with the fix.
+///
+/// Runs ONCE, on the genuine v8->v9 hop (`from_version == 8`). A fresh DB (never had efficiency) and
+/// any pre-v8 DB (whose invalidation is already done by `migrate_v8_extend_efficiency`) skip it, so
+/// no row is nulled twice. `outcome_json` is left as-is: the dedup does not affect outcome extraction,
+/// and the same reindex pass rewrites it anyway. Mirrors the v7/v8 trigger-suppressed reset so the
+/// derived-annotation invalidation does not advance `updated_at`.
+fn migrate_v9_reset_efficiency(conn: &Connection, from_version: i64) -> Result<()> {
+    debug!("migrate_v9_reset_efficiency: from_version={from_version} (reset runs only on the genuine v8->v9 hop)");
+    if from_version != 8 {
+        return Ok(());
+    }
+    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
+        .context("v9: suppress the revision UPDATE trigger")?;
+    let reset = conn
+        .execute(
+            "UPDATE sessions SET efficiency_json=NULL, cache_read_share=NULL, tool_errors=NULL, cost_usd=NULL",
+            [],
+        )
+        .context("v9: null efficiency columns to force recompute with the per-message usage dedupe")?;
+    conn.execute_batch(V5_TRIGGERS_SQL)
+        .context("v9: restore the revision UPDATE trigger")?;
+    debug!("migrate_v9_reset_efficiency: invalidated efficiency on {reset} rows (updated_at unchanged)");
     Ok(())
 }
 

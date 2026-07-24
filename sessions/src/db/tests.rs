@@ -1366,6 +1366,57 @@ fn v5_migration_from_v4_backfills_in_rowid_order_and_seeds_counter() {
     );
 }
 
+/// v9 invalidates efficiency computed by the pre-dedup extractor so the next reindex recomputes it
+/// with the per-message `usage` dedupe. Plant a NON-NULL efficiency blob + indexed cost on a v9-schema
+/// DB, stamp `user_version` back to 8, and reopen: the v8->v9 migration must NULL the annotation.
+/// BITES: drop `migrate_v9_reset_efficiency` (or mis-gate it) and the stale, inflated blob survives.
+#[test]
+fn v9_migration_from_v8_nulls_pre_dedup_efficiency() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("v8.db");
+    {
+        let db = Db::open_at(&path).unwrap(); // fresh open migrates to the current schema
+        db.conn
+            .execute(
+                "INSERT INTO sessions (id, session_id, project_dir, transcript_path, modified, host, \
+                 efficiency_json, cost_usd) \
+                 VALUES (1, ?1, '/p', '/t', '2026-06-01T00:00:00Z', 'desk', '{\"stale\":true}', 99.0)",
+                rusqlite::params![UUID_A],
+            )
+            .unwrap();
+        // Pretend the row's efficiency was written by the pre-dedup (v8) extractor.
+        db.conn.pragma_update(None, "user_version", 8i64).unwrap();
+    }
+
+    // Reopen: migrate v8 -> v9 must invalidate the stale efficiency annotation.
+    let db = Db::open_at(&path).unwrap();
+    let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema version");
+
+    let eff: Option<String> = db
+        .conn
+        .query_row(
+            "SELECT efficiency_json FROM sessions WHERE session_id = ?1",
+            rusqlite::params![UUID_A],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        eff, None,
+        "v9 nulls the pre-dedup efficiency_json so reindex recomputes it"
+    );
+
+    let cost: Option<f64> = db
+        .conn
+        .query_row(
+            "SELECT cost_usd FROM sessions WHERE session_id = ?1",
+            rusqlite::params![UUID_A],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cost, None, "the indexed cost scalar is nulled alongside the blob");
+}
+
 /// The migration is idempotent on reopen: `migrate` is version-gated and its whole body (column add,
 /// backfill, seed, triggers) plus the `user_version` bump commit in ONE transaction, so a fresh open
 /// of an already-migrated DB re-runs nothing — the counter and every row's revision are stable.
