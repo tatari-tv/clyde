@@ -71,7 +71,13 @@ pub fn compute_mtime_hash(files: &[&SessionFile]) -> u64 {
 /// refresh invalidates every cached day, which is exactly what a repricing should do.
 ///
 /// `None` (a feed carrying no `data_version`) hashes as the literal `none`, so an unversioned
-/// feed is still distinct from any versioned one.
+/// feed is still distinct from any versioned one. In practice nothing reaches that arm any more:
+/// `Pricing::embedded()` reports the embedded baseline's own version, and a legacy schema-1 feed is
+/// the only remaining source of `None`.
+///
+/// One-time effect of that change, benign: day entries written under the old `"none"` key are now
+/// unreachable for embedded-resolved runs, so the first run after it landed recomputed them. No
+/// migration is warranted; this cache is disposable by design (see [`cache_dir`]).
 pub fn compute_cache_key(files: &[&SessionFile], pricing_version: Option<&str>) -> u64 {
     trace!(
         "compute_cache_key: file_count={} pricing_version={:?}",

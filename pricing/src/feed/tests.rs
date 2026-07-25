@@ -267,3 +267,47 @@ fn user_override_path_returns_app_specific_dir() {
     let path = path.unwrap();
     assert!(path.ends_with("test-app/pricing.json"));
 }
+
+// ---- AC-P8: the embedded baseline reports its own version ---------------------------------------
+
+/// `Pricing::embedded()` must carry the embedded JSON's `data_version`, not `None`.
+///
+/// Read out of `data/pricing.json` rather than hardcoded: the daily refresh cron rewrites that
+/// timestamp, so a literal here would fail every time the feed refreshes and teach the next reader to
+/// "fix" it by loosening the assertion.
+///
+/// Why it matters beyond tidiness: `cost`'s day-cost cache keys on `data_version()` and folds `None` to
+/// the literal "none", so a `None` here puts every embedded-resolved run from every crate version ever
+/// built into one bucket, and the release that adds a model serves the prior release's under-count.
+///
+/// BITES: restore `data_version: None` in `Pricing::embedded()` and this fails.
+#[test]
+fn embedded_reports_the_embedded_data_version() {
+    let raw: serde_json::Value =
+        serde_json::from_str(include_str!("../../data/pricing.json")).expect("embedded pricing JSON parses");
+    let expected = raw
+        .get("data_version")
+        .and_then(|v| v.as_str())
+        .expect("the embedded feed carries a data_version");
+
+    assert_eq!(
+        Pricing::embedded().data_version(),
+        Some(expected),
+        "embedded() must carry the baseline's own version, not None"
+    );
+}
+
+/// The property the day-cost cache actually depends on, stated as its own assertion: an
+/// embedded-resolved run never lands in the `"none"` bucket. `cost::cache::compute_cache_key` cannot be
+/// called from this crate (`cost` depends on `pricing`, not the reverse), so this asserts the input that
+/// makes both of its call sites discriminate rather than reaching across the dependency edge.
+///
+/// BITES: restore `data_version: None` in `Pricing::embedded()` and this fails.
+#[test]
+fn an_embedded_resolved_run_is_never_the_none_cache_bucket() {
+    assert!(
+        Pricing::embedded().data_version().is_some(),
+        "a None version hashes as the literal \"none\", collapsing every embedded baseline into one \
+         cache bucket at BOTH compute_cache_key call sites"
+    );
+}

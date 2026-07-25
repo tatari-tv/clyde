@@ -48,6 +48,16 @@ tasks:
       echo "=== Checking compilation ==="
       cargo check --workspace --all-targets --all-features
       echo ""
+      # The non-fetch build of claude-pricing, which NO other job covers. Every check above uses
+      # --all-features (which turns `fetch` ON) and --workspace (which unifies features across
+      # members regardless), yet `efficiency` and `common` both depend on claude-pricing WITHOUT
+      # fetch, as do the external `ccu`/`cr` pins. Without this line a feature-gated item that only
+      # exists under `fetch` can be referenced from ungated code and every job stays green.
+      # Lib-only on purpose: the crate's own test target needs `log/std`, which only the workspace
+      # build unifies in, so --all-targets here would fail for a reason unrelated to this guard.
+      echo "=== Checking claude-pricing without the fetch feature ==="
+      cargo check -p claude-pricing
+      echo ""
       echo "=== Running Clippy ==="
       cargo clippy --workspace --all-targets --all-features -- -D warnings
       echo ""
