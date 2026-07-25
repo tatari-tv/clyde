@@ -2,7 +2,7 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-25
-**Status:** Implemented (all three phases shipped; AC-P4 and AC-P5 are post-merge live checks and are the only items still pending, see Acceptance Criteria)
+**Status:** Implemented (all three phases shipped; AC-P4 and AC-P5 closed live on 2026-07-25 against `https://tatari-tv.github.io/clyde/`, so every acceptance criterion is now checked)
 **Review Passes Completed:** 5/5
 **Funnel position:** five passes, then a two-seat review panel over two rounds (Architect on Gemini, Staff Engineer on Codex, both completed both rounds). Sixteen findings, every one dispositioned in "Review Panel Dispositions". F1 restructured the doc from two phases to three; F15 added the structural CI guard without which Phase 1 would delete its own safety net. Open Questions empty. Ready to build, starting at Phase 1. **(State at AUTHORING time. All three phases have since shipped -- see Status above.)**
 **Sibling:** `docs/design/2026-07-25-render-output-ceilings-config.md`, separate work, different crate and branch, no shared code
@@ -255,10 +255,16 @@ Phase 1 owns AC-P8 and AC-P9. Phase 2 owns AC-P1, P2, P3, P6, P7. Phase 3 owns A
 - [x] AC-P3: sidecar semantics are unchanged. No cache-path code writes or clears the stale marker; `fetch_and_cache` remains the only clearer; `stale_then_fresh_cache_hit_still_reports_stale` passes unchanged.
 - [x] AC-P6: exactly one rejection `warn!` per resolution. Asserted in both directions: the fresh-cache rejection with the failure-backoff window OPEN emits one warn, not two; a fallback-chain-only rejection after a fetch failure emits one, not zero.
 - [x] AC-P7: an unguarded cache read is falsifiable. Every `load_from_cache` call site goes through the shared cache-candidate helper, asserted mechanically so a future third read site fails the check. Grepping for the old predicate name is not sufficient and does not count.
-- [ ] AC-P4 (**PENDING MERGE** -- Pages deploys from `main`, so the live half cannot be checked before then): `https://tatari-tv.github.io/clyde/` returns 200 and renders `data_version`, `schema_version`, `min_library_version`, the model count, and the rates table, all read from `./pricing.json` at load time.
+- [x] AC-P4: `https://tatari-tv.github.io/clyde/` returns 200 and renders `data_version`, `schema_version`, `min_library_version`, the model count, and the rates table, all read from `./pricing.json` at load time.
+
+  **Closed live 2026-07-25** against the deployed site. Root and `/pricing.json` both return 200, and the served feed is byte-identical to `pricing/data/pricing.json` (`jq -S` diff, empty). Headless Chrome on the live URL renders `data_version` `2026-07-25T01:56:53Z`, `schema_version` `2`, `min_library_version` `2.0.0`, model count `18`, and 18 rate rows; `claude-fable-5` shows `$10 / $50 / $12.5 / $20 / $1`, matching the feed's rates rather than a transcription. The read-at-load-time half is proven negatively: none of `2026-07-25T01:56:53Z`, `2.0.0`, or `claude-fable-5` appears anywhere in `pricing/site/index.html`, so every rendered value can only have come from the fetch.
 
   **Verified locally in a real browser (headless Chrome), 2026-07-25**, serving `pricing/site/` beside a copy of the feed: all four version/count fields match `pricing/data/pricing.json` exactly, all 18 model rows render, and a spot-checked rate matches the feed rather than being transcribed. A synthetic feed carrying `*_above_200k` rates renders the long-context tier line (the real feed currently has none, so that branch would otherwise ship unexercised). With `pricing.json` absent the page shows the error banner, hides the feed block entirely, renders **zero** rate rows, and names the cause (`HTTP 404`) -- i.e. visibly broken rather than an empty table that reads as real data reporting zero models.
-- [ ] AC-P5 (**PENDING MERGE**, and deliberately so: it requires a LATER commit than this work): a **later, index-only** commit touching just `pricing/site/index.html` on `main` triggers a Pages deploy. The Phase 3 commit itself proves nothing here, because it also edits `.github/workflows/pages.yml`, which is already in `on.push.paths` (`pages.yml:8`) and would fire the deploy regardless of whether the new path was added.
+- [x] AC-P5: a **later, index-only** commit touching just `pricing/site/index.html` on `main` triggers a Pages deploy. The Phase 3 commit itself proves nothing here, because it also edits `.github/workflows/pages.yml`, which is already in `on.push.paths` (`pages.yml:8`) and would fire the deploy regardless of whether the new path was added.
+
+  **Closed live 2026-07-25** by `5c76f97` (`fix(pricing): drop last row border stub`, #61), a follow-up PR opened for exactly this purpose. `git show --name-only 5c76f97` lists one file, `pricing/site/index.html`, so `pricing/data/pricing.json` and `pages.yml` were both untouched and neither could have fired the run. Pages run [30148682157](https://github.com/tatari-tv/clyde/actions/runs/30148682157) triggered on that push and deployed successfully, and the fixed rule is live in the served CSS. The deploy is therefore attributable to the `pricing/site/index.html` entry in `on.push.paths` and to nothing else, which is what F7 asked for and what the Phase 3 commit could not show.
+
+  The two intervening runs do not close this and were not counted: #59 and #60 both changed `pricing/data/pricing.json`, which is its own `paths` entry.
 
 ## Resolved Decisions
 
@@ -362,6 +368,7 @@ No new surface. The page is static, served from GitHub Pages, and reads one same
 - Order: `bump --no-tag` on the branch, PR, merge, then `bump --tag-only` on `main` and push the tag by name. Never plain `bump` on a gated repo, never a bump-only release branch.
 - Phase 2's live criteria are only checkable after merge, because Pages deploys from `main`.
 - After merge: `cargo install --path .`, then re-run the AC-P1 planted-cache check against the installed binary. Green CI is not done.
+  - **Done 2026-07-25** against installed `clyde v0.14.0` (`v0.14.0` tagged on merged `main` via `bump --tag-only`). Recorded in the implementation notes under "Post-merge verification".
 - **Nothing in this section runs without Scott's explicit approval.**
 
 ## Risks and Mitigations

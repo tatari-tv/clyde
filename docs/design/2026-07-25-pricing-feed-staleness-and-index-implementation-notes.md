@@ -176,11 +176,12 @@ removal was incomplete.
 
 ### Tradeoffs
 
-- **AC-P4 and AC-P5 stay unchecked, and the doc says why rather than quietly claiming them.** Pages
-  deploys from `main`, so the live 200 and the index-only-deploy proof are both structurally
-  post-merge; AC-P5 additionally requires a commit *later* than this one, since this commit also touches
-  `pages.yml` (already in `paths`) and would fire the deploy regardless. Everything checkable before a
-  merge was checked in a real browser instead of asserted.
+- **AC-P4 and AC-P5 stayed unchecked at implementation time, and the doc said why rather than quietly
+  claiming them.** Pages deploys from `main`, so the live 200 and the index-only-deploy proof were both
+  structurally post-merge; AC-P5 additionally required a commit *later* than this one, since this commit
+  also touches `pages.yml` (already in `paths`) and would fire the deploy regardless. Everything
+  checkable before a merge was checked in a real browser instead of asserted. **Both were closed live on
+  2026-07-25** -- see "Post-merge verification" below.
 - **No test in CI asserts anything about the page.** It is static, and the doc says CI only has to stay
   green. The real coverage is the three-scenario browser check recorded under AC-P4, which is manual by
   nature; nothing was added to CI to create the appearance of automation that does not exist.
@@ -237,3 +238,64 @@ the cache at most twice with no loop, matching the doc's "terminating, not self-
 (zero `innerHTML`/`document.write`/`eval`, all eight feed-derived DOM sinks are `textContent` or
 `createTextNode`); all four `pricing.rs` sites ungated with the stale gate comment rewritten; and
 AC-P4/AC-P5 being unchecked is honest, with nothing checkable hidden behind the label.
+
+## Post-merge verification (2026-07-25, after `v0.14.0`)
+
+The Rollout Plan's three post-merge items, all run against the live site and the installed binary.
+
+### AC-P4: the live page
+
+Root and `/pricing.json` both 200. The served feed is byte-identical to `pricing/data/pricing.json`
+(`jq -S` diff, empty output). Headless Chrome on the live URL renders `data_version`
+`2026-07-25T01:56:53Z`, `schema_version` `2`, `min_library_version` `2.0.0`, model count `18`, and 18
+rate rows, with `claude-fable-5` at `$10 / $50 / $12.5 / $20 / $1` matching the feed.
+
+The read-at-load-time half is proven **negatively**, which is the half a rendering check alone cannot
+establish: none of those literal strings appears anywhere in `pricing/site/index.html`, so a rendered
+value can only have come from the fetch. A page that transcribed its own numbers would pass a render
+check identically.
+
+### AC-P5: the index-only deploy
+
+Closed by `5c76f97` (#61). The squash commit on `main` lists exactly one file,
+`pricing/site/index.html`, so neither `pricing/data/pricing.json` nor `pages.yml` -- the other two
+`on.push.paths` entries -- could have fired the run. Pages run `30148682157` triggered and deployed, and
+the changed CSS rule is live in the served page. That is the attribution F7 demanded and the Phase 3
+commit structurally could not provide.
+
+`#59` and `#60` deployed in between but do not close this: both changed `pricing/data/pricing.json`,
+its own `paths` entry.
+
+### AC-P1 re-run against installed `clyde v0.14.0`
+
+The doc asks for the planted-cache check against the installed binary, not just the test suite. Run as a
+three-way comparison on `clyde cost yesterday` -- a **closed** day, because `cost today` grows while the
+session runs and the first attempt at this produced a non-10x control for exactly that reason:
+
+| run | planted cache | total |
+|---|---|---|
+| baseline | real cache, real rates | `696.65` |
+| control | `data_version` 2027-01-01 (newer), rates x10 | `6966.50` |
+| AC-P1 | `data_version` 2026-01-01 (older), rates x10 | `696.65` |
+
+The control is the part that makes this non-vacuous: it lands at exactly 10x, proving planted rates do
+reach the user-visible total, so the AC-P1 row returning to `696.65` is the gate rejecting the cache and
+repricing from embedded rather than the plant simply having no effect.
+
+Two implementation details worth recording, both of which would silently defeat a re-run:
+
+- **`--offline` must NOT be used here.** It skips the library cache entirely
+  (`cost/src/lib.rs:657-660`, `Pricing::with_user_override`), so it never reaches the cache-candidate
+  gate and would pass while proving nothing. The network was blocked by pointing
+  `CLAUDE_PRICING_FEED_URL` at a refused port instead, which is what "no network" in AC-P1 has to mean.
+- **`cost` logs to `~/.local/share/clyde/logs/cost.log`, not `clyde.log`**, only when an explicit
+  `-l <level>` is passed, filtered on `cost=<level>,claude_pricing=<level>` (`cost/src/lib.rs:100`).
+
+That log carries the rest of the proof: one `WARN` naming both versions ("cached feed ... is older than
+the embedded baseline ... not serving it, preferring the newer embedded data") and `Pricing source:
+Embedded, models=18`, i.e. the `Source::Embedded` resolution AC-P1 specifies. The run also logged `in
+failure backoff window; skipping fetch`, so this incidentally re-confirms **AC-P6** on the exact path it
+was written for: backoff window open, and still **one** warn, not two.
+
+Caches were backed up before planting and restored after; a closing run confirms normal operation
+(`Source::Fetched` from the live feed, no warnings, same `696.65`).
