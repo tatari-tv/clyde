@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clyde pricing feed</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #59636e;
+    --line: #d1d9e0;
+    --accent: #0969da;
+    --code-bg: #f6f8fa;
+    --err-bg: #ffebe9;
+    --err-fg: #82071e;
+    --err-line: #ff818266;
+    --warn-bg: #fff8c5;
+    --warn-fg: #4d2d00;
+    --warn-line: #d4a72c66;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --line: #3d444d;
+      --accent: #4493f8;
+      --code-bg: #151b23;
+      --err-bg: #25171c;
+      --err-fg: #ff8182;
+      --err-line: #f8514966;
+      --warn-bg: #1e1a12;
+      --warn-fg: #d4a72c;
+      --warn-line: #bb800966;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    padding: 2rem 1.25rem 5rem;
+    max-width: 62rem;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  h1 { font-size: 1.75rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+  h2 { font-size: 1.2rem; margin: 2.5rem 0 .75rem; padding-bottom: .3rem; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
+  p, li { color: var(--fg); }
+  .lede { color: var(--muted); margin: 0 0 1.5rem; }
+  a { color: var(--accent); }
+  code, .mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .875em;
+  }
+  code { background: var(--code-bg); padding: .15em .4em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: .75rem 1rem; overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .75rem; margin: 1.25rem 0; }
+  .card { border: 1px solid var(--line); border-radius: 6px; padding: .7rem .9rem; }
+  .card dt { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 .25rem; }
+  .card dd { margin: 0; font-weight: 600; word-break: break-all; }
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: .875rem; }
+  th, td { text-align: right; padding: .5rem .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { background: var(--code-bg); font-weight: 600; position: sticky; top: 0; }
+  tbody tr:last-child td { border-bottom: none; }
+  .tier { color: var(--muted); font-size: .8em; display: block; }
+  .banner { border-radius: 6px; padding: .9rem 1.1rem; margin: 1.25rem 0; }
+  .banner.error { background: var(--err-bg); color: var(--err-fg); border: 1px solid var(--err-line); }
+  .banner.warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-line); }
+  .banner h3 { margin-top: 0; }
+  .banner code { background: #8883; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .875rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<h1>clyde pricing feed</h1>
+<p class="lede">
+  The published Claude model pricing data that <code>clyde</code> reads at runtime.
+  Everything below the fold is static; everything about the feed itself is read from
+  <a href="./pricing.json"><code>./pricing.json</code></a> when this page loads, so it cannot drift from
+  the feed it documents.
+</p>
+
+<!-- Fetch failed: a LOUD, visible error. Never an empty table, which would read as real data
+     reporting zero models. -->
+<div id="error" class="banner error" hidden>
+  <h3>Could not read the feed</h3>
+  <p id="error-detail"></p>
+  <p>
+    Every figure on this page comes from <code>./pricing.json</code>. Nothing is transcribed into the
+    HTML, so when that fetch fails there is nothing to show and this page says so instead of rendering
+    an empty table.
+  </p>
+</div>
+
+<div id="feed" hidden>
+  <dl class="meta">
+    <div class="card"><dt>data version</dt><dd class="mono" id="data-version"></dd></div>
+    <div class="card"><dt>schema version</dt><dd class="mono" id="schema-version"></dd></div>
+    <div class="card"><dt>min library version</dt><dd class="mono" id="min-library-version"></dd></div>
+    <div class="card"><dt>models priced</dt><dd class="mono" id="model-count"></dd></div>
+  </dl>
+
+  <h2>Rates</h2>
+  <p>
+    US dollars per million tokens (MTok). A second line on a cell is that rate's long-context tier,
+    charged when the request's total input exceeds 200K tokens; a cell with one line has no separate
+    tier.
+  </p>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">model</th>
+          <th scope="col">input</th>
+          <th scope="col">output</th>
+          <th scope="col">cache write 5m</th>
+          <th scope="col">cache write 1h</th>
+          <th scope="col">cache read</th>
+        </tr>
+      </thead>
+      <tbody id="rates"></tbody>
+    </table>
+  </div>
+</div>
+
+<h2>How consumers read it</h2>
+<p>
+  <code>clyde</code> fetches this URL at runtime and caches the result, so a data refresh reaches
+  consumers within about 24 hours with <strong>no crate bump and no re-pin</strong>. That split is the
+  point: fast-changing data (this JSON) never forces a rebuild of the slow-changing library that
+  consumes it.
+</p>
+<p>
+  Each binary also compiles in a baseline copy of this feed, and it never serves anything older than
+  that baseline: a cached or fetched feed whose <code>data_version</code> is behind the embedded one
+  loses, and the embedded data is used instead. So a stale or unreachable feed degrades to
+  "as good as the binary you installed", never to worse.
+</p>
+
+<h2>How it is produced</h2>
+<p>
+  <code>pricing.json</code> is a generated artifact, not a hand-maintained file. A daily cron
+  (<code>.github/workflows/refresh-pricing.yml</code>, 06:17 UTC) runs <code>pricing/bin/update</code>,
+  which scrapes Anthropic's published pricing page and opens a PR only when the data actually changed.
+  Merging that PR to <code>main</code> deploys this page and the JSON beside it
+  (<code>.github/workflows/pages.yml</code>).
+</p>
+<p><code>bin/update</code> refuses to ship questionable data rather than publishing it:</p>
+<ul>
+  <li>
+    <strong>Two independent parsers</strong> (one <code>awk</code>, one Python) read the same input, and
+    their outputs are compared for semantic equality (<code>5</code> and <code>5.0</code> agree). Any
+    real disagreement is a hard stop, with a diff naming the models that differ.
+  </li>
+  <li>
+    <strong>Delisted models carry forward</strong> at their last known rates rather than vanishing, so a
+    model disappearing upstream never silently becomes unpriceable. The cross-check above is what still
+    catches a parser accidentally dropping a row that is genuinely still listed.
+  </li>
+  <li>
+    <strong>Two regression checks</strong> against the previous published file: no rate may move by more
+    than 5x, and every rate must sit within absolute bounds of $0.001 to $1000 per MTok.
+  </li>
+</ul>
+
+<div class="banner warn">
+  <h3>New model launches are not hands-off</h3>
+  <p>
+    Worth knowing before trusting a brand-new model's row to appear on its own. Model keys are derived by
+    slugifying the row label on the upstream pricing table. When a model ships with
+    <strong>date-tiered introductory pricing</strong> it occupies two rows ("… through August 31, 2026"
+    and "… starting September 1, 2026"), and the parser emits one broken key per tier instead of one
+    clean model id.
+  </p>
+  <p>
+    The bare <code>opus</code> / <code>sonnet</code> / <code>haiku</code> aliases are human-authored
+    policy in <code>data/normalization.json</code> and are <strong>never repointed automatically</strong>.
+    So a launch needs a person to pick the canonical id, choose the correct tier, fold the broken rows
+    into it, and repoint the alias. Until that happens the daily cron keeps regenerating the broken keys.
+  </p>
+</div>
+
+<h2>Schema</h2>
+<p>
+  The crate's <strong>major version is locked to <code>schema_version</code></strong>: a <code>v2</code>
+  tag means schema 2. <code>min_library_version</code> is the crate version that ships the current
+  schema, so a consumer too old to understand this feed can detect that and fall back to its embedded
+  baseline instead of misreading the file.
+</p>
+
+<footer>
+  <p>
+    Served from <a href="https://github.com/tatari-tv/clyde">tatari-tv/clyde</a>
+    (<code>pricing/site/index.html</code>). Feed: <a href="./pricing.json"><code>pricing.json</code></a>.
+  </p>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var RATE_COLUMNS = [
+    ["input_per_mtok", "input_per_mtok_above_200k"],
+    ["output_per_mtok", "output_per_mtok_above_200k"],
+    ["cache_5m_write_per_mtok", "cache_5m_write_per_mtok_above_200k"],
+    ["cache_1h_write_per_mtok", "cache_1h_write_per_mtok_above_200k"],
+    ["cache_read_per_mtok", "cache_read_per_mtok_above_200k"]
+  ];
+
+  function fail(detail) {
+    document.getElementById("error-detail").textContent = detail;
+    document.getElementById("error").hidden = false;
+    document.getElementById("feed").hidden = true;
+  }
+
+  // Rates span $0.10 to $75+/MTok, so a fixed precision either truncates the small ones or pads the
+  // large ones. Trim trailing zeros instead of choosing wrong in one direction.
+  function money(value) {
+    if (typeof value !== "number" || !isFinite(value)) return "n/a";
+    var s = value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+    return "$" + s;
+  }
+
+  function cell(model, pair) {
+    var td = document.createElement("td");
+    td.appendChild(document.createTextNode(money(model[pair[0]])));
+    var tiered = model[pair[1]];
+    if (typeof tiered === "number" && isFinite(tiered)) {
+      var span = document.createElement("span");
+      span.className = "tier";
+      span.textContent = money(tiered) + " >200K";
+      td.appendChild(span);
+    }
+    return td;
+  }
+
+  function render(feed) {
+    var pricing = feed && feed.pricing;
+    // A feed with no `pricing` map is not something to render an empty table for.
+    if (!pricing || typeof pricing !== "object") {
+      fail("The feed parsed as JSON but carries no `pricing` map, so there are no rates to show.");
+      return;
+    }
+
+    document.getElementById("data-version").textContent = feed.data_version || "(none)";
+    document.getElementById("schema-version").textContent =
+      feed.schema_version === undefined ? "(none)" : String(feed.schema_version);
+    document.getElementById("min-library-version").textContent = feed.min_library_version || "(none)";
+
+    var names = Object.keys(pricing).sort();
+    document.getElementById("model-count").textContent = String(names.length);
+
+    var tbody = document.getElementById("rates");
+    names.forEach(function (name) {
+      var model = pricing[name];
+      var tr = document.createElement("tr");
+      var th = document.createElement("th");
+      th.scope = "row";
+      th.className = "mono";
+      th.textContent = name;
+      tr.appendChild(th);
+      RATE_COLUMNS.forEach(function (pair) {
+        tr.appendChild(cell(model, pair));
+      });
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById("feed").hidden = false;
+  }
+
+  fetch("./pricing.json", { cache: "no-cache" })
+    .then(function (response) {
+      if (!response.ok) {
+        throw new Error("HTTP " + response.status + " " + response.statusText);
+      }
+      return response.json();
+    })
+    .then(render)
+    .catch(function (e) {
+      fail("Fetching ./pricing.json failed: " + (e && e.message ? e.message : String(e)));
+    });
+})();
+</script>
+
+</body>
+</html>
