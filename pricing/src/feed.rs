@@ -72,10 +72,17 @@ fn default_min_library_version() -> String {
 }
 
 impl Pricing {
+    /// The compiled-in baseline.
+    ///
+    /// Carries the embedded JSON's own `data_version` rather than `None`. That is load-bearing
+    /// downstream: `cost`'s day-cost cache keys on `data_version()`, folding `None` to the literal
+    /// `"none"`, so a `None` here puts every embedded-resolved run from every crate version ever
+    /// built into ONE cache bucket. The release that adds a model then serves the previous release's
+    /// under-count without re-pricing and without reporting an unknown model.
     pub fn embedded() -> Self {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
-            data_version: None,
+            data_version: crate::pricing::embedded_data_version().map(str::to_string),
             aliases: default_aliases().clone(),
             family_rules: default_family_rules().to_vec(),
             pricing: default_pricing().clone(),

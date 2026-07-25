@@ -1,25 +1,70 @@
-use eyre::{Context, Result, bail};
-use log::{debug, info};
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
+pub mod api;
+pub mod cli;
 
-/// Markdown-path model, pinned. The markdown-source output is byte-identical to the pre-HTML
-/// behavior, and the model is part of that contract - it must not move without re-baselining.
-const MARKDOWN_MODEL: &str = "claude-opus-4-7";
-/// Html-path model. Bumped to opus-4-8 (Scott, Phase 6 shakedown 2026-07-06) for its stronger
-/// design/prose sense. Same request surface as 4-7 (adaptive-thinking-only, no sampling params)
-/// and the same 128K output ceiling / 1M context, so HTML_MAX_OUTPUT_TOKENS below is unchanged.
-const HTML_MODEL: &str = "claude-opus-4-8";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
-const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
-/// Non-streaming markdown-source ceiling (unchanged from the pre-HTML design). The markdown path
-/// stays byte-identical, so this value and the prompt below must not move.
-const MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 16_000;
-/// Streaming html-source ceiling. Phase 0 observed a max 26.5K output on a 5x-synthetic month;
-/// 64K is half the opus-4-7 128K output ceiling, so the named-exhaustion bail is a backstop that
-/// will not fire for realistic months.
-const HTML_MAX_OUTPUT_TOKENS: u32 = 64_000;
-const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
+pub use api::{ApiTransport, api_key_from_env};
+pub use cli::CliTransport;
+
+use eyre::{Context, Result, bail};
+use log::debug;
+use serde::Deserialize;
+
+/// One prose completion: the job's system prompt plus its instruction and facts -> the model's text
+/// reply. Implementations own their own transport knobs, so nothing here leaks an api-only or
+/// cli-only concept.
+///
+/// `prompt` and `json_body` stay SEPARATE arguments deliberately. The api transport joins them into
+/// one user message; the cli transport must deliver them over two different channels (instruction
+/// on argv, facts on stdin), and a pre-joined string would force it to either re-split a 500KB blob
+/// or push the whole thing through argv into `ARG_MAX`.
+pub trait Transport {
+    fn complete(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<String>;
+}
+
+/// WHICH artifact a job produces. Stays a `Copy` enum because it IS a compile-time fact: the two
+/// arms are the two call sites in `render.rs`, and nothing about the choice is user-configurable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Markdown,
+    Html,
+}
+
+impl Kind {
+    /// The `clyde.yml` key carrying this job's output ceiling.
+    ///
+    /// Exists so a ceiling failure can name the ONE line that prevents the next one. Per-kind on
+    /// purpose: naming the markdown key on an html failure would be a remedy that cannot remedy, which
+    /// `cli.rs`'s module docs call worse than offering none. A compile-time fact about the kind, unlike
+    /// the ceiling itself.
+    pub fn max_output_tokens_key(self) -> &'static str {
+        match self {
+            Kind::Markdown => "render.markdown-max-output-tokens",
+            Kind::Html => "render.html-max-output-tokens",
+        }
+    }
+}
+
+/// A render job with its user-configurable pins RESOLVED from `clyde.yml`.
+///
+/// Every per-job tunable lands here. Both fields were once compile-time facts reachable as methods on
+/// the old `Job` enum (`Job::model()`, then `Job::max_output_tokens()`), and both stopped being
+/// expressible the moment a user could set them: a `Copy` enum arm cannot return a `String` it does
+/// not own, nor a number it has not read. Bundling them means the NEXT configurable per-job value is
+/// a field, not a sixth argument on [`Transport::complete`].
+#[derive(Clone, Copy, Debug)]
+pub struct Job<'a> {
+    pub kind: Kind,
+    /// `render.markdown-model` / `render.html-model`.
+    pub model: &'a str,
+    /// `render.markdown-max-output-tokens` / `render.html-max-output-tokens`.
+    ///
+    /// SHARED by both transports: the api transport SETS it as `max_tokens` on the wire, and the cli
+    /// transport — which cannot set a ceiling at all — CHECKS the returned `usage.output_tokens`
+    /// against it. Streaming, by contrast, is api-private and lives in `api.rs`, because the cli
+    /// transport has no delivery choice to make and a `stream` field it ignored would be a lying
+    /// field.
+    pub max_output_tokens: u32,
+}
+
 const MARKDOWN_SYSTEM_PROMPT: &str = "You are a precise technical writer producing markdown documents from structured data. Output exactly what is asked - no preamble, no commentary, no fenced code block wrapping the whole output.";
 /// Phase 0-verified wording. The `\`-continued string is one logical line (no embedded newlines
 /// beyond the single spaces the continuations preserve).
@@ -27,118 +72,51 @@ const HTML_SYSTEM_PROMPT: &str = "You are producing a complete, self-contained H
      Output ONLY the HTML document - no preamble, no commentary, no markdown fences. \
      Your reply begins with <!doctype html> and ends with </html>.";
 
-/// Markdown-source render: non-streaming, byte-identical to the pre-HTML behavior for a successful
-/// `end_turn` response (the truncation unhappy path now bails loudly instead of silently clipping).
-pub fn markdown(prompt: &str, json_body: &str, api_key: &str) -> Result<String> {
-    debug!("summarize::markdown: json bytes={}", json_body.len());
-    request(
-        MARKDOWN_MODEL,
-        MARKDOWN_SYSTEM_PROMPT,
-        MARKDOWN_MAX_OUTPUT_TOKENS,
-        false,
-        prompt,
-        json_body,
-        api_key,
-    )
-}
-
-/// Html-source render: streaming (SSE) so the connection keeps flowing bytes and the 300s idle
-/// wall never fires on a long generation. The accumulated document is fence-stripped and validated
-/// (doctype, closing tag, self-containment) before it is returned.
-pub fn html(prompt: &str, json_body: &str, api_key: &str) -> Result<String> {
-    debug!("summarize::html: json bytes={}", json_body.len());
-    let raw = request(
-        HTML_MODEL,
-        HTML_SYSTEM_PROMPT,
-        HTML_MAX_OUTPUT_TOKENS,
-        true,
-        prompt,
-        json_body,
-        api_key,
-    )?;
-    postprocess_html(&raw)
-}
-
-/// Shared Anthropic Messages call. `stream=false` reads a single JSON response body; `stream=true`
-/// reads the SSE body synchronously through the same `ureq` agent (no async runtime), accumulating
-/// `text_delta` text and the terminal `message_delta`'s `stop_reason`. Both paths bail when
-/// `stop_reason` is not `end_turn` (a max-tokens truncation is a loud, actionable error, never a
-/// silently clipped artifact).
-fn request(
+/// Markdown-source render over any transport. The `Job` is assembled HERE, from the config-resolved
+/// pins the caller passes, so `render.rs` never constructs one.
+pub fn markdown<T: Transport>(
+    transport: &T,
     model: &str,
-    system: &str,
-    max_tokens: u32,
-    stream: bool,
+    max_output_tokens: u32,
     prompt: &str,
     json_body: &str,
-    api_key: &str,
 ) -> Result<String> {
-    let user_msg = format!("{}\n\n```json\n{}\n```\n", prompt.trim_end(), json_body);
     debug!(
-        "summarize::request: system bytes={} max_tokens={} stream={} prompt+json bytes={}",
-        system.len(),
-        max_tokens,
-        stream,
-        user_msg.len()
+        "summarize::markdown: model={model} max_output_tokens={max_output_tokens} json bytes={}",
+        json_body.len()
     );
-
-    let body = MessagesRequest {
-        model: model.into(),
-        max_tokens,
-        stream,
-        system: system.into(),
-        messages: vec![Message {
-            role: "user".into(),
-            content: user_msg,
-        }],
+    let job = Job {
+        kind: Kind::Markdown,
+        model,
+        max_output_tokens,
     };
+    transport.complete(job, MARKDOWN_SYSTEM_PROMPT, prompt, json_body)
+}
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(HTTP_TIMEOUT))
-        .build()
-        .new_agent();
-
-    info!("summarize::request: calling {} ({}) stream={}", ENDPOINT, model, stream);
-    let mut response = agent
-        .post(ENDPOINT)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .header("content-type", "application/json")
-        .send_json(&body)
-        .with_context(|| "Anthropic API call failed")?;
-
-    let (text, stop_reason) = if stream {
-        let sse = response
-            .body_mut()
-            .read_to_string()
-            .with_context(|| "failed to read streaming Anthropic response")?;
-        let outcome = parse_sse_stream(&sse)?;
-        debug!(
-            "summarize::request: stream complete output_tokens={:?} stop_reason={:?} text bytes={}",
-            outcome.output_tokens,
-            outcome.stop_reason,
-            outcome.text.len()
-        );
-        (outcome.text, outcome.stop_reason)
-    } else {
-        let parsed: MessagesResponse = response
-            .body_mut()
-            .read_json()
-            .with_context(|| "failed to parse Anthropic response")?;
-        let text = parsed
-            .content
-            .into_iter()
-            .filter_map(|c| if c.r#type == "text" { Some(c.text) } else { None })
-            .collect::<Vec<_>>()
-            .join("\n");
-        (text, parsed.stop_reason)
+/// Html-source render over any transport. The returned document is fence-stripped and validated
+/// (doctype, closing tag, self-containment) before it is handed back.
+///
+/// [`postprocess_html`] runs HERE, after the transport returns, so it is transport-agnostic: it
+/// cannot be weakened by swapping the delivery mechanism. Same property as `reject_foreign_numbers`
+/// in `render.rs`. That is the whole safety argument for adding a second transport.
+pub fn html<T: Transport>(
+    transport: &T,
+    model: &str,
+    max_output_tokens: u32,
+    prompt: &str,
+    json_body: &str,
+) -> Result<String> {
+    debug!(
+        "summarize::html: model={model} max_output_tokens={max_output_tokens} json bytes={}",
+        json_body.len()
+    );
+    let job = Job {
+        kind: Kind::Html,
+        model,
+        max_output_tokens,
     };
-
-    if text.trim().is_empty() {
-        bail!("Anthropic API returned empty content");
-    }
-    check_stop_reason(stop_reason.as_deref())?;
-    Ok(text)
+    let raw = transport.complete(job, HTML_SYSTEM_PROMPT, prompt, json_body)?;
+    postprocess_html(&raw)
 }
 
 /// Bail unless the model finished on its own (`end_turn`). A `max_tokens` (or any non-`end_turn`)
@@ -424,43 +402,6 @@ fn parse_sse_stream(body: &str) -> Result<StreamOutcome> {
         stop_reason,
         output_tokens,
     })
-}
-
-fn is_false(b: &bool) -> bool {
-    !b
-}
-
-#[derive(Serialize)]
-struct MessagesRequest {
-    model: String,
-    max_tokens: u32,
-    /// Omitted entirely when false so the markdown-source request body stays byte-identical to the
-    /// pre-HTML behavior.
-    #[serde(skip_serializing_if = "is_false")]
-    stream: bool,
-    system: String,
-    messages: Vec<Message>,
-}
-
-#[derive(Serialize)]
-struct Message {
-    role: String,
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct MessagesResponse {
-    #[serde(default)]
-    content: Vec<ContentBlock>,
-    #[serde(default)]
-    stop_reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ContentBlock {
-    r#type: String,
-    #[serde(default)]
-    text: String,
 }
 
 /// One SSE event's JSON payload. Unknown fields (`index`, `stop_sequence`, ...) are tolerated by

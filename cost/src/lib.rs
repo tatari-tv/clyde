@@ -296,6 +296,13 @@ fn compute_summaries(
         // sound only because the cache key includes the feed's `data_version` - a cached cost is
         // therefore always one this same feed produced, and any feed that would newly price a
         // previously-unknown model misses the key outright and recomputes below.
+        //
+        // That soundness condition was FALSE on the embedded path until `Pricing::embedded()` began
+        // reporting its own `data_version`: it returned `None`, `compute_cache_key` folds `None` to the
+        // literal "none", and so every embedded-resolved run from every crate version ever built shared
+        // one bucket. The release that added a model kept serving the previous release's under-count
+        // here, silently, because nothing re-priced and nothing reported an unknown model. The
+        // condition is now actually met rather than merely asserted.
         return Ok(Summaries {
             days: vec![summary],
             sessions: Vec::new(),

@@ -416,7 +416,7 @@ fn collect_errors_loudly_on_unparseable_efficiency_json() {
 #[test]
 fn log_file_path_resolves_under_unified_clyde_logs_dir() {
     // report's log lives at `<xdg-data>/clyde/logs/report.log`.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::ENV_LOCK;
     let guard = ENV_LOCK.lock().unwrap();
     let prior_xdg = std::env::var("XDG_DATA_HOME").ok();
 

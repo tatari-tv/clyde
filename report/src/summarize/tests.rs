@@ -190,3 +190,173 @@ fn postprocess_rejects_websocket() {
     let err = postprocess_html(&raw).unwrap_err();
     assert!(format!("{err}").contains("network API"), "{err}");
 }
+
+// ---- Transport port: fake-driven end-to-end over markdown/html ---------------------------------
+
+/// One recorded trip through the port. A named struct rather than a tuple so each assertion reads
+/// as the field it is checking.
+///
+/// The `Job` is DESTRUCTURED into owned fields rather than stored whole. A borrowing `Job<'_>` inside
+/// the `RefCell<Vec<Recorded>>` below does not compile: `RefCell` is invariant in its parameter, so
+/// pushing a `Job` carried in on the trait method's (shorter, fresh) lifetime is rejected. Recording
+/// owned data is the right shape for a recording fake anyway; the borrow was only ever incidental.
+#[derive(Clone, Debug)]
+struct Recorded {
+    kind: Kind,
+    model: String,
+    max_output_tokens: u32,
+    system: String,
+    prompt: String,
+    json_body: String,
+}
+
+/// Records what the port was handed and returns a canned reply. Mirrors how `sessions` and
+/// `efficiency` fake their `Completer`/`Narrator` ports: a fake that records, never a mock.
+struct FakeTransport {
+    reply: String,
+    seen: std::cell::RefCell<Vec<Recorded>>,
+}
+
+impl FakeTransport {
+    fn new(reply: impl Into<String>) -> Self {
+        Self {
+            reply: reply.into(),
+            seen: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The single recorded call, or a panic if the count is not exactly one.
+    fn only_call(&self) -> Recorded {
+        let seen = self.seen.borrow();
+        assert_eq!(seen.len(), 1, "expected exactly one transport call, got {}", seen.len());
+        seen[0].clone()
+    }
+}
+
+impl Transport for FakeTransport {
+    fn complete(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<String> {
+        self.seen.borrow_mut().push(Recorded {
+            kind: job.kind,
+            model: job.model.to_string(),
+            max_output_tokens: job.max_output_tokens,
+            system: system.to_string(),
+            prompt: prompt.to_string(),
+            json_body: json_body.to_string(),
+        });
+        Ok(self.reply.clone())
+    }
+}
+
+/// A transport that always fails, to prove the error propagates rather than yielding an artifact.
+struct FailingTransport;
+
+impl Transport for FailingTransport {
+    fn complete(&self, _: Job<'_>, _: &str, _: &str, _: &str) -> Result<String> {
+        bail!("transport exploded")
+    }
+}
+
+/// An inert ceiling for the tests that are not about the ceiling. Deliberately not either default, so
+/// nothing here re-couples to a value that moves.
+const CEILING: u32 = 1_024;
+
+/// Each kind names its OWN ceiling key. A ceiling failure quotes this key as the remedy, so a shared or
+/// crossed value would send the reader to a line that does not govern the job that failed — the
+/// "remedy that cannot remedy" `cli.rs`'s module docs reject.
+///
+/// BITES: return the markdown key from both arms and the html assertion fails.
+#[test]
+fn each_kind_names_its_own_ceiling_key() {
+    assert_eq!(
+        Kind::Markdown.max_output_tokens_key(),
+        "render.markdown-max-output-tokens"
+    );
+    assert_eq!(Kind::Html.max_output_tokens_key(), "render.html-max-output-tokens");
+}
+
+#[test]
+fn markdown_passes_job_model_and_system_prompt_through() {
+    let t = FakeTransport::new("# Report\n\nprose");
+    let out = markdown(&t, "some-model", CEILING, "instruction", "{\"k\":1}").unwrap();
+    assert_eq!(out, "# Report\n\nprose");
+    let call = t.only_call();
+    assert_eq!(call.kind, Kind::Markdown);
+    assert_eq!(call.model, "some-model");
+    assert_eq!(call.system, MARKDOWN_SYSTEM_PROMPT);
+    // prompt and json_body stay SEPARATE across the port; joining is the transport's business.
+    assert_eq!(call.prompt, "instruction");
+    assert_eq!(call.json_body, "{\"k\":1}");
+}
+
+#[test]
+fn html_passes_job_model_and_system_prompt_through() {
+    let t = FakeTransport::new(doc("<h1>hi</h1>"));
+    let out = html(&t, "other-model", CEILING, "instruction", "{\"k\":1}").unwrap();
+    assert!(out.starts_with("<!doctype html>"));
+    let call = t.only_call();
+    assert_eq!(call.kind, Kind::Html);
+    assert_eq!(call.model, "other-model");
+    assert_eq!(call.system, HTML_SYSTEM_PROMPT);
+    assert_eq!(call.prompt, "instruction");
+    assert_eq!(call.json_body, "{\"k\":1}");
+}
+
+/// The `summarize` half of the two-sided plumbing probe: the CALLER's ceiling reaches the port, per
+/// job, unswapped. Sentinels that could never be a default, and different from each other, so a
+/// hardcoded value or a crossed pair fails here.
+///
+/// BITES: build the `Job` in `markdown`/`html` with a literal, or swap the two, and this fails.
+#[test]
+fn the_resolved_ceiling_reaches_the_port_per_job() {
+    let md = FakeTransport::new("# Report");
+    markdown(&md, "m", 12_345, "p", "{}").unwrap();
+    assert_eq!(md.only_call().max_output_tokens, 12_345);
+
+    let ht = FakeTransport::new(doc("<h1>hi</h1>"));
+    html(&ht, "m", 54_321, "p", "{}").unwrap();
+    assert_eq!(ht.only_call().max_output_tokens, 54_321);
+}
+
+#[test]
+fn html_postprocesses_whatever_the_transport_returns() {
+    // The guard runs AFTER the transport, so it is transport-agnostic: a fenced reply is stripped
+    // no matter which transport produced it. This is the safety argument for a second transport.
+    let t = FakeTransport::new(format!("```html\n{}\n```", doc("<p>x</p>")));
+    let out = html(&t, "m", CEILING, "p", "{}").unwrap();
+    assert!(out.starts_with("<!doctype html>"), "fence should be stripped: {out}");
+    assert!(out.trim_end().ends_with("</html>"));
+}
+
+#[test]
+fn html_bails_when_the_transport_returns_a_non_document() {
+    // Proven to bite: swap this reply for a valid document and the test fails.
+    let t = FakeTransport::new("Here is your dashboard!");
+    let err = html(&t, "m", CEILING, "p", "{}").unwrap_err().to_string();
+    assert!(
+        err.contains("<!doctype html>"),
+        "should name the doctype requirement: {err}"
+    );
+}
+
+#[test]
+fn html_bails_when_the_transport_returns_an_externally_dependent_document() {
+    let t = FakeTransport::new(doc("<script src=\"https://cdn.example.com/x.js\"></script>"));
+    let err = html(&t, "m", CEILING, "p", "{}").unwrap_err().to_string();
+    assert!(err.contains("self-contained"), "should name self-containment: {err}");
+}
+
+#[test]
+fn markdown_propagates_a_transport_failure() {
+    let err = markdown(&FailingTransport, "m", CEILING, "p", "{}")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("transport exploded"), "got: {err}");
+}
+
+#[test]
+fn html_propagates_a_transport_failure() {
+    let err = html(&FailingTransport, "m", CEILING, "p", "{}")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("transport exploded"), "got: {err}");
+}

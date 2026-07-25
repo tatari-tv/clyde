@@ -92,18 +92,3 @@ fn clean_title_keeps_hyphens_in_words() {
         "split out config-loader module"
     );
 }
-
-#[test]
-fn api_key_from_env_returns_none_when_unset() {
-    let prev = std::env::var("ANTHROPIC_API_KEY").ok();
-    // SAFETY: tests must not mutate process env in parallel; we restore below.
-    unsafe {
-        std::env::remove_var("ANTHROPIC_API_KEY");
-    }
-    assert_eq!(api_key_from_env(), None);
-    if let Some(v) = prev {
-        unsafe {
-            std::env::set_var("ANTHROPIC_API_KEY", v);
-        }
-    }
-}

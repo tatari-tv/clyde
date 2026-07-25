@@ -30,6 +30,32 @@ impl Format {
     }
 }
 
+/// Which transport performs `report render`'s two model calls, selected via `--llm`.
+///
+/// `auto` (the default) prefers the `claude` CLI, so the keyless path is what everyone gets and an
+/// api key is opt-in rather than the entry fee. This is the SELECTION, not the answer: `auto` still
+/// has to be resolved against the environment (see `config::resolve_transport`).
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[clap(rename_all = "kebab-case")]
+pub enum Llm {
+    #[default]
+    Auto,
+    Api,
+    Cli,
+}
+
+/// Map the `clyde.yml` `render.llm` config value onto the CLI [`Llm`]. Lives here (not in `common`)
+/// because the mapping's target type is owned by this crate.
+impl From<common::config::LlmConfig> for Llm {
+    fn from(value: common::config::LlmConfig) -> Self {
+        match value {
+            common::config::LlmConfig::Auto => Llm::Auto,
+            common::config::LlmConfig::Api => Llm::Api,
+            common::config::LlmConfig::Cli => Llm::Cli,
+        }
+    }
+}
+
 /// Map the `clyde.yml` `render.format` config value onto the CLI [`Format`]. Lives here (not in
 /// `common`) because the mapping's target type is owned by this crate.
 impl From<common::config::FormatConfig> for Format {
@@ -132,11 +158,24 @@ pub struct RenderArgs {
     /// too is unset. `markdown`/`pdf`/`html` write locally (see `-o`); the `marquee-*` variants
     /// publish to marquee and print the URL. `pdf` requires `pandoc`; the `marquee-*` variants
     /// require the `marquee` CLI with an authenticated session. `html`/`marquee-html` are
-    /// model-authored (no pandoc involved) and require `ANTHROPIC_API_KEY`; there is no offline
-    /// path for them. Not valid with `--template` for `html`/`marquee-html` (the offline template
-    /// produces markdown).
+    /// model-authored (no pandoc involved), so they need an LLM transport but NOT an API key: by
+    /// default they use the locally installed `claude` CLI and the Claude Code login you already
+    /// have (see `--llm`). There is no offline path for them, and `--template` is not valid with
+    /// `html`/`marquee-html` (the offline template produces markdown).
     #[arg(long, value_enum, ignore_case = true)]
     pub format: Option<Format>,
+
+    /// Which transport performs the model calls: `auto` (the default) picks `cli` when `claude` is on
+    /// PATH, else `api` when a key is set; `cli` shells out to the locally installed `claude` CLI and
+    /// uses the Claude Code login you already have -- no API key needed; `api` uses
+    /// `ANTHROPIC_API_KEY`.
+    ///
+    /// When omitted, falls back to `render.llm` in `clyde.yml`, and to `auto` if that too is unset.
+    /// There is NO fallback once a transport is chosen: if the `claude` CLI fails (logged out, stale
+    /// install, rate limited), the render fails loudly naming `--llm api` rather than silently
+    /// switching credentials. Automated callers (CI, cron) should pin `--llm api` explicitly.
+    #[arg(long, value_enum, ignore_case = true)]
+    pub llm: Option<Llm>,
 
     /// Target marquee space for the `marquee-*` formats (defaults to your personal ~space).
     /// Ignored by `markdown`/`pdf`.

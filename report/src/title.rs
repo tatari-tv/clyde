@@ -229,9 +229,5 @@ struct ContentBlock {
     text: String,
 }
 
-pub fn api_key_from_env() -> Option<String> {
-    std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.trim().is_empty())
-}
-
 #[cfg(test)]
 mod tests;

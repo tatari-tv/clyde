@@ -10,6 +10,7 @@ pub mod fmt;
 pub mod merge;
 pub mod outcome;
 pub mod persona;
+pub mod proc;
 pub mod render;
 pub mod repo;
 pub mod report;
@@ -29,6 +30,16 @@ use std::str::FromStr;
 pub use cli::ReportArgs;
 pub use config::{Config, ResolvedCommand};
 pub use tools::tool_validation_help;
+
+/// ONE process-wide lock for every test that reads or mutates the process environment.
+///
+/// Deliberately crate-level rather than per-test-module. `set_var`/`remove_var` are process-global,
+/// so two modules each holding their OWN mutex do not serialize against each other at all — which is
+/// exactly the intermittent failure that showed up once `summarize::cli`'s tests began reading the
+/// full environment while `summarize::api`'s tests were mutating `ANTHROPIC_API_KEY` under a
+/// different lock. Every env-touching test in this crate must take THIS lock.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug)]
 pub struct RunResult {
@@ -66,9 +77,10 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     setup_logging(&log_level).context("Failed to setup logging")?;
 
     let config = Config {
-        // clyde.yml (the bare-date `--since` tz convention) is loaded LAZILY inside
-        // `resolve_command` — only for `collect`, the sole DateTz consumer — so a malformed
-        // config cannot break `report render`/`merge`, which never use a date.
+        // clyde.yml is loaded inside `resolve_command`, per subcommand: `collect` needs the
+        // bare-date `--since` tz convention, and `render` needs the `llm` selection plus the two
+        // model pins. Render's load is UNCONDITIONAL — no flag opts out of needing a model pin — so a
+        // malformed clyde.yml breaks both, loudly and naming the file. Only `merge` reads no config.
         command: config::resolve_command(args.command)?,
         log_level,
     };

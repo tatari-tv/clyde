@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - pricing/data/pricing.json
+      # Without this, edits to the page never deploy and NOTHING reports
+      # an error: the workflow simply does not run. That silent failure is
+      # why it gets its own acceptance criterion in the design doc.
+      - pricing/site/index.html
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -30,6 +34,9 @@ jobs:
         run: |
           mkdir -p _site
           cp pricing/data/pricing.json _site/pricing.json
+          # The site root. The page reads ./pricing.json client-side, so
+          # the two must be staged together as same-origin siblings.
+          cp pricing/site/index.html _site/index.html
           touch _site/.nojekyll
 
       - name: Configure Pages

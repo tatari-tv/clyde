@@ -96,6 +96,85 @@ fn load_from_rejects_bad_render_format() {
     assert!(load_from(&path).is_err(), "unknown format variant should fail to parse");
 }
 
+// ---- the render output ceilings -----------------------------------------------------------------
+
+#[test]
+fn render_ceilings_default_when_the_file_is_absent() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    let cfg = load_from(&path).unwrap();
+    assert_eq!(
+        cfg.render_markdown_max_output_tokens(),
+        DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS
+    );
+    assert_eq!(cfg.render_html_max_output_tokens(), DEFAULT_HTML_MAX_OUTPUT_TOKENS);
+}
+
+#[test]
+fn render_ceilings_come_from_clyde_yml_when_set() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    // Sentinels neither ceiling could ever default to, and different from each other, so a crossed
+    // pair or a hardcoded value fails here.
+    std::fs::write(
+        &path,
+        "render:\n  markdown-max-output-tokens: 12345\n  html-max-output-tokens: 54321\n",
+    )
+    .unwrap();
+    let cfg = load_from(&path).unwrap();
+    assert_eq!(cfg.render_markdown_max_output_tokens(), 12_345);
+    assert_eq!(cfg.render_html_max_output_tokens(), 54_321);
+}
+
+#[test]
+fn render_ceilings_are_independent_of_each_other() {
+    // Setting only one must leave the other at its default, not zero it.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  html-max-output-tokens: 54321\n").unwrap();
+    let cfg = load_from(&path).unwrap();
+    assert_eq!(
+        cfg.render_markdown_max_output_tokens(),
+        DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        "an unset ceiling keeps its default"
+    );
+    assert_eq!(cfg.render_html_max_output_tokens(), 54_321);
+}
+
+/// AC-C2: a ceiling of `0` is never a legitimate budget, and the error must name the KEY.
+///
+/// The hand-written `RenderConfig::default` only protects the ABSENT case, so this is the explicit-zero
+/// half. Naming the key matters because serde_yaml renders a `de::Error::custom` with the enclosing
+/// SECTION and the source location but never the field — `render: <msg> at line 2 column 3` — which is
+/// why there are two validators rather than one shared one.
+///
+/// BITES: drop `deserialize_with` from the field and this fails (a 0 would load clean).
+#[test]
+fn render_rejects_a_zero_markdown_ceiling_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  markdown-max-output-tokens: 0\n").unwrap();
+    let err = format!("{:#}", load_from(&path).unwrap_err());
+    assert!(
+        err.contains("render.markdown-max-output-tokens"),
+        "must name the key the user set: {err}"
+    );
+}
+
+/// The html half of AC-C2. Separate because each key is named by its own validator, and a single
+/// shared one naming neither would pass a test that only checked one side.
+#[test]
+fn render_rejects_a_zero_html_ceiling_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  html-max-output-tokens: 0\n").unwrap();
+    let err = format!("{:#}", load_from(&path).unwrap_err());
+    assert!(
+        err.contains("render.html-max-output-tokens"),
+        "must name the key the user set: {err}"
+    );
+}
+
 #[test]
 fn load_from_rejects_unknown_field() {
     let dir = tempfile::TempDir::new().unwrap();

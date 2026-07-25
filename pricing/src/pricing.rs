@@ -41,12 +41,13 @@ pub struct FamilyRule {
 
 #[derive(Deserialize)]
 struct PricingFile {
-    // Only the staleness guard (behind the `fetch` feature) reads the embedded
-    // baseline's own `data_version`; gate the field to that feature so the
-    // struct carries no never-read field when the crate is built without fetch
-    // (external consumers like `ccu`/`cr`). `PricingFile` has no
-    // `deny_unknown_fields`, so the JSON key is simply ignored when absent here.
-    #[cfg(feature = "fetch")]
+    // The embedded baseline's own `data_version` is read on EVERY build, not just
+    // `fetch` ones: `Pricing::embedded()` carries it so the day-cost cache key can
+    // tell one embedded baseline from another (`cost::cache::compute_cache_key`).
+    // It was once gated to `fetch` because only the staleness guard read it; that
+    // is no longer true, and a gate here would make cache-key behavior differ by
+    // feature flag. `PricingFile` has no `deny_unknown_fields`, so the JSON key is
+    // simply ignored by any consumer that does not want it.
     #[serde(default)]
     data_version: Option<String>,
     #[serde(default)]
@@ -60,7 +61,6 @@ struct EmbeddedData {
     pricing: HashMap<String, ModelPricing>,
     aliases: HashMap<String, String>,
     family_rules: Vec<FamilyRule>,
-    #[cfg(feature = "fetch")]
     data_version: Option<String>,
 }
 
@@ -72,7 +72,6 @@ fn embedded_data() -> &'static EmbeddedData {
             pricing: parsed.pricing,
             aliases: parsed.aliases,
             family_rules: parsed.family_rules,
-            #[cfg(feature = "fetch")]
             data_version: parsed.data_version,
         }
     })
@@ -81,12 +80,16 @@ fn embedded_data() -> &'static EmbeddedData {
 /// The embedded baseline's `data_version` (the ISO-8601 UTC timestamp shipped in
 /// `data/pricing.json`), parsed once alongside the rest of the embedded data.
 ///
-/// This is the authority the staleness guard compares a fetched feed against: a
-/// fetched feed older than this loses (see `fetch::fetch_and_cache`). Returns
-/// `None` only if the embedded baseline somehow carries no `data_version`, in
-/// which case the guard disables itself (fail-open) rather than treating every
-/// fetched feed as stale.
-#[cfg(feature = "fetch")]
+/// Two consumers, which is why this is NOT gated to the `fetch` feature:
+///
+/// - the staleness guard in `fetch` compares a candidate feed against it, and a
+///   candidate older than this loses. Returns `None` only if the embedded baseline
+///   somehow carries no `data_version`, in which case the guard disables itself
+///   (fail-open) rather than rejecting every candidate.
+/// - `Pricing::embedded()` carries it, so the day-cost cache key discriminates one
+///   embedded baseline from another. Without it every embedded-resolved run from
+///   every crate version ever built shares one cache bucket, and the release that
+///   adds a model serves the previous release's under-count.
 pub(crate) fn embedded_data_version() -> Option<&'static str> {
     embedded_data().data_version.as_deref()
 }
