@@ -70,7 +70,9 @@
   th, td { text-align: right; padding: .5rem .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; }
   thead th { background: var(--code-bg); font-weight: 600; position: sticky; top: 0; }
-  tbody tr:last-child td { border-bottom: none; }
+  /* The model name is a `th`, not a `td`, so a `td`-only rule leaves a 1px stub
+     under the last row's leftmost cell and nothing under the other five. */
+  tbody tr:last-child th, tbody tr:last-child td { border-bottom: none; }
   .tier { color: var(--muted); font-size: .8em; display: block; }
   .banner { border-radius: 6px; padding: .9rem 1.1rem; margin: 1.25rem 0; }
   .banner.error { background: var(--err-bg); color: var(--err-fg); border: 1px solid var(--err-line); }
