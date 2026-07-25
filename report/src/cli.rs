@@ -165,9 +165,10 @@ pub struct RenderArgs {
     #[arg(long, value_enum, ignore_case = true)]
     pub format: Option<Format>,
 
-    /// Which transport performs the model calls: `cli` (default) shells out to the locally installed
-    /// `claude` CLI and uses the Claude Code login you already have -- no API key needed; `api` uses
-    /// `ANTHROPIC_API_KEY`; `auto` picks `cli` when `claude` is on PATH, else `api` when a key is set.
+    /// Which transport performs the model calls: `auto` (the default) picks `cli` when `claude` is on
+    /// PATH, else `api` when a key is set; `cli` shells out to the locally installed `claude` CLI and
+    /// uses the Claude Code login you already have -- no API key needed; `api` uses
+    /// `ANTHROPIC_API_KEY`.
     ///
     /// When omitted, falls back to `render.llm` in `clyde.yml`, and to `auto` if that too is unset.
     /// There is NO fallback once a transport is chosen: if the `claude` CLI fails (logged out, stale

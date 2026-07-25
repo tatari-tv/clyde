@@ -266,7 +266,7 @@ Three phases. The behavior-neutral refactor first, the value change second and s
   - `otto ci` exit 0. Every phase is ci-green with exactly one commit; the earlier draft gated only Phase 2, which given the point above would let a broken `cli/tests.rs` satisfy Phase 1.
   - **the two-sided plumbing probe is the real proof:** a `clyde.yml` setting `markdown-max-output-tokens: 12345` produces `"max_tokens":12345` in the built api body AND a Guard 6 ceiling of 12345 on the cli path. That crosses both transports, which the byte tests never do.
   - both byte-identical tests pass with their **expected literal** untouched (`"max_tokens":16000` / `"max_tokens":64000` still, since defaults do not move until Phase 2). Anti-rot, not the neutrality proof.
-  - `rg 'fn max_output_tokens|fn api_limits' report/src/` returns nothing.
+  - `rg 'fn max_output_tokens\(|fn api_limits' report/src/` returns nothing. (Anchored on the open paren for the reason AC-C3 records: the bare form also matches `Kind::max_output_tokens_key`, which Phase 2 adds.)
   - `markdown-max-output-tokens: 0` fails config load with an error naming the key (see AC-C2 for why the obvious implementation does not achieve this).
 
 #### Phase 2: raise the markdown default and rebaseline every site that named the old ceiling

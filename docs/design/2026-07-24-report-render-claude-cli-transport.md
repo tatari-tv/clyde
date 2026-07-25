@@ -4,7 +4,7 @@
 **Date:** 2026-07-24
 **Status:** Implemented (all six phases shipped and live-verified; the one open question this design left open -- the markdown job's output ceiling -- is CLOSED by `docs/design/2026-07-25-render-output-ceilings-config.md`, see Resolved Decisions)
 **Review Passes Completed:** 5/5
-**Funnel position:** five passes, then a two-round review panel (Architect on Gemini, Staff Engineer on Codex, four invocations). Every finding dispositioned in Resolved Decisions; both reviewers declined a third round. Open Questions empty. Ready to build, starting at Phase 0.
+**Funnel position:** five passes, then a two-round review panel (Architect on Gemini, Staff Engineer on Codex, four invocations). Every finding dispositioned in Resolved Decisions; both reviewers declined a third round. Open Questions empty. Ready to build, starting at Phase 0. **(That last sentence is the state at AUTHORING time. All six phases have since shipped -- see Status above. Kept rather than rewritten because this line records where the funnel stood when the doc was written, not where the work stands now.)**
 
 ## Summary
 
@@ -101,7 +101,7 @@ What this establishes:
 - A large payload piped on stdin is read and used (probes 2, 4, 5).
 - No directory-trust prompt in a brand-new `mktemp -d` (probe 3). Headless mode does not gate on trust, so it cannot hang there.
 - The envelope carries `is_error`, `subtype`, `stop_reason`, `result`, `usage`, `total_cost_usd`, and `modelUsage.<id>.canonicalModel`.
-- The harness preamble is a fixed per-call tax: ~17K tokens on opus with lean flags, ~39K without. The lean flags cut it 55%. This is a real cost delta versus the api path, quantified in Technical Considerations.
+- ~~The harness preamble is a fixed per-call tax: ~17K tokens on opus with lean flags, ~39K without. The lean flags cut it 55%. This is a real cost delta versus the api path, quantified in Technical Considerations.~~ **SUPERSEDED by Phase 0 probes 7/8: under the final argv (`--safe-mode` + `--tools ""`) the preamble tax is ZERO, not 17K.** The measured cli/api cost delta (~1.9x) comes from the payload being billed as a 1h cache write plus an internal haiku sub-call -- see Phase 0 Results F3 and the two Resolved Decisions rows. Struck rather than deleted: the argument was load-bearing in the original design and killing the record would hide why the cost objection was raised and then withdrawn.
 
 ## Phase 0 Results: measured against a real report (2026-07-24, desk.lan)
 
@@ -118,7 +118,7 @@ Three findings that change the design. Each is folded into the sections below.
 
 **F1: wall clock exceeds `SUBPROCESS_TIMEOUT`.** 145s and 204s both blow past the 120s `SUBPROCESS_TIMEOUT` that bounds pandoc and marquee. The doc already called for a separate `CLAUDE_TIMEOUT`; this measurement makes it load-bearing rather than tidy. Set to **900s**: 204s observed on a 23-day month, and a full month with more sessions is slower, so the margin is deliberately wide. A timeout here wastes a call we already paid for, which is the expensive direction to be wrong in.
 
-**F2: `modelUsage` is a multi-entry map, because the CLI makes an internal haiku sub-call.** Both envelopes carry TWO entries: the pinned `claude-opus-4-8` AND `claude-haiku-4-5-20251001` (187,459 input tokens, 13-15 output, ~$0.19), which happens despite `--tools ""` and `--safe-mode`. No flag suppresses it. The consequence is mechanical: the guard must **look up `modelUsage[job.model()]` by key and compare that entry's `canonicalModel`** — it must NOT iterate the map comparing every entry, which would see haiku and false-positive a model-mismatch bail on a perfectly good render. The doc's earlier phrasing ("`modelUsage`'s `canonicalModel` equals `job.model()`") was ambiguous and the naive reading is a bug.
+**F2: `modelUsage` is a multi-entry map, because the CLI makes an internal haiku sub-call.** Both envelopes carry TWO entries: the pinned `claude-opus-4-8` AND `claude-haiku-4-5-20251001` (187,459 input tokens, 13-15 output, ~$0.19), which happens despite `--tools ""` and `--safe-mode`. No flag suppresses it. The consequence is mechanical: the guard must **look up `modelUsage[job.model()]` by key and compare that entry's `canonicalModel`** -- it must NOT iterate the map comparing every entry, which would see haiku and false-positive a model-mismatch bail on a perfectly good render. The doc's earlier phrasing ("`modelUsage`'s `canonicalModel` equals `job.model()`") was ambiguous and the naive reading is a bug.
 
 **F3: the withdrawn cost argument is REINSTATED, corrected. The cli path costs roughly 1.9x the api path per render, not "essentially nothing".** Probes 7 and 8 measured a trivial payload, so they measured only the absence of a harness preamble. That part holds: there is no preamble tax. But the *payload* is billed, and the CLI bills it as a **1-hour cache write at $10/Mtok** rather than as plain input at $5/Mtok. Derived from the envelope and confirmed to the cent:
 
@@ -190,7 +190,7 @@ Why cli-default is the better default, not merely the requested one:
 - The credential everyone already has drives the feature. The api key becomes the exception it should be, not the entry fee.
 - It inverts the failure mode that started this: the default now works for the person with nothing configured, and the person with special configuration opts into it.
 
-The cost consequence is real and stated plainly in Technical Considerations: a key-holding host now pays the ~17K preamble tax per render by default where it previously paid none. That is cents per render, against an artifact that was previously unreachable for most of the team.
+The cost consequence is real and stated plainly in Technical Considerations: a key-holding host now pays **[SUPERSEDED: the ~17K preamble tax is zero under the final argv; the real delta is ~1.9x from payload cache writes plus the haiku sub-call -- Phase 0 F3]** per render by default where it previously paid none. That is cents per render, against an artifact that was previously unreachable for most of the team.
 
 The neither-credential error replaces today's `ANTHROPIC_API_KEY is required...` text and must name both doors, because there are now two:
 
@@ -288,7 +288,7 @@ This replaces the earlier `Spec { model, max_output_tokens }` plus a `max_output
 Dispatch at the two call sites is a `match` on the resolved selection, monomorphized per transport. No `Box<dyn Transport>`: the house rule is generics for DI, never trait objects.
 
 ```rust
-// render.rs, render_via_opus_markdown — `cfg.markdown_model` is the resolved config pin
+// render.rs, render_via_opus_markdown -- `cfg.markdown_model` is the resolved config pin
 let prose = match cfg.llm {
     Llm::Api => summarize::markdown(&ApiTransport::from_env()?, &cfg.markdown_model, prompt, json_body)?,
     Llm::Cli => summarize::markdown(&CliTransport::resolve()?, &cfg.markdown_model, prompt, json_body)?,
@@ -397,7 +397,7 @@ Note what that contingency protects: the markdown path is the one Stephen actual
 
 #### Phase 3: `CliTransport`
 **Model:** opus
-- `summarize/cli.rs`, `proc::run_with_payload`, argv construction, envelope parse, all five guards.
+- `summarize/cli.rs`, `proc::run_with_payload`, argv construction, envelope parse, all the guards. **(Written as "all five guards"; the shipped chain is SEVEN -- exit status, `is_error`, subtype, `stop_reason`, empty result, output ceiling, keyed model. The count grew during implementation and every one carries a bite-proven fixture test, so the criteria were exceeded rather than missed.)**
 - **Success criteria:** fixture tests over recorded envelopes cover six cases: success, `is_error: true`, `stop_reason: "max_tokens"`, `canonicalModel` mismatch, empty `result`, and non-zero exit with no envelope at all (logged out). Each failure case is proven to bite by breaking the guard and watching the test fail before it is committed.
 
 #### Phase 4: Wire transport selection

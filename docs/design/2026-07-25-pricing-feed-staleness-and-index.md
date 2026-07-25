@@ -4,7 +4,7 @@
 **Date:** 2026-07-25
 **Status:** Implemented (all three phases shipped; AC-P4 and AC-P5 are post-merge live checks and are the only items still pending, see Acceptance Criteria)
 **Review Passes Completed:** 5/5
-**Funnel position:** five passes, then a two-seat review panel over two rounds (Architect on Gemini, Staff Engineer on Codex, both completed both rounds). Sixteen findings, every one dispositioned in "Review Panel Dispositions". F1 restructured the doc from two phases to three; F15 added the structural CI guard without which Phase 1 would delete its own safety net. Open Questions empty. Ready to build, starting at Phase 1.
+**Funnel position:** five passes, then a two-seat review panel over two rounds (Architect on Gemini, Staff Engineer on Codex, both completed both rounds). Sixteen findings, every one dispositioned in "Review Panel Dispositions". F1 restructured the doc from two phases to three; F15 added the structural CI guard without which Phase 1 would delete its own safety net. Open Questions empty. Ready to build, starting at Phase 1. **(State at AUTHORING time. All three phases have since shipped -- see Status above.)**
 **Sibling:** `docs/design/2026-07-25-render-output-ceilings-config.md`, separate work, different crate and branch, no shared code
 
 ## Summary
@@ -179,7 +179,9 @@ None. No new file, no new sidecar field, no new config key, no schema change.
 - **A failed fetch renders a loud, visible error, never an empty table.** An empty rates table looks like real data reporting zero models. Fail visibly.
 - **Static prose covers what the feed cannot say about itself:** that clyde fetches this URL at runtime so a data refresh reaches consumers within about 24h with no crate bump or re-pin; how the feed is produced (`pricing/bin/update` with its dual parser, refuse-on-disagreement, 5x and absolute-bound regression guards, carry-forward of delisted models; the `refresh-pricing.yml` daily cron; `pages.yml` publish on merge); and the caveat from `pricing/CLAUDE.md` that new model launches are **not** hands-off, because date-tiered introductory pricing emits one row per tier instead of a clean model id and the bare `opus`/`sonnet`/`haiku` aliases in `normalization.json` are human-authored and never repointed automatically.
 
-**The untracked `pricing/site/index.html` currently in the working tree is scratch.** It was written from a misread instruction during the `v0.13.3` session, never committed, never reviewed, and `pages.yml` was reverted. It is not a sanctioned starting point. Archive it with `rkvr rmrf` before Phase 2 starts so it cannot be mistaken for prior art.
+**HISTORICAL, AND DO NOT ACT ON IT NOW: `pricing/site/index.html` is SHIPPED, reviewed source as of Phase 3. Do not archive or delete it.** The paragraph below describes a DIFFERENT, uncommitted file that occupied that path before Phase 3 ran, and it was archived at the time exactly as instructed.
+
+**The untracked `pricing/site/index.html` that was in the working tree before Phase 3 was scratch.** It was written from a misread instruction during the `v0.13.3` session, never committed, never reviewed, and `pages.yml` was reverted. It is not a sanctioned starting point. Archive it with `rkvr rmrf` before Phase 2 starts so it cannot be mistaken for prior art.
 
 ### Implementation Plan
 
@@ -234,7 +236,7 @@ Three phases. The prerequisite that makes the gate's benefit reach the user goes
 #### Phase 3: the Pages site index
 **Model:** sonnet
 
-- `rkvr rmrf` the untracked scratch `pricing/site/index.html` first, then author the real one.
+- `rkvr rmrf` the untracked scratch `pricing/site/index.html` first, then author the real one. **DONE 2026-07-25; the scratch file was archived to `/var/tmp/rmrf/2026-07-24-223307-000/` and the real page authored in its place. The file at that path today is the SHIPPED page -- this bullet is a completed step, not a standing instruction.**
 - Both `pages.yml` edits: the second `cp`, and `pricing/site/index.html` in `on.push.paths`.
 - Update `pricing/CLAUDE.md`: it documents the feed pipeline and the `pages.yml` publish step, and this phase adds a published artifact and a new `pricing/site/` source directory. CLAUDE.md is living and tracks shipped reality.
 - **Success criteria:**
