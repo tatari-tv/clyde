@@ -60,6 +60,27 @@ pub fn compute_mtime_hash(files: &[&SessionFile]) -> u64 {
     hash
 }
 
+/// Cache key for a day's cost: the session-file hash folded together with the identity of the
+/// pricing feed that produced that cost.
+///
+/// The feed MUST be part of the key. A cost computed under a feed that did not yet know a model
+/// silently EXCLUDED those entries (see the `UnknownModel` arm in `compute_summaries`), so the
+/// cached number is an under-count. Keying on files alone can never notice: the session files
+/// that produced it do not change when the feed learns the model, so the wrong total is served
+/// until something unrelated touches the day's files. Folding `data_version` in means a feed
+/// refresh invalidates every cached day, which is exactly what a repricing should do.
+///
+/// `None` (a feed carrying no `data_version`) hashes as the literal `none`, so an unversioned
+/// feed is still distinct from any versioned one.
+pub fn compute_cache_key(files: &[&SessionFile], pricing_version: Option<&str>) -> u64 {
+    trace!(
+        "compute_cache_key: file_count={} pricing_version={:?}",
+        files.len(),
+        pricing_version
+    );
+    fnv1a_update(compute_mtime_hash(files), pricing_version.unwrap_or("none").as_bytes())
+}
+
 /// Get the cache directory (~/.cache/clyde/cost/). Disposable day-cost cache: not migrated by
 /// bootstrap, it rebuilds at this clyde-namespaced path on first run (was ~/.cache/ccu/).
 pub fn cache_dir() -> Option<PathBuf> {
@@ -180,6 +201,38 @@ mod tests {
         )];
         let refs: Vec<&SessionFile> = files.iter().collect();
         assert_eq!(compute_mtime_hash(&refs), 0x9207_5a54_a049_57ce);
+    }
+
+    /// The regression this whole seam exists for: identical session files priced under two
+    /// different feeds MUST NOT share a cache key. Before `data_version` was folded in, a cost
+    /// computed while the feed lacked a model (those entries silently dropped) kept being served
+    /// after the feed learned that model, because the files it derived from never changed.
+    #[test]
+    fn test_compute_cache_key_changes_with_pricing_version() {
+        let files = [sf("/tmp/test.jsonl", SystemTime::UNIX_EPOCH, 1024)];
+        let refs: Vec<&SessionFile> = files.iter().collect();
+
+        let before = compute_cache_key(&refs, Some("2026-06-30T23:29:00Z"));
+        let after = compute_cache_key(&refs, Some("2026-07-25T01:56:53Z"));
+        assert_ne!(
+            before, after,
+            "a feed refresh must invalidate cached days; same key = stale cost served forever"
+        );
+
+        // An unversioned feed is still distinct from any versioned one, and from itself is stable.
+        let none = compute_cache_key(&refs, None);
+        assert_ne!(none, before);
+        assert_eq!(none, compute_cache_key(&refs, None));
+    }
+
+    /// Negative case: the pricing version is the ONLY thing `compute_cache_key` adds. Same files
+    /// plus same feed must still hit, or every run recomputes and the cache is pointless.
+    #[test]
+    fn test_compute_cache_key_stable_for_same_files_and_version() {
+        let files = [sf("/tmp/test.jsonl", SystemTime::UNIX_EPOCH, 1024)];
+        let refs: Vec<&SessionFile> = files.iter().collect();
+        let v = Some("2026-07-25T01:56:53Z");
+        assert_eq!(compute_cache_key(&refs, v), compute_cache_key(&refs, v));
     }
 
     #[test]

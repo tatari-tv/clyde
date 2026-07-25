@@ -278,7 +278,9 @@ fn run_clyde(projects_dir: &Path, start: NaiveDate, end: NaiveDate) -> ClydeResu
     };
     let config = Config::default();
     let pricing = Pricing::embedded();
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let sessions = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
 
     let mut per_session = BTreeMap::new();
     let mut total_cost = 0.0;

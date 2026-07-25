@@ -488,7 +488,9 @@ fn dedup_keeps_max_cost_copy_of_streaming_partial() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let sessions = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
 
     assert_eq!(sessions.len(), 1, "both copies dedup into a single session");
     let s = &sessions[0];
@@ -533,7 +535,9 @@ fn dedup_equal_cost_cross_session_attributes_to_lower_session_id() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let sessions = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
 
     assert_eq!(
         sessions.len(),
@@ -573,7 +577,9 @@ fn synthetic_model_entry_is_skipped() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let sessions = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
 
     assert_eq!(sessions.len(), 1);
     let s = &sessions[0];
@@ -615,7 +621,9 @@ fn subagent_file_folds_into_parent_session_total() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let sessions = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
 
     assert_eq!(
         sessions.len(),
@@ -671,7 +679,8 @@ fn multi_day_entries_roll_into_correct_day_buckets() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (days, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let Summaries { days, sessions, .. } =
+        compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
 
     // Compute the expected LOCAL bucket for each UTC timestamp the same way `compute_summaries`
     // does, so this test is robust to the CI host's timezone while still pinning day-split
@@ -732,7 +741,19 @@ fn unknown_model_entry_is_skipped_without_crashing() {
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
     let result = compute_summaries(&args, &config, &pricing, start, end, false, None);
-    let (_, sessions) = result.expect("unknown model must not crash the scan");
+    let Summaries {
+        sessions,
+        unknown_models,
+        ..
+    } = result.expect("unknown model must not crash the scan");
+
+    // The entry is excluded from the cost (asserted below), so the exclusion MUST be reported
+    // back to the caller - otherwise the total is silently low and nothing says so.
+    assert_eq!(
+        unknown_models,
+        vec!["definitely-not-a-real-model-xyz".to_string()],
+        "an unpriceable model must be reported, not silently dropped"
+    );
 
     assert_eq!(sessions.len(), 1);
     let s = &sessions[0];
@@ -767,7 +788,9 @@ fn missing_message_id_bypasses_dedup_and_counts_as_is() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let sessions = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
 
     assert_eq!(sessions.len(), 1);
     let s = &sessions[0];
@@ -811,7 +834,9 @@ fn in_window_entry_in_a_stale_mtime_file_is_counted_not_dropped() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap();
 
-    let (_, sessions) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let sessions = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
 
     assert_eq!(
         sessions.len(),
@@ -857,8 +882,12 @@ fn compute_summaries_is_deterministic_across_repeated_runs() {
     let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
     let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-    let (_, sessions1) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
-    let (_, sessions2) = compute_summaries(&args, &config, &pricing, start, end, false, None).unwrap();
+    let sessions1 = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
+    let sessions2 = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
 
     let ids1: Vec<_> = sessions1.iter().map(|s| s.session_id.clone()).collect();
     let ids2: Vec<_> = sessions2.iter().map(|s| s.session_id.clone()).collect();
@@ -979,5 +1008,20 @@ fn trace_writes_per_entry_fate_lines_for_the_target_session() {
             .iter()
             .any(|l| l.contains("parse drop") && l.contains("message.usage")),
         "expected a parse-drop-with-reason line naming the missing field: {fate_lines:?}"
+    );
+}
+
+/// The banner is the entire user-visible payoff of tracking `unknown_models`, so pin the two
+/// things it must always do: name every unpriced model, and say plainly that the totals are low.
+/// A banner that merely says "unknown model" leaves the reader assuming the number is still right.
+#[test]
+fn unknown_models_banner_names_models_and_warns_totals_are_low() {
+    let banner = format_unknown_models_banner(&["claude-opus-5".to_string(), "some-future-model".to_string()]);
+
+    assert!(banner.contains("claude-opus-5"), "must name the model: {banner}");
+    assert!(banner.contains("some-future-model"), "must name every model: {banner}");
+    assert!(
+        banner.contains("EXCLUDED") && banner.contains("low"),
+        "must state that totals are under-reported, not just that a model is unknown: {banner}"
     );
 }
