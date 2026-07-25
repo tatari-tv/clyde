@@ -187,3 +187,51 @@ fixes. Model output length is not deterministic, and the run used `claude` 2.1.2
 16,117-token render recorded in the prior doc's Open Questions, not on this run. What this run proves is
 the part that was actually at risk: the reshape moved no behavior, a config value reaches a live
 transport, and the largest real month renders keyless at exit 0.
+
+## Implementation audit (review panel, 2026-07-25) and the fixes it forced
+
+Both seats ran (rc=0) and **both were execution-blocked**, which is itself the most useful thing to
+record. The Architect (Gemini) had no shell in its mode and returned a clean PASS with zero findings
+while describing its reads as "empirically verified" -- they were not. The Staff Engineer (Codex) could
+not run `otto ci` or `cargo test --workspace` (read-only filesystem; `tempfile` could not create temp
+dirs) and said so per command, then found the real defect from a code read. Staff's reporting was the
+reliable one, and the panel re-ran the verification itself.
+
+Four findings, all verified against the tree before acting, all closed:
+
+- **F1 (High, undisclosed deviation -- the real miss).** `report/src/summarize/api.rs` still claimed the
+  retired contract in three places: the module doc asserted the body is "byte-identical to the
+  pre-transport behavior" (`:4-5`), the `stream` field doc repeated "stays byte-identical to the
+  pre-HTML behavior" (`:177-178`), and the module doc still listed "the output ceilings" among things
+  that "never reach the `Transport` port" (`:7-8`) -- false the moment `max_output_tokens` became a
+  `Job` field ON the port. Phase 2's own bullet said the retired contract is "struck where it is
+  claimed"; I struck it in the prior design doc and in `api/tests.rs`, and edited the `streams()` doc
+  fifteen lines below to say the ceiling "IS a field on `Job`", then missed these three. Three sites
+  fixed, three missed, same file, same session. This is exactly the M3 stale-comment class this design
+  cites twice as its own precedent, committed by the change that cites it. Now rewritten to state the
+  declared-baseline contract and to keep the ceiling out of the api-private list.
+- **F2 (Medium).** AC-C3's stated command `rg 'fn max_output_tokens|fn api_limits' report/src/` no longer
+  returns nothing: Phase 2 ADDED `Kind::max_output_tokens_key` (`report/src/summarize.rs:38`), which the
+  bare pattern matches. I ran that grep in Phase 1, before the function existed, and never re-ran it
+  after Phase 2. The AC's intent held throughout (nothing returns a ceiling; the port is 4 args), but the
+  gate as written was failing. Pattern anchored to `fn max_output_tokens\(`, with the reason recorded in
+  the AC so the next reader does not "helpfully" widen it back.
+- **F3 (Medium).** Guard 6's html bail had no test. `each_kind_names_its_own_ceiling_key` covers the key
+  function in isolation and `guard_output_ceiling_allows_the_same_output_for_the_larger_job` drives
+  `Kind::Html` down the PASS path only, so a correct-in-isolation key could have been wired wrong in the
+  bail with nothing failing. Closed by
+  `guard_output_ceiling_names_the_html_key_when_the_html_job_is_over`, proven to bite by hardcoding the
+  markdown key into the html arm.
+- **F4 (Low).** AC-C6 said "flipping its `Job::Markdown` assertion", a variant Phase 1 deleted. Corrected
+  to `Kind::Markdown` with a note that the old name was accurate when written. The churn table's and
+  Phase 1 narrative's `Job::Markdown` references were deliberately left alone: they describe the
+  pre-change tree and are correct as history.
+
+Findings the panel checked and cleared, worth recording so they are not re-litigated: fields are not
+swapped at either `render.rs` call site and the disclosed no-test gap rides (the only seam would be
+`Box<dyn Transport>`, which the house generics-for-DI rule forbids); AC-C2 verified empirically at 6/6
+(the shared-body/two-entry-point form does name each key); AC-C4 still returns zero and the surviving
+`16,117` / "pre-config ceiling" wordings are the ones AC-C4 itself prescribes; no Guard 6 test is
+vacuous; the `Recorded` redesign lost no assertion and gained two; the byte baselines still pin field
+order and the `stream` omission; and AC-C5's caveat about the live run landing under the old ceiling is
+adequate disclosure.

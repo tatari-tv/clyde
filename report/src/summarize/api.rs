@@ -1,11 +1,16 @@
 //! The `x-api-key` transport: today's direct `api.anthropic.com/v1/messages` call, unchanged.
 //!
 //! This is the opt-in path after the cli-default flip (`--llm api` / `render.llm: api`), and it must
-//! not rot: the serialized request body is asserted byte-identical to the pre-transport behavior, so
-//! a key holder's artifact is exactly what it always was.
+//! not rot: the serialized request body is asserted byte-for-byte against the CURRENT DECLARED
+//! BASELINE. It is no longer asserted byte-identical to the pre-transport behavior — that contract was
+//! retired when the output ceilings became `clyde.yml` keys, because a default a user can move is not
+//! a fact about past behavior. The assertion is anti-rot against the declared baseline: field order,
+//! the `stream` omission, the system prompt, the prompt/facts join, and the current defaults.
 //!
-//! Everything api-specific lives here and never reaches the [`Transport`] port: the output ceilings,
-//! the streaming choice, the endpoint, the version header, and the prompt/facts join.
+//! Everything api-PRIVATE lives here and never reaches the [`Transport`] port: the streaming choice,
+//! the endpoint, the version header, and the prompt/facts join. The output ceiling is NOT in that
+//! list — it is a `Job` field, shared across the port, because the cli transport checks the same
+//! value this one sets on the wire.
 
 use super::{Job, Kind, Transport, check_stop_reason, parse_sse_stream};
 use eyre::{Context, Result, bail};
@@ -174,8 +179,9 @@ fn is_false(b: &bool) -> bool {
 struct MessagesRequest {
     model: String,
     max_tokens: u32,
-    /// Omitted entirely when false so the markdown-source request body stays byte-identical to the
-    /// pre-HTML behavior.
+    /// Omitted entirely when false, which is the shape the markdown baseline test pins. A
+    /// `"stream":false` on the wire would be semantically equivalent but is still a change to the
+    /// declared baseline, so the omission is asserted rather than assumed.
     #[serde(skip_serializing_if = "is_false")]
     stream: bool,
     system: String,

@@ -590,6 +590,32 @@ fn guard_output_ceiling_enforces_the_configured_value_not_a_constant() {
         .expect("exactly the configured ceiling must pass");
 }
 
+/// The html arm of Guard 6's bail, which nothing else exercises.
+///
+/// `each_kind_names_its_own_ceiling_key` proves the key FUNCTION returns the html key, and
+/// `guard_output_ceiling_allows_the_same_output_for_the_larger_job` drives `Kind::Html` only down the
+/// PASS path. Neither proves Guard 6 composes the html key into a real bail, so a `max_output_tokens_key()`
+/// that was correct in isolation could still be wired wrong here and no test would notice. Audit
+/// finding F3.
+///
+/// BITES: hardcode `Kind::Markdown.max_output_tokens_key()` into the Guard 6 bail and this fails while
+/// every other ceiling test stays green.
+#[test]
+fn guard_output_ceiling_names_the_html_key_when_the_html_job_is_over() {
+    let over = u64::from(DEFAULT_HTML_MAX_OUTPUT_TOKENS) + 1;
+    let json = envelope_json(false, "success", "end_turn", "long prose", over, &real_model_usage());
+    let err = check(&json, Kind::Html).unwrap_err().to_string();
+    assert!(
+        err.contains("render.html-max-output-tokens"),
+        "the html bail must name the html key, not the markdown one: {err}"
+    );
+    assert!(
+        !err.contains("render.markdown-max-output-tokens"),
+        "naming the markdown key on an html failure is a remedy that cannot remedy: {err}"
+    );
+    assert!(err.contains("64000-token ceiling"), "must name the html ceiling: {err}");
+}
+
 #[test]
 fn guard_output_ceiling_accepts_exactly_the_ceiling() {
     // Boundary: the guard bails ABOVE the ceiling, not at it. Must equal the markdown default, or it
