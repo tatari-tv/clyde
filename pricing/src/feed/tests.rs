@@ -205,9 +205,20 @@ fn block_less_feed_falls_back_to_embedded_normalization() {
     // A v1-shaped feed (no aliases/family_rules) must still resolve bare aliases
     // via the embedded tables rather than regressing to empty - the regression
     // the Staff Engineer flagged for v1 caches / hand-written overrides.
+    // The fixture must carry whatever the EMBEDDED `opus` alias currently targets, since that is
+    // the table this test proves we fall back to; a feed missing that key would fail the alias
+    // assertion below for the wrong reason (absent model, not absent fallback). `claude-opus-4-8`
+    // stays alongside it to keep the direct-key lookup covered.
     let v1 = r#"{
         "schema_version": 1,
         "pricing": {
+            "claude-opus-5": {
+                "input_per_mtok": 5,
+                "output_per_mtok": 25,
+                "cache_5m_write_per_mtok": 6.25,
+                "cache_1h_write_per_mtok": 10,
+                "cache_read_per_mtok": 0.5
+            },
             "claude-opus-4-8": {
                 "input_per_mtok": 5,
                 "output_per_mtok": 25,

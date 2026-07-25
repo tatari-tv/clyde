@@ -236,6 +236,19 @@ fn candidate_wins(
 /// divergence self-diagnosing (which entries counted, which collapsed, which were skipped and
 /// why) instead of archaeology. `None` traces every session's entries. The complementary
 /// parse-drop trace lives at `claude_pricing::parse::convert_raw_entry`.
+/// What a [`compute_summaries`] run produced, plus the models it could not price.
+///
+/// `unknown_models` holds the normalized id of every model missing from the effective pricing
+/// feed. Those entries were EXCLUDED from every figure in `days` and `sessions`, so a non-empty
+/// list means the totals under-report and the caller must say so out loud
+/// (see [`format_unknown_models_banner`]). Reporting it is not optional: a silently low number
+/// is worse than an error, because nothing on screen invites you to doubt it.
+struct Summaries {
+    days: Vec<DaySummary>,
+    sessions: Vec<SessionSummary>,
+    unknown_models: Vec<String>,
+}
+
 fn compute_summaries(
     args: &CostArgs,
     config: &Config,
@@ -244,7 +257,7 @@ fn compute_summaries(
     end: NaiveDate,
     verbose: bool,
     trace_session: Option<&str>,
-) -> Result<(Vec<DaySummary>, Vec<SessionSummary>)> {
+) -> Result<Summaries> {
     debug!(
         "compute_summaries: start={}, end={}, verbose={}, model={:?}, trace_session={:?}",
         start, end, verbose, args.model, trace_session
@@ -267,7 +280,7 @@ fn compute_summaries(
     // Try cache for single-day, non-verbose, no-filter queries.
     // The single-day load uses a per-day hash; for start==end the filtered set IS today's files,
     // so this hash matches the per-day hash that the save loop will write below.
-    let single_day_hash = cache::compute_mtime_hash(&filtered);
+    let single_day_hash = cache::compute_cache_key(&filtered, pricing.data_version());
     if !args.no_cache
         && !verbose
         && args.model.is_none()
@@ -279,7 +292,15 @@ fn compute_summaries(
             cost: cached.cost,
             sessions: cached.sessions,
         };
-        return Ok((vec![summary], Vec::new()));
+        // No `unknown_models`: a cache hit never ran pricing, so it has nothing to report. That is
+        // sound only because the cache key includes the feed's `data_version` - a cached cost is
+        // therefore always one this same feed produced, and any feed that would newly price a
+        // previously-unknown model misses the key outright and recomputes below.
+        return Ok(Summaries {
+            days: vec![summary],
+            sessions: Vec::new(),
+            unknown_models: Vec::new(),
+        });
     }
 
     // Parse all files in parallel
@@ -465,7 +486,7 @@ fn compute_summaries(
             // ever match - dead writes.
             if !args.no_cache {
                 let day_files = scanner::filter_by_date_range(&all_files, date, date);
-                let day_mtime_hash = cache::compute_mtime_hash(&day_files);
+                let day_mtime_hash = cache::compute_cache_key(&day_files, pricing.data_version());
                 if let Err(e) = cache::save_cached_day(date, cost, session_count, day_mtime_hash) {
                     warn!("Failed to save cache for {}: {}", date, e);
                 }
@@ -495,7 +516,29 @@ fn compute_summaries(
         warn!("Failed to prune cache: {}", e);
     }
 
-    Ok((day_summaries, session_summaries))
+    // Sorted so the banner and the JSON field are stable run-to-run (a HashSet's iteration order
+    // is not).
+    let mut unknown_models: Vec<String> = warned_models.into_iter().collect();
+    unknown_models.sort();
+
+    Ok(Summaries {
+        days: day_summaries,
+        sessions: session_summaries,
+        unknown_models,
+    })
+}
+
+/// Render the unknown-model banner: the models that had no price and were therefore left out of
+/// the totals entirely. Returns the text rather than printing so the call sites in [`dispatch`]
+/// choose the stream (always stderr, so `--json` and `--total` stay machine-parseable) and so the
+/// wording is assertable in tests without capturing output. Mirrors [`format_stale_banner`].
+fn format_unknown_models_banner(models: &[String]) -> String {
+    debug!("format_unknown_models_banner: count={}", models.len());
+    format!(
+        "⚠ no pricing for {}; those messages are EXCLUDED from the totals below, which are therefore low. \
+         Refresh the feed (`clyde cost pricing --show`) or add an override.",
+        models.join(", ")
+    )
 }
 
 fn subtract_months(date: NaiveDate, n: u32) -> NaiveDate {
@@ -643,6 +686,14 @@ fn wants_json(explicit_json: bool) -> bool {
     explicit_json || !std::io::stdout().is_terminal()
 }
 
+/// Emit the unknown-model banner when there is one. Always stderr: every cost command can be
+/// piped (`--json`, `--total`, the statusline), and a warning on stdout would corrupt that.
+fn warn_unknown_models(models: &[String]) {
+    if !models.is_empty() {
+        eprintln!("{}", format_unknown_models_banner(models));
+    }
+}
+
 fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
     debug!(
         "dispatch: command={:?}",
@@ -657,7 +708,12 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                 Some(Command::Today { json, total, verbose }) => (*json, *total, *verbose),
                 _ => (false, false, false),
             };
-            let (days, sessions) = compute_summaries(args, config, pricing, today, today, verbose, None)?;
+            let Summaries {
+                days,
+                sessions,
+                unknown_models,
+            } = compute_summaries(args, config, pricing, today, today, verbose, None)?;
+            warn_unknown_models(&unknown_models);
             let summary = days.first().cloned().unwrap_or(DaySummary {
                 date: today,
                 cost: 0.0,
@@ -680,7 +736,12 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
         }
         Some(Command::Yesterday { json, total, verbose }) => {
             let yesterday = today - chrono::Duration::days(1);
-            let (days, sessions) = compute_summaries(args, config, pricing, yesterday, yesterday, *verbose, None)?;
+            let Summaries {
+                days,
+                sessions,
+                unknown_models,
+            } = compute_summaries(args, config, pricing, yesterday, yesterday, *verbose, None)?;
+            warn_unknown_models(&unknown_models);
             let summary = days.first().cloned().unwrap_or(DaySummary {
                 date: yesterday,
                 cost: 0.0,
@@ -709,7 +770,10 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
             graph: show_graph,
         }) => {
             let start = today - chrono::Duration::days(i64::from(*num_days) - 1);
-            let (days, ..) = compute_summaries(args, config, pricing, start, today, false, None)?;
+            let Summaries {
+                days, unknown_models, ..
+            } = compute_summaries(args, config, pricing, start, today, false, None)?;
+            warn_unknown_models(&unknown_models);
 
             if *total {
                 let sum: f64 = days.iter().map(|d| d.cost).sum();
@@ -760,7 +824,10 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                 let current_sunday = today - chrono::Duration::days(days_since_sunday);
                 current_sunday - chrono::Duration::weeks(i64::from(*num_weeks) - 1)
             };
-            let (days, ..) = compute_summaries(args, config, pricing, start, today, false, None)?;
+            let Summaries {
+                days, unknown_models, ..
+            } = compute_summaries(args, config, pricing, start, today, false, None)?;
+            warn_unknown_models(&unknown_models);
 
             // Group by Sunday-based week (Sun-Sat)
             let mut weeks: BTreeMap<String, (f64, HashSet<String>)> = BTreeMap::new();
@@ -831,7 +898,10 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
                 let current_month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).expect("valid date");
                 subtract_months(current_month_start, *num_months - 1)
             };
-            let (days, ..) = compute_summaries(args, config, pricing, start, today, false, None)?;
+            let Summaries {
+                days, unknown_models, ..
+            } = compute_summaries(args, config, pricing, start, today, false, None)?;
+            warn_unknown_models(&unknown_models);
 
             // Group by month
             let mut months: BTreeMap<String, (f64, HashSet<String>)> = BTreeMap::new();
@@ -898,8 +968,12 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
             } else {
                 Some(id.clone())
             };
-            let (_, sessions) =
-                compute_summaries(args, config, pricing, start, today, false, trace_session.as_deref())?;
+            let Summaries {
+                sessions,
+                unknown_models,
+                ..
+            } = compute_summaries(args, config, pricing, start, today, false, trace_session.as_deref())?;
+            warn_unknown_models(&unknown_models);
 
             if id == "current" {
                 // Prefer the live session id Claude Code exports; fall back to the
