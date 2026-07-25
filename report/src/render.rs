@@ -234,12 +234,21 @@ pub enum Template {
 ///
 /// `which::which` mirrors `clyde::resolve_claude`, which already canonicalizes a relative PATH hit.
 fn resolve_transport_for(cfg: &RenderConfig) -> Result<TransportKind> {
-    crate::config::resolve_transport(
+    let resolved = crate::config::resolve_transport(
         cfg.llm,
         which::which("claude").is_ok(),
         summarize::api_key_from_env().is_some(),
         cfg.format,
-    )
+    )?;
+    // Log the SELECTION for both transports, not just cli: an operator reading a log must be able to
+    // tell what paid for an artifact without rerunning it. The cli path adds the resolved binary path
+    // and version in `CliTransport::resolve`.
+    log::info!(
+        "render: llm transport selected={resolved:?} (requested={:?}) format={:?}",
+        cfg.llm,
+        cfg.format
+    );
+    Ok(resolved)
 }
 
 fn render_via_opus_markdown(json_body: &str, prompt: &str, cfg: &RenderConfig) -> Result<String> {

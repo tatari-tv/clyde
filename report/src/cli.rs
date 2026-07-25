@@ -158,9 +158,10 @@ pub struct RenderArgs {
     /// too is unset. `markdown`/`pdf`/`html` write locally (see `-o`); the `marquee-*` variants
     /// publish to marquee and print the URL. `pdf` requires `pandoc`; the `marquee-*` variants
     /// require the `marquee` CLI with an authenticated session. `html`/`marquee-html` are
-    /// model-authored (no pandoc involved) and require `ANTHROPIC_API_KEY`; there is no offline
-    /// path for them. Not valid with `--template` for `html`/`marquee-html` (the offline template
-    /// produces markdown).
+    /// model-authored (no pandoc involved), so they need an LLM transport but NOT an API key: by
+    /// default they use the locally installed `claude` CLI and the Claude Code login you already
+    /// have (see `--llm`). There is no offline path for them, and `--template` is not valid with
+    /// `html`/`marquee-html` (the offline template produces markdown).
     #[arg(long, value_enum, ignore_case = true)]
     pub format: Option<Format>,
 

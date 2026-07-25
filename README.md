@@ -93,9 +93,26 @@ $XDG_CONFIG_HOME/clyde/pricing.json  # merged pricing override (was ccu/ + cr/)
 
 `clyde.yml` is optional and strict (`deny_unknown_fields`): a missing file is all-defaults, but a
 typo'd key is a hard error. Today it carries `date-tz` (how `report collect --since <date>`
-interprets a bare date), a `render:` section whose `format` sets the default `report render`
-output format, and an `efficiency:` section (below) with the thresholds `clyde efficiency` scores
-sessions against. See [`report/README.md`](report/README.md) for the render options.
+interprets a bare date), a `render:` section (below), and an `efficiency:` section (below) with the
+thresholds `clyde efficiency` scores sessions against.
+
+The `render:` defaults for `report render` (all optional; a missing section is all-defaults):
+
+```yaml
+# ~/.config/clyde/clyde.yml
+render:
+  format: markdown                 # default --format when the flag is omitted
+  llm: auto                        # auto | api | cli — which transport makes the model calls
+  markdown-model: claude-opus-4-8  # model pin for the Markdown narrative
+  html-model: claude-opus-4-8      # model pin for the HTML dashboard
+```
+
+`report render`'s model-authored formats need **no API key** by default: `llm: auto` prefers the
+locally installed `claude` CLI and uses the Claude Code login you already have. Set `llm: api` (or
+pass `--llm api`) to use `ANTHROPIC_API_KEY` instead — which is also what any automated caller
+should pin, since `auto` selects the CLI on presence alone and will not silently fall back.
+See [`report/README.md`](report/README.md) for the full transport rules, the rollback line, and the
+per-render cost difference.
 
 The `efficiency:` thresholds (all optional; a missing section is all-defaults):
 
