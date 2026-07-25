@@ -1092,3 +1092,219 @@ fn stale_marker_wrapper_reads_the_exact_path_a_shell_script_would_build() {
     assert_eq!(info.embedded, "2026-01-01T00:00:00Z");
     assert_eq!(info.url, "https://example.com");
 }
+
+// ---- Phase 2: never serve a cache older than embedded -------------------------------------------
+//
+// Every test here PLANTS a cache rather than waiting for one. The reported repro (a real cache that
+// had fallen behind embedded) does not reproduce on demand: both sides caught up to
+// 2026-07-25T01:56:53Z, and the embedded side advances daily via the refresh cron.
+
+/// A `data_version` guaranteed older than any embedded baseline, since the cron only moves it forward.
+const ANCIENT: &str = "2000-01-01T00:00:00Z";
+/// A `data_version` guaranteed newer, matching the V1_FEED convention above.
+const FAR_FUTURE: &str = "2099-01-01T00:00:00Z";
+
+/// AC-P1: a cache older than embedded is never served, even with no network at all.
+///
+/// The cache is FRESH by TTL, so before this gate existed it won outright for up to 24h -- which is
+/// exactly what happened during the v0.13.3 release when `claude-opus-5` landed in the embedded
+/// baseline and `cost pricing --show` kept omitting it.
+///
+/// BITES: drop the `loses_to_embedded` check in `load_cache_candidate` and this resolves to
+/// `Source::Fetched` (which is how `load_from_cache` labels a cache hit) instead of `Source::Embedded`.
+#[test]
+fn a_cache_older_than_embedded_is_not_served() {
+    let dir = tempfile::TempDir::new().unwrap();
+    // Port 1 with nothing listening: the fetch cannot succeed, so the only way to reach embedded is
+    // for the gate to reject the cache.
+    let cfg = test_config(
+        "http://127.0.0.1:1/pricing.json",
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(0),
+    );
+    std::fs::create_dir_all(dir.path()).unwrap();
+    std::fs::write(cfg.cache_path(), feed_with_version(Some(ANCIENT))).unwrap();
+
+    let p = auto_with_config("test-app", &cfg).unwrap();
+    assert!(
+        matches!(p.source(), crate::feed::Source::Embedded),
+        "a cache behind embedded must lose; got {:?}",
+        p.source()
+    );
+    // The half that makes the fix reach the user's TOTAL rather than just the resolved Source: the
+    // day-cost cache keys on this value, so it must be the embedded baseline's own version and never
+    // the `None` that collapses every baseline into one bucket.
+    assert_eq!(
+        p.data_version(),
+        crate::pricing::embedded_data_version(),
+        "the resolved pricing must carry the embedded version so the day-cost cache re-prices"
+    );
+}
+
+/// AC-P2: the TTL fast path is not broken. A cache NEWER than embedded is still served with zero
+/// network calls.
+///
+/// Asserted with a `.expect(0)` mock rather than on `Source`: `load_from_cache` labels a cache hit as
+/// `Source::Fetched` (`fetch.rs`), so a `Source` assertion could not tell cache from network and would
+/// be vacuous.
+///
+/// BITES: make `load_cache_candidate` reject unconditionally and the mock's expect(0) fails.
+#[test]
+fn a_cache_newer_than_embedded_is_still_served_without_a_fetch() {
+    let mut server = mockito::Server::new();
+    let mock = server.mock("GET", "/pricing.json").expect(0).create();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        &format!("{}/pricing.json", server.url()),
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+    std::fs::write(cfg.cache_path(), feed_with_version(Some(FAR_FUTURE))).unwrap();
+
+    let p = auto_with_config("test-app", &cfg).unwrap();
+    mock.assert();
+    assert_eq!(p.data_version(), Some(FAR_FUTURE), "the cache itself was served");
+}
+
+/// AC-P6, direction one: the fresh-cache rejection with the failure-backoff window OPEN emits ONE
+/// warn, not two.
+///
+/// This is the path that double-warns under the naive implementation: `auto_with_config` gates and
+/// warns, falls through, hits the backoff short-circuit, and `fallback_chain` gates the SAME cache
+/// again. One rejected cache is one fact.
+///
+/// BITES: pass `true` instead of `!warned_cache_loss` at either `fallback_chain` call site and this
+/// sees two.
+#[test]
+fn a_rejected_cache_warns_exactly_once_with_backoff_open() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        "http://127.0.0.1:1/pricing.json",
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
+    std::fs::write(cfg.cache_path(), feed_with_version(Some(ANCIENT))).unwrap();
+    // Open the failure-backoff window so the fetch is skipped and `fallback_chain` runs.
+    record_failure(&cfg.last_attempt_path());
+
+    let (p, warns) = capture_warns(|| auto_with_config("test-app", &cfg).unwrap());
+    assert!(matches!(p.source(), crate::feed::Source::Embedded));
+    let rejections: Vec<&String> = warns.iter().filter(|w| w.contains("older than the embedded")).collect();
+    assert_eq!(
+        rejections.len(),
+        1,
+        "exactly one rejection warn per resolution, got {}: {warns:?}",
+        rejections.len()
+    );
+    // And it names all three facts an operator needs to act.
+    let w = rejections[0];
+    assert!(w.contains(ANCIENT), "names the cached version: {w}");
+    assert!(
+        w.contains(&cfg.cache_path().display().to_string()),
+        "names the cache path: {w}"
+    );
+    assert!(
+        crate::pricing::embedded_data_version().is_some_and(|e| w.contains(e)),
+        "names the embedded version: {w}"
+    );
+}
+
+/// AC-P6, direction two: a fallback-chain-ONLY rejection is not silent.
+///
+/// The cache is PAST its TTL here, so `auto_with_config` never gates it; the fetch then fails and
+/// `fallback_chain` is the only site that sees the cache. Warning only at the first site would leave
+/// this entirely unlogged, which is the inverse failure and equally wrong.
+///
+/// BITES: hardcode `false` for `warn_on_loss` at the `fallback_chain` call sites and this sees zero.
+#[test]
+fn a_fallback_chain_only_rejection_still_warns() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        "http://127.0.0.1:1/pricing.json",
+        dir.path(),
+        // TTL 0: the cache is never "fresh", so the first gate is skipped entirely.
+        Duration::from_secs(0),
+        Duration::from_secs(0),
+    );
+    std::fs::write(cfg.cache_path(), feed_with_version(Some(ANCIENT))).unwrap();
+
+    let (p, warns) = capture_warns(|| auto_with_config("test-app", &cfg).unwrap());
+    assert!(matches!(p.source(), crate::feed::Source::Embedded));
+    let rejections = warns.iter().filter(|w| w.contains("older than the embedded")).count();
+    assert_eq!(rejections, 1, "exactly one, never zero: {warns:?}");
+}
+
+/// AC-P3: no cache-path code writes the stale-feed sidecar.
+///
+/// Rejecting a cache is not "the upstream feed regressed", and the sidecar has three consumers that
+/// would be told a lie -- the banner, `cost`'s `--offline` read, and the shipped statusline glyph,
+/// which would light persistently for a condition the user cannot act on.
+///
+/// BITES: call `write_stale_marker` from `load_cache_candidate` and this fails.
+#[test]
+fn rejecting_a_cache_never_writes_the_stale_sidecar() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        "http://127.0.0.1:1/pricing.json",
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(0),
+    );
+    std::fs::write(cfg.cache_path(), feed_with_version(Some(ANCIENT))).unwrap();
+
+    let p = auto_with_config("test-app", &cfg).unwrap();
+    assert!(matches!(p.source(), crate::feed::Source::Embedded));
+    assert!(
+        !cfg.stale_feed_path().exists(),
+        "the cache path must neither write nor clear the sidecar"
+    );
+    assert!(
+        p.stale_feed().is_none(),
+        "a rejected CACHE is not a stale upstream FEED"
+    );
+}
+
+/// A cache carrying no comparable `data_version` loses, matching how a fetched feed with a missing
+/// version is already treated. A cache we cannot date is a cache we cannot trust against embedded.
+#[test]
+fn a_cache_with_no_data_version_loses_to_embedded() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let cfg = test_config(
+        "http://127.0.0.1:1/pricing.json",
+        dir.path(),
+        Duration::from_secs(3600),
+        Duration::from_secs(0),
+    );
+    std::fs::write(cfg.cache_path(), feed_with_version(None)).unwrap();
+
+    let p = auto_with_config("test-app", &cfg).unwrap();
+    assert!(matches!(p.source(), crate::feed::Source::Embedded));
+}
+
+/// AC-P7: an unguarded cache read is falsifiable.
+///
+/// Grepping for the old predicate name would not catch a NEW read site at all, which is what the
+/// design doc says is insufficient. This asserts the structural property instead: `load_from_cache` is
+/// called from exactly ONE place, the shared `load_cache_candidate` that applies the gate. A future
+/// third read site that calls the deserializer directly fails here, and the fix is to route it through
+/// the helper.
+#[test]
+fn every_cache_read_goes_through_the_gated_helper() {
+    let source = include_str!("../fetch.rs");
+    let calls = source.matches("load_from_cache(").count();
+    // One definition (`fn load_from_cache(`) plus exactly one call site.
+    assert_eq!(
+        calls, 2,
+        "expected `fn load_from_cache(` plus exactly ONE call (inside load_cache_candidate); found \
+         {calls} occurrences. A new cache read must go through load_cache_candidate so it inherits \
+         the never-older-than-embedded gate."
+    );
+    assert!(
+        source.contains("fn load_cache_candidate("),
+        "the shared gated helper must exist"
+    );
+}
