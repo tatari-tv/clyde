@@ -17,46 +17,37 @@ use serde::Deserialize;
 /// on argv, facts on stdin), and a pre-joined string would force it to either re-split a 500KB blob
 /// or push the whole thing through argv into `ARG_MAX`.
 pub trait Transport {
-    fn complete(&self, job: Job, model: &str, system: &str, prompt: &str, json_body: &str) -> Result<String>;
+    fn complete(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<String>;
 }
 
-/// The two real render jobs. Identifies WHICH job is running; every transport knob is private to the
-/// transport that has one (the api transport maps this to its `max_tokens` + streaming choice; the
-/// cli transport maps it to nothing at all).
-///
-/// The MODEL is deliberately NOT a method here. It is user-configurable via `clyde.yml`
-/// (`render.markdown-model` / `render.html-model`), so it is not a compile-time fact and cannot be
-/// returned as a `&'static str`. It threads down from `RenderConfig` as an explicit argument.
+/// WHICH artifact a job produces. Stays a `Copy` enum because it IS a compile-time fact: the two
+/// arms are the two call sites in `render.rs`, and nothing about the choice is user-configurable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Job {
+pub enum Kind {
     Markdown,
     Html,
 }
 
-/// Non-streaming markdown-source ceiling (unchanged from the pre-HTML design). The markdown path
-/// stays byte-identical, so this value and the system prompt must not move.
-const MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 16_000;
-/// Html-source ceiling. The html design's Phase 0 observed a max 26.5K output on a 5x-synthetic
-/// month, and the 2026-07-24 cli spike observed 19.6K on a real 1,310-session month, so the
-/// named-exhaustion bail is a backstop that will not fire for realistic months.
-const HTML_MAX_OUTPUT_TOKENS: u32 = 64_000;
-
-impl Job {
-    /// How much output this job's artifact may legitimately need.
+/// A render job with its user-configurable pins RESOLVED from `clyde.yml`.
+///
+/// Every per-job tunable lands here. Both fields were once compile-time facts reachable as methods on
+/// the old `Job` enum (`Job::model()`, then `Job::max_output_tokens()`), and both stopped being
+/// expressible the moment a user could set them: a `Copy` enum arm cannot return a `String` it does
+/// not own, nor a number it has not read. Bundling them means the NEXT configurable per-job value is
+/// a field, not a sixth argument on [`Transport::complete`].
+#[derive(Clone, Copy, Debug)]
+pub struct Job<'a> {
+    pub kind: Kind,
+    /// `render.markdown-model` / `render.html-model`.
+    pub model: &'a str,
+    /// `render.markdown-max-output-tokens` / `render.html-max-output-tokens`.
     ///
-    /// SHARED by both transports, and deliberately not api-private: the api transport SETS it as
-    /// `max_tokens` on the wire, and the cli transport — which cannot set a ceiling at all — CHECKS
-    /// the returned `usage.output_tokens` against it. Both genuinely use it, so it is a fact about
-    /// the job rather than a field one transport would have to ignore.
-    ///
-    /// Streaming, by contrast, IS api-private and lives in `api.rs`: the cli transport has no
-    /// delivery choice to make, and a `stream` field it ignored would be a lying field.
-    pub fn max_output_tokens(self) -> u32 {
-        match self {
-            Job::Markdown => MARKDOWN_MAX_OUTPUT_TOKENS,
-            Job::Html => HTML_MAX_OUTPUT_TOKENS,
-        }
-    }
+    /// SHARED by both transports: the api transport SETS it as `max_tokens` on the wire, and the cli
+    /// transport — which cannot set a ceiling at all — CHECKS the returned `usage.output_tokens`
+    /// against it. Streaming, by contrast, is api-private and lives in `api.rs`, because the cli
+    /// transport has no delivery choice to make and a `stream` field it ignored would be a lying
+    /// field.
+    pub max_output_tokens: u32,
 }
 
 const MARKDOWN_SYSTEM_PROMPT: &str = "You are a precise technical writer producing markdown documents from structured data. Output exactly what is asked - no preamble, no commentary, no fenced code block wrapping the whole output.";
@@ -66,11 +57,25 @@ const HTML_SYSTEM_PROMPT: &str = "You are producing a complete, self-contained H
      Output ONLY the HTML document - no preamble, no commentary, no markdown fences. \
      Your reply begins with <!doctype html> and ends with </html>.";
 
-/// Markdown-source render over any transport. Byte-identical to the pre-transport behavior for a
-/// successful `end_turn` response (the truncation unhappy path bails loudly instead of clipping).
-pub fn markdown<T: Transport>(transport: &T, model: &str, prompt: &str, json_body: &str) -> Result<String> {
-    debug!("summarize::markdown: model={model} json bytes={}", json_body.len());
-    transport.complete(Job::Markdown, model, MARKDOWN_SYSTEM_PROMPT, prompt, json_body)
+/// Markdown-source render over any transport. The `Job` is assembled HERE, from the config-resolved
+/// pins the caller passes, so `render.rs` never constructs one.
+pub fn markdown<T: Transport>(
+    transport: &T,
+    model: &str,
+    max_output_tokens: u32,
+    prompt: &str,
+    json_body: &str,
+) -> Result<String> {
+    debug!(
+        "summarize::markdown: model={model} max_output_tokens={max_output_tokens} json bytes={}",
+        json_body.len()
+    );
+    let job = Job {
+        kind: Kind::Markdown,
+        model,
+        max_output_tokens,
+    };
+    transport.complete(job, MARKDOWN_SYSTEM_PROMPT, prompt, json_body)
 }
 
 /// Html-source render over any transport. The returned document is fence-stripped and validated
@@ -79,9 +84,23 @@ pub fn markdown<T: Transport>(transport: &T, model: &str, prompt: &str, json_bod
 /// [`postprocess_html`] runs HERE, after the transport returns, so it is transport-agnostic: it
 /// cannot be weakened by swapping the delivery mechanism. Same property as `reject_foreign_numbers`
 /// in `render.rs`. That is the whole safety argument for adding a second transport.
-pub fn html<T: Transport>(transport: &T, model: &str, prompt: &str, json_body: &str) -> Result<String> {
-    debug!("summarize::html: model={model} json bytes={}", json_body.len());
-    let raw = transport.complete(Job::Html, model, HTML_SYSTEM_PROMPT, prompt, json_body)?;
+pub fn html<T: Transport>(
+    transport: &T,
+    model: &str,
+    max_output_tokens: u32,
+    prompt: &str,
+    json_body: &str,
+) -> Result<String> {
+    debug!(
+        "summarize::html: model={model} max_output_tokens={max_output_tokens} json bytes={}",
+        json_body.len()
+    );
+    let job = Job {
+        kind: Kind::Html,
+        model,
+        max_output_tokens,
+    };
+    let raw = transport.complete(job, HTML_SYSTEM_PROMPT, prompt, json_body)?;
     postprocess_html(&raw)
 }
 

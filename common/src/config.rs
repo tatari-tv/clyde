@@ -74,12 +74,77 @@ pub const DEFAULT_MARKDOWN_MODEL: &str = "claude-opus-4-8";
 /// Default pin for the html job (`render.html-model`). See [`DEFAULT_MARKDOWN_MODEL`].
 pub const DEFAULT_HTML_MODEL: &str = "claude-opus-4-8";
 
+/// Default output ceiling for the markdown job (`render.markdown-max-output-tokens`).
+///
+/// Holds the pre-config value in this phase; the raise lands with its own rationale next.
+pub const DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 16_000;
+
+/// Default output ceiling for the html job (`render.html-max-output-tokens`). Exactly what the
+/// `claude` CLI grants `claude-opus-4-8` (64,000), against a largest observed html output of 19,574
+/// tokens (3.2x headroom). Nothing measured argues for moving it.
+pub const DEFAULT_HTML_MAX_OUTPUT_TOKENS: u32 = 64_000;
+
 fn default_markdown_model() -> String {
     DEFAULT_MARKDOWN_MODEL.to_string()
 }
 
 fn default_html_model() -> String {
     DEFAULT_HTML_MODEL.to_string()
+}
+
+fn default_markdown_max_output_tokens() -> u32 {
+    DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS
+}
+
+fn default_html_max_output_tokens() -> u32 {
+    DEFAULT_HTML_MAX_OUTPUT_TOKENS
+}
+
+/// Deserialize `render.markdown-max-output-tokens`, rejecting `0` loudly and BY NAME.
+///
+/// There are TWO of these rather than one shared `de_nonzero` for a mechanical reason: serde_yaml
+/// renders a [`serde::de::Error::custom`] with the enclosing SECTION and the source location but
+/// never the field name (`render: <msg> at line 2 column 3`), so a shared validator naming no key
+/// would leave the reader guessing which of the two ceilings they broke. The key is therefore
+/// hardcoded per call. The shared body still lives in one place ([`nonzero_ceiling`]).
+fn de_markdown_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    nonzero_ceiling(deserializer, "render.markdown-max-output-tokens")
+}
+
+/// Deserialize `render.html-max-output-tokens`. See [`de_markdown_max_output_tokens`] for why the
+/// two keys get one function each.
+fn de_html_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    nonzero_ceiling(deserializer, "render.html-max-output-tokens")
+}
+
+/// Reject a zero output ceiling, naming the key the caller passed.
+///
+/// `0` is the one value that is never a legitimate budget: it fails every render. The hand-written
+/// [`RenderConfig::default`] only protects the ABSENT case, so an explicit `...-max-output-tokens: 0`
+/// needs this.
+///
+/// No UPPER bound is enforced, deliberately. Both transports already fail loudly on a ceiling the
+/// model cannot honor — the api path returns a 400, and the cli path is cut at the granted ceiling and
+/// bails on `stop_reason: max_tokens` before the after-the-fact budget check is ever reached — and
+/// bounding it here would require a per-model capability table, i.e. fast-changing data baked into
+/// slow-changing logic.
+fn nonzero_ceiling<'de, D>(deserializer: D, key: &str) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(format!(
+            "{key} must be greater than 0; a ceiling of 0 fails every render"
+        )));
+    }
+    Ok(value)
 }
 
 /// The `render:` section of `clyde.yml`: defaults for `report render`. Every field defaults, so an
@@ -105,6 +170,20 @@ pub struct RenderConfig {
     /// Model pin for the html job. Defaults to [`DEFAULT_HTML_MODEL`].
     #[serde(default = "default_html_model")]
     html_model: String,
+    /// Output ceiling for the markdown job. Defaults to
+    /// [`DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS`]. `0` is rejected loudly.
+    #[serde(
+        default = "default_markdown_max_output_tokens",
+        deserialize_with = "de_markdown_max_output_tokens"
+    )]
+    markdown_max_output_tokens: u32,
+    /// Output ceiling for the html job. Defaults to [`DEFAULT_HTML_MAX_OUTPUT_TOKENS`]. `0` is
+    /// rejected loudly.
+    #[serde(
+        default = "default_html_max_output_tokens",
+        deserialize_with = "de_html_max_output_tokens"
+    )]
+    html_max_output_tokens: u32,
 }
 
 impl Default for RenderConfig {
@@ -114,6 +193,8 @@ impl Default for RenderConfig {
             llm: LlmConfig::default(),
             markdown_model: default_markdown_model(),
             html_model: default_html_model(),
+            markdown_max_output_tokens: default_markdown_max_output_tokens(),
+            html_max_output_tokens: default_html_max_output_tokens(),
         }
     }
 }
@@ -325,6 +406,18 @@ impl Config {
     /// The configured model pin for the html job ([`DEFAULT_HTML_MODEL`] when unset).
     pub fn render_html_model(&self) -> &str {
         &self.render.html_model
+    }
+
+    /// The configured output ceiling for the markdown job
+    /// ([`DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS`] when unset).
+    pub fn render_markdown_max_output_tokens(&self) -> u32 {
+        self.render.markdown_max_output_tokens
+    }
+
+    /// The configured output ceiling for the html job ([`DEFAULT_HTML_MAX_OUTPUT_TOKENS`] when
+    /// unset).
+    pub fn render_html_max_output_tokens(&self) -> u32 {
+        self.render.html_max_output_tokens
     }
 
     /// The resolved projects root for `clyde mcp serve`: the configured `projects-dir`, else the

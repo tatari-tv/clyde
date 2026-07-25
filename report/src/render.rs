@@ -253,16 +253,22 @@ fn resolve_transport_for(cfg: &RenderConfig) -> Result<TransportKind> {
 
 fn render_via_opus_markdown(json_body: &str, prompt: &str, cfg: &RenderConfig) -> Result<String> {
     debug!(
-        "render::render_via_opus_markdown: context bytes={} prompt bytes={} model={}",
+        "render::render_via_opus_markdown: context bytes={} prompt bytes={} model={} max_output_tokens={}",
         json_body.len(),
         prompt.len(),
-        cfg.markdown_model
+        cfg.markdown_model,
+        cfg.markdown_max_output_tokens
     );
     let model = &cfg.markdown_model;
+    let ceiling = cfg.markdown_max_output_tokens;
     // Monomorphized per transport; no Box<dyn Transport>, per the house generics-for-DI rule.
     let prose = match resolve_transport_for(cfg)? {
-        TransportKind::Api => summarize::markdown(&summarize::ApiTransport::from_env()?, model, prompt, json_body)?,
-        TransportKind::Cli => summarize::markdown(&summarize::CliTransport::resolve()?, model, prompt, json_body)?,
+        TransportKind::Api => {
+            summarize::markdown(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, json_body)?
+        }
+        TransportKind::Cli => {
+            summarize::markdown(&summarize::CliTransport::resolve()?, model, ceiling, prompt, json_body)?
+        }
     };
     // Render invents nothing: the whole markdown document is prose over the string-only facts, so
     // every numeric token in it must appear verbatim in the context (which carries only pre-formatted
@@ -276,15 +282,17 @@ fn render_via_opus_markdown(json_body: &str, prompt: &str, cfg: &RenderConfig) -
 /// is rejected for html-source formats).
 fn render_via_opus_html(context: &str, prompt: &str, cfg: &RenderConfig) -> Result<String> {
     debug!(
-        "render::render_via_opus_html: context bytes={} prompt bytes={} model={}",
+        "render::render_via_opus_html: context bytes={} prompt bytes={} model={} max_output_tokens={}",
         context.len(),
         prompt.len(),
-        cfg.html_model
+        cfg.html_model,
+        cfg.html_max_output_tokens
     );
     let model = &cfg.html_model;
+    let ceiling = cfg.html_max_output_tokens;
     let html = match resolve_transport_for(cfg)? {
-        TransportKind::Api => summarize::html(&summarize::ApiTransport::from_env()?, model, prompt, context)?,
-        TransportKind::Cli => summarize::html(&summarize::CliTransport::resolve()?, model, prompt, context)?,
+        TransportKind::Api => summarize::html(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, context)?,
+        TransportKind::Cli => summarize::html(&summarize::CliTransport::resolve()?, model, ceiling, prompt, context)?,
     };
     // Render invents nothing (html): CSS/JS geometry is legitimate authored markup full of numbers
     // that are NOT data (px, breakpoints, colors), so the guard runs over the VISIBLE TEXT only

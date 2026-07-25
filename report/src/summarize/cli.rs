@@ -77,9 +77,9 @@ impl CliTransport {
     }
 
     /// Build the child process spec. Pure, so the argv and the env can be asserted without spawning.
-    fn build_spawn(&self, job: Job, model: &str, system: &str, prompt: &str) -> Spawn {
+    fn build_spawn(&self, job: Job<'_>, system: &str, prompt: &str) -> Spawn {
         debug!(
-            "CliTransport::build_spawn: job={job:?} model={model} system bytes={} prompt bytes={}",
+            "CliTransport::build_spawn: job={job:?} system bytes={} prompt bytes={}",
             system.len(),
             prompt.len()
         );
@@ -91,7 +91,7 @@ impl CliTransport {
                 "-p".into(),
                 prompt.into(),
                 "--model".into(),
-                model.into(),
+                job.model.into(),
                 "--output-format".into(),
                 "json".into(),
                 // The SAME system prompt the api path sends, so the model reads identical
@@ -123,13 +123,13 @@ impl CliTransport {
 }
 
 impl Transport for CliTransport {
-    fn complete(&self, job: Job, model: &str, system: &str, prompt: &str, json_body: &str) -> Result<String> {
-        let spawn = self.build_spawn(job, model, system, prompt);
+    fn complete(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<String> {
+        let spawn = self.build_spawn(job, system, prompt);
         // The IDENTICAL fenced block the api transport puts in its user message, so the model sees
         // the same content in the same order on both transports. Only the channel differs.
         let payload = format!("```json\n{json_body}\n```\n");
         info!(
-            "CliTransport::complete: transport=cli job={job:?} model={model} binary={} version={} \
+            "CliTransport::complete: transport=cli job={job:?} binary={} version={} \
              payload bytes={}",
             self.binary.display(),
             self.version,
@@ -154,7 +154,7 @@ impl Transport for CliTransport {
         }
 
         let envelope = parse_envelope(&output.stdout)?;
-        let result = check_envelope(envelope, job, model, &self.observations())?;
+        let result = check_envelope(envelope, job, &self.observations())?;
         debug!("CliTransport::complete: job={job:?} ok result bytes={}", result.len());
         Ok(result)
     }
@@ -165,9 +165,9 @@ impl Transport for CliTransport {
 /// Pure, and separate from [`CliTransport::complete`] so every failure mode is driven by a recorded
 /// envelope fixture in tests rather than requiring a real `claude` subprocess. Returns the validated
 /// artifact text. Every guard bails loudly; none of them degrade the artifact.
-fn check_envelope(envelope: Envelope, job: Job, model: &str, observations: &str) -> Result<String> {
+fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Result<String> {
     debug!(
-        "check_envelope: job={job:?} model={model} is_error={} subtype={:?} stop_reason={:?}",
+        "check_envelope: job={job:?} is_error={} subtype={:?} stop_reason={:?}",
         envelope.is_error, envelope.subtype, envelope.stop_reason
     );
 
@@ -213,13 +213,16 @@ fn check_envelope(envelope: Envelope, job: Job, model: &str, observations: &str)
     // GUARD 6: the output ceiling, CHECKED because it cannot be SET. `end_turn` proves the model
     // stopped naturally; it does NOT prove the output stayed under the job's ceiling, and unlike the
     // api transport this one cannot put `max_tokens` on the wire.
-    let ceiling = job.max_output_tokens();
+    let ceiling = job.max_output_tokens;
     if let Some(used) = envelope.usage.as_ref().and_then(|u| u.output_tokens)
         && used > u64::from(ceiling)
     {
+        // `job.kind`, not `job`: a `{job:?}` on the struct would print the model pin into a
+        // user-facing error message.
         bail!(
-            "claude -p produced {used} output tokens, over the {ceiling}-token ceiling for the {job:?} \
-             job; refusing to publish an artifact that exceeded its budget\n{observations}"
+            "claude -p produced {used} output tokens, over the {ceiling}-token ceiling for the {:?} \
+             job; refusing to publish an artifact that exceeded its budget\n{observations}",
+            job.kind
         );
     }
 
@@ -229,7 +232,7 @@ fn check_envelope(envelope: Envelope, job: Job, model: &str, observations: &str)
     // the observations the outermost message, so a plain `{}` format (what most callers and the CLI's
     // top-level error printer use) would show only "binary: ... version: ..." and HIDE the actual
     // cause. Every other guard formats them inline; this one matches.
-    check_model(&envelope.model_usage, model, observations)?;
+    check_model(&envelope.model_usage, job.model, observations)?;
     Ok(result)
 }
 

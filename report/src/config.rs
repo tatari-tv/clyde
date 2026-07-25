@@ -69,6 +69,12 @@ pub struct RenderConfig {
     /// Model pin for the html job, from `render.html-model` (default
     /// `common::config::DEFAULT_HTML_MODEL`).
     pub html_model: String,
+    /// Output ceiling for the markdown job, from `render.markdown-max-output-tokens` (default
+    /// `common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS`).
+    pub markdown_max_output_tokens: u32,
+    /// Output ceiling for the html job, from `render.html-max-output-tokens` (default
+    /// `common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS`).
+    pub html_max_output_tokens: u32,
 }
 
 /// The RESOLVED transport: which backend actually performs the call.
@@ -208,6 +214,8 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 llm,
                 markdown_model: file.render_markdown_model().to_string(),
                 html_model: file.render_html_model().to_string(),
+                markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
+                html_max_output_tokens: file.render_html_max_output_tokens(),
             })
         }
         crate::cli::Command::Merge(args) => {

@@ -2,7 +2,10 @@
 
 use super::super::{HTML_SYSTEM_PROMPT, MARKDOWN_SYSTEM_PROMPT};
 use super::*;
-use common::config::{DEFAULT_HTML_MODEL as HTML_MODEL, DEFAULT_MARKDOWN_MODEL as MARKDOWN_MODEL};
+use common::config::{
+    DEFAULT_HTML_MAX_OUTPUT_TOKENS, DEFAULT_HTML_MODEL as HTML_MODEL, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+    DEFAULT_MARKDOWN_MODEL as MARKDOWN_MODEL,
+};
 
 use crate::ENV_LOCK;
 
@@ -18,14 +21,27 @@ fn expected_user_msg() -> String {
 
 // ---- AC3: the serialized request body must not rot ---------------------------------------------
 
+/// A `Job` at its DEFAULT pins, which is what the byte-identical baseline is a baseline of.
+fn default_job(kind: Kind) -> Job<'static> {
+    let (model, max_output_tokens) = match kind {
+        Kind::Markdown => (MARKDOWN_MODEL, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS),
+        Kind::Html => (HTML_MODEL, DEFAULT_HTML_MAX_OUTPUT_TOKENS),
+    };
+    Job {
+        kind,
+        model,
+        max_output_tokens,
+    }
+}
+
 #[test]
 fn markdown_body_is_byte_identical_to_baseline() {
-    let (max_tokens, stream) = Job::Markdown.api_limits();
+    let job = default_job(Kind::Markdown);
     let body = build_body(
-        MARKDOWN_MODEL,
+        job.model,
         MARKDOWN_SYSTEM_PROMPT,
-        max_tokens,
-        stream,
+        job.max_output_tokens,
+        job.kind.streams(),
         PROMPT,
         JSON_BODY,
     );
@@ -41,8 +57,15 @@ fn markdown_body_is_byte_identical_to_baseline() {
 
 #[test]
 fn html_body_is_byte_identical_to_baseline() {
-    let (max_tokens, stream) = Job::Html.api_limits();
-    let body = build_body(HTML_MODEL, HTML_SYSTEM_PROMPT, max_tokens, stream, PROMPT, JSON_BODY);
+    let job = default_job(Kind::Html);
+    let body = build_body(
+        job.model,
+        HTML_SYSTEM_PROMPT,
+        job.max_output_tokens,
+        job.kind.streams(),
+        PROMPT,
+        JSON_BODY,
+    );
     // Same shape as markdown but `stream: true` IS serialized, and the ceiling is 64K.
     let expected = format!(
         r#"{{"model":"claude-opus-4-8","max_tokens":64000,"stream":true,"system":{},"messages":[{{"role":"user","content":{}}}]}}"#,
@@ -80,14 +103,26 @@ fn body_joins_prompt_and_facts_with_a_fenced_json_block() {
     assert_eq!(content, "  trailing space trimmed\n\n```json\n{\"a\":1}\n```\n");
 }
 
-// ---- the Job -> (max_tokens, stream) mapping ---------------------------------------------------
+// ---- the two api knobs, asserted SEPARATELY ----------------------------------------------------
+//
+// The retired `Job::api_limits()` returned them as one tuple, which packed the SHARED output ceiling
+// and the api-PRIVATE streaming choice into a single value. Two signals never share one value here, so
+// they get one assertion each.
 
 #[test]
-fn job_api_limits_map_to_todays_behavior() {
-    // Markdown: 16K, non-streaming. Html: 64K, SSE. This is the pre-transport behavior exactly, and
-    // it is asserted per-job rather than derived from a threshold over max_tokens.
-    assert_eq!(Job::Markdown.api_limits(), (16_000, false));
-    assert_eq!(Job::Html.api_limits(), (64_000, true));
+fn streaming_is_derived_from_the_kind_not_from_a_threshold() {
+    // Markdown reads a single JSON body; html streams so the 300s idle wall never fires on a long
+    // generation. Derived from the KIND, never from a threshold over max_tokens.
+    assert!(!Kind::Markdown.streams());
+    assert!(Kind::Html.streams());
+}
+
+#[test]
+fn the_default_ceilings_are_the_documented_pair() {
+    // Mirrors how `both_jobs_default_to_opus_4_8` pins the model defaults: a silent change to either
+    // ceiling fails here.
+    assert_eq!(DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, 16_000);
+    assert_eq!(DEFAULT_HTML_MAX_OUTPUT_TOKENS, 64_000);
 }
 
 #[test]
@@ -171,4 +206,34 @@ fn a_configured_model_reaches_the_serialized_body() {
         "the configured pin must reach the wire: {json}"
     );
     assert!(!json.contains("claude-opus-4-8"), "no default may sneak in: {json}");
+}
+
+/// AC-C1's api half: a CONFIGURED ceiling must reach the wire as `max_tokens`.
+///
+/// The sentinel could never be a default, so a hardcoded ceiling inside `build_body` (or a `Job` built
+/// from a const rather than from config) fails here. The cli half of the same probe lives in
+/// `cli/tests.rs`, and together they cross both transports — which the byte-identical body tests never
+/// do, since they call `build_body` directly and never touch a transport at all.
+///
+/// BITES: replace `max_tokens` with a literal in `build_body` and this fails.
+#[test]
+fn a_configured_ceiling_reaches_the_serialized_body() {
+    let job = Job {
+        kind: Kind::Markdown,
+        model: MARKDOWN_MODEL,
+        max_output_tokens: 12_345,
+    };
+    let body = build_body(
+        job.model,
+        "sys",
+        job.max_output_tokens,
+        job.kind.streams(),
+        PROMPT,
+        JSON_BODY,
+    );
+    let json = serde_json::to_string(&body).unwrap();
+    assert!(
+        json.contains(r#""max_tokens":12345"#),
+        "the configured ceiling must reach the wire: {json}"
+    );
 }

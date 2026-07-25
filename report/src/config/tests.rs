@@ -536,6 +536,50 @@ fn model_pins_are_independent_of_each_other() {
     assert_eq!(cfg.html_model, "claude-sonnet-5");
 }
 
+// ---- AC-C1: the output ceilings are configurable and plumbed ------------------------------------
+
+#[test]
+fn ceilings_default_without_config() {
+    let cfg = resolved_render(render_args_llm(None), None);
+    assert_eq!(
+        cfg.markdown_max_output_tokens,
+        common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS
+    );
+    assert_eq!(
+        cfg.html_max_output_tokens,
+        common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS
+    );
+}
+
+/// AC-C1's first hop: `clyde.yml` -> the resolved per-invocation `RenderConfig`. The two transports'
+/// halves of the probe live in `summarize/api/tests.rs` and `summarize/cli/tests.rs`.
+///
+/// Sentinels that could never be a default, and distinct, so a hardcoded value or a crossed pair in
+/// `resolve_command` fails here.
+#[test]
+fn ceilings_come_from_clyde_yml_when_set() {
+    let yml = "render:\n  markdown-max-output-tokens: 12345\n  html-max-output-tokens: 54321\n";
+    let cfg = resolved_render(render_args_llm(None), Some(yml));
+    assert_eq!(cfg.markdown_max_output_tokens, 12_345);
+    assert_eq!(cfg.html_max_output_tokens, 54_321);
+}
+
+#[test]
+fn ceilings_are_independent_of_each_other() {
+    // Setting only one must leave the other at its default, not zero it — a ceiling of 0 fails every
+    // render.
+    let cfg = resolved_render(
+        render_args_llm(None),
+        Some("render:\n  markdown-max-output-tokens: 12345\n"),
+    );
+    assert_eq!(cfg.markdown_max_output_tokens, 12_345);
+    assert_eq!(
+        cfg.html_max_output_tokens,
+        common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
+        "unset ceiling keeps its default"
+    );
+}
+
 // ---- the config-load blast radius, named and tested --------------------------------------------
 
 /// The behavior change this design accepted: render now loads `clyde.yml` UNCONDITIONALLY, because

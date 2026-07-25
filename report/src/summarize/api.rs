@@ -7,7 +7,7 @@
 //! Everything api-specific lives here and never reaches the [`Transport`] port: the output ceilings,
 //! the streaming choice, the endpoint, the version header, and the prompt/facts join.
 
-use super::{Job, Transport, check_stop_reason, parse_sse_stream};
+use super::{Job, Kind, Transport, check_stop_reason, parse_sse_stream};
 use eyre::{Context, Result, bail};
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
@@ -17,23 +17,18 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
 
-impl Job {
+impl Kind {
     /// Whether this job's response is delivered as SSE.
     ///
-    /// API-PRIVATE, and the reason it is not on `Job` itself: the cli transport has no delivery
+    /// API-PRIVATE, and the reason it is not a field on `Job`: the cli transport has no delivery
     /// choice to make, so a shared `stream` field would be one it must ignore. The output ceiling is
-    /// the opposite case — both transports use it — so it lives on `Job`.
+    /// the opposite case — both transports use it — so it IS a field on `Job`.
     ///
     /// Html streams so the connection keeps flowing bytes and the 300s idle wall never fires on a
-    /// long generation; markdown reads a single JSON body. Derived from the JOB, not from a
+    /// long generation; markdown reads a single JSON body. Derived from the KIND, not from a
     /// threshold over `max_tokens`, so one value never carries two meanings.
     fn streams(self) -> bool {
-        matches!(self, Job::Html)
-    }
-
-    /// This job's api call knobs: the shared ceiling, plus the api-private streaming choice.
-    fn api_limits(self) -> (u32, bool) {
-        (self.max_output_tokens(), self.streams())
+        matches!(self, Kind::Html)
     }
 }
 
@@ -82,12 +77,12 @@ impl ApiTransport {
 }
 
 impl Transport for ApiTransport {
-    fn complete(&self, job: Job, model: &str, system: &str, prompt: &str, json_body: &str) -> Result<String> {
-        let (max_tokens, stream) = job.api_limits();
-        let body = build_body(model, system, max_tokens, stream, prompt, json_body);
+    fn complete(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<String> {
+        let max_tokens = job.max_output_tokens;
+        let stream = job.kind.streams();
+        let body = build_body(job.model, system, max_tokens, stream, prompt, json_body);
         debug!(
-            "ApiTransport::complete: job={job:?} model={model} system bytes={} max_tokens={max_tokens} \
-             stream={stream} prompt+json bytes={}",
+            "ApiTransport::complete: job={job:?} system bytes={} stream={stream} prompt+json bytes={}",
             system.len(),
             body.messages.first().map(|m| m.content.len()).unwrap_or(0)
         );
@@ -97,7 +92,10 @@ impl Transport for ApiTransport {
             .build()
             .new_agent();
 
-        info!("ApiTransport::complete: calling {ENDPOINT} ({model}) stream={stream}");
+        info!(
+            "ApiTransport::complete: calling {ENDPOINT} ({}) stream={stream}",
+            job.model
+        );
         let mut response = agent
             .post(ENDPOINT)
             .header("x-api-key", &self.api_key)
