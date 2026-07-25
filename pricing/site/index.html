@@ -253,12 +253,25 @@
       return;
     }
 
+    // An EMPTY map is the SAME failure as a missing one, and it is the one that slips through a
+    // typeof check: `{"pricing": {}}` is a truthy object, so guarding only the missing case would
+    // reveal the feed block with "0 models priced" above an empty table -- precisely the "looks like
+    // real data reporting zero models" outcome this page exists to avoid. There is no legitimate
+    // published feed with zero models; the publisher's own regression checks would not emit one.
+    var names = Object.keys(pricing).sort();
+    if (names.length === 0) {
+      fail(
+        "The feed parsed as JSON and carries a `pricing` map, but it is EMPTY (zero models). That is " +
+          "not a feed state the publisher can legitimately produce, so it is reported as a failure " +
+          "rather than rendered as a table of no rows."
+      );
+      return;
+    }
+
     document.getElementById("data-version").textContent = feed.data_version || "(none)";
     document.getElementById("schema-version").textContent =
       feed.schema_version === undefined ? "(none)" : String(feed.schema_version);
     document.getElementById("min-library-version").textContent = feed.min_library_version || "(none)";
-
-    var names = Object.keys(pricing).sort();
     document.getElementById("model-count").textContent = String(names.length);
 
     var tbody = document.getElementById("rates");

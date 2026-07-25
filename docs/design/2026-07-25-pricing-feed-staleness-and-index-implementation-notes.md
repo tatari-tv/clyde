@@ -11,15 +11,26 @@ gets a NEW entry; nothing above is rewritten.
 - **The design doc rides the Phase 3 commit, not Phase 1's.** Scott's instruction was that the doc ride
   a phase commit rather than a standalone `docs(...)` commit, first or last, implementer's choice. Last,
   so the `Status:` flip to `Implemented` is true in the commit that makes it true.
-- **The new CI guard is `cargo check -p claude-pricing`, lib-only — no `--all-targets`.** That is what
-  the doc specifies, and `--all-targets` is not merely unnecessary here, it is impossible: the crate's
-  own test target calls `log::set_boxed_logger` (`pricing/src/fetch/tests.rs:47`), which needs `log`'s
-  `std` feature. Nothing in `pricing/Cargo.toml` enables it; the workspace build gets it through
-  feature unification from another member. So `cargo check -p claude-pricing --all-targets` fails on a
-  clean tree for a reason unrelated to this guard. **Verified this is pre-existing, not introduced
-  here:** `cargo check -p claude-pricing --all-features --all-targets` fails identically (3 hits on
-  `set_boxed_logger`), and this phase's diff touches no feature declarations. The guard therefore covers
-  the LIB in a non-fetch build, which is exactly what the external `ccu`/`cr` consumers compile.
+- **The new CI guard is `cargo check -p claude-pricing`, lib-only.** That is what the doc and AC-P9
+  specify, and it is what shipped.
+
+  **CORRECTION (implementation audit, 2026-07-25): the reason originally recorded here was wrong.**
+  This entry claimed `--all-targets` was "not merely unnecessary, it is impossible" because the crate's
+  test target calls `log::set_boxed_logger` (`pricing/src/fetch/tests.rs:47`), which needs `log`'s `std`
+  feature. The Staff Engineer seat re-ran the command on a cold target dir and got **exit 0**. Verified
+  independently: `CARGO_TARGET_DIR=<fresh> cargo check -p claude-pricing --all-targets` succeeds.
+
+  The real mechanism: `pricing/src/lib.rs:8-9` gates `mod fetch` behind the `fetch` feature, so
+  `fetch/tests.rs` is never compiled in a non-fetch build and its `set_boxed_logger` call is never
+  reached. What actually fails is the `--features fetch` / `--all-features` variant — which is the
+  command I ran, and I generalized from it to the plain one without testing the plain one. An
+  unverified impossibility claim recorded for future readers is worse than no claim, because the next
+  person believes the door is locked and never tries it.
+
+  **Consequence left open deliberately, not decided:** `cargo check -p claude-pricing --all-targets`
+  works and would additionally compile the crate's non-fetch test targets, making the guard strictly
+  stronger for the same runtime. AC-P9 is satisfied by the lib-only form, so widening it is a scope
+  decision rather than a fix, and it is Scott's call. Flagged here rather than taken.
 - **AC-P8's "both `compute_cache_key` call sites" needed no code change at either site.** Both
   `cost/src/lib.rs:283` (single-day read) and `:489` (multi-day write) already pass
   `pricing.data_version()`; the bug was entirely upstream in what that returned. So the one-field fix in
@@ -187,3 +198,42 @@ Headless Chrome against `python3 -m http.server`, three scenarios:
 | feed present (real `pricing/data/pricing.json`) | `data_version`, `schema_version`, `min_library_version`, model count all match the file exactly; 18/18 rows; `claude-opus-4-8` input renders `$5` against the feed's `5`; error banner hidden |
 | feed with `*_above_200k` rates (synthetic) | both tier lines render (`$6 >200K`, `$22.5 >200K`) |
 | `pricing.json` absent (HTTP 404) | error banner VISIBLE, feed block hidden, **zero** rate rows, message names `HTTP 404` |
+
+## Implementation audit (review panel, 2026-07-25) and the fixes it forced
+
+Both seats ran (rc=0). The Architect (Gemini) returned "zero findings, ready to ship" and that verdict
+did not survive checking: it missed the real defect below, and it affirmatively endorsed the false
+`--all-targets` claim in the very notes it was auditing without running the command. The Staff Engineer
+(Codex) declared itself read-only and found the defect from a code read. Weight Staff higher on this run.
+The panel then ran the verification itself, including re-gating a `pricing.rs` site to prove AC-P9's
+guard actually goes red (it does: `E0609`), and reverted cleanly.
+
+- **F1 (Medium, undisclosed deviation against my OWN stated criterion) — an empty `pricing` map rendered
+  an empty table.** `pricing/site/index.html`'s guard was `!pricing || typeof pricing !== "object"`.
+  `{"pricing": {}}` is a truthy object, so it sailed through: "0 models priced", feed block revealed,
+  empty `<tbody>`. That is exactly the "looks like real data reporting zero models" outcome the doc rules
+  out at `:179`. Worse than a plain miss: this notes file already claimed the case was handled, naming
+  "the fetch succeeding with no `pricing` map" as one of two covered failure modes. I guarded the MISSING
+  map and left the EMPTY map open while writing that both were covered. Closed by folding
+  `names.length === 0` into the fail path, verified in a real browser (error banner visible, feed block
+  hidden, zero rows) with the real feed re-checked for regression (18/18 rows).
+- **F2 (Low, my error) — the `--all-targets` "impossible" claim was false.** Corrected in place above,
+  with the real mechanism (`lib.rs:8-9` gates `mod fetch`) and the scope question it opens left for
+  Scott rather than taken.
+- **F3 (deferred, panel's own demotion) — a model object present but missing rate fields renders a row
+  of `"n/a"`.** The doc requires no per-field rate validation, `"n/a"` is visible degradation rather than
+  a silent zero, and a genuinely malformed shape (a `null` entry) throws into the `.catch()` and shows
+  only the error banner because `#feed` is revealed last. Residual gap is narrow and specific:
+  object-present-but-numbers-absent. Recorded, not built — building it would be unrequested scope.
+- **Pointer hygiene.** AC-P8 and the Phase 1 bullet cited `cost/src/lib.rs:489` for the multi-day write
+  site; it is `:496`, shifted seven lines by the comment Phase 1 itself added. Live guidance and the live
+  gate corrected; the round-2 F14 disposition row keeps `:489` because it was accurate when written.
+
+Cleared by the panel and not to be re-litigated: AC-P1/P2/P3/P6/P7/P8/P9 all verified; warn-once holds on
+all six paths through `auto_with_config` -> `fallback_chain`, with the `Unusable` branch correctly leaving
+the flag false so a later fallback-chain-only loss still warns; the sidecar is neither written nor cleared
+from the cache path and `fetch_and_cache` remains sole writer and sole clearer; the fall-through consults
+the cache at most twice with no loop, matching the doc's "terminating, not self-healing" claim; XSS clean
+(zero `innerHTML`/`document.write`/`eval`, all eight feed-derived DOM sinks are `textContent` or
+`createTextNode`); all four `pricing.rs` sites ungated with the stale gate comment rewritten; and
+AC-P4/AC-P5 being unchecked is honest, with nothing checkable hidden behind the label.
