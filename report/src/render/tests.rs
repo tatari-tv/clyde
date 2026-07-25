@@ -783,7 +783,7 @@ fn build_context_block_omits_outcomes_key_when_rollup_absent() {
 // ---------------------------------------------------------------------------
 
 /// Serialize all env-var-touching tests behind one lock (edition 2024, parallel test races).
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use crate::ENV_LOCK;
 
 /// Phase 5: the context is STRING-ONLY. The raw numeric OPERANDS the pre-Phase-5 context carried
 /// (`totals.tokens`, per-model `spend-usd`, per-session raw `spend`) are GONE, so the model has no

@@ -154,8 +154,9 @@ const DEFAULT_RENDER_INPUT: &str = "./claude-report.json";
 pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> {
     let resolved = match command {
         crate::cli::Command::Collect(args) => {
-            // Load clyde.yml ONLY here — collect is the sole consumer of the date-tz convention.
-            // Loading lazily means a malformed config can't break `render`/`merge` below.
+            // Collect is the sole consumer of the date-tz convention, so it loads clyde.yml for that.
+            // This load is NOT what protects `merge` — `render` below loads config unconditionally
+            // now (the model pins live there), so only `merge` is still config-independent.
             let tz = common::config::load()?.date_tz();
             ResolvedCommand::Collect(collect_config_from_args(args, tz)?)
         }

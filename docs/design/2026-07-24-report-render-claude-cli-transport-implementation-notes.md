@@ -266,3 +266,76 @@ html explicit). Two billed renders instead of four; recorded so the gap is visib
   doc's Open Questions; the choice is Scott's because each costs something (raising the ceiling
   retires AC3's byte-identical contract, accepting it leaves a hard failure on big months, making it
   configurable adds two keys). Everything else shipped and is verified.
+
+## Implementation audit response (2026-07-25)
+
+Panel ran in Mode 2 against the branch. Both reviewers completed. Architect (Gemini) returned zero
+findings and a clean bill on all twelve ACs; that verdict was NOT trusted, because its citations were
+systematically off by hundreds of lines and it "verified" the cost arithmetic using haiku rates that
+do not appear in `pricing/data/pricing.json`. Every Staff Engineer (Codex) finding landed on real code
+with correct line numbers. Convergence was thin by construction, so each finding was verified
+independently before acting.
+
+**Both direct questions confirmed.** The cost arithmetic is correct to the cent against
+`pricing.json` read from the commit ($2.9305 cli vs $1.5303 api, ratio 1.915x). The markdown
+16,000-token ceiling failure is confirmed NOT cli-specific: `api.rs` calls `check_stop_reason`
+unconditionally and the byte-identical fixture proves `max_tokens: 16000` goes on the wire, so the api
+path refuses the same month via a different mechanism. Identical outcome, no artifact either way.
+
+### Fixed
+
+- **M1 (must-fix). AC4's central security property was not test-enforced.** `Command::get_envs()`
+  reports only explicit OVERRIDES, so the old assertion on its length passed with `env_clear()`
+  deleted while the child inherited the parent's whole environment, including three measured secrets.
+  Green test, absent property. Replaced with a test that spawns `/usr/bin/env` in place of `claude`,
+  plants four secrets in the parent, and asserts the child's environment is EXACTLY the allowlist --
+  by name and by value. The old comment claiming this was unprovable without the `claude` binary was
+  simply wrong; `/usr/bin/env` is hermetic and the scope boundary is intact. Proven to bite.
+- **M2. AC11's api half was not regression-proof.** Every `build_body` test passed the DEFAULT
+  consts, which equal the literal the fixtures assert, so ignoring the `model` parameter would have
+  left them all green. Added a sentinel-model case. Proven to bite in the exact shape predicted: the
+  sabotage fails the sentinel test while both pre-existing byte-identical tests still pass. Note the
+  crude version of this sabotage (hardcode and drop the param) cannot even compile, because the crate
+  runs `#![deny(unused_variables)]` -- a stronger guarantee than a test, but one that does not cover
+  the plumbing-ignored shape, which is why the sentinel case is still needed.
+- **M3. Two comments asserted behavior the code no longer had.** `config.rs` still said clyde.yml was
+  loaded "ONLY here" and that lazy loading meant a malformed config could not break `render` -- eight
+  lines above the render branch that now loads it unconditionally. Same false claim in `lib.rs`. Both
+  corrected to name `merge` as the only config-independent subcommand. Staff caught the `lib.rs` one;
+  the `config.rs` one was found by the panel's own reconciliation, not by either reviewer.
+- **M4. The `ESCAPE_HATCH` invariant was stated absolutely and honored partially.** Accepted the
+  panel's narrowing over the Staff Engineer's literal reading: Guard 4 (truncation) and Guard 6
+  (over-budget) correctly OMIT the hatch, because the api path enforces the identical per-job ceiling
+  and would fail the same way -- pointing at `--llm api` there would be a remedy that does not remedy.
+  The two `check_model` bails DO now carry it, since the api path puts the pin on the wire and honors
+  it. One code change plus two comment corrections, not four code changes. Added tests for BOTH sides
+  of the contract, which nothing previously asserted in either direction; both proven to bite.
+- **M5. All twelve AC checkboxes were still unticked in a doc marked `Status: Implemented`.** Set to
+  ground truth. AC1 stays deliberately UNCHECKED and marked PARTIAL: it does not hold for the largest
+  report, which is the open question. A tidy checklist that overstates is worse than an honest one.
+
+### Accepted the panel's demotions
+
+AC9 log-string assertions (brittle, buys little), AC5's literal timeout-kill and stale-flag tests
+(both collapse into covered classes), the AC1b/AC2c live-verification gap (a cross-product of two
+independently proven axes; two more billed renders would prove nothing), and the absent annotated
+example `clyde.yml` (repo-wide pre-existing gap, both READMEs carry annotated blocks). Also accepted
+A1: the ceiling on `Job` is the right seam and not a lying field, since api sets it and cli checks it.
+
+### Found while fixing, not in the audit
+
+**The `ENV_LOCK` pattern was broken across modules.** Each test module declared its OWN
+`static ENV_LOCK`, and two separate mutexes do not serialize against each other at all. The new M1
+test reads the entire parent environment while `summarize::api`'s tests mutate `ANTHROPIC_API_KEY`
+under a different lock, which produced exactly one intermittent two-test failure before it was
+diagnosed. Replaced all five per-module locks with a single crate-wide `crate::ENV_LOCK` and
+documented why it must stay crate-wide. Verified with three consecutive full-suite runs. This is the
+same race class as the Phase 4 incident, one level up: fixing it per-module was treating the symptom.
+
+### Process note
+
+Twice in this work I used `git checkout <path>` to undo a deliberate sabotage on a file whose real
+edits were not yet committed, and destroyed those edits both times -- the second time silently
+reverting all four M4 changes, caught only by re-grepping. Bite proofs now copy the file aside and
+restore from the copy. `git checkout` is for discarding changes you want gone, never for undoing a
+temporary edit sitting on top of work you want to keep.

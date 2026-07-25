@@ -3,11 +3,8 @@
 use super::super::{HTML_SYSTEM_PROMPT, MARKDOWN_SYSTEM_PROMPT};
 use super::*;
 use common::config::{DEFAULT_HTML_MODEL as HTML_MODEL, DEFAULT_MARKDOWN_MODEL as MARKDOWN_MODEL};
-use std::sync::Mutex;
 
-/// Serialize every env-var-touching test; `set_var`/`remove_var` are process-global and the test
-/// harness runs in parallel by default.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use crate::ENV_LOCK;
 
 /// The prompt/facts pair every body test uses. Small on purpose: the assertion is about the
 /// envelope's exact shape, not about payload size.
@@ -156,4 +153,22 @@ fn from_env_error_names_both_remedies() {
     // There are two doors now, so an unset key must not read as "you need a key, full stop".
     assert!(err.contains("ANTHROPIC_API_KEY"), "should name the env var: {err}");
     assert!(err.contains("claude"), "should name the cli alternative: {err}");
+}
+
+/// AC11's api half: a CONFIGURED model must reach the wire, not just the default.
+///
+/// Every other body test passes `MARKDOWN_MODEL`/`HTML_MODEL`, which EQUAL the literal
+/// `"claude-opus-4-8"` those fixtures assert — so hardcoding the model inside `build_body` would
+/// leave them all green. A sentinel that could never be a default closes that hole.
+///
+/// BITES: replace `model` with a literal in `build_body` and this fails.
+#[test]
+fn a_configured_model_reaches_the_serialized_body() {
+    let body = build_body("sentinel-model-xyz", "sys", 16_000, false, PROMPT, JSON_BODY);
+    let json = serde_json::to_string(&body).unwrap();
+    assert!(
+        json.contains(r#""model":"sentinel-model-xyz""#),
+        "the configured pin must reach the wire: {json}"
+    );
+    assert!(!json.contains("claude-opus-4-8"), "no default may sneak in: {json}");
 }

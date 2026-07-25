@@ -2,9 +2,10 @@
 
 use super::*;
 
-// NOTE: `resolve_command` reads `clyde.yml` from `$XDG_CONFIG_HOME`; env mutation isn't
-// parallel-safe, so the config-precedence tests below serialize on the module's `ENV_LOCK`
-// (defined further down alongside the XDG-data tests).
+// NOTE: `resolve_command` reads `clyde.yml` from `$XDG_CONFIG_HOME`; env mutation is not
+// parallel-safe, so every test here serializes on the CRATE-WIDE `ENV_LOCK` (`crate::ENV_LOCK`).
+// It is crate-wide on purpose: per-module locks do not serialize against each other, and this crate
+// has env-touching tests in five modules.
 //
 // As of the `render.llm` / model-pin work this applies to EVERY render test, not just the
 // config-precedence ones. Render used to load `clyde.yml` only when `--format` was absent, so a
@@ -156,10 +157,7 @@ fn first_of_month_local_midnight_is_first() {
 
 use chrono::{Local, Timelike};
 
-use std::sync::Mutex;
-
-// Serialize env-var-touching tests to prevent parallel races.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use crate::ENV_LOCK;
 
 #[test]
 fn explicit_output_selects_file_target() {
@@ -386,7 +384,9 @@ fn resolve_command_collect_threads_no_outcomes_into_config() {
         no_rollup: false,
         no_outcomes: true,
     };
-    let resolved = resolve_command(crate::cli::Command::Collect(args)).unwrap();
+    // `collect` also loads clyde.yml (for the date-tz convention), so this must hold ENV_LOCK too —
+    // same race as the render tests, just via the other branch of `resolve_command`.
+    let resolved = with_clyde_yml(None, || resolve_command(crate::cli::Command::Collect(args)).unwrap());
     match resolved {
         ResolvedCommand::Collect(cfg) => assert!(cfg.no_outcomes),
         other => panic!("expected Collect, got {other:?}"),

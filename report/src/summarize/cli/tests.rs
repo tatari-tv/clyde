@@ -7,6 +7,8 @@ const MODEL: &str = "claude-opus-4-8";
 /// The observation block a real transport would render, for guards that embed it.
 const OBS: &str = "  binary:  /usr/local/bin/claude\n  version: 2.1.219 (minimum supported: 2.1.219)";
 
+use crate::ENV_LOCK;
+
 fn transport() -> CliTransport {
     CliTransport {
         binary: PathBuf::from("/usr/local/bin/claude"),
@@ -160,8 +162,9 @@ fn child_env_is_an_allowlist_and_leaks_no_secret() {
 fn child_env_survives_a_secret_being_present_in_the_parent() {
     // The parent's env is irrelevant by construction (env_clear + allowlist), so setting a secret
     // here must change nothing. This is the property a denylist could not guarantee.
+    let guard = ENV_LOCK.lock().unwrap();
     let before = child_env();
-    // SAFETY: single-threaded assertion window; removed immediately below.
+    // SAFETY: serialized behind ENV_LOCK; removed before the guard drops.
     unsafe {
         std::env::set_var("CLAUDE_COST_SLACK_BOT_TOKEN", "xoxb-not-a-real-token");
     }
@@ -169,25 +172,75 @@ fn child_env_survives_a_secret_being_present_in_the_parent() {
     unsafe {
         std::env::remove_var("CLAUDE_COST_SLACK_BOT_TOKEN");
     }
+    drop(guard);
     assert_eq!(before, after, "the child env must not depend on the parent's");
 }
 
+/// AC4 clause one, proven by inspecting a REAL child's environment.
+///
+/// This spawns `/usr/bin/env` in place of `claude` and reads what the child actually received. An
+/// earlier version of this test asserted `Command::get_envs().len()`, which does NOT work: that
+/// getter reports only the explicit OVERRIDES, so deleting `cmd.env_clear()` left the assertion
+/// passing while the child silently inherited the parent's entire environment — including the three
+/// measured secrets below. The test was green and the security property was gone.
+///
+/// Nothing about this needs the `claude` binary, so the scope boundary ("no test shells out to the
+/// real claude") is respected: `/usr/bin/env` is hermetic, fast, and present everywhere this builds.
+///
+/// BITES: delete `cmd.env_clear()` in `Spawn::to_command` and this fails on the planted secret.
 #[test]
-fn built_command_clears_the_environment_before_applying_the_allowlist() {
-    let spawn = transport().build_spawn(Job::Markdown, MODEL, "SYS", "P");
-    let cmd = spawn.to_command();
-    // `Command` exposes no getter for "was env_clear called", so assert the observable consequence:
-    // the explicit override set is exactly the allowlist, with no inherited entries alongside it.
-    let envs: Vec<String> = cmd
-        .get_envs()
-        .map(|(k, v)| format!("{}={}", k.to_string_lossy(), v.unwrap_or_default().to_string_lossy()))
+fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
+    let guard = ENV_LOCK.lock().unwrap();
+    // Plant a secret of each shape the design measured as leaking, in the PARENT.
+    // Values are long and distinctive on purpose: the value-leak assertion below is a substring
+    // search over the child's whole environment, so a short value like "1" would false-positive
+    // against a legitimate allowlist entry (`NO_UPDATE_NOTIFIER=1`).
+    let planted = [
+        ("CLAUDE_COST_ANTHROPIC_API_ADMIN_KEY", "planted-admin-key-must-not-leak"),
+        ("CLAUDE_COST_SLACK_BOT_TOKEN", "planted-slack-bot-must-not-leak"),
+        ("ANTHROPIC_API_KEY", "planted-api-key-must-not-leak"),
+        ("CLAUDECODE", "planted-claudecode-must-not-leak"),
+    ];
+    // SAFETY: serialized behind ENV_LOCK; every planted var is removed below.
+    for (k, v) in planted {
+        unsafe { std::env::set_var(k, v) };
+    }
+
+    let mut spawn = transport().build_spawn(Job::Markdown, MODEL, "SYS", "P");
+    // Swap the program for `env`, which prints the environment it was handed. The env/args split is
+    // exactly what a real render builds; only the executable differs.
+    spawn.program = PathBuf::from("/usr/bin/env");
+    spawn.args.clear();
+    let output = spawn.to_command().output().expect("/usr/bin/env must be spawnable");
+
+    for (k, _) in planted {
+        unsafe { std::env::remove_var(k) };
+    }
+    drop(guard);
+
+    assert!(output.status.success(), "env exited {:?}", output.status.code());
+    let seen: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
         .collect();
-    assert_eq!(
-        envs.len(),
-        spawn.env.len(),
-        "override set must equal the allowlist: {envs:?}"
-    );
-    assert!(envs.iter().any(|e| e == "NO_UPDATE_NOTIFIER=1"), "{envs:?}");
+    let names: Vec<&str> = seen.iter().filter_map(|l| l.split('=').next()).collect();
+
+    // Not one planted secret may appear, by name OR by value.
+    for (k, v) in planted {
+        assert!(!names.contains(&k), "{k} leaked into the child: {names:?}");
+        assert!(
+            !seen.iter().any(|l| l.contains(v)),
+            "{k}'s VALUE leaked into the child under another name: {names:?}"
+        );
+    }
+    // And the child's whole environment is the allowlist, nothing more.
+    let mut got = names.clone();
+    got.sort_unstable();
+    let allowlist = child_env();
+    let mut want: Vec<&str> = allowlist.iter().map(|(k, _)| k.as_str()).collect();
+    want.sort_unstable();
+    assert_eq!(got, want, "child env must be exactly the allowlist");
 }
 
 // ---- envelope parsing: the two stdout-contamination guards -------------------------------------
@@ -497,4 +550,60 @@ fn guards_run_in_order_so_the_most_specific_cause_wins() {
         !err.contains("<missing>"),
         "must not report a downstream symptom: {err}"
     );
+}
+
+// ---- the ESCAPE_HATCH contract, which nothing asserted either way ------------------------------
+
+/// Failures the api transport could actually resolve must name it.
+#[test]
+fn credential_and_model_failures_carry_the_escape_hatch() {
+    let cases = [
+        // is_error: an expired token — api key would work.
+        r#"{"is_error":true,"error":{"message":"OAuth token has expired"}}"#.to_string(),
+        // subtype not success.
+        envelope_json(false, "error_during_execution", "end_turn", "x", 1, &real_model_usage()),
+        // empty result.
+        envelope_json(false, "success", "end_turn", "  ", 1, &real_model_usage()),
+        // a substituted model — the api path puts the pin on the wire and would honor it.
+        envelope_json(
+            false,
+            "success",
+            "end_turn",
+            "prose",
+            10,
+            r#"{"claude-opus-4-8":{"canonicalModel":"claude-sonnet-5"}}"#,
+        ),
+        // the pinned model never ran at all.
+        envelope_json(
+            false,
+            "success",
+            "end_turn",
+            "prose",
+            10,
+            r#"{"claude-haiku-4-5-20251001":{"canonicalModel":"claude-haiku-4-5"}}"#,
+        ),
+    ];
+    for json in cases {
+        let err = check(&json, Job::Markdown).unwrap_err().to_string();
+        assert!(err.contains("--llm api"), "must offer the api transport: {err}");
+    }
+}
+
+/// Output-ceiling failures must NOT name it: the api path enforces the same per-job ceiling, so
+/// `--llm api` would send the reader to a path that fails identically. A remedy that cannot remedy is
+/// worse than none. (Audit finding; the invariant was previously stated absolutely and honored
+/// partially, with nothing asserting either side.)
+#[test]
+fn ceiling_failures_do_not_offer_a_transport_that_fails_the_same_way() {
+    // Guard 4: truncation.
+    let truncated = envelope_json(false, "success", "max_tokens", "trunc", 16_000, &real_model_usage());
+    let err = check(&truncated, Job::Markdown).unwrap_err().to_string();
+    assert!(!err.contains("--llm api"), "api path truncates identically: {err}");
+    assert!(err.contains("--since"), "must still offer a remedy that works: {err}");
+
+    // Guard 6: over budget on a natural stop.
+    let over = envelope_json(false, "success", "end_turn", "long", 20_000, &real_model_usage());
+    let err = check(&over, Job::Markdown).unwrap_err().to_string();
+    assert!(!err.contains("--llm api"), "api path caps at the same ceiling: {err}");
+    assert!(err.contains("16000-token ceiling"), "must name the budget: {err}");
 }

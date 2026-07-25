@@ -9,7 +9,13 @@
 //! out, non-zero exit, malformed envelope, non-`end_turn` stop, model mismatch, timeout. None of
 //! them retry and none silently switch to the api transport, because a silent fallback would make
 //! one command nondeterministic across two transports and two billing paths, and would hide a broken
-//! login forever. Every error therefore carries the `--llm api` escape hatch.
+//! login forever.
+//!
+//! Failures that could plausibly be fixed by the OTHER transport carry the [`ESCAPE_HATCH`]; the ones
+//! that could not, deliberately do not. A truncation or an over-budget artifact is NOT one of them:
+//! the api path enforces the identical per-job ceiling (it sets `max_tokens` on the wire and bails on
+//! `stop_reason: max_tokens`), so advising `--llm api` there would send the reader to a path that
+//! fails the same way. Suggesting a remedy that cannot work is worse than suggesting none.
 
 use super::{Job, Transport};
 use crate::proc;
@@ -227,8 +233,13 @@ fn check_envelope(envelope: Envelope, job: Job, model: &str, observations: &str)
     Ok(result)
 }
 
-/// Remediation appended to failures that could plausibly be an install/login problem. Every cli
-/// failure must carry the escape hatch, because there is no automatic fallback by design.
+/// Remediation appended to failures that could plausibly be an install, login, credential, or
+/// model-selection problem — i.e. the ones the api transport would actually resolve. There is no
+/// automatic fallback by design, so those failures must name the manual one.
+///
+/// Deliberately NOT appended to the truncation (Guard 4) or over-budget (Guard 6) bails: both are
+/// per-job output-ceiling failures that the api path enforces identically, so pointing at `--llm api`
+/// would be a remedy that does not remedy. See the module docs.
 const ESCAPE_HATCH: &str =
     "try `claude` interactively to check the install and login, or pass --llm api to use ANTHROPIC_API_KEY";
 
@@ -404,7 +415,7 @@ fn check_model(model_usage: &BTreeMap<String, ModelUsage>, requested: &str, obse
         let saw: Vec<&str> = model_usage.keys().map(String::as_str).collect();
         bail!(
             "claude -p reported no usage for the requested model {requested}; it ran {:?} instead. \
-             Refusing to publish an artifact from a model we did not pin.\n{observations}",
+             Refusing to publish an artifact from a model we did not pin.\n{observations}\n{ESCAPE_HATCH}",
             saw
         );
     };
@@ -412,7 +423,7 @@ fn check_model(model_usage: &BTreeMap<String, ModelUsage>, requested: &str, obse
     if claude_pricing::normalize_model_id(got) != want {
         bail!(
             "claude -p ran canonicalModel={got} but {requested} was requested; refusing to publish an \
-             artifact from a substituted model\n{observations}"
+             artifact from a substituted model\n{observations}\n{ESCAPE_HATCH}"
         );
     }
     debug!("check_model: requested={requested} canonical={got} ok");
