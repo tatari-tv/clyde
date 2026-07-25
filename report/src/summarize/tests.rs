@@ -260,6 +260,20 @@ impl Transport for FailingTransport {
 /// nothing here re-couples to a value that moves.
 const CEILING: u32 = 1_024;
 
+/// Each kind names its OWN ceiling key. A ceiling failure quotes this key as the remedy, so a shared or
+/// crossed value would send the reader to a line that does not govern the job that failed — the
+/// "remedy that cannot remedy" `cli.rs`'s module docs reject.
+///
+/// BITES: return the markdown key from both arms and the html assertion fails.
+#[test]
+fn each_kind_names_its_own_ceiling_key() {
+    assert_eq!(
+        Kind::Markdown.max_output_tokens_key(),
+        "render.markdown-max-output-tokens"
+    );
+    assert_eq!(Kind::Html.max_output_tokens_key(), "render.html-max-output-tokens");
+}
+
 #[test]
 fn markdown_passes_job_model_and_system_prompt_through() {
     let t = FakeTransport::new("# Report\n\nprose");

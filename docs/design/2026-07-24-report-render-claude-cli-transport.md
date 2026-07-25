@@ -2,7 +2,7 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-24
-**Status:** Implemented (all six phases shipped and live-verified; ONE open question left for the owner -- the markdown job's 16,000-token output ceiling, a pre-existing limit surfaced by the Phase 5 shakedown, see Open Questions)
+**Status:** Implemented (all six phases shipped and live-verified; the one open question this design left open -- the markdown job's output ceiling -- is CLOSED by `docs/design/2026-07-25-render-output-ceilings-config.md`, see Resolved Decisions)
 **Review Passes Completed:** 5/5
 **Funnel position:** five passes, then a two-round review panel (Architect on Gemini, Staff Engineer on Codex, four invocations). Every finding dispositioned in Resolved Decisions; both reviewers declined a third round. Open Questions empty. Ready to build, starting at Phase 0.
 
@@ -47,7 +47,7 @@ Nothing else is in scope. `--template` quality is a separate ask nobody has made
 
 - Keyless render of both artifacts, full fidelity (R1, R2).
 - Zero credential custody in clyde: no token read, no refresh, no storage (R3).
-- One default path for everyone: `claude -p`. The api transport stays fully supported and byte-identical when selected, but it is opt-in (R4).
+- One default path for everyone: `claude -p`. The api transport stays fully supported and, at the time this shipped, byte-identical when selected, but it is opt-in (R4). (The byte-identical-to-pre-HTML contract was retired later by the ceilings design; the api path is still asserted byte-for-byte against the current declared baseline. See AC3.)
 - Every unhappy path is an error, never a degraded artifact (R5).
 
 ### Non-Goals
@@ -393,7 +393,7 @@ Note what that contingency protects: the markdown path is the one Stephen actual
 **Model:** sonnet
 - Add the `Transport` port and the `Job` enum; move `request()` into `summarize/api.rs` behind `ApiTransport`; move `api_key_from_env`; make `markdown`/`html` generic over `T: Transport` and take `model: &str`; add a `FakeTransport` in `summarize/tests.rs` (recording its `Job` + model and returning a canned reply), mirroring how `sessions` and `efficiency` already fake `Completer`/`Narrator`.
 - Re-pin the markdown job to `claude-opus-4-8` (Scott's directive). Call sites still pass the module consts here; Phase 4 swaps them for config-resolved values.
-- **Success criteria:** a unit test asserts the serialized request body for each job is byte-identical to the pre-change body **modulo the deliberately re-pinned markdown model** (the baseline fixture carries `claude-opus-4-8`); a unit test asserts the `Job -> (max_tokens, stream)` mapping (Markdown -> 16K/false, Html -> 64K/true).
+- **Success criteria:** a unit test asserts the serialized request body for each job is byte-identical to the pre-change body **modulo the deliberately re-pinned markdown model** (the baseline fixture carries `claude-opus-4-8`); a unit test asserts the `Job -> (max_tokens, stream)` mapping (Markdown -> 16K/false, Html -> 64K/true). **Both were met as written and both have since been superseded** by the ceilings design: the baseline was rebaselined onto the raised markdown default (see AC3), and the `(max_tokens, stream)` tuple was split into two separate assertions when `Job::api_limits()` was deleted, because it packed the shared ceiling and the api-private streaming flag into one value.
 
 #### Phase 3: `CliTransport`
 **Model:** opus
@@ -417,7 +417,7 @@ Note what that contingency protects: the markdown path is the one Stephen actual
 - [x] AC2: same invocation with `--format html` exits 0; output starts `<!doctype html>` and ends `</html>`.
 - [x] AC1b/AC2b: both of the above are ALSO run with an explicit `--llm cli`, and the emitted log names the cli transport. Passing keyless is not by itself proof the cli path ran (Staff Engineer round 2); the transport must be asserted, not inferred.
 - [x] AC1c/AC2c: and both are run with NO `--llm` flag, no key, and `claude` confirmed on PATH, which is what proves `auto`'s DEFAULT routing works rather than just its explicit form (Architect round 2). AC1b proves the transport; AC1c proves the default.
-- [x] AC3: `--llm api` produces a serialized request body for both jobs that is byte-identical to pre-change **except for the deliberately re-pinned markdown model** (`claude-opus-4-7` -> `claude-opus-4-8`, Scott's directive); the test's baseline fixture carries the new pin, and every other byte -- system prompt, `max_tokens`, the `stream` omission, the prompt/json join -- is unchanged. The api path is opt-in now, but it must not rot.
+- [x] AC3 (**REBASELINED, and its stronger contract RETIRED**): `--llm api` produces a serialized request body for both jobs that matches the **current declared baseline**, asserted byte-for-byte. It no longer asserts "byte-identical to pre-change behavior", and that is a deliberate retirement rather than a quiet drift, recorded in `docs/design/2026-07-25-render-output-ceilings-config.md` ("The retired contract, stated plainly"). The baseline moved twice: once for the re-pinned markdown model (`claude-opus-4-7` -> `claude-opus-4-8`, Scott's directive), and once when the markdown `max_tokens` default rose and became the user-settable `render.markdown-max-output-tokens`. A default a user can move is not a fact about "pre-change behavior", so the assertion is now anti-rot against the declared baseline: field order, the `stream` omission, the system prompt, the prompt/json join, and the current defaults. The api path is opt-in now, but it must not rot.
 - [x] AC11: the model pins are configurable and actually plumbed. `render.markdown-model` / `render.html-model` in `clyde.yml` reach the built api request body AND the built cli argv (`--model <value>`); an absent `clyde.yml` resolves both to `claude-opus-4-8`; an unknown key under `render:` still fails loudly via `deny_unknown_fields`.
 - [x] AC12: the cli model guard survives a real multi-entry envelope. A fixture envelope carrying BOTH the pinned model and an unrelated `claude-haiku-4-5` entry in `modelUsage` must PASS the guard (keyed lookup), while an envelope whose pinned-model key is absent or whose `canonicalModel` differs must bail. This is Phase 0 finding F2 made mechanically checkable.
 - [x] AC6: with NEITHER a key nor `claude` on PATH, render exits non-zero with an error naming both remedies, and never emits a partial artifact.
@@ -463,6 +463,7 @@ Note what that contingency protects: the markdown path is the one Stephen actual
 | 2026-07-24 | `CLAUDE_TIMEOUT = 900s` | Phase 0 F1: real jobs ran 145s and 204s, both over the 120s `SUBPROCESS_TIMEOUT`. Reusing it would kill every real render. Wide margin because a timeout throws away an already-billed call |
 | 2026-07-24 | the model guard is a KEYED lookup into `modelUsage`, never a scan | Phase 0 F2: the CLI makes an internal `claude-haiku-4-5` sub-call, so both real envelopes carry two `modelUsage` entries. A scan-and-compare-all would bail on every successful render |
 | 2026-07-24 | the withdrawn cost argument is REINSTATED, corrected to ~1.9x | Phase 0 F3: probes 7/8 measured a trivial payload, so they only proved the preamble is gone. On the real 513KB payload the CLI bills ~242K tokens as a 1h cache WRITE ($10/Mtok vs the api's $5/Mtok input) plus a ~$0.19 haiku sub-call: $2.93 cli vs ~$1.53 api. Does NOT reopen the default (Scott decided cli-default on keyless-access grounds); it corrects the doc's claim that the flip is free and sharpens the bulk-render advice |
+| 2026-07-25 | the markdown output ceiling becomes a `clyde.yml` key and its default rises; this design's last Open Question closes | Scott priced the three options in Open Questions and chose configurable-with-a-raised-default, consistent with his own directive that moved the model pins into `clyde.yml`. Executed under `docs/design/2026-07-25-render-output-ceilings-config.md`, which also retires this doc's "markdown stays byte-identical" contract and rebaselines AC3. Nothing dangles from this doc anymore |
 
 ## Alternatives Considered
 
@@ -576,21 +577,15 @@ Phase 5 documents three things that follow from cli-as-default: that rollback li
 
 ## Open Questions
 
-- **The markdown job's 16,000-token output ceiling is too tight for the largest months, and it needs Scott's decision.** Found during the Phase 5 live shakedown, not by any unit test. Rendering the full 1,310-session July report as markdown produced **16,117 output tokens**, so Guard 6 correctly refused to publish and the render failed. The same month renders fine as html (19,574 tokens against a 64,000 ceiling), and a normal 173-session window renders fine as markdown (well under budget).
+- None.
 
-  **This is NOT caused by the cli transport.** The ceiling is a pre-existing property of the markdown job that both transports enforce, just with different error text: the api path puts `max_tokens: 16000` on the wire, so the model would be cut off at exactly 16,000 and return `stop_reason: "max_tokens"`, which `check_stop_reason` has always bailed on. The cli path cannot set a ceiling, so it lets the model finish and then reports the true count. Either way the largest month cannot render as markdown today. What the cli transport changed is only that the failure is now *legible* (it names the real token count instead of "truncated").
-
-  Three options, none of which I am taking unilaterally because each has a cost the owner should price:
-
-  | option | cost |
-  |---|---|
-  | raise `MARKDOWN_MAX_OUTPUT_TOKENS` (e.g. 16K -> 32K) | breaks AC3's byte-identical baseline, which is the assertion that keeps the api path from rotting. The pin would need re-baselining, and the doc's "markdown stays byte-identical" contract retires |
-  | accept it: the largest months use `--format html` | zero code, but `report render --format markdown` on a big month is a hard failure with no offline fallback worth having |
-  | make the ceiling configurable, like the model pins | consistent with the directive that moved the pins to `clyde.yml`, but adds two more keys and lets a user set a ceiling the model cannot honor |
-
-  **Sharpening input from the implementation audit (2026-07-25): on the cli path the 16,000 is a self-imposed BUDGET, not a capability limit.** The two failures are equivalent in outcome but not in kind, and the difference matters for pricing the options. On the api path the artifact is genuinely truncated mid-document at exactly 16,000 tokens and is unusable. On the cli path Guard 6 rejected a **complete, untruncated, valid** 16,117-token artifact for exceeding a budget that exists only to mirror the api's limit -- the CLI had granted 64,000 output tokens for that call. So raising `MARKDOWN_MAX_OUTPUT_TOKENS` carries no truncation risk on the cli path up to 64,000; the only real cost of option 1 remains the AC3 re-baselining. (The api path would still truncate at whatever the new ceiling is, so the ceiling is not free there.) This does not pick an option; it means option 1 is cheaper than it looked and option 2 is more costly than it looked.
-
-  Everything else in this design shipped and is verified; this is the one item left open, and it is a pre-existing ceiling being surfaced rather than a regression introduced here.
+  The one item this section held -- the markdown job's output ceiling being too tight for the largest
+  months, surfaced by the Phase 5 live shakedown rather than by any test -- is **CLOSED**. Scott priced
+  the three options and chose the third: make both ceilings config keys in `clyde.yml` and raise the
+  markdown default. That work has its own doc, `docs/design/2026-07-25-render-output-ceilings-config.md`,
+  which carries the full option pricing, the audit's sharpening (on the cli path the ceiling was a
+  self-imposed budget, not a capability limit), and the AC3 rebaseline it forced. See the Resolved
+  Decisions row dated 2026-07-25.
 
 ## Addendum: parked, with revisit conditions
 

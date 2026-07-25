@@ -219,10 +219,17 @@ fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Resul
     {
         // `job.kind`, not `job`: a `{job:?}` on the struct would print the model pin into a
         // user-facing error message.
+        //
+        // The bail NAMES THE KEY. Now that the ceiling is a budget the user set rather than a mirror of
+        // an api limit, "you are over by N" without the one line that raises it is the remedy-less
+        // error this file's own doctrine rejects — and on the cli path those tokens are already
+        // generated and already billed, so the error is the only thing left that can be made useful.
         bail!(
             "claude -p produced {used} output tokens, over the {ceiling}-token ceiling for the {:?} \
-             job; refusing to publish an artifact that exceeded its budget\n{observations}",
-            job.kind
+             job; refusing to publish an artifact that exceeded its budget. Raise \
+             {} in clyde.yml, or narrow the window with a shorter --since.\n{observations}",
+            job.kind,
+            job.kind.max_output_tokens_key()
         );
     }
 

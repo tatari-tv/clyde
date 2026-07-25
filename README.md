@@ -105,7 +105,12 @@ render:
   llm: auto                        # auto | api | cli — which transport makes the model calls
   markdown-model: claude-opus-4-8  # model pin for the Markdown narrative
   html-model: claude-opus-4-8      # model pin for the HTML dashboard
+  markdown-max-output-tokens: 32000  # output ceiling for the Markdown narrative
+  html-max-output-tokens: 64000      # output ceiling for the HTML dashboard
 ```
+
+The two ceilings bound how much output a render may produce. Raise one if a large month is refused for
+exceeding its budget; the error names the key. `0` is rejected at load.
 
 `report render`'s model-authored formats need **no API key** by default: `llm: auto` prefers the
 locally installed `claude` CLI and uses the Claude Code login you already have. Set `llm: api` (or

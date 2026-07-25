@@ -536,17 +536,26 @@ fn guard_empty_result_bails_even_on_an_otherwise_clean_envelope() {
 #[test]
 fn guard_output_ceiling_bails_when_the_job_budget_is_exceeded() {
     // `end_turn` proves a natural stop, NOT that output stayed under a ceiling the cli cannot set.
-    // 20,000 tokens is a natural stop that still blows the markdown job's 16,000 budget.
-    let json = envelope_json(false, "success", "end_turn", "long prose", 20_000, &real_model_usage());
+    // 40,000 tokens is a natural stop that still blows the markdown job's raised budget.
+    let json = envelope_json(false, "success", "end_turn", "long prose", 40_000, &real_model_usage());
     let err = check(&json, Kind::Markdown).unwrap_err().to_string();
-    assert!(err.contains("20000 output tokens"), "got: {err}");
-    assert!(err.contains("16000-token ceiling"), "must name the job ceiling: {err}");
+    assert!(err.contains("40000 output tokens"), "got: {err}");
+    assert!(err.contains("32000-token ceiling"), "must name the job ceiling: {err}");
+    // A budget the user set deserves the line that raises it (Alternative 4: the tokens are already
+    // billed by the time this fires, so an actionable error is all that is left to salvage).
+    assert!(
+        err.contains("render.markdown-max-output-tokens"),
+        "must name the config key that raises the budget: {err}"
+    );
 }
 
 #[test]
 fn guard_output_ceiling_allows_the_same_output_for_the_larger_job() {
-    // The ceiling is per-JOB: 20,000 tokens is over budget for markdown (16K) and fine for html (64K).
-    let json = envelope_json(false, "success", "end_turn", "long prose", 20_000, &real_model_usage());
+    // The ceiling is per-JOB, and the value must sit STRICTLY BETWEEN the two ceilings or this test
+    // passes while proving nothing. 40,000 is over budget for markdown (32K) and fine for html (64K).
+    // At the old 20,000 it would be fine for both after the raise -- the exact vacuous shape AC-C6
+    // exists to catch.
+    let json = envelope_json(false, "success", "end_turn", "long prose", 40_000, &real_model_usage());
     assert!(check(&json, Kind::Markdown).is_err());
     assert_eq!(check(&json, Kind::Html).unwrap(), "long prose");
 }
@@ -558,7 +567,7 @@ fn guard_output_ceiling_allows_the_same_output_for_the_larger_job() {
 /// The api half (`a_configured_ceiling_reaches_the_serialized_body`) proves the same value goes on the
 /// wire, and together the two cross both transports.
 ///
-/// BITES: replace `job.max_output_tokens` in Guard 6 with `{ let _ = job; 16_000 }` and this fails.
+/// BITES: replace `job.max_output_tokens` in Guard 6 with any literal and this fails.
 #[test]
 fn guard_output_ceiling_enforces_the_configured_value_not_a_constant() {
     let configured = Job {
@@ -583,8 +592,16 @@ fn guard_output_ceiling_enforces_the_configured_value_not_a_constant() {
 
 #[test]
 fn guard_output_ceiling_accepts_exactly_the_ceiling() {
-    // Boundary: the guard bails ABOVE the ceiling, not at it.
-    let json = envelope_json(false, "success", "end_turn", "prose", 16_000, &real_model_usage());
+    // Boundary: the guard bails ABOVE the ceiling, not at it. Must equal the markdown default, or it
+    // stops being a boundary test.
+    let json = envelope_json(
+        false,
+        "success",
+        "end_turn",
+        "prose",
+        u64::from(DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS),
+        &real_model_usage(),
+    );
     assert!(check(&json, Kind::Markdown).is_ok());
 }
 
@@ -663,14 +680,20 @@ fn credential_and_model_failures_carry_the_escape_hatch() {
 #[test]
 fn ceiling_failures_do_not_offer_a_transport_that_fails_the_same_way() {
     // Guard 4: truncation.
-    let truncated = envelope_json(false, "success", "max_tokens", "trunc", 16_000, &real_model_usage());
+    // The count is INERT here: Guard 4 fires on `stop_reason: max_tokens` before Guard 6 sees it.
+    let truncated = envelope_json(false, "success", "max_tokens", "trunc", 1_024, &real_model_usage());
     let err = check(&truncated, Kind::Markdown).unwrap_err().to_string();
     assert!(!err.contains("--llm api"), "api path truncates identically: {err}");
     assert!(err.contains("--since"), "must still offer a remedy that works: {err}");
 
     // Guard 6: over budget on a natural stop.
-    let over = envelope_json(false, "success", "end_turn", "long", 20_000, &real_model_usage());
+    let over = envelope_json(false, "success", "end_turn", "long", 40_000, &real_model_usage());
     let err = check(&over, Kind::Markdown).unwrap_err().to_string();
     assert!(!err.contains("--llm api"), "api path caps at the same ceiling: {err}");
-    assert!(err.contains("16000-token ceiling"), "must name the budget: {err}");
+    assert!(err.contains("32000-token ceiling"), "must name the budget: {err}");
+    // The remedy it DOES offer must be one that works: the config key, not the other transport.
+    assert!(
+        err.contains("render.markdown-max-output-tokens"),
+        "must offer the remedy that actually remedies: {err}"
+    );
 }

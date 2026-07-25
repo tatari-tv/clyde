@@ -28,6 +28,21 @@ pub enum Kind {
     Html,
 }
 
+impl Kind {
+    /// The `clyde.yml` key carrying this job's output ceiling.
+    ///
+    /// Exists so a ceiling failure can name the ONE line that prevents the next one. Per-kind on
+    /// purpose: naming the markdown key on an html failure would be a remedy that cannot remedy, which
+    /// `cli.rs`'s module docs call worse than offering none. A compile-time fact about the kind, unlike
+    /// the ceiling itself.
+    pub fn max_output_tokens_key(self) -> &'static str {
+        match self {
+            Kind::Markdown => "render.markdown-max-output-tokens",
+            Kind::Html => "render.html-max-output-tokens",
+        }
+    }
+}
+
 /// A render job with its user-configurable pins RESOLVED from `clyde.yml`.
 ///
 /// Every per-job tunable lands here. Both fields were once compile-time facts reachable as methods on

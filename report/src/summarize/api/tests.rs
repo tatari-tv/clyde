@@ -14,6 +14,11 @@ use crate::ENV_LOCK;
 const PROMPT: &str = "Write the report.";
 const JSON_BODY: &str = "{\"a\":1}";
 
+/// A ceiling for the tests where the number is INERT -- they assert stream omission, prompt joining, or
+/// model presence, and any value would do. Deliberately not either default: tracking a real default by
+/// coincidence would drag these tests along the next time one moves.
+const INERT_CEILING: u32 = 1_024;
+
 /// The joined user message the api transport must produce: instruction, blank line, fenced facts.
 fn expected_user_msg() -> String {
     format!("{PROMPT}\n\n```json\n{JSON_BODY}\n```\n")
@@ -46,9 +51,12 @@ fn markdown_body_is_byte_identical_to_baseline() {
         JSON_BODY,
     );
     // Field order is the struct's declaration order, `stream` is OMITTED entirely when false, and
-    // `max_tokens` is the unchanged 16K markdown ceiling. Any drift in any of those fails here.
+    // `max_tokens` is the CURRENT declared markdown default. This no longer asserts "byte-identical to
+    // the pre-HTML behavior" -- that contract is retired, because the default is now a config value the
+    // user can move. It is an anti-rot assertion against the declared baseline: any unintended drift in
+    // field order, omission, or the default still fails here.
     let expected = format!(
-        r#"{{"model":"claude-opus-4-8","max_tokens":16000,"system":{},"messages":[{{"role":"user","content":{}}}]}}"#,
+        r#"{{"model":"claude-opus-4-8","max_tokens":32000,"system":{},"messages":[{{"role":"user","content":{}}}]}}"#,
         serde_json::to_string(MARKDOWN_SYSTEM_PROMPT).unwrap(),
         serde_json::to_string(&expected_user_msg()).unwrap(),
     );
@@ -77,7 +85,7 @@ fn html_body_is_byte_identical_to_baseline() {
 
 #[test]
 fn stream_false_is_omitted_not_serialized_as_false() {
-    let body = build_body(MARKDOWN_MODEL, "sys", 16_000, false, PROMPT, JSON_BODY);
+    let body = build_body(MARKDOWN_MODEL, "sys", INERT_CEILING, false, PROMPT, JSON_BODY);
     let json = serde_json::to_string(&body).unwrap();
     // A `"stream":false` on the wire would be a behavior change from the pre-HTML baseline even
     // though it is semantically equivalent. Assert the absence explicitly.
@@ -92,7 +100,7 @@ fn body_joins_prompt_and_facts_with_a_fenced_json_block() {
     let body = build_body(
         MARKDOWN_MODEL,
         "sys",
-        16_000,
+        INERT_CEILING,
         false,
         "  trailing space trimmed  ",
         JSON_BODY,
@@ -121,7 +129,7 @@ fn streaming_is_derived_from_the_kind_not_from_a_threshold() {
 fn the_default_ceilings_are_the_documented_pair() {
     // Mirrors how `both_jobs_default_to_opus_4_8` pins the model defaults: a silent change to either
     // ceiling fails here.
-    assert_eq!(DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, 16_000);
+    assert_eq!(DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, 32_000);
     assert_eq!(DEFAULT_HTML_MAX_OUTPUT_TOKENS, 64_000);
 }
 
@@ -199,7 +207,7 @@ fn from_env_error_names_both_remedies() {
 /// BITES: replace `model` with a literal in `build_body` and this fails.
 #[test]
 fn a_configured_model_reaches_the_serialized_body() {
-    let body = build_body("sentinel-model-xyz", "sys", 16_000, false, PROMPT, JSON_BODY);
+    let body = build_body("sentinel-model-xyz", "sys", INERT_CEILING, false, PROMPT, JSON_BODY);
     let json = serde_json::to_string(&body).unwrap();
     assert!(
         json.contains(r#""model":"sentinel-model-xyz""#),

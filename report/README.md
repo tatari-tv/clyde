@@ -45,7 +45,7 @@ transports, selected with `--llm`:
 requires no second credential. clyde never reads, stores, refreshes, or transmits a token: the
 `claude` binary owns auth end to end, the same way `marquee` owns its own Okta tokens.
 
-Configure the default and the model pins in `clyde.yml`:
+Configure the default, the model pins, and the output ceilings in `clyde.yml`:
 
 ```yaml
 # ~/.config/clyde/clyde.yml
@@ -53,9 +53,17 @@ render:
   llm: auto                        # auto | api | cli    (default auto, which prefers cli)
   markdown-model: claude-opus-4-8  # model pin for the Markdown narrative
   html-model: claude-opus-4-8      # model pin for the HTML dashboard
+  markdown-max-output-tokens: 32000  # output ceiling for the Markdown narrative
+  html-max-output-tokens: 64000      # output ceiling for the HTML dashboard
 ```
 
 Precedence is the house convention: flag > config > default.
+
+The ceilings are enforced differently by the two transports, and that is inherent rather than a gap: the
+api path puts the value on the wire as `max_tokens` and the model is cut off at it, while the cli path
+cannot set a ceiling at all and instead compares the reported `usage.output_tokens` after the fact. On
+the cli path the artifact is therefore complete when it is refused, and the tokens are already billed --
+so raise the key the error names rather than re-running. `0` is rejected at config load.
 
 ### Three things to know before you rely on it
 

@@ -76,8 +76,11 @@ pub const DEFAULT_HTML_MODEL: &str = "claude-opus-4-8";
 
 /// Default output ceiling for the markdown job (`render.markdown-max-output-tokens`).
 ///
-/// Holds the pre-config value in this phase; the raise lands with its own rationale next.
-pub const DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 16_000;
+/// 32,000: twice the largest markdown output ever measured (16,117 tokens on the 1,310-session
+/// 2026-07 month, the render that surfaced this problem), and half of what the `claude` CLI grants
+/// `claude-opus-4-8` (64,000), so the cli path can deliver a document at this ceiling untruncated.
+/// Raised from the pre-config ceiling, which that same month exceeded by 117 tokens.
+pub const DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 32_000;
 
 /// Default output ceiling for the html job (`render.html-max-output-tokens`). Exactly what the
 /// `claude` CLI grants `claude-opus-4-8` (64,000), against a largest observed html output of 19,574
