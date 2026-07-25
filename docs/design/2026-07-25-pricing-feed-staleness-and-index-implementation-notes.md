@@ -245,15 +245,26 @@ The Rollout Plan's three post-merge items, all run against the live site and the
 
 ### AC-P4: the live page
 
-Root and `/pricing.json` both 200. The served feed is byte-identical to `pricing/data/pricing.json`
-(`jq -S` diff, empty output). Headless Chrome on the live URL renders `data_version`
+Root and `/pricing.json` both 200. The served feed is byte-identical to `pricing/data/pricing.json`,
+established by `cmp` and matching SHA-256
+(`52b86d79541f7ca7f215e89abfb0c5f8d01fd0ce1e56079c2dc284df3bf2997a`, 4147 bytes both sides). An
+earlier pass cited a `jq -S` diff for this, which only establishes canonicalized JSON equality:
+key order and whitespace are normalized away, so two files differing in formatting would have
+passed it. The hash is the check that actually supports the word "byte-identical".
+
+Headless Chrome on the live URL renders `data_version`
 `2026-07-25T01:56:53Z`, `schema_version` `2`, `min_library_version` `2.0.0`, model count `18`, and 18
 rate rows, with `claude-fable-5` at `$10 / $50 / $12.5 / $20 / $1` matching the feed.
 
-The read-at-load-time half is proven **negatively**, which is the half a rendering check alone cannot
-establish: none of those literal strings appears anywhere in `pricing/site/index.html`, so a rendered
-value can only have come from the fetch. A page that transcribed its own numbers would pass a render
-check identically.
+The read-at-load-time half is supported **negatively**, which is the half a rendering check alone
+cannot address: none of those literal strings appears anywhere in `pricing/site/index.html`, so the
+rendered values are not transcribed into the page source. A page that hardcoded its own numbers would
+pass a render check identically, which is why this check exists.
+
+Stated precisely, that rules out the transcription failure mode; it is not a proof of exclusive
+provenance, since it cannot by itself exclude a value arriving by some path other than the `fetch`.
+What closes that gap is not this check but the code: `pricing/site/index.html` has exactly one
+`fetch` call and assigns every rendered field from its parsed result.
 
 ### AC-P5: the index-only deploy
 
