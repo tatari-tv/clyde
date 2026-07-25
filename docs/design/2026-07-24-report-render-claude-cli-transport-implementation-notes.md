@@ -339,3 +339,41 @@ edits were not yet committed, and destroyed those edits both times -- the second
 reverting all four M4 changes, caught only by re-grepping. Bite proofs now copy the file aside and
 restore from the copy. `git checkout` is for discarding changes you want gone, never for undoing a
 temporary edit sitting on top of work you want to keep.
+
+### Audit verification pass (2026-07-25)
+
+Panel re-verified `f556e98` read-only. **All five findings CLOSED, none newly wrong.** M4's narrowing
+was CONFIRMED, not merely accepted: the reviewer pressure-tested its own position, built the strongest
+counter-argument it could, and the counter-argument did not overturn it. The burden for reopening the
+literal four-site reading is now stated -- show a case where `--llm api` produces an artifact the cli
+path refused -- and per the ceiling analysis there is none.
+
+Three things came out of the verification that are worth keeping:
+
+**1. Re-proving the M2 bite will mislead the next person unless they know this.** The crude sabotage
+(hardcode the model literal, drop the parameter) does NOT compile, because the crate runs
+`#![deny(unused_variables)]`. Anyone re-proving that test's bite will hit a compile error and could
+wrongly conclude the test does not bite. The minimal COMPILING sabotage is
+`model: { let _ = model; "claude-opus-4-8".to_string() }`. Recorded here rather than left in chat,
+because the audit trail is where a future reader looks.
+
+**2. The `ENV_LOCK` fix was incomplete on the READER side, and I had declared it done.** Every
+*mutating* site took the lock, which is what I checked. But `child_env()` READS the environment
+(`dirs::home_dir()`, `std::env::var("PATH")`), and two tests called it unlocked:
+`child_env_is_an_allowlist_and_leaks_no_secret` took no lock at all, and the new M1 test called
+`child_env()` *after* `drop(guard)`. Neither could produce a wrong assertion -- an allowlist can never
+contain a planted secret regardless of timing -- but both sat in the same
+read-during-environ-mutation window that made `set_var` unsafe in edition 2024. Both closed: the first
+now takes the lock, the second moved its `child_env()` call above the drop. The lesson is that
+"serialize env access" means readers too, and I checked only writers.
+
+**3. `common/src/config/tests.rs` keeps its own separate `ENV_LOCK`, deliberately.** `common` compiles
+to its own test binary and therefore its own process, so it has nothing to serialize against `report`.
+Not a gap; recorded so nobody "fixes" it later.
+
+One refinement left undone on purpose, with the reviewer's agreement: Guard 4 fires on ANY
+non-`end_turn` stop but its message hardcodes the truncation diagnosis (`--since`, `--format
+markdown`). For a `refusal`-shaped stop that advice would be wrong and `--llm api` might genuinely
+help. Deferred because truncation is the only stop reason measured so far, and narrowing the message
+for unobserved stop reasons is speculation. Revisit the first time a non-truncation stop is actually
+seen in the wild.

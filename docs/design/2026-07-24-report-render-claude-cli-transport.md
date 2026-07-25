@@ -588,6 +588,8 @@ Phase 5 documents three things that follow from cli-as-default: that rollback li
   | accept it: the largest months use `--format html` | zero code, but `report render --format markdown` on a big month is a hard failure with no offline fallback worth having |
   | make the ceiling configurable, like the model pins | consistent with the directive that moved the pins to `clyde.yml`, but adds two more keys and lets a user set a ceiling the model cannot honor |
 
+  **Sharpening input from the implementation audit (2026-07-25): on the cli path the 16,000 is a self-imposed BUDGET, not a capability limit.** The two failures are equivalent in outcome but not in kind, and the difference matters for pricing the options. On the api path the artifact is genuinely truncated mid-document at exactly 16,000 tokens and is unusable. On the cli path Guard 6 rejected a **complete, untruncated, valid** 16,117-token artifact for exceeding a budget that exists only to mirror the api's limit -- the CLI had granted 64,000 output tokens for that call. So raising `MARKDOWN_MAX_OUTPUT_TOKENS` carries no truncation risk on the cli path up to 64,000; the only real cost of option 1 remains the AC3 re-baselining. (The api path would still truncate at whatever the new ceiling is, so the ceiling is not free there.) This does not pick an option; it means option 1 is cheaper than it looked and option 2 is more costly than it looked.
+
   Everything else in this design shipped and is verified; this is the one item left open, and it is a pre-existing ceiling being surfaced rather than a regression introduced here.
 
 ## Addendum: parked, with revisit conditions

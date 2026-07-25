@@ -115,7 +115,12 @@ fn argv_carries_the_configured_model_and_the_shared_system_prompt() {
 
 #[test]
 fn child_env_is_an_allowlist_and_leaks_no_secret() {
+    // Holds ENV_LOCK even though it mutates nothing: `child_env()` READS the environment, and reading
+    // the environ block while another test is inside `set_var` is the unsafety window edition 2024
+    // made explicit. Every env-touching test takes this lock, readers included.
+    let guard = ENV_LOCK.lock().unwrap();
     let env = child_env();
+    drop(guard);
     let names: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
 
     // Enumerated BY NAME so a future secret-bearing variable fails loudly rather than leaking.
@@ -216,6 +221,12 @@ fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
     for (k, _) in planted {
         unsafe { std::env::remove_var(k) };
     }
+    // `child_env()` READS the environment (`dirs::home_dir()`, `PATH`), so it must be called while
+    // the lock is still held. Reading the environ block concurrently with another test's `set_var` is
+    // the same unsafety window that makes `set_var` itself unsafe in edition 2024 — it can tear or
+    // crash rather than fail cleanly. The assertion below cannot go WRONG (the allowlist can never
+    // contain a planted secret), so this is purely about not reading a block mid-mutation.
+    let allowlist = child_env();
     drop(guard);
 
     assert!(output.status.success(), "env exited {:?}", output.status.code());
@@ -234,10 +245,12 @@ fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
             "{k}'s VALUE leaked into the child under another name: {names:?}"
         );
     }
-    // And the child's whole environment is the allowlist, nothing more.
+    // And the child's whole environment is the allowlist, nothing more. Both sides of this move
+    // together if the allowlist changes, which is why the sibling
+    // `child_env_is_an_allowlist_and_leaks_no_secret` pins the allowlist to its literal three names —
+    // keep the pair together if either is ever refactored.
     let mut got = names.clone();
     got.sort_unstable();
-    let allowlist = child_env();
     let mut want: Vec<&str> = allowlist.iter().map(|(k, _)| k.as_str()).collect();
     want.sort_unstable();
     assert_eq!(got, want, "child env must be exactly the allowlist");
