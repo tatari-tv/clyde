@@ -155,3 +155,31 @@ render:
 With the above, a bare `clyde report render` publishes to marquee, while `--format markdown` still
 overrides back to a local Markdown file for a single run. An absent file (or absent `render:`
 section) leaves the default at `markdown`.
+
+## Measuring render quality: `clyde report eval`
+
+The same report JSON renders differently every month by design, so narrative quality is measured on
+frozen fixtures rather than eyeballed. There are two layers, split by what they cost.
+
+**Mechanical** checks are deterministic, offline and free, so they run in `otto ci` against the
+committed golden artifacts under `fixtures/report/`: every cited repo, date and quoted phrase must
+exist in the context, the required sections must be present and the forbidden ones absent, Hard
+prohibition 2's phrase list and the em-dash must be absent, the foreign-number guard must be clean,
+and every digit-bearing chart attribute must be one the binary computed.
+
+**Judged** scoring costs tokens and needs a network, so it runs from `otto eval` before a release,
+never in CI. A model scores a FRESH render 0 to 3 on citation accuracy, coverage of the top three
+`by-repo` rows and the top agent type, prohibition compliance, and readability; a score below the
+floor committed in that fixture's `eval.yml` exits non-zero.
+
+```bash
+otto eval                                              # the three committed fixtures, judged
+clyde report eval --llm cli                            # same, over the keyless transport
+clyde report eval --fixture fixtures/report/local      # a real month, locally, never committed
+clyde report eval --write-goldens                      # regenerate the committed goldens
+```
+
+Every committed fixture is **synthesized** by a seeded generator (`cargo run -p report --bin
+fixtures`), never derived from real session data: this repo is public, and session titles and enrich
+summaries are the sensitive payload. Real-data evaluation reads `fixtures/report/local/`, which is
+gitignored. See `fixtures/report/README.md` for the layout and the regeneration flow.

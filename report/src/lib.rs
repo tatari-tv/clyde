@@ -7,6 +7,7 @@ pub mod aggregate;
 pub mod chart;
 pub mod cli;
 pub mod config;
+pub mod eval;
 pub mod fmt;
 pub(crate) mod geometry;
 pub mod merge;
@@ -153,6 +154,13 @@ fn setup_logging(level: &str) -> Result<()> {
 }
 
 pub fn run_with_config(config: &Config) -> Result<RunResult> {
+    // The eval NEVER resolves pricing from the live feed, so it does not pay for one here either.
+    // A fixture priced against a feed that moves scores differently on two days for a reason that
+    // is not the render, and the committed goldens would be silently invalidated by the next
+    // `data: refresh pricing` commit. See `eval`'s module docs.
+    if let ResolvedCommand::Eval(cfg) = &config.command {
+        return eval::run(cfg, &Pricing::embedded());
+    }
     let pricing = Pricing::auto("clyde").context("failed to load pricing")?;
     run_with_pricing(config, &pricing)
 }
@@ -162,6 +170,9 @@ pub(crate) fn run_with_pricing(config: &Config, pricing: &Pricing) -> Result<Run
         ResolvedCommand::Collect(cfg) => run_collect(cfg, pricing),
         ResolvedCommand::Render(cfg) => render::run(cfg, pricing),
         ResolvedCommand::Merge(cfg) => merge::run(cfg),
+        // Reached only when a caller bypasses `run_with_config`; the embedded pin is the same one,
+        // stated in both places rather than depending on which entry point was used.
+        ResolvedCommand::Eval(cfg) => eval::run(cfg, &Pricing::embedded()),
     }
 }
 

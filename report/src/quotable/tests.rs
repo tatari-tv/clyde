@@ -264,3 +264,39 @@ fn array_elements_inherit_their_arrays_key() {
         facts.figures
     );
 }
+
+/// A percentile field is WRITTEN as an ordinal, so the ordinal spelling is licensed and a bare
+/// number is not. Found by the Phase 13 render eval, on the first live render it measured: the
+/// model wrote "the 90th percentile" about the real `session-spend-p90` figure and the guard
+/// rejected a correct sentence as a fabrication, on both render paths.
+///
+/// BITES: delete `percentile_ordinal` and the first assertion fails; license the bare digits
+/// instead of the ordinal and the second one does.
+#[test]
+fn a_percentile_label_licenses_its_ordinal_spelling_and_not_a_bare_number() {
+    let facts =
+        QuotableFacts::from_context_json(r#"{"unit-costs":{"session-spend-p50":"$7.29","session-spend-p90":"$8.79"}}"#)
+            .unwrap();
+    assert_eq!(
+        facts.foreign_figures("The median was $7.29 and the 90th percentile $8.79."),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        facts.foreign_figures("The window ran for 90 days."),
+        vec!["90".to_string()],
+        "a bare 90 is still unlicensed; only the ordinal SPELLING of the label is"
+    );
+}
+
+/// The ordinal suffix is the English one, teens included -- `p11` is written "11th", never "11st".
+#[test]
+fn the_percentile_ordinal_uses_the_english_suffix() {
+    assert_eq!(percentile_ordinal("p90").as_deref(), Some("90th"));
+    assert_eq!(percentile_ordinal("p1").as_deref(), Some("1st"));
+    assert_eq!(percentile_ordinal("p2").as_deref(), Some("2nd"));
+    assert_eq!(percentile_ordinal("p3").as_deref(), Some("3rd"));
+    assert_eq!(percentile_ordinal("p11").as_deref(), Some("11th"));
+    assert_eq!(percentile_ordinal("p13").as_deref(), Some("13th"));
+    assert_eq!(percentile_ordinal("1h").as_deref(), None);
+    assert_eq!(percentile_ordinal("cache").as_deref(), None);
+}

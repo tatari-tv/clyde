@@ -61,11 +61,7 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
         );
     }
 
-    let body =
-        fs::read_to_string(&cfg.input).with_context(|| format!("failed to read report at {}", cfg.input.display()))?;
-    check_schema_version(&body, &cfg.input)?;
-    let report: Report =
-        serde_json::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
+    let report = load_report(&cfg.input, "report")?;
 
     // Branch once at the source: the html-source family (`Html`, `MarqueeHtml`) never touches
     // pandoc; the markdown-source family is the unchanged template-or-opus pipeline. Generation
@@ -246,37 +242,61 @@ pub(crate) fn default_output_path(report: &Report, format: Format) -> std::path:
 /// pure and its whole precedence matrix is unit-testable.
 ///
 /// `which::which` mirrors `clyde::resolve_claude`, which already canonicalizes a relative PATH hit.
-fn resolve_transport_for(cfg: &RenderConfig) -> Result<TransportKind> {
+///
+/// Takes the two values it needs rather than a whole [`RenderConfig`], so a caller that has a
+/// selection and a format but no config (the eval) resolves through the SAME precedence matrix
+/// rather than a second copy of it.
+pub(crate) fn resolve_selected_transport(llm: crate::cli::Llm, format: Format) -> Result<TransportKind> {
     let resolved = crate::config::resolve_transport(
-        cfg.llm,
+        llm,
         which::which("claude").is_ok(),
         summarize::api_key_from_env().is_some(),
-        cfg.format,
+        format,
     )?;
     // Log the SELECTION for both transports, not just cli: an operator reading a log must be able to
     // tell what paid for an artifact without rerunning it. The cli path adds the resolved binary path
     // and version in `CliTransport::resolve`.
-    log::info!(
-        "render: llm transport selected={resolved:?} (requested={:?}) format={:?}",
-        cfg.llm,
-        cfg.format
-    );
+    log::info!("render: llm transport selected={resolved:?} (requested={llm:?}) format={format:?}");
     Ok(resolved)
 }
 
 fn render_via_opus_markdown(context: &RenderContext, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+    markdown_from_context(
+        context,
+        prompt,
+        Pins {
+            llm: cfg.llm,
+            format: cfg.format,
+            model: &cfg.markdown_model,
+            ceiling: cfg.markdown_max_output_tokens,
+        },
+    )
+}
+
+/// Everything a model call needs beyond the context and the prompt: which transport, which format
+/// (for the no-transport error's remedy), which model, and the output ceiling. A struct rather than
+/// four positional arguments, so the two render entry points and the eval cannot transpose them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Pins<'a> {
+    pub(crate) llm: crate::cli::Llm,
+    pub(crate) format: Format,
+    pub(crate) model: &'a str,
+    pub(crate) ceiling: u32,
+}
+
+/// The markdown render, over a context block and its [`Pins`] rather than a whole
+/// [`RenderConfig`]. `pub(crate)` because the eval renders through THIS function -- guards included
+/// -- so a fresh eval render can never be a different pipeline from the one users get.
+pub(crate) fn markdown_from_context(context: &RenderContext, prompt: &str, pins: Pins<'_>) -> Result<String> {
     let json_body = &context.json;
+    let Pins { model, ceiling, .. } = pins;
     debug!(
-        "render::render_via_opus_markdown: context bytes={} prompt bytes={} model={} max_output_tokens={}",
+        "render::markdown_from_context: context bytes={} prompt bytes={} model={model} max_output_tokens={ceiling}",
         json_body.len(),
-        prompt.len(),
-        cfg.markdown_model,
-        cfg.markdown_max_output_tokens
+        prompt.len()
     );
-    let model = &cfg.markdown_model;
-    let ceiling = cfg.markdown_max_output_tokens;
     // Monomorphized per transport; no Box<dyn Transport>, per the house generics-for-DI rule.
-    let prose = match resolve_transport_for(cfg)? {
+    let prose = match resolve_selected_transport(pins.llm, pins.format)? {
         TransportKind::Api => {
             summarize::markdown(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, json_body)?
         }
@@ -297,17 +317,29 @@ fn render_via_opus_markdown(context: &RenderContext, prompt: &str, cfg: &RenderC
 /// the missing-key error deliberately does NOT recommend `--template` (which produces markdown and
 /// is rejected for html-source formats).
 fn render_via_opus_html(context: &RenderContext, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+    html_from_context(
+        context,
+        prompt,
+        Pins {
+            llm: cfg.llm,
+            format: cfg.format,
+            model: &cfg.html_model,
+            ceiling: cfg.html_max_output_tokens,
+        },
+    )
+}
+
+/// The html render over its [`Pins`], the counterpart to [`markdown_from_context`] and the function
+/// the eval's html pass calls, so the geometry allowlist it measures is the one users hit.
+pub(crate) fn html_from_context(context: &RenderContext, prompt: &str, pins: Pins<'_>) -> Result<String> {
     let json_body = &context.json;
+    let Pins { model, ceiling, .. } = pins;
     debug!(
-        "render::render_via_opus_html: context bytes={} prompt bytes={} model={} max_output_tokens={}",
+        "render::html_from_context: context bytes={} prompt bytes={} model={model} max_output_tokens={ceiling}",
         json_body.len(),
-        prompt.len(),
-        cfg.html_model,
-        cfg.html_max_output_tokens
+        prompt.len()
     );
-    let model = &cfg.html_model;
-    let ceiling = cfg.html_max_output_tokens;
-    let html = match resolve_transport_for(cfg)? {
+    let html = match resolve_selected_transport(pins.llm, pins.format)? {
         TransportKind::Api => {
             summarize::html(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, json_body)?
         }
@@ -324,6 +356,15 @@ fn render_via_opus_html(context: &RenderContext, prompt: &str, cfg: &RenderConfi
     // verbatim against the geometry the binary computed.
     geometry::reject_foreign_geometry("html", &html, &context.facts)?;
     Ok(html)
+}
+
+/// Read, schema-gate, and parse a collected artifact. ONE path for every reader of one: the primary
+/// `-i` input, `--prior`, and the eval's fixtures. `label` names which input failed, so an error on
+/// a prior artifact does not read as an error on the report being rendered.
+pub(crate) fn load_report(path: &Path, label: &str) -> Result<Report> {
+    let body = fs::read_to_string(path).with_context(|| format!("failed to read {label} at {}", path.display()))?;
+    check_schema_version(&body, path)?;
+    serde_json::from_str(&body).with_context(|| format!("failed to parse {label} at {}", path.display()))
 }
 
 /// Gate on the artifact's `schema-version` BEFORE the full parse, so a wrong-shaped report is named
@@ -387,17 +428,51 @@ fn reject_foreign_numbers(kind: &str, prose: &str, facts: &QuotableFacts) -> Res
     );
     let foreign = facts.foreign_figures(prose);
     if !foreign.is_empty() {
+        // Each token WITH the sentence it appeared in. A bare token list names the number and not
+        // the claim, so the operator has to re-run a paid render just to see where it was written;
+        // the excerpt is what makes "fix this" actionable on the first read.
+        let cited: Vec<String> = foreign
+            .iter()
+            .map(|t| format!("{t:?} in {:?}", excerpt(prose, t)))
+            .collect();
         log::warn!(
             "render::reject_foreign_numbers: {kind} path REJECTED -- generated prose stated \
-             figure(s) no quotable fact licenses: {foreign:?}"
+             figure(s) no quotable fact licenses: {}",
+            cited.join("; ")
         );
         bail!(
-            "{kind} rendering introduced number(s) absent from the computed facts: {foreign:?} -- the \
-             render-invents-nothing contract was violated; refusing to emit the artifact"
+            "{kind} rendering introduced number(s) absent from the computed facts: {} -- the \
+             render-invents-nothing contract was violated; refusing to emit the artifact",
+            cited.join("; ")
         );
     }
     debug!("render::reject_foreign_numbers: kind={kind} clean");
     Ok(())
+}
+
+/// Chars of prose kept on each side of a rejected figure, so the excerpt reads as a claim rather
+/// than a fragment.
+const EXCERPT_RADIUS: usize = 60;
+
+/// The prose around `needle`'s first occurrence, char-based (crate lint) and whitespace-collapsed so
+/// a wrapped markdown paragraph reads as one line in the error. Empty when the token cannot be
+/// located verbatim (a comma-grouped figure is normalized before comparison, so this can happen).
+fn excerpt(prose: &str, needle: &str) -> String {
+    let chars: Vec<char> = prose.chars().collect();
+    let needle_chars: Vec<char> = needle.chars().collect();
+    let at = (0..chars.len().saturating_sub(needle_chars.len().saturating_sub(1)))
+        .find(|&i| chars[i..].starts_with(&needle_chars[..]));
+    let Some(at) = at else {
+        return String::new();
+    };
+    let start = at.saturating_sub(EXCERPT_RADIUS);
+    let end = (at + needle_chars.len() + EXCERPT_RADIUS).min(chars.len());
+    chars[start..end]
+        .iter()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The reader-visible text of an HTML document: `<style>`/`<script>` block CONTENTS and all tag
@@ -407,7 +482,10 @@ fn reject_foreign_numbers(kind: &str, prose: &str, facts: &QuotableFacts) -> Res
 /// fabricated DATA figure always surfaces in visible text (a headline, a label, a table cell); the
 /// pre-formatted display strings the model may quote also live there. Byte-slice-free (char-based)
 /// per the crate lint.
-fn visible_text(html: &str) -> String {
+///
+/// `pub(crate)` for the eval's mechanical layer, which must scan an HTML artifact exactly the way
+/// this path does or it would grade a different document than the guard checked.
+pub(crate) fn visible_text(html: &str) -> String {
     let stripped = strip_blocks(&strip_blocks(html, "script"), "style");
     let mut out = String::with_capacity(stripped.len());
     let mut in_tag = false;
@@ -1035,11 +1113,7 @@ fn build_prior_view(prior_path: Option<&Path>, current_days: i64, pricing: &Pric
         return Ok(None);
     };
     debug!("render::build_prior_view: path={}", path.display());
-    let body =
-        fs::read_to_string(path).with_context(|| format!("failed to read --prior report at {}", path.display()))?;
-    check_schema_version(&body, path)?;
-    let report: Report =
-        serde_json::from_str(&body).with_context(|| format!("failed to parse --prior report at {}", path.display()))?;
+    let report = load_report(path, "--prior report")?;
 
     let days = (report.until.date_naive() - report.since.date_naive()).num_days() + 1;
     let comparable = days == current_days;

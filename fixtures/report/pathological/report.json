@@ -1,0 +1,1346 @@
+{
+  "schema-version": 2,
+  "generated": "2026-06-01T12:00:00Z",
+  "host": "fixture-host",
+  "since": "2026-05-01T00:00:00Z",
+  "until": "2026-05-20T00:00:00Z",
+  "outcomes-enabled": true,
+  "notes": [
+    "window is session-level (M2): whole sessions whose catalog `modified` falls in [since, until]; not per-record like pre-v2 reports, so a boundary-straddling session's numbers can differ from a v1 report."
+  ],
+  "totals": {
+    "sessions": 12,
+    "spend-usd": 49.48,
+    "untracked-models": [
+      "claude-nimbus-2"
+    ],
+    "models": {
+      "claude-nimbus-2": {
+        "input": 132110,
+        "output": 38210,
+        "cache-5m-write": 660330,
+        "cache-1h-write": 0,
+        "cache-read": 9457570,
+        "total": 10288220,
+        "spend-usd": null
+      },
+      "claude-sonnet-4-6": {
+        "input": 876002,
+        "output": 253422,
+        "cache-5m-write": 4685606,
+        "cache-1h-write": 166142,
+        "cache-read": 81600174,
+        "total": 87581346,
+        "spend-usd": 49.48
+      }
+    },
+    "outcomes": {
+      "sessions-with-commits": 0,
+      "commits": 0,
+      "prs-opened": 0,
+      "confluence-writes": 0,
+      "jira-writes": 0,
+      "slack-messages": 0,
+      "files-edited": 0,
+      "lines-written": 0,
+      "lines-replaced": 0
+    },
+    "cache-read-share": 0.933179667444076,
+    "tool-error-rate": 0.05214723926380368
+  },
+  "sessions": {
+    "0e6ec74b-cebc-49ae-1f99-c8c450edba9b": {
+      "title": "Split the driftwood parser module",
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-04-27T16:00:00Z",
+      "end": "2026-04-30T04:00:00Z",
+      "spend-usd": 4.04,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/0e6ec74b-cebc-49ae-1f99-c8c450edba9b.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 69370,
+          "output": 20070,
+          "cache-5m-write": 380110,
+          "cache-1h-write": 0,
+          "cache-read": 7019190,
+          "total": 7488740,
+          "spend-usd": 4.04
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7488740,
+          "cost-usd": 4.0403295
+        }
+      },
+      "cache-read-share": 0.9398179327778574,
+      "tool-error-rate": 0.08333333333333333,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {
+        "wiki-write": {
+          "tokens": 1248123,
+          "cost-usd": 2.31
+        }
+      },
+      "efficiency": {
+        "session-id": "0e6ec74b-cebc-49ae-1f99-c8c450edba9b",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 69370,
+            "output-tokens": 20070,
+            "cache-read-tokens": 7019190,
+            "cache-5m-write-tokens": 380110,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 4.04,
+            "turns": 19,
+            "turn-durations-ms": [
+              197698,
+              28126,
+              237280,
+              11359,
+              131295,
+              224268,
+              90716,
+              21686,
+              128508,
+              61418,
+              138586,
+              141983
+            ],
+            "compactions": [],
+            "tool-calls": 24,
+            "tool-errors": 2,
+            "bash-command-failures": 1,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 15
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 69370,
+                "output": 20070,
+                "cache-5m-write": 380110,
+                "cache-1h-write": 0,
+                "cache-read": 7019190,
+                "total": 7488740
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {
+              "wiki-write": {
+                "tokens": 1248123,
+                "cost-usd": 2.31
+              }
+            }
+          },
+          "cache-read-share": 0.9398179327778574,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 394144.2105263158,
+          "cost-per-turn-usd": 0.21263157894736842,
+          "tool-error-rate": 0.08333333333333333,
+          "turn-ms-p50": 128508,
+          "turn-ms-p90": 224268,
+          "turn-ms-max": 237280
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "1a45219a-98a3-4027-a608-665b29531a2d": {
+      "title": "Split the driftwood parser module",
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-05-19T09:00:00Z",
+      "end": "2026-05-19T11:00:00Z",
+      "spend-usd": 5.27,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/1a45219a-98a3-4027-a608-665b29531a2d.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 103877,
+          "output": 30047,
+          "cache-5m-write": 534231,
+          "cache-1h-write": 0,
+          "cache-read": 8360299,
+          "total": 9028454,
+          "spend-usd": 5.27
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 9028454,
+          "cost-usd": 5.27379195
+        }
+      },
+      "cache-read-share": 0.9290865594321306,
+      "tool-error-rate": 0.06451612903225806,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {
+        "wiki-write": {
+          "tokens": 820768,
+          "cost-usd": 1.52
+        }
+      },
+      "efficiency": {
+        "session-id": "1a45219a-98a3-4027-a608-665b29531a2d",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 103877,
+            "output-tokens": 30047,
+            "cache-read-tokens": 8360299,
+            "cache-5m-write-tokens": 534231,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 5.27,
+            "turns": 55,
+            "turn-durations-ms": [
+              124621,
+              120043,
+              48154,
+              84750
+            ],
+            "compactions": [],
+            "tool-calls": 31,
+            "tool-errors": 2,
+            "bash-command-failures": 1,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 11
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 103877,
+                "output": 30047,
+                "cache-5m-write": 534231,
+                "cache-1h-write": 0,
+                "cache-read": 8360299,
+                "total": 9028454
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {
+              "wiki-write": {
+                "tokens": 820768,
+                "cost-usd": 1.52
+              }
+            }
+          },
+          "cache-read-share": 0.9290865594321306,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 164153.70909090908,
+          "cost-per-turn-usd": 0.09581818181818182,
+          "tool-error-rate": 0.06451612903225806,
+          "turn-ms-p50": 84750,
+          "turn-ms-p90": 124621,
+          "turn-ms-max": 124621
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "2439cf48-8012-4c9a-57c5-abf2ae29080f": {
+      "title": "Teach driftwood to report a line number",
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-05-06T11:00:00Z",
+      "end": "2026-05-06T13:00:00Z",
+      "spend-usd": 3.7,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/2439cf48-8012-4c9a-57c5-abf2ae29080f.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 59959,
+          "output": 17349,
+          "cache-5m-write": 338077,
+          "cache-1h-write": 0,
+          "cache-read": 6653433,
+          "total": 7068818,
+          "spend-usd": 3.7
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7068818,
+          "cost-usd": 3.70393065
+        }
+      },
+      "cache-read-share": 0.9435527547522368,
+      "tool-error-rate": 0.08571428571428572,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {
+        "release-notes": {
+          "tokens": 589068,
+          "cost-usd": 1.09
+        }
+      },
+      "by-mcp": {
+        "wiki-write": {
+          "tokens": 1413763,
+          "cost-usd": 2.62
+        }
+      },
+      "efficiency": {
+        "session-id": "2439cf48-8012-4c9a-57c5-abf2ae29080f",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 59959,
+            "output-tokens": 17349,
+            "cache-read-tokens": 6653433,
+            "cache-5m-write-tokens": 338077,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 3.7,
+            "turns": 42,
+            "turn-durations-ms": [
+              168749,
+              212295,
+              42675,
+              44319,
+              11166,
+              80312,
+              138846,
+              193345,
+              49310,
+              107024,
+              85915,
+              199026
+            ],
+            "compactions": [],
+            "tool-calls": 70,
+            "tool-errors": 6,
+            "bash-command-failures": 3,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 13
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 59959,
+                "output": 17349,
+                "cache-5m-write": 338077,
+                "cache-1h-write": 0,
+                "cache-read": 6653433,
+                "total": 7068818
+              }
+            },
+            "by-skill": {
+              "release-notes": {
+                "tokens": 589068,
+                "cost-usd": 1.09
+              }
+            },
+            "by-mcp-tool": {
+              "wiki-write": {
+                "tokens": 1413763,
+                "cost-usd": 2.62
+              }
+            }
+          },
+          "cache-read-share": 0.9435527547522368,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 168305.19047619047,
+          "cost-per-turn-usd": 0.0880952380952381,
+          "tool-error-rate": 0.08571428571428572,
+          "turn-ms-p50": 85915,
+          "turn-ms-p90": 199026,
+          "turn-ms-max": 212295
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "2b3bd835-d25a-40de-127d-0bdd0c08077a": {
+      "title": "Teach driftwood to report a line number",
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-05-18T14:00:00Z",
+      "end": "2026-05-18T17:00:00Z",
+      "spend-usd": 5.83,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/2b3bd835-d25a-40de-127d-0bdd0c08077a.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 119562,
+          "output": 34582,
+          "cache-5m-write": 604286,
+          "cache-1h-write": 0,
+          "cache-read": 8969894,
+          "total": 9728324,
+          "spend-usd": 5.83
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 9728324,
+          "cost-usd": 5.8344567000000005
+        }
+      },
+      "cache-read-share": 0.9253283200646355,
+      "tool-error-rate": 0.01948051948051948,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 1,
+      "compactions": 1,
+      "by-skill": {},
+      "by-mcp": {
+        "tracker-search": {
+          "tokens": 810693,
+          "cost-usd": 1.5
+        }
+      },
+      "efficiency": {
+        "session-id": "2b3bd835-d25a-40de-127d-0bdd0c08077a",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 119562,
+            "output-tokens": 34582,
+            "cache-read-tokens": 8969894,
+            "cache-5m-write-tokens": 604286,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 5.83,
+            "turns": 52,
+            "turn-durations-ms": [
+              118887,
+              151293,
+              91733,
+              192413
+            ],
+            "compactions": [
+              {
+                "trigger": "auto",
+                "pre-tokens": 180490,
+                "post-tokens": 45122,
+                "duration-ms": 15503
+              }
+            ],
+            "tool-calls": 154,
+            "tool-errors": 3,
+            "bash-command-failures": 1,
+            "interrupts-structured": 0,
+            "interrupts-text": 1,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 34
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 119562,
+                "output": 34582,
+                "cache-5m-write": 604286,
+                "cache-1h-write": 0,
+                "cache-read": 8969894,
+                "total": 9728324
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {
+              "tracker-search": {
+                "tokens": 810693,
+                "cost-usd": 1.5
+              }
+            }
+          },
+          "cache-read-share": 0.9253283200646355,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 187083.15384615384,
+          "cost-per-turn-usd": 0.11211538461538462,
+          "tool-error-rate": 0.01948051948051948,
+          "turn-ms-p50": 118887,
+          "turn-ms-p90": 192413,
+          "turn-ms-max": 192413
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "3cecc43a-8948-484a-46a6-7821874ab89a": {
+      "title": "Teach driftwood to report a line number",
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-05-02T08:00:00Z",
+      "end": "2026-05-02T10:00:00Z",
+      "spend-usd": 4.83,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/3cecc43a-8948-484a-46a6-7821874ab89a.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 91329,
+          "output": 26419,
+          "cache-5m-write": 478187,
+          "cache-1h-write": 0,
+          "cache-read": 7872623,
+          "total": 8468558,
+          "spend-usd": 4.83
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 8468558,
+          "cost-usd": 4.82526015
+        }
+      },
+      "cache-read-share": 0.9325388980209873,
+      "tool-error-rate": 0.05714285714285714,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {
+        "schema-review": {
+          "tokens": 1209794,
+          "cost-usd": 2.24
+        }
+      },
+      "by-mcp": {},
+      "efficiency": {
+        "session-id": "3cecc43a-8948-484a-46a6-7821874ab89a",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 91329,
+            "output-tokens": 26419,
+            "cache-read-tokens": 7872623,
+            "cache-5m-write-tokens": 478187,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 4.83,
+            "turns": 54,
+            "turn-durations-ms": [
+              7108,
+              154771,
+              120764,
+              172458
+            ],
+            "compactions": [],
+            "tool-calls": 35,
+            "tool-errors": 2,
+            "bash-command-failures": 1,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 17
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 91329,
+                "output": 26419,
+                "cache-5m-write": 478187,
+                "cache-1h-write": 0,
+                "cache-read": 7872623,
+                "total": 8468558
+              }
+            },
+            "by-skill": {
+              "schema-review": {
+                "tokens": 1209794,
+                "cost-usd": 2.24
+              }
+            },
+            "by-mcp-tool": {}
+          },
+          "cache-read-share": 0.9325388980209873,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 156825.14814814815,
+          "cost-per-turn-usd": 0.08944444444444445,
+          "tool-error-rate": 0.05714285714285714,
+          "turn-ms-p50": 120764,
+          "turn-ms-p90": 172458,
+          "turn-ms-max": 172458
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "422fdead-fbc8-41a6-66e1-1c77f8225ef6": {
+      "title": "Split the driftwood parser module",
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-05-03T08:00:00Z",
+      "end": "2026-05-03T09:00:00Z",
+      "spend-usd": null,
+      "untracked-models": [
+        "claude-nimbus-2"
+      ],
+      "jsonl-paths": [
+        "/fixture/projects/422fdead-fbc8-41a6-66e1-1c77f8225ef6.jsonl"
+      ],
+      "models": {
+        "claude-nimbus-2": {
+          "input": 132110,
+          "output": 38210,
+          "cache-5m-write": 660330,
+          "cache-1h-write": 0,
+          "cache-read": 9457570,
+          "total": 10288220,
+          "spend-usd": null
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 10288220,
+          "cost-usd": 0.0
+        }
+      },
+      "cache-read-share": 0.9226888559133113,
+      "tool-error-rate": 0.04081632653061224,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {
+        "release-notes": {
+          "tokens": 2057644,
+          "cost-usd": 3.81
+        }
+      },
+      "by-mcp": {
+        "wiki-write": {
+          "tokens": 2057644,
+          "cost-usd": 3.81
+        }
+      },
+      "efficiency": {
+        "session-id": "422fdead-fbc8-41a6-66e1-1c77f8225ef6",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 132110,
+            "output-tokens": 38210,
+            "cache-read-tokens": 9457570,
+            "cache-5m-write-tokens": 660330,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": -0.0,
+            "turns": 31,
+            "turn-durations-ms": [
+              173505,
+              169374,
+              143947,
+              60291,
+              194902
+            ],
+            "compactions": [],
+            "tool-calls": 49,
+            "tool-errors": 2,
+            "bash-command-failures": 1,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-nimbus-2": 34
+            },
+            "by-model": {
+              "claude-nimbus-2": {
+                "input": 132110,
+                "output": 38210,
+                "cache-5m-write": 660330,
+                "cache-1h-write": 0,
+                "cache-read": 9457570,
+                "total": 10288220
+              }
+            },
+            "by-skill": {
+              "release-notes": {
+                "tokens": 2057644,
+                "cost-usd": 3.81
+              }
+            },
+            "by-mcp-tool": {
+              "wiki-write": {
+                "tokens": 2057644,
+                "cost-usd": 3.81
+              }
+            }
+          },
+          "cache-read-share": 0.9226888559133113,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 331878.06451612903,
+          "cost-per-turn-usd": -0.0,
+          "tool-error-rate": 0.04081632653061224,
+          "turn-ms-p50": 169374,
+          "turn-ms-p90": 194902,
+          "turn-ms-max": 194902
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "455f349d-fba9-4fa4-7cd3-02e332a473bd": {
+      "title": "Teach driftwood to report a line number",
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-05-15T08:00:00Z",
+      "end": "2026-05-15T09:00:00Z",
+      "spend-usd": 4.49,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/455f349d-fba9-4fa4-7cd3-02e332a473bd.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 81918,
+          "output": 23698,
+          "cache-5m-write": 436154,
+          "cache-1h-write": 0,
+          "cache-read": 7506866,
+          "total": 8048636,
+          "spend-usd": 4.49
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 8048636,
+          "cost-usd": 4.4888613
+        }
+      },
+      "cache-read-share": 0.93544224266904,
+      "tool-error-rate": 0.06578947368421052,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 1,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {
+        "tracker-search": {
+          "tokens": 1006079,
+          "cost-usd": 1.86
+        }
+      },
+      "efficiency": {
+        "session-id": "455f349d-fba9-4fa4-7cd3-02e332a473bd",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 81918,
+            "output-tokens": 23698,
+            "cache-read-tokens": 7506866,
+            "cache-5m-write-tokens": 436154,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 4.49,
+            "turns": 44,
+            "turn-durations-ms": [
+              169508,
+              72667,
+              54952,
+              235831,
+              174394,
+              184397,
+              109731,
+              232420,
+              24413,
+              170867,
+              135296
+            ],
+            "compactions": [],
+            "tool-calls": 76,
+            "tool-errors": 5,
+            "bash-command-failures": 2,
+            "interrupts-structured": 0,
+            "interrupts-text": 1,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 38
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 81918,
+                "output": 23698,
+                "cache-5m-write": 436154,
+                "cache-1h-write": 0,
+                "cache-read": 7506866,
+                "total": 8048636
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {
+              "tracker-search": {
+                "tokens": 1006079,
+                "cost-usd": 1.86
+              }
+            }
+          },
+          "cache-read-share": 0.93544224266904,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 182923.54545454544,
+          "cost-per-turn-usd": 0.10204545454545455,
+          "tool-error-rate": 0.06578947368421052,
+          "turn-ms-p50": 169508,
+          "turn-ms-p90": 232420,
+          "turn-ms-max": 235831
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "9587c1f7-105a-43e3-e5c5-268fe2fde1be": {
+      "title": null,
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-05-16T13:00:00Z",
+      "end": "2026-05-16T16:00:00Z",
+      "spend-usd": 4.15,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/9587c1f7-105a-43e3-e5c5-268fe2fde1be.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 72507,
+          "output": 20977,
+          "cache-5m-write": 394121,
+          "cache-1h-write": 0,
+          "cache-read": 7141109,
+          "total": 7628714,
+          "spend-usd": 4.15
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7628714,
+          "cost-usd": 4.15246245
+        }
+      },
+      "cache-read-share": 0.9386640205885141,
+      "tool-error-rate": 0.011111111111111112,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 1,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {},
+      "efficiency": {
+        "session-id": "9587c1f7-105a-43e3-e5c5-268fe2fde1be",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 72507,
+            "output-tokens": 20977,
+            "cache-read-tokens": 7141109,
+            "cache-5m-write-tokens": 394121,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 4.15,
+            "turns": 60,
+            "turn-durations-ms": [
+              114853,
+              235744,
+              121707,
+              203371
+            ],
+            "compactions": [],
+            "tool-calls": 90,
+            "tool-errors": 1,
+            "bash-command-failures": 0,
+            "interrupts-structured": 1,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 8
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 72507,
+                "output": 20977,
+                "cache-5m-write": 394121,
+                "cache-1h-write": 0,
+                "cache-read": 7141109,
+                "total": 7628714
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {}
+          },
+          "cache-read-share": 0.9386640205885141,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 127145.23333333334,
+          "cost-per-turn-usd": 0.06916666666666667,
+          "tool-error-rate": 0.011111111111111112,
+          "turn-ms-p50": 121707,
+          "turn-ms-p90": 235744,
+          "turn-ms-max": 235744
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "a1d0adc8-370b-4c3c-d593-bdaf1453cfa3": {
+      "title": "Teach driftwood to report a line number",
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-04-29T11:00:00Z",
+      "end": "2026-05-01T11:00:00Z",
+      "spend-usd": 4.04,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/a1d0adc8-370b-4c3c-d593-bdaf1453cfa3.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 69370,
+          "output": 20070,
+          "cache-5m-write": 380110,
+          "cache-1h-write": 0,
+          "cache-read": 7019190,
+          "total": 7488740,
+          "spend-usd": 4.04
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7488740,
+          "cost-usd": 4.0403295
+        }
+      },
+      "cache-read-share": 0.9398179327778574,
+      "tool-error-rate": 0.0759493670886076,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {
+        "wiki-write": {
+          "tokens": 936092,
+          "cost-usd": 1.73
+        }
+      },
+      "efficiency": {
+        "session-id": "a1d0adc8-370b-4c3c-d593-bdaf1453cfa3",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 69370,
+            "output-tokens": 20070,
+            "cache-read-tokens": 7019190,
+            "cache-5m-write-tokens": 380110,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 4.04,
+            "turns": 10,
+            "turn-durations-ms": [
+              156599,
+              68961,
+              165809,
+              206318,
+              26597,
+              64364,
+              206159,
+              94040,
+              141168
+            ],
+            "compactions": [],
+            "tool-calls": 158,
+            "tool-errors": 12,
+            "bash-command-failures": 6,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 28
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 69370,
+                "output": 20070,
+                "cache-5m-write": 380110,
+                "cache-1h-write": 0,
+                "cache-read": 7019190,
+                "total": 7488740
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {
+              "wiki-write": {
+                "tokens": 936092,
+                "cost-usd": 1.73
+              }
+            }
+          },
+          "cache-read-share": 0.9398179327778574,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 748874.0,
+          "cost-per-turn-usd": 0.404,
+          "tool-error-rate": 0.0759493670886076,
+          "turn-ms-p50": 141168,
+          "turn-ms-p90": 206318,
+          "turn-ms-max": 206318
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "eec33f5b-a088-4b88-98cc-99f877463e41": {
+      "title": null,
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-05-01T14:00:00Z",
+      "end": "2026-05-01T15:00:00Z",
+      "spend-usd": 4.3,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/eec33f5b-a088-4b88-98cc-99f877463e41.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 63096,
+          "output": 18256,
+          "cache-5m-write": 352088,
+          "cache-1h-write": 79952,
+          "cache-read": 6775352,
+          "total": 7288744,
+          "spend-usd": 4.3
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7288744,
+          "cost-usd": 4.2957756
+        }
+      },
+      "cache-read-share": 0.9318978313422703,
+      "tool-error-rate": 0.043010752688172046,
+      "cache-1h-write-fraction": 0.18505693917229887,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {
+        "release-notes": {
+          "tokens": 662613,
+          "cost-usd": 1.23
+        }
+      },
+      "by-mcp": {},
+      "efficiency": {
+        "session-id": "eec33f5b-a088-4b88-98cc-99f877463e41",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 63096,
+            "output-tokens": 18256,
+            "cache-read-tokens": 6775352,
+            "cache-5m-write-tokens": 352088,
+            "cache-1h-write-tokens": 79952,
+            "cost-usd": 4.3,
+            "turns": 44,
+            "turn-durations-ms": [
+              22450,
+              194112,
+              42284,
+              116396,
+              19715,
+              131562,
+              238222,
+              232684,
+              102020
+            ],
+            "compactions": [],
+            "tool-calls": 93,
+            "tool-errors": 4,
+            "bash-command-failures": 2,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 23
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 63096,
+                "output": 18256,
+                "cache-5m-write": 352088,
+                "cache-1h-write": 79952,
+                "cache-read": 6775352,
+                "total": 7288744
+              }
+            },
+            "by-skill": {
+              "release-notes": {
+                "tokens": 662613,
+                "cost-usd": 1.23
+              }
+            },
+            "by-mcp-tool": {}
+          },
+          "cache-read-share": 0.9318978313422703,
+          "cache-1h-write-fraction": 0.18505693917229887,
+          "tokens-per-turn": 165653.27272727274,
+          "cost-per-turn-usd": 0.09772727272727272,
+          "tool-error-rate": 0.043010752688172046,
+          "turn-ms-p50": 116396,
+          "turn-ms-p90": 238222,
+          "turn-ms-max": 238222
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "ef35bcda-9a4c-41b2-7685-d5629b1ecbe9": {
+      "title": null,
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-05-05T14:00:00Z",
+      "end": "2026-05-05T15:00:00Z",
+      "spend-usd": 4.56,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/ef35bcda-9a4c-41b2-7685-d5629b1ecbe9.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 69370,
+          "output": 20070,
+          "cache-5m-write": 380110,
+          "cache-1h-write": 86190,
+          "cache-read": 7019190,
+          "total": 7574930,
+          "spend-usd": 4.56
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7574930,
+          "cost-usd": 4.5574695
+        }
+      },
+      "cache-read-share": 0.9290959726586595,
+      "tool-error-rate": 0.056910569105691054,
+      "cache-1h-write-fraction": 0.1848380870684109,
+      "interrupts": 2,
+      "compactions": 1,
+      "by-skill": {},
+      "by-mcp": {
+        "tracker-search": {
+          "tokens": 841658,
+          "cost-usd": 1.56
+        }
+      },
+      "efficiency": {
+        "session-id": "ef35bcda-9a4c-41b2-7685-d5629b1ecbe9",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 69370,
+            "output-tokens": 20070,
+            "cache-read-tokens": 7019190,
+            "cache-5m-write-tokens": 380110,
+            "cache-1h-write-tokens": 86190,
+            "cost-usd": 4.56,
+            "turns": 13,
+            "turn-durations-ms": [
+              159137,
+              234073,
+              84238,
+              145495,
+              228427,
+              44595,
+              85016,
+              189391
+            ],
+            "compactions": [
+              {
+                "trigger": "auto",
+                "pre-tokens": 148042,
+                "post-tokens": 37010,
+                "duration-ms": 10357
+              }
+            ],
+            "tool-calls": 123,
+            "tool-errors": 7,
+            "bash-command-failures": 3,
+            "interrupts-structured": 2,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 19
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 69370,
+                "output": 20070,
+                "cache-5m-write": 380110,
+                "cache-1h-write": 86190,
+                "cache-read": 7019190,
+                "total": 7574930
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {
+              "tracker-search": {
+                "tokens": 841658,
+                "cost-usd": 1.56
+              }
+            }
+          },
+          "cache-read-share": 0.9290959726586595,
+          "cache-1h-write-fraction": 0.1848380870684109,
+          "tokens-per-turn": 582686.9230769231,
+          "cost-per-turn-usd": 0.3507692307692307,
+          "tool-error-rate": 0.056910569105691054,
+          "turn-ms-p50": 145495,
+          "turn-ms-p90": 234073,
+          "turn-ms-max": 234073
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "f9a7f9d2-51b7-4572-8da4-87307297791b": {
+      "title": "Teach driftwood to report a line number",
+      "repo": "jrivera/driftwood",
+      "repo-source": "path-guess",
+      "begin": "2026-04-28T08:00:00Z",
+      "end": "2026-04-30T14:00:00Z",
+      "spend-usd": 4.26,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/f9a7f9d2-51b7-4572-8da4-87307297791b.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 75644,
+          "output": 21884,
+          "cache-5m-write": 408132,
+          "cache-1h-write": 0,
+          "cache-read": 7263028,
+          "total": 7768688,
+          "spend-usd": 4.26
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7768688,
+          "cost-usd": 4.2645954
+        }
+      },
+      "cache-read-share": 0.9375515373823837,
+      "tool-error-rate": 0.06666666666666667,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {
+        "schema-review": {
+          "tokens": 647390,
+          "cost-usd": 1.2
+        }
+      },
+      "by-mcp": {
+        "tracker-search": {
+          "tokens": 706244,
+          "cost-usd": 1.31
+        }
+      },
+      "efficiency": {
+        "session-id": "f9a7f9d2-51b7-4572-8da4-87307297791b",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 75644,
+            "output-tokens": 21884,
+            "cache-read-tokens": 7263028,
+            "cache-5m-write-tokens": 408132,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 4.26,
+            "turns": 11,
+            "turn-durations-ms": [
+              103434,
+              119889,
+              131905,
+              172886,
+              238084,
+              52648,
+              236254,
+              32388,
+              142966,
+              196149,
+              5099
+            ],
+            "compactions": [],
+            "tool-calls": 75,
+            "tool-errors": 5,
+            "bash-command-failures": 2,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 8
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 75644,
+                "output": 21884,
+                "cache-5m-write": 408132,
+                "cache-1h-write": 0,
+                "cache-read": 7263028,
+                "total": 7768688
+              }
+            },
+            "by-skill": {
+              "schema-review": {
+                "tokens": 647390,
+                "cost-usd": 1.2
+              }
+            },
+            "by-mcp-tool": {
+              "tracker-search": {
+                "tokens": 706244,
+                "cost-usd": 1.31
+              }
+            }
+          },
+          "cache-read-share": 0.9375515373823837,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 706244.3636363636,
+          "cost-per-turn-usd": 0.38727272727272727,
+          "tool-error-rate": 0.06666666666666667,
+          "turn-ms-p50": 131905,
+          "turn-ms-p90": 236254,
+          "turn-ms-max": 238084
+        },
+        "subagents": [],
+        "flags": []
+      }
+    }
+  }
+}

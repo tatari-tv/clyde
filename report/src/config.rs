@@ -2,7 +2,7 @@ use crate::cli::CollectArgs;
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use common::DateTz;
 use eyre::{Result, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -15,6 +15,7 @@ pub enum ResolvedCommand {
     Collect(CollectConfig),
     Render(RenderConfig),
     Merge(MergeConfig),
+    Eval(crate::eval::EvalConfig),
 }
 
 /// Destination for `report collect`'s JSON. `-o <path>` selects [`Output::File`]; omitting `-o`
@@ -228,6 +229,33 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 html_max_output_tokens: file.render_html_max_output_tokens(),
                 prior: args.prior,
                 reconcile: args.reconcile,
+            })
+        }
+        crate::cli::Command::Eval(args) => {
+            // Same unconditional load as `render`, and for the same reason: the eval IS a render
+            // (twice, per fixture) plus a judge, so it needs the model pins and the ceilings. The
+            // judge pin defaults to the markdown pin rather than introducing a config key whose only
+            // reader would be this subcommand.
+            let file = common::config::load()?;
+            let fixtures = match args.fixture {
+                Some(dirs) if !dirs.is_empty() => dirs,
+                // Resolved against the process CWD, so `otto eval` from the workspace root finds
+                // them and any other CWD fails loudly naming `--fixture` (`fixture::Fixture::load`).
+                _ => crate::eval::fixture::committed_dirs(Path::new(".")),
+            };
+            ResolvedCommand::Eval(crate::eval::EvalConfig {
+                fixtures,
+                judge_model: args.judge.unwrap_or_else(|| file.render_markdown_model().to_string()),
+                out: args.out.unwrap_or_else(|| PathBuf::from(crate::eval::DEFAULT_OUT)),
+                write_goldens: args.write_goldens,
+                llm: match args.llm {
+                    Some(l) => l,
+                    None => file.render_llm().into(),
+                },
+                markdown_model: file.render_markdown_model().to_string(),
+                html_model: file.render_html_model().to_string(),
+                markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
+                html_max_output_tokens: file.render_html_max_output_tokens(),
             })
         }
         crate::cli::Command::Merge(args) => {

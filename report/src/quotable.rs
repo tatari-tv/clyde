@@ -258,6 +258,9 @@ impl QuotableFacts {
             let has_alpha = segment.chars().any(|c| c.is_ascii_alphabetic());
             if has_digit && has_alpha {
                 self.identifiers.insert(segment.to_string());
+                if let Some(ordinal) = percentile_ordinal(segment) {
+                    self.identifiers.insert(ordinal);
+                }
             }
         }
     }
@@ -351,6 +354,32 @@ fn classify(key: &str) -> Class {
         return Class::Identifier;
     }
     Class::Figure
+}
+
+/// The English ordinal a `p<N>` percentile label is WRITTEN as: `p90` -> `90th`, `p50` -> `50th`.
+/// `None` for any other segment shape.
+///
+/// Found by the Phase 13 render eval, on the first live render it ever measured. `session-spend-p90`
+/// is a real field and "the 90th percentile" is the natural way to say it, but the label segment
+/// `p90` only masks the digits INSIDE `p90` -- so a correct sentence about a real figure was
+/// rejected as a fabrication, twice in a row, on both render paths. This licenses the ordinal
+/// SPELLING of a label the binary itself named, and nothing else: a bare `90` anywhere in the prose
+/// is still unlicensed, which is the narrowing Phase 10 exists to keep.
+fn percentile_ordinal(segment: &str) -> Option<String> {
+    let digits = segment.strip_prefix('p')?;
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = digits.parse().ok()?;
+    // 11th/12th/13th are the exceptions every naive ordinal function gets wrong.
+    let suffix = match (n % 100, n % 10) {
+        (11..=13, _) => "th",
+        (_, 1) => "st",
+        (_, 2) => "nd",
+        (_, 3) => "rd",
+        _ => "th",
+    };
+    Some(format!("{digits}{suffix}"))
 }
 
 /// The calendar-date prefix of an RFC3339 timestamp, or `None` when the value is not date-shaped.

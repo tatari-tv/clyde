@@ -26,6 +26,10 @@ pub trait Transport {
 pub enum Kind {
     Markdown,
     Html,
+    /// `clyde report eval`'s judge: a small JSON verdict over an already-rendered artifact
+    /// (design Phase 13). It rides the existing transport rather than a second client, so the eval
+    /// inherits `--llm` and needs no second credential.
+    Judge,
 }
 
 impl Kind {
@@ -35,9 +39,14 @@ impl Kind {
     /// purpose: naming the markdown key on an html failure would be a remedy that cannot remedy, which
     /// `cli.rs`'s module docs call worse than offering none. A compile-time fact about the kind, unlike
     /// the ceiling itself.
+    ///
+    /// [`Kind::Judge`] names the MARKDOWN key, and that is not a stand-in: the eval passes
+    /// `render.markdown-max-output-tokens` as the judge's ceiling, so the key this error names is
+    /// the key that actually governs it. The eval deliberately adds no ceiling key of its own -- a
+    /// four-object verdict cannot plausibly need a budget the markdown document does not.
     pub fn max_output_tokens_key(self) -> &'static str {
         match self {
-            Kind::Markdown => "render.markdown-max-output-tokens",
+            Kind::Markdown | Kind::Judge => "render.markdown-max-output-tokens",
             Kind::Html => "render.html-max-output-tokens",
         }
     }

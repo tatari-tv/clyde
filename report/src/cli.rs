@@ -104,6 +104,18 @@ pub enum Command {
     /// `since`/`until` window to the min/max across inputs, and tags the output
     /// with a multi-host marker.
     Merge(MergeArgs),
+    /// Render every frozen fixture, run the mechanical checks, score with a judge, and write a
+    /// scored report.
+    ///
+    /// Costs model calls: this is `otto eval`, not `otto ci`. The free, deterministic half of the
+    /// same checks runs in `otto ci` against the committed golden artifacts, offline.
+    ///
+    /// With no `--fixture`, evaluates the three synthesized fixtures under `fixtures/report/`
+    /// (run from the workspace root). `--fixture <dir>` replaces that set, which is how a real
+    /// month is evaluated locally without the data entering git -- `fixtures/report/local/` is
+    /// gitignored for exactly that. Exits non-zero when any fixture fails a mechanical check or
+    /// scores below a floor its `eval.yml` commits to.
+    Eval(EvalArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -235,6 +247,39 @@ pub struct RenderArgs {
     /// missing.
     #[arg(long)]
     pub reconcile: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct EvalArgs {
+    /// Fixture directories to evaluate, space separated. Each must hold a `report.json`; a
+    /// committed fixture also holds `eval.yml` and its goldens. When omitted, the three committed
+    /// fixtures under `fixtures/report/` are used.
+    #[arg(long, num_args = 1..)]
+    pub fixture: Option<Vec<PathBuf>>,
+
+    /// Model pin for the judge. When omitted, falls back to `render.markdown-model` in `clyde.yml`,
+    /// so the eval needs no config key of its own.
+    #[arg(long)]
+    pub judge: Option<String>,
+
+    /// Write the scored JSON report here (default: `./eval-report.json`).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+
+    /// Overwrite each fixture's committed `golden.md` / `golden.html` with this run's fresh render.
+    /// The goldens are model-authored, so this is how they are regenerated; a hand-run `report
+    /// render` would splice in the machine's real persona and price against the live feed instead
+    /// of the fixture's invented persona and the eval's pinned embedded pricing. A render that
+    /// failed its own mechanical checks is NOT written -- a golden is a known-good artifact by
+    /// definition, and committing a failing one would make `otto ci` green against a broken render.
+    #[arg(long)]
+    pub write_goldens: bool,
+
+    /// Which transport performs the renders and the judge call: `auto`, `cli`, or `api`. Same
+    /// semantics as `render --llm`, and the judge inherits it -- there is no second credential.
+    /// When omitted, falls back to `render.llm` in `clyde.yml`, and to `auto` if that too is unset.
+    #[arg(long, value_enum, ignore_case = true)]
+    pub llm: Option<Llm>,
 }
 
 #[derive(clap::Args, Debug)]

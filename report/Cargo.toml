@@ -29,6 +29,7 @@ rayon = { workspace = true }
 regex = "1.12.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml.workspace = true
 session = { path = "../session" }
 sessions = { path = "../sessions" }
 tempfile = { workspace = true }

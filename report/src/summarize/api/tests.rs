@@ -29,7 +29,8 @@ fn expected_user_msg() -> String {
 /// A `Job` at its DEFAULT pins, which is what the byte-identical baseline is a baseline of.
 fn default_job(kind: Kind) -> Job<'static> {
     let (model, max_output_tokens) = match kind {
-        Kind::Markdown => (MARKDOWN_MODEL, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS),
+        // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
+        Kind::Markdown | Kind::Judge => (MARKDOWN_MODEL, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS),
         Kind::Html => (HTML_MODEL, DEFAULT_HTML_MAX_OUTPUT_TOKENS),
     };
     Job {

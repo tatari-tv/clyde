@@ -22,7 +22,8 @@ fn transport() -> CliTransport {
 /// change to either default flows through every Guard 6 case instead of being hand-edited per site.
 fn job(kind: Kind) -> Job<'static> {
     let max_output_tokens = match kind {
-        Kind::Markdown => DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
+        Kind::Markdown | Kind::Judge => DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
         Kind::Html => DEFAULT_HTML_MAX_OUTPUT_TOKENS,
     };
     Job {

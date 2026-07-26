@@ -1147,3 +1147,200 @@ live fetch from a cache hit is a `claude-pricing` change this phase's scope excl
 - Phase 13's synthesized fixtures will need a `reconciliation` case (present and absent) to keep the
   `otto ci` mechanical layer's coverage of this phase; not built here since Phase 13 owns the
   fixture generator.
+
+## Phase 13: Render eval
+
+### Design decisions
+- **Fixtures are SYNTHESIZED by a committed, seeded generator, and the generator asserts that in a
+  test.** `report/src/eval/synth.rs` invents every org, repo, title, summary, tag, commit sha and PR
+  reference; `synth::tests::the_vocabulary_names_nothing_real` fails the build if a future edit
+  pastes `tatari`, `scottidler`, `clyde`, `marquee` or `philo` into a fixture. The public-repo rule
+  is enforced by CI rather than by remembering it.
+- **The generator freezes the clock.** `build_report` stamps `generated: Utc::now()`, so
+  `synth::build` overwrites it with a fixed instant (`synth::GENERATED`). Without that, every
+  regeneration differs from the committed fixture in exactly one field and "seeded, so fixtures are
+  reproducible and diffable" is false. `the_same_kind_generates_byte_identical_json` pins it, and
+  `eval::tests::the_committed_fixtures_match_the_generator` pins the committed files against the
+  generator so the two can never drift.
+- **Synthesized sessions go through the REAL `report::build_report`.** A fixture is exactly the
+  artifact `report collect` would have written for that window -- the agent-type partition, the
+  outcome rollup, the untracked-model gate and the pricing all computed by production code. A
+  hand-written JSON would have been a fixture of what someone thought collect emits.
+- **The work vocabulary is PER REPO and title/summary are PAIRED.** Both properties were forced by
+  the judge on live runs. A global title pool put "Harden the quill release script" on a
+  `northwind-media/tideline` session; independent title and summary lists then put the
+  backoff-and-jitter summary under "Trace a cold start in the ingest worker". Both scored
+  citation-accuracy down, correctly: a fixture whose sessions do not belong to their repos is not a
+  realistic window, and grading a narrative against one measures the fixture rather than the render.
+  `small` additionally ROTATES through its repo's tasks rather than sampling, because nine random
+  draws from one repo gave three sessions the byte-identical title and summary.
+- **Pricing is pinned to `Pricing::embedded()` everywhere in the eval** (`lib.rs`'s dispatch, the
+  `fixtures` bin, and the CI tests). A fixture priced against the live feed scores differently on two
+  days because the feed moved, which measures the feed; worse, the next `data: refresh pricing`
+  commit would silently invalidate every committed golden. The coupling to
+  `pricing/data/pricing.json` is real, so it gets a NAMED failure:
+  `fixture_models_still_carry_the_rates_the_goldens_were_rendered_against` pins the exact per-model
+  rates and prints the regeneration remedy.
+- **The eval never calls `persona::whoami()`.** Each fixture's `eval.yml` carries an INVENTED
+  persona. A render normally splices the operator's real name, title, team and email into the
+  artifact; committing that to a public repo is the same leak as a real fixture by another route.
+- **Fresh renders go through `render::markdown_from_context` / `html_from_context`, the same
+  functions `report render` calls**, guards included. `render_via_opus_markdown`/`_html` became thin
+  wrappers over them. An eval that rendered through a parallel path would be measuring a pipeline
+  users never run.
+- **The judge rides the existing `summarize::Transport` as a new `Kind::Judge`**, so it inherits
+  `--llm` and needs no second credential. `Kind::Judge::max_output_tokens_key()` names the MARKDOWN
+  key, and that is not a stand-in: the eval passes `render.markdown-max-output-tokens` as the judge's
+  ceiling, so the key the cli transport's over-budget error names is the key that governs it. The
+  eval adds no config key of its own.
+- **The mechanical layer takes its ground truth from the SERIALIZED context block**, not from the
+  `Report` -- so "exists in the context" is literally true, and a field a later phase adds is covered
+  the day it lands.
+- **`cited-repos` is anchored on the context's own vocabulary**, not on a slug-shaped regex: a
+  path run is checked when its left half is a known ORG (a corrupted repo name) or its right half is
+  a known repo NAME (a corrupted org). That is what keeps `read/write`, `and/or` and
+  `cache-read/cache-write` out of the check while still catching the swap the design's own criterion
+  plants.
+- **An HTML render rejection is measured, not gated; a markdown rejection is gated.** The markdown
+  artifact is the eval's subject (it is what the judge scores and what the goldens are), so losing it
+  means nothing was measured. The HTML render exists to exercise the geometry allowlist, whose
+  stochastic pass rate is a PENDING DECISION this phase was asked to size -- gating on it would make
+  `otto eval` flake for exactly the reason it exists to measure.
+- **`--write-goldens` is the only way to regenerate a golden.** A hand-run `clyde report render`
+  would splice in the machine's real persona and price against the live feed. A render that failed
+  its own mechanical checks is never written, so a golden is a known-good artifact by construction.
+- **New crate module `report::eval`, four submodules** (`synth`, `fixture`, `mechanical`, `judge`),
+  matching the Phase 11/12 split-by-job pattern. `synth` is the only `pub` one, because the
+  `fixtures` bin is a separate crate; the rest are `pub(crate)` so their types can name
+  `quotable::RenderContext`.
+
+### Deviations
+- **`--write-goldens` is a new flag the doc's CLI line does not list** (`report eval [--fixture]
+  [--judge] [--out]`). Necessary, not additive: the goldens must be rendered with the fixture's
+  invented persona and the eval's pinned pricing, and no other command does both, so without it the
+  committed goldens would be artifacts nobody could reproduce. Same reasoning added `--llm`, which
+  the doc implies ("the eval judge uses the existing `summarize` transport, so it inherits `--llm`")
+  without listing.
+- **The three fixtures ship six goldens, not three** (`golden.md` and `golden.html` each). The doc
+  says "a committed GOLDEN rendered artifact", singular, but its own mechanical-check list includes
+  "every `viewBox`/`points` value verbatim in quotable facts", and a markdown artifact has no SVG. An
+  HTML golden is the only thing that check can run against.
+- **The judge's per-fixture `citation-accuracy` floor is 2, not 3.** Measured across the runs that
+  produced these goldens, a clean artifact scored 2 about as often as 3, with the judge's own reason
+  text finding no concrete fault (one verdict argued itself from "correct... correct... correct" to a
+  2). A floor that is red on a correct render gates nothing. 2 still fails "several unsupported
+  claims" (1) and any fabrication (0), and the mechanical layer independently proves no fabricated
+  figure, repo, date or quoted title can reach a golden at all. `coverage: 2` is the design's own
+  criterion in floor form; `prohibition-compliance: 3` stays absolute and every run cleared it.
+- **The judge brief is the WHOLE context block, not a subset.** The doc does not specify the brief's
+  shape. Two narrower forms were tried and both mis-scored live: a hand-picked subset made legitimate
+  by-day, reconciliation and cache figures read as unsupported; dropping only `sessions[]` then made
+  legitimate citations of sessions below the outlier cut read as fabricated (citation-accuracy 1).
+  A judge asked "is every claim supported" has to be holding exactly what supported it.
+- **Three guard fixes landed here that belong to earlier phases' code**, each found by the first live
+  render this phase ever measured, each with its own test:
+  1. `quotable::percentile_ordinal` (Phase 10). The model writes `session-spend-p90` as "the 90th
+     percentile"; the label segment `p90` masks only the digits inside `p90`, so a correct sentence
+     about a real figure was rejected as a fabrication on BOTH render paths, twice in a row. The fix
+     licenses the ordinal SPELLING of a label the binary itself named and nothing else -- a bare `90`
+     is still unlicensed.
+  2. `render::excerpt` (Phase 10). `reject_foreign_numbers` named the offending token and not the
+     sentence, so diagnosing a rejection meant re-running a paid render. The error now carries the
+     prose around the first occurrence. This is what made (1) diagnosable in one run.
+  3. `report/README.md` gained a "Measuring render quality" section. The doc assigns README duty only
+     to Phase 6, but a new subcommand that is undocumented in the crate's own README is a surface
+     nobody can find.
+- **`Guards` measures the MARKDOWN guard's rejection rate too**, where the team lead asked only about
+  the HTML geometry validator. Same mechanism, same stochastic shape, and the markdown path tripped
+  first (twice, on `90`), so measuring only one of the two would have hidden the one that actually
+  blocked this phase.
+
+### Tradeoffs
+- **Whole context to the judge vs a brief.** A 1,523-session local window is a ~900KB judge input,
+  roughly 230K tokens and about a dollar per fixture. Accepted: two cheaper briefs each produced a
+  wrong score, and a judge that is wrong is worth less than a judge that is expensive.
+- **`cited-titles` checks double-quoted spans only, at 20 chars and 4 words, case-insensitively.**
+  Every one of those bounds was set by a live false positive: the frontmatter `title:` composite (now
+  excluded with the whole frontmatter block), the table labels `"Lines written"` / `"lines
+  replaced"`, and a summary quote whose first letter the model lowercased to open a sentence. The
+  cost is that a short fabricated title could pass; the alternative is a check that rejects correct
+  renders, which is the worse failure for a guard whose false positive is fatal.
+- **"would have cost" is deliberately NOT on the speculative-phrase list.** A first cut included it
+  and rejected a correct render: the cache counterfactual is the ONE quantification both prompts
+  sanction, and "what the same tokens would have cost at fresh-input rates" is how that
+  binary-computed figure reads in English. Banning the phrase would ban the exception.
+- **No `\d+x`-multiplier check, and no figure-followed-by-a-time-unit check.** Phase 10's open
+  questions recommend both as a follow-up phase with a different mechanism (claim-shaped rather than
+  value-shaped). Adding them here would be unrequested scope on a guard whose false positive is a
+  hard render failure; the phrase list covers the cases the prompt names.
+- **`otto eval` pins `--llm api`.** The fixtures are small enough for either transport, but `auto`
+  would silently pick whichever this host happens to have, and a measurement whose transport varies
+  by machine is not a measurement. The keyless path is one flag away
+  (`clyde report eval --llm cli`).
+
+### Open questions
+- **`preserveaspectratio` is a real, recurring live failure and the decision is Scott's.** Measured
+  across 24 fresh HTML renders in this phase: **9 rejections, 37.5%**, EVERY one of them the same
+  attribute on a chart `<svg>`, and never anything else. Per fixture: `small` 0 of 8, `medium` 3 of
+  8, `pathological` 6 of 8. Nothing was widened, per the explicit instruction. The options are the
+  ones Phase 11 already named: (a) keep the allowlist and tighten `report-html.pmt` to ban the
+  attribute by name (it currently bans coordinates, not attributes-outside-the-list); (b) add
+  `preserveAspectRatio` to `geometry::PERMITTED_ATTRIBUTES`, which is defensible because its value
+  (`xMidYMid meet`) carries no digit and therefore cannot smuggle geometry; (c) accept a ~38%
+  retry rate on `--format html`. Recommendation: (b) plus (a) -- the attribute is presentational, its
+  value is digit-free, and the digit-bearing-value rule that makes the allowlist fail closed would
+  still apply to it unchanged.
+- **`stroke-width="2"`, Phase 11's predicted first failure, never fired.** Across the same 24 renders
+  the model always took the stylesheet route the prompt describes. The open question Phase 11 left is
+  answered by measurement: it is not the live problem; `preserveaspectratio` is.
+- Should the eval keep a rolling record of guard-rejection rates across runs, rather than one run's
+  figures in `eval-report.json`? The rate is the interesting number and it is only meaningful over
+  several runs; nothing in this design asked for persistence, so nothing was built.
+
+### Verification
+- `otto ci`: green (lint, bloat, check, test). 412 tests in `report`, 57 of them new.
+- **Criterion 1, "`otto ci` runs the mechanical layer on all three goldens offline and green":** met.
+  `eval::tests::every_committed_golden_passes_the_mechanical_layer` runs both goldens of all three
+  fixtures through `mechanical::check` with `Pricing::embedded()`; no network, no model, no clock.
+- **Criterion 2, "`otto eval` passes all three fixtures":** met, observed live. `otto eval` exited 0
+  with `small` 3/3/3/3, `medium` 3/3/3/3, `pathological` 2/3/3/3 against floors 2/2/3/2.
+- **Criterion 3, "corrupting a golden's narrative (swap a repo name) fails the `otto ci` citation
+  check":** met, and asserted over EVERY golden rather than one:
+  `corrupting_a_golden_repo_name_fails_the_citation_check` swaps each fixture's top `by-repo` row for
+  `<same-org>/lighthouse` and requires a `cited-repos` finding. Both swap directions (repo name, org)
+  and the inside-a-URL case have their own unit tests.
+- **Criterion 4, "a judged fresh render that misses the top `by-repo` row drops below its coverage
+  floor and exits non-zero":** met, observed live against the real judge. The ignored, paid probe
+  `a_render_missing_the_top_repo_scores_below_its_coverage_floor` deletes every line naming
+  `openpipe-oss/quill` from the medium golden and re-judges it: **coverage scored 1 against a floor
+  of 2**, reason "the top repo is effectively missing from coverage", and `regressions` is non-empty,
+  which is what `eval::run` bails on. The offline half (below-floor is a regression, a regression is
+  a non-zero exit) is pinned by `judge::tests::a_coverage_score_below_the_floor_is_a_regression`.
+- **Phase 10's criterion 3, re-run against the committed goldens (the deferral Phase 10 recorded):**
+  met. `phase_ten_criterion_three_holds_against_the_committed_goldens` runs `foreign_figures` over
+  all SIX committed artifacts (markdown, and each HTML document's visible text) and requires an empty
+  result, and requires the corpus to include an untitled session cited by `short-id` and a prose PR
+  reference. Both cases are additionally guaranteed in the DATA
+  (`the_fixtures_contain_the_untitled_and_pr_cases`: all three fixtures carry untitled sessions) and
+  REQUIRED by contract (the medium fixture's `require-citations`, asserted present by
+  `a_committed_fixture_requires_both_citation_shapes`).
+- Tests bite, checked by mutation: dropping `strip_frontmatter` fails every markdown golden on
+  `cited-titles`; dropping the `orgs.contains(left)` anchor lets the planted repo swap through;
+  removing `percentile_ordinal` re-fails the "90th percentile" sentence; removing the frozen
+  `generated` stamp fails `the_same_kind_generates_byte_identical_json`.
+
+### Measured, on the three committed fixtures
+
+| fixture | sessions | spend | window | what it carries |
+|---|---|---|---|---|
+| `small` | 9 | `$64.85` | 7 days | one repo, no subagents, all `git-origin`, full enrich coverage |
+| `medium` | 44 | `$671.28` | 30 days | 3 orgs / 7 repos, subagents with a positive `(main-session)` residual, all four `repo-source` values, `--prior`, `--reconcile`, partial enrichment |
+| `pathological` | 12 | `$49.48` | 20 days | zero outcomes, one unpriced nonzero-token model, an 8-day gap, 3 carried-in sessions, all-`path-guess`, zero enrichment |
+
+Judge scores on the `otto eval` run that closed the phase (floors 2 / 2 / 3 / 2):
+
+| fixture | citation-accuracy | coverage | prohibition-compliance | readability |
+|---|---|---|---|---|
+| `small` | 3 | 3 | 3 | 3 |
+| `medium` | 3 | 3 | 3 | 3 |
+| `pathological` | 2 | 3 | 3 | 3 |
