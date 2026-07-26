@@ -217,7 +217,8 @@ fn all_priced_session_has_some_spend_and_no_untracked() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     let entry = &report.sessions[SID_A];
     assert!(entry.spend_usd.unwrap() > 0.0);
     assert!(entry.untracked_models.is_empty());
@@ -239,7 +240,8 @@ fn all_untracked_session_has_none_spend_and_lists_models() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     let entry = &report.sessions[SID_A];
     assert_eq!(entry.spend_usd, None);
     assert_eq!(entry.untracked_models, vec!["not-a-real-model".to_string()]);
@@ -264,7 +266,8 @@ fn totals_untracked_models_dedupe_across_sessions() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     assert_eq!(
         report.totals.untracked_models,
         vec!["ghost-model".to_string(), "phantom-model".to_string()]
@@ -329,7 +332,8 @@ fn totals_ratios_are_ratio_of_sums_not_average() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     // Ratio-of-sums: 900 / (100 + 900 + 100) = 900/1100 ≈ 0.818, NOT the average of 0.9 and 0.0 (0.45).
     let share = report.totals.cache_read_share.unwrap();
     assert!((share - 900.0 / 1100.0).abs() < 1e-9, "got {share}");
@@ -340,7 +344,7 @@ fn totals_ratios_are_ratio_of_sums_not_average() {
 }
 
 /// HEADLINE: agent-type cost attribution is promoted to a top-level per-session field, keyed by the
-/// subagent's TYPE, summing tokens + (embedded-priced) cost across subagents of that type.
+/// subagent's TYPE, summing tokens + re-priced cost across subagents of that type.
 #[test]
 fn agent_type_costs_attribute_by_subagent_type() {
     let subs = vec![
@@ -369,10 +373,237 @@ fn agent_type_costs_attribute_by_subagent_type() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     let costs = &report.sessions[SID_A].agent_type_costs;
     assert_eq!(costs.get("phase-implementer").unwrap().tokens, 1500);
     assert_eq!(costs.get("reviewer").unwrap().tokens, 200);
+}
+
+/// Sum every agent-type bucket of every session -- the figure the Phase 5 partition criterion is
+/// written against.
+fn agent_type_spend(report: &Report) -> f64 {
+    report
+        .sessions
+        .values()
+        .flat_map(|e| e.agent_type_costs.values())
+        .map(|w| w.cost_usd)
+        .sum()
+}
+
+/// A DELIBERATELY broken `SessionEfficiency`: the aggregate is whatever the caller passes, NOT
+/// `parent ⊎ subs`. `fold` can never produce this (`efficiency/src/fold.rs:95-99` recomputes the
+/// aggregate from the union), which is precisely why report must refuse it rather than clamp it.
+fn broken_eff(sid: &str, aggregate: RawCounters, subs: Vec<SubagentEfficiency>) -> SessionEfficiency {
+    SessionEfficiency {
+        session_id: sid.into(),
+        aggregate: finalize(aggregate),
+        subagents: subs,
+        flags: Vec::new(),
+    }
+}
+
+/// A session that did most of its own work plus delegated some, and a session with no subagents at
+/// all -- the mix a real window carries.
+fn partition_fixture() -> Vec<CollectedSession> {
+    // Session A: 1,100 parent-own tokens (the POSITIVE residual the criterion needs to exercise the
+    // `(main-session)` row), plus four subagents across two models and three type buckets.
+    let parent = raw_with(
+        "claude-opus-4-7",
+        TokenUsage {
+            input_tokens: 400,
+            output_tokens: 0,
+            cache_5m_write_tokens: 0,
+            cache_1h_write_tokens: 0,
+            cache_read_tokens: 700,
+        },
+    );
+    let subs = vec![
+        subagent(
+            "aimpl-1",
+            Some("phase-implementer"),
+            raw_with("claude-opus-4-7", small_usage(1000)),
+        ),
+        subagent(
+            "aimpl-2",
+            Some("phase-implementer"),
+            raw_with("claude-sonnet-4-5", small_usage(500)),
+        ),
+        subagent(
+            "arev-1",
+            Some("reviewer"),
+            raw_with("claude-opus-4-7", small_usage(200)),
+        ),
+        subagent("aghost-1", None, raw_with("claude-opus-4-7", small_usage(50))),
+    ];
+    vec![
+        collected(SID_A, None, session_eff(SID_A, parent, subs), None),
+        // Session B: no subagents whatsoever -- every dollar belongs to `(main-session)`. Pre-Phase-5
+        // this session contributed NOTHING to the agent-type table, which is where the missing 74%
+        // of the money went.
+        opus_session(SID_B, None),
+    ]
+}
+
+/// Phase 5, the headline invariant: `agent-type-costs` is a true PARTITION of `totals.spend-usd`.
+/// Every bucket is re-priced from its own per-model split with the same feed `totals` uses, and the
+/// `(main-session)` residual catches whatever was not delegated, so the rows account for the whole
+/// window instead of the subagent-only slice.
+///
+/// BITES: before Phase 5 a session with no subagents (SID_B) had an EMPTY `agent-type-costs`, so this
+/// sum came to the subagent total alone and missed SID_B's spend entirely.
+#[test]
+fn agent_type_costs_partition_totals_with_a_positive_main_session_residual() {
+    let sessions = partition_fixture();
+    let report = build_report(
+        &sessions,
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let a = &report.sessions[SID_A].agent_type_costs;
+    let residual = a
+        .get(MAIN_SESSION_BUCKET)
+        .expect("the parent's own work must emit a (main-session) row");
+    assert_eq!(residual.tokens, 1100, "residual is aggregate minus every subagent");
+    assert!(
+        residual.cost_usd > 0.0,
+        "the fixture must carry a POSITIVE residual or the row this phase adds is never exercised"
+    );
+    assert_eq!(a.get("phase-implementer").unwrap().tokens, 1500);
+    assert_eq!(a.get("reviewer").unwrap().tokens, 200);
+    assert_eq!(
+        a.get("unknown").unwrap().tokens,
+        50,
+        "an untyped subagent keeps its own row rather than folding into the residual"
+    );
+
+    // A session that spawned nothing is now fully attributed, all of it to `(main-session)`.
+    let b = &report.sessions[SID_B].agent_type_costs;
+    assert_eq!(b.keys().collect::<Vec<_>>(), vec![MAIN_SESSION_BUCKET]);
+    assert_eq!(b[MAIN_SESSION_BUCKET].tokens, report.sessions[SID_B].total_tokens());
+
+    let partition = agent_type_spend(&report);
+    assert!(
+        (partition - report.totals.spend_usd).abs() < 0.01,
+        "agent-type rows must sum to totals.spend-usd: {partition} vs {}",
+        report.totals.spend_usd
+    );
+}
+
+/// The partition holds under `--no-rollup` too: the residual row carries `(main-session)` and each
+/// subagent row carries its own type, so the exploded view still accounts for exactly the total.
+#[test]
+fn agent_type_costs_partition_survives_no_rollup() {
+    let sessions = partition_fixture();
+    let report = build_report(
+        &sessions,
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        true,
+    )
+    .unwrap();
+    let partition = agent_type_spend(&report);
+    assert!(
+        (partition - report.totals.spend_usd).abs() < 0.01,
+        "exploded rows must still partition totals.spend-usd: {partition} vs {}",
+        report.totals.spend_usd
+    );
+}
+
+/// Buckets are priced from the per-model token split with report's FETCHED feed, never from the
+/// catalog's scalar `cost_usd` (which is embedded-priced by design and left alone).
+///
+/// BITES: the fixture's catalog scalar is deliberately absurd, so the pre-Phase-5 implementation
+/// (`bucket.cost_usd += sub.signals.raw.cost_usd`) would report `$999` for a 1,000-token subagent.
+#[test]
+fn agent_type_costs_reprice_from_tokens_not_the_catalog_scalar() {
+    let mut sub_raw = raw_with("claude-opus-4-7", small_usage(1000));
+    sub_raw.cost_usd = 999.0;
+    let sub = subagent("aimpl-1", Some("phase-implementer"), sub_raw);
+    let s = collected(SID_A, None, session_eff(SID_A, RawCounters::default(), vec![sub]), None);
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let bucket = &report.sessions[SID_A].agent_type_costs["phase-implementer"];
+    let expected = price("claude-opus-4-7", &small_usage(1000), &pricing()).unwrap();
+    assert!(
+        (bucket.cost_usd - expected).abs() < 1e-9,
+        "bucket must be re-priced from tokens ({expected}), not the catalog scalar: {}",
+        bucket.cost_usd
+    );
+    assert!(bucket.cost_usd < 1.0, "the $999 catalog scalar must not leak through");
+}
+
+/// The impossible state fails LOUDLY. A subagent using a model the session's own split never saw
+/// means the fold invariant broke; `subtract_token_totals` clamps at zero, so absorbing it would
+/// leave the rows summing ABOVE the total with nothing to explain why.
+#[test]
+fn agent_type_costs_error_when_a_subagent_model_is_absent_from_the_aggregate() {
+    let sub = subagent(
+        "aimpl-1",
+        Some("phase-implementer"),
+        raw_with("claude-sonnet-4-5", small_usage(500)),
+    );
+    let eff = broken_eff(SID_A, raw_with("claude-opus-4-7", small_usage(100)), vec![sub]);
+    let s = collected(SID_A, None, eff, None);
+    let err = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .expect_err("a subagent model missing from the aggregate must abort the report");
+    let msg = err.to_string();
+    assert!(msg.contains(SID_A), "error must name the session: {msg}");
+    assert!(msg.contains("claude-sonnet-4-5"), "error must name the model: {msg}");
+    assert!(msg.contains("reindex"), "error must name the remedy: {msg}");
+}
+
+/// Same guard, the other direction: a model PRESENT in the aggregate but whose subagent tokens
+/// exceed it. The clamp would silently shrink the residual to zero and overstate the partition.
+#[test]
+fn agent_type_costs_error_when_a_subagent_overstates_a_shared_model() {
+    let sub = subagent(
+        "aimpl-1",
+        Some("phase-implementer"),
+        raw_with("claude-opus-4-7", small_usage(500)),
+    );
+    let eff = broken_eff(SID_A, raw_with("claude-opus-4-7", small_usage(100)), vec![sub]);
+    let s = collected(SID_A, None, eff, None);
+    let err = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .expect_err("a subagent overstating a shared model must abort the report");
+    let msg = err.to_string();
+    assert!(msg.contains(SID_A), "error must name the session: {msg}");
+    assert!(msg.contains("claude-opus-4-7"), "error must name the model: {msg}");
+    assert!(msg.contains("exceed"), "error must say what was violated: {msg}");
 }
 
 /// `--no-rollup` is a VIEW over subagents: the session explodes into a parent-residual row plus one
@@ -395,7 +626,8 @@ fn no_rollup_explodes_into_residual_plus_subagents() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     assert_eq!(rolled.sessions.len(), 1);
     assert_eq!(rolled.sessions[SID_A].total_tokens(), 1000);
 
@@ -408,7 +640,8 @@ fn no_rollup_explodes_into_residual_plus_subagents() {
         &pricing(),
         true,
         true,
-    );
+    )
+    .unwrap();
     assert_eq!(exploded.sessions.len(), 2);
     assert_eq!(
         exploded.sessions[SID_A].total_tokens(),
@@ -455,7 +688,8 @@ fn no_rollup_keeps_outcomes_for_fully_subagent_session() {
         &pricing(),
         true, // outcomes_enabled
         true, // no_rollup
-    );
+    )
+    .unwrap();
 
     // The parent-residual row is kept (for its outcomes) and carries them; the subagent row does not.
     let parent = exploded
@@ -524,7 +758,8 @@ fn build_report_rolls_up_outcomes_with_global_dedupe() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     assert_eq!(report.outcomes_enabled, Some(true));
     let outcomes = report.totals.outcomes.expect("rollup must be present");
     assert_eq!(outcomes.sessions_with_commits, 2);

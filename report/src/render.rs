@@ -536,17 +536,28 @@ struct EfficiencyView {
     interrupts: u64,
     /// Total context compactions observed across the window.
     compactions: u64,
-    /// HEADLINE: tokens + `$` attributed to each subagent TYPE, pre-sorted by spend descending.
+    /// HEADLINE: tokens + `$` attributed to each subagent TYPE, pre-sorted by spend descending, plus
+    /// the `(main-session)` residual. A true PARTITION of `totals.spend` (Phase 5): same pricing
+    /// basis, every dollar in exactly one row.
     agent_type_costs: Vec<WorkloadRow>,
-    /// Tokens + `$` grouped by skill (`attributionSkill`), pre-sorted by spend descending.
+    /// Tokens + `$` grouped by skill (`attributionSkill`), pre-sorted by spend descending. An
+    /// attribution TAG set, not a partition -- see [`Self::by_skill_coverage`].
     by_skill: Vec<WorkloadRow>,
-    /// Tokens + `$` grouped by MCP tool (`attributionMcpTool`), pre-sorted by spend descending.
+    /// Tokens + `$` grouped by MCP tool (`attributionMcpTool`), pre-sorted by spend descending. An
+    /// attribution TAG set, not a partition -- see [`Self::by_mcp_coverage`].
     by_mcp: Vec<WorkloadRow>,
+    /// How much of `totals.spend` the `by-skill` rows cover, and on what pricing basis, e.g.
+    /// `"$412.19 of $9,450.31 (4.4%), embedded-price basis"`. Binary-computed so the prose can state
+    /// the coverage as a fact rather than reconciling a tag set that cannot sum to anything.
+    by_skill_coverage: String,
+    /// The same statement for the `by-mcp` rows.
+    by_mcp_coverage: String,
 }
 
-/// One agent-type / skill / mcp-tool attribution row, string-only. `spend` is the catalog's
-/// embedded-priced figure formatted as a display string (see `report::SessionEntry` notes on why
-/// these differ from the fetched-feed model spend).
+/// One agent-type / skill / mcp-tool attribution row, string-only. `spend` is a display string. On
+/// `agent-type-costs` it is priced from report's fetched feed (the same basis as `totals.spend`); on
+/// `by-skill` / `by-mcp` it is the catalog's embedded-priced figure, which is why those two carry a
+/// coverage string instead of summing to the total.
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct WorkloadRow {
@@ -845,6 +856,8 @@ fn build_efficiency_view(report: &Report) -> EfficiencyView {
         merge_workload(&mut by_mcp, &entry.by_mcp);
     }
     let grand_signals = finalize(grand);
+    let skill_covered: f64 = by_skill.values().map(|w| w.cost_usd).sum();
+    let mcp_covered: f64 = by_mcp.values().map(|w| w.cost_usd).sum();
     let view = EfficiencyView {
         cache_read_share: fmt_ratio_pct(report.totals.cache_read_share),
         tool_error_rate: fmt_ratio_pct(report.totals.tool_error_rate),
@@ -854,16 +867,40 @@ fn build_efficiency_view(report: &Report) -> EfficiencyView {
         agent_type_costs: workload_rows(agent),
         by_skill: workload_rows(by_skill),
         by_mcp: workload_rows(by_mcp),
+        by_skill_coverage: coverage_note(skill_covered, report.totals.spend_usd),
+        by_mcp_coverage: coverage_note(mcp_covered, report.totals.spend_usd),
     };
     debug!(
-        "render::build_efficiency_view: agent-types={} skills={} mcp-tools={} interrupts={} compactions={}",
+        "render::build_efficiency_view: agent-types={} skills={} mcp-tools={} interrupts={} compactions={} skill-coverage={} mcp-coverage={}",
         view.agent_type_costs.len(),
         view.by_skill.len(),
         view.by_mcp.len(),
         view.interrupts,
-        view.compactions
+        view.compactions,
+        view.by_skill_coverage,
+        view.by_mcp_coverage
     );
     view
+}
+
+/// The `by-skill` / `by-mcp` coverage statement (design Phase 5): how much of `totals.spend` a TAG
+/// set accounts for, and on what pricing basis. These buckets are not a partition -- a dollar can
+/// carry no skill tag or several, and they keep the catalog's embedded prices -- so the honest move
+/// is to state the coverage as a computed fact rather than let the reader reconcile them.
+///
+/// A zero total renders `0.0%` rather than a `NaN`, matching `compute_attribution`'s precedent.
+fn coverage_note(covered: f64, total: f64) -> String {
+    let share = if total == 0.0 {
+        "0.0%".to_string()
+    } else {
+        format!("{:.1}%", covered / total * 100.0)
+    };
+    format!(
+        "{} of {} ({}), embedded-price basis",
+        format_usd(covered),
+        format_usd(total),
+        share
+    )
 }
 
 /// A ratio in `[0, 1]` as a one-decimal percent string; `None` -> `"n/a"` (never `NaN`). One decimal

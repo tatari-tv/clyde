@@ -148,9 +148,18 @@ The JSON context block contains:
   `agent-type-costs` (the HEADLINE: a LIST pre-sorted by spend descending, each row `name`,
   `tokens-human`, `spend`, attributing cost to a subagent TYPE); and `by-skill` / `by-mcp` (the
   same row shape, for skill and MCP-tool attribution). Empty lists mean nothing of that kind was
-  observed. These spend figures are catalog-embedded prices and may not sum to `totals.spend`;
-  present them as attribution, never reconcile them against the model spend. There is NO
-  `*-percent-of-max` on these rows, so they are rendered as TABLES, never charts.
+  observed. There is NO `*-percent-of-max` on these rows, so they are rendered as TABLES, never
+  charts.
+- `efficiency.agent-type-costs` is a TRUE PARTITION of `totals.spend`. It is priced on the same
+  basis as the totals, every dollar of the period lands in exactly one row, and the `(main-session)`
+  row is the work the session did itself instead of delegating to a subagent. So these rows DO
+  account for `totals.spend`, and you may say so in prose.
+- `efficiency.by-skill` and `efficiency.by-mcp` are the opposite: attribution TAGS, not a partition.
+  A dollar can carry no tag or several, and they keep the catalog's embedded prices, so they do NOT
+  sum to `totals.spend` and cannot be reconciled against it. Present them as attribution only, and
+  when you show one, quote its coverage string -- `efficiency.by-skill-coverage` /
+  `efficiency.by-mcp-coverage`, binary-computed display strings stating exactly how much of the
+  total that tag set covers.
 - `outcomes.totals`: observed, verifiable counts extracted from session transcripts; any of:
   `sessions-with-commits`, `commits`, `prs-opened`, `confluence-writes`, `jira-writes`,
   `slack-messages`, `files-edited`. Only fields present were observed.
@@ -198,16 +207,20 @@ Produce ONE complete, self-contained HTML document.
   by-mcp).
 - Every section has an HTML counterpart: an executive summary, quantified output (the outcome
   counts), a cost summary, an agent-type cost attribution table (the HEADLINE breakdown from
-  `efficiency.agent-type-costs`, rows in the order given, with a lead-in naming the top row), the
+  `efficiency.agent-type-costs`, rows in the order given, with a lead-in naming the top row and
+  stating that the rows account for the whole period spend), the
   efficiency story (cache-read-share plus the `efficiency` signals -- tool-error-rate,
-  cache-1h-write-fraction, interrupts, compactions -- and optional by-skill / by-mcp tables),
+  cache-1h-write-fraction, interrupts, compactions -- and optional by-skill / by-mcp tables, each
+  shown table carrying its coverage string verbatim),
   what-this-funded (organized by org tier: employer org first, then the user's personal org and
   open-source, then third-party), a usage profile (temporal shape, model mix, outliers), a
   forward-looking note, and a conclusion. Omit any section whose data is absent (e.g. quantified
   output when there is no `outcomes` block; the agent-type table when `efficiency.agent-type-costs`
   is empty; a signal clause when its value is `n/a` or zero). Every figure in these sections is
-  copied verbatim from the context; never sum, average, or reconcile the attribution prices against
-  `totals.spend`.
+  copied verbatim from the context; do not sum or average them yourself. The agent-type rows are a
+  partition of `totals.spend` and you may say so, copying `totals.spend` for the total; the
+  by-skill / by-mcp tables are tags covering only part of the period, so quote their coverage
+  strings rather than reconciling them against `totals.spend`.
 - HTML-escape every interpolated string (titles, repo slugs) so a stray character cannot break
   the markup.
 - Never use an em-dash (the Unicode character U+2014) anywhere in the document: not in the title,

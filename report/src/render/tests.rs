@@ -914,18 +914,20 @@ fn report_with_efficiency() -> Report {
             cost_usd: 9.00,
         },
     );
+    // Tag-set costs stay inside the fixture's $0.60 total so the coverage strings read as a real
+    // share of it (they are tags, so they cover only part of the money by construction).
     entry.by_skill.insert(
         "graphify".into(),
         WorkloadCost {
             tokens: 200_000,
-            cost_usd: 1.25,
+            cost_usd: 0.20,
         },
     );
     entry.by_mcp.insert(
         "slack".into(),
         WorkloadCost {
             tokens: 50_000,
-            cost_usd: 0.30,
+            cost_usd: 0.05,
         },
     );
     report
@@ -962,6 +964,63 @@ fn build_context_block_surfaces_efficiency_signals_as_strings() {
 
     assert_eq!(eff.get("by-skill").and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
     assert_eq!(eff.get("by-mcp").and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
+}
+
+/// Phase 5: `by-skill` / `by-mcp` are attribution TAGS, not a partition, so each carries a
+/// binary-computed coverage string naming exactly how much of `totals.spend` it accounts for and on
+/// what pricing basis. That is what the prose quotes INSTEAD of reconciling a set that cannot sum.
+#[test]
+fn build_context_block_carries_tag_set_coverage_strings() {
+    let report = report_with_efficiency();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let eff = parsed.get("efficiency").expect("efficiency key");
+
+    assert_eq!(
+        eff.get("by-skill-coverage").and_then(|v| v.as_str()),
+        Some("$0.20 of $0.60 (33.3%), embedded-price basis")
+    );
+    assert_eq!(
+        eff.get("by-mcp-coverage").and_then(|v| v.as_str()),
+        Some("$0.05 of $0.60 (8.3%), embedded-price basis")
+    );
+}
+
+/// A zero-spend window renders `0.0%`, never a `NaN` percent -- matching `compute_attribution`'s
+/// precedent for the same divide-by-zero.
+#[test]
+fn coverage_note_on_a_zero_total_is_zero_percent_not_nan() {
+    assert_eq!(coverage_note(0.0, 0.0), "$0.00 of $0.00 (0.0%), embedded-price basis");
+}
+
+/// Phase 5's prompt-edit ledger: BOTH templates flip the agent-type framing from "attribution you
+/// must never reconcile" to "a partition of the total", and keep the non-reconcilable framing for
+/// the by-skill / by-mcp TAG sets only.
+#[test]
+fn both_templates_declare_agent_type_costs_a_partition() {
+    for (name, tpl) in [("report.pmt", DEFAULT_PROMPT), ("report-html.pmt", DEFAULT_HTML_PROMPT)] {
+        assert!(
+            !tpl.contains("never reconcile"),
+            "{name} must no longer forbid reconciling the agent-type rows"
+        );
+        assert!(
+            tpl.contains("TRUE PARTITION of `totals.spend`"),
+            "{name} must state that agent-type-costs partitions the total"
+        );
+        assert!(
+            tpl.contains("(main-session)"),
+            "{name} must name the residual row so the model can explain it"
+        );
+        // The tag sets keep the caveat, and gain the coverage strings that replace reconciliation.
+        assert!(
+            tpl.contains("cannot be reconciled against it"),
+            "{name} must keep the non-reconcilable framing for by-skill / by-mcp"
+        );
+        assert!(
+            tpl.contains("efficiency.by-skill-coverage") && tpl.contains("efficiency.by-mcp-coverage"),
+            "{name} must license both coverage strings"
+        );
+    }
 }
 
 /// A stale schema-v1 artifact is rejected by VERSION, naming both versions and the re-collect

@@ -18,7 +18,7 @@ use claude_pricing::Pricing;
 use common::metrics::{TokenTotals, price};
 use common::repo::RepoSource;
 use efficiency::{RawCounters, SessionEfficiency, SubagentEfficiency, WorkloadCost, finalize};
-use eyre::{Context, Result};
+use eyre::{Context, Result, bail};
 use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,6 +35,15 @@ pub const SCHEMA_VERSION: u32 = 2;
 pub const WINDOW_NOTE: &str = "window is session-level (M2): whole sessions whose catalog `modified` \
      falls in [since, until]; not per-record like pre-v2 reports, so a boundary-straddling session's \
      numbers can differ from a v1 report.";
+
+/// The residual `agent-type-costs` bucket: the scope's own work, i.e. everything the main session
+/// did rather than delegating to a typed subagent. Parenthesized so it can never collide with a real
+/// agent type, matching the house precedent [`crate::aggregate::UNATTRIBUTED_ORG`].
+pub const MAIN_SESSION_BUCKET: &str = "(main-session)";
+
+/// Bucket key for a subagent the transcript never typed -- kept as its own row rather than dropped,
+/// so an untyped subagent's spend is visible instead of silently folding into [`MAIN_SESSION_BUCKET`].
+const UNKNOWN_AGENT_TYPE: &str = "unknown";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -106,10 +115,12 @@ pub struct SessionEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcomes: Option<Outcomes>,
     // ---- v2 curated efficiency signals (the render contract's headline set) ----
-    /// HEADLINE: cost + tokens attributed to each subagent TYPE (`agent-type -> {tokens, cost-usd}`).
-    /// Empty when the session spawned no typed subagent. Costs here are the catalog's embedded-priced
-    /// figures (the only per-bucket cost the catalog stores); the per-model `models`/`spend-usd`
-    /// below are RE-priced with report's fetched feed. See module notes.
+    /// HEADLINE: cost + tokens attributed to each subagent TYPE (`agent-type -> {tokens, cost-usd}`),
+    /// plus the [`MAIN_SESSION_BUCKET`] residual carrying whatever the session did NOT delegate. A
+    /// true PARTITION of this scope: every bucket is re-priced from its own `raw.by_model` split with
+    /// report's fetched feed, the same basis as `models`/`spend-usd` and `Totals::spend_usd`, so the
+    /// buckets sum to the scope's spend and the report's buckets sum to `totals.spend-usd`. Empty
+    /// only for a scope with no priced tokens at all.
     #[serde(default)]
     pub agent_type_costs: BTreeMap<String, WorkloadCost>,
     /// `cache-read-share` for this session's aggregate scope; `None` for a zero-token scope.
@@ -241,7 +252,7 @@ pub fn build_json(
         outcomes_enabled,
         no_rollup
     );
-    let report = build_report(sessions, since, until, host, pricing, outcomes_enabled, no_rollup);
+    let report = build_report(sessions, since, until, host, pricing, outcomes_enabled, no_rollup)?;
     let json = serde_json::to_string_pretty(&report).context("failed to serialize report to JSON")?;
     Ok((json, report.totals.sessions))
 }
@@ -292,6 +303,13 @@ pub fn write_json(
     Ok(count)
 }
 
+/// Shape a window of collected sessions into a v2 [`Report`].
+///
+/// Fallible since Phase 5 (design `2026-07-26-report-story-fidelity.md`): `agent-type-costs` is now
+/// a partition of each scope's spend, and a subagent whose token split does not fit inside its
+/// session's aggregate means the efficiency fold invariant broke. That is an impossible state, so it
+/// aborts the report loudly rather than clamping to zero and publishing rows that sum ABOVE
+/// `totals.spend-usd` with no explanation.
 #[allow(clippy::too_many_arguments)]
 pub fn build_report(
     sessions: &[CollectedSession],
@@ -301,7 +319,7 @@ pub fn build_report(
     pricing: &Pricing,
     outcomes_enabled: bool,
     no_rollup: bool,
-) -> Report {
+) -> Result<Report> {
     debug!(
         "report::build_report: sessions={} host={} outcomes-enabled={} no-rollup={}",
         sessions.len(),
@@ -319,7 +337,7 @@ pub fn build_report(
 
     for s in sessions {
         grand.merge(&s.efficiency.aggregate.raw);
-        for (key, entry) in expand_entries(s, pricing, outcomes_enabled, no_rollup) {
+        for (key, entry) in expand_entries(s, pricing, outcomes_enabled, no_rollup)? {
             for name in &entry.untracked_models {
                 untracked.insert(name.clone());
             }
@@ -356,7 +374,7 @@ pub fn build_report(
         tool_error_rate: grand_signals.tool_error_rate,
     };
 
-    Report {
+    Ok(Report {
         schema_version: SCHEMA_VERSION,
         generated: Utc::now(),
         host: host.to_string(),
@@ -366,7 +384,7 @@ pub fn build_report(
         notes: vec![WINDOW_NOTE.to_string()],
         totals,
         sessions: entries,
-    }
+    })
 }
 
 /// Expand one collected session into the `(key, SessionEntry)` rows it contributes to the report.
@@ -386,7 +404,7 @@ fn expand_entries(
     pricing: &Pricing,
     outcomes_enabled: bool,
     no_rollup: bool,
-) -> Vec<(String, SessionEntry)> {
+) -> Result<Vec<(String, SessionEntry)>> {
     let session_outcomes = if outcomes_enabled { s.outcomes.clone() } else { None };
 
     if !no_rollup {
@@ -396,8 +414,8 @@ fn expand_entries(
             s.efficiency.clone(),
             session_outcomes,
             pricing,
-        );
-        return vec![(s.session_id.clone(), entry)];
+        )?;
+        return Ok(vec![(s.session_id.clone(), entry)]);
     }
 
     let mut out: Vec<(String, SessionEntry)> = Vec::new();
@@ -416,7 +434,7 @@ fn expand_entries(
             flags: s.efficiency.flags.clone(),
         };
         // Session-level outcomes attach to the parent-residual row (they are not subagent-scoped).
-        let entry = entry_from_scope(s, &residual_raw, residual_eff, session_outcomes, pricing);
+        let entry = entry_from_scope(s, &residual_raw, residual_eff, session_outcomes, pricing)?;
         out.push((s.session_id.clone(), entry));
     }
 
@@ -429,11 +447,11 @@ fn expand_entries(
         };
         let key = format!("{}/{}", s.session_id, sub.agent_id);
         // Subagent rows carry no outcomes (outcomes are session-level; see the residual row above).
-        let entry = entry_from_scope(s, &sub.signals.raw, sub_eff, None, pricing);
+        let entry = entry_from_scope(s, &sub.signals.raw, sub_eff, None, pricing)?;
         out.push((key, entry));
     }
 
-    out
+    Ok(out)
 }
 
 /// Build a [`SessionEntry`] for one SCOPE (a whole-session aggregate, a subagent, or a parent
@@ -445,10 +463,11 @@ fn entry_from_scope(
     efficiency: SessionEfficiency,
     outcomes: Option<Outcomes>,
     pricing: &Pricing,
-) -> SessionEntry {
+) -> Result<SessionEntry> {
     let (models, spend_usd, untracked_models) = price_models(&raw.by_model, pricing);
+    let agent_type_costs = agent_type_costs(&s.session_id, raw, &efficiency.subagents, pricing)?;
     let signals = &efficiency.aggregate;
-    SessionEntry {
+    Ok(SessionEntry {
         title: s.title.clone(),
         repo: s.repo.clone(),
         repo_source: s.repo_source.map(|src| src.as_str().to_string()),
@@ -459,7 +478,7 @@ fn entry_from_scope(
         jsonl_paths: s.jsonl_paths.clone(),
         models,
         outcomes,
-        agent_type_costs: agent_type_costs(&efficiency.subagents),
+        agent_type_costs,
         cache_read_share: signals.cache_read_share,
         tool_error_rate: signals.tool_error_rate,
         cache_1h_write_fraction: signals.cache_1h_write_fraction,
@@ -468,7 +487,7 @@ fn entry_from_scope(
         by_skill: raw.by_skill.clone(),
         by_mcp: raw.by_mcp_tool.clone(),
         efficiency,
-    }
+    })
 }
 
 /// Price a per-model `TokenTotals` map into `ModelTokens`, returning the priced map, the session's
@@ -501,18 +520,123 @@ fn price_models(
     (models, spend_usd, untracked)
 }
 
-/// Attribute tokens + `$` to each subagent TYPE for the headline `agent-type-costs`. Costs are the
-/// catalog's embedded-priced `cost_usd` (the only per-subagent cost the catalog carries); untyped
-/// subagents fall under the `"unknown"` bucket rather than being dropped.
-fn agent_type_costs(subagents: &[SubagentEfficiency]) -> BTreeMap<String, WorkloadCost> {
-    let mut out: BTreeMap<String, WorkloadCost> = BTreeMap::new();
+/// Partition ONE scope's tokens + `$` across the subagent TYPES that spent them, plus the
+/// [`MAIN_SESSION_BUCKET`] residual for whatever the scope did NOT delegate.
+///
+/// This is the headline `agent-type-costs`, and since Phase 5 it is a true partition rather than a
+/// subagent-only footnote (design `2026-07-26-report-story-fidelity.md`, defect 4). Two changes make
+/// it one:
+///
+/// - Each bucket is priced from its own `raw.by_model` split through the caller's FETCHED
+///   [`Pricing`], the same basis [`Totals::spend_usd`] uses. The catalog's scalar `cost_usd` is
+///   embedded-priced by design (`efficiency/src/metrics.rs:130-138`) and is deliberately left alone:
+///   report re-prices at read time instead of changing what the catalog persists.
+/// - The residual `by_model(scope) - Σ by_model(subagents)` becomes its own row, so a session that
+///   spawned no subagent still accounts for every dollar it spent.
+///
+/// Untyped subagents keep their own [`UNKNOWN_AGENT_TYPE`] row rather than being dropped or folded
+/// into the residual. An unpriced model contributes its tokens and no `$` (the scope's
+/// `untracked-models` already names it), exactly as [`price_models`] treats the same model.
+fn agent_type_costs(
+    session_id: &str,
+    raw: &RawCounters,
+    subagents: &[SubagentEfficiency],
+    pricing: &Pricing,
+) -> Result<BTreeMap<String, WorkloadCost>> {
+    debug!(
+        "report::agent_type_costs: session-id={session_id} subagents={} scope-models={}",
+        subagents.len(),
+        raw.by_model.len()
+    );
+
+    // Bucket the subagents' per-model splits by type, accumulating the union alongside so the
+    // residual is one subtraction rather than one per subagent.
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTotals>> = BTreeMap::new();
+    let mut attributed: BTreeMap<String, TokenTotals> = BTreeMap::new();
     for sub in subagents {
-        let key = sub.agent_type.clone().unwrap_or_else(|| "unknown".to_string());
-        let bucket = out.entry(key).or_default();
-        bucket.tokens += sub.signals.raw.total_tokens();
-        bucket.cost_usd += sub.signals.raw.cost_usd;
+        let key = sub.agent_type.clone().unwrap_or_else(|| UNKNOWN_AGENT_TYPE.to_string());
+        let bucket = buckets.entry(key).or_default();
+        for (model, totals) in &sub.signals.raw.by_model {
+            bucket.entry(model.clone()).or_default().merge(totals);
+            attributed.entry(model.clone()).or_default().merge(totals);
+        }
+    }
+
+    check_fold_invariant(session_id, &raw.by_model, &attributed)?;
+
+    let mut residual = raw.by_model.clone();
+    subtract_token_totals(&mut residual, &attributed);
+    if !residual.is_empty() {
+        buckets.insert(MAIN_SESSION_BUCKET.to_string(), residual);
+    }
+
+    let out: BTreeMap<String, WorkloadCost> = buckets
+        .into_iter()
+        .map(|(name, by_model)| (name, price_bucket(&by_model, pricing)))
+        .collect();
+    debug!(
+        "report::agent_type_costs: session-id={session_id} buckets={} main-session={}",
+        out.len(),
+        out.contains_key(MAIN_SESSION_BUCKET)
+    );
+    Ok(out)
+}
+
+/// Price one agent-type bucket's per-model token split, summing `$` LAST over the accumulated
+/// `TokenTotals` (the Aggregation invariant: price the sum, never sum priced values). Nothing is
+/// rounded here -- rounding per bucket would let the partition drift from `totals.spend-usd` by a
+/// cent per row, and the display layer rounds once at the end anyway.
+fn price_bucket(by_model: &BTreeMap<String, TokenTotals>, pricing: &Pricing) -> WorkloadCost {
+    let mut out = WorkloadCost::default();
+    for (model, totals) in by_model {
+        out.tokens += totals.total;
+        if let Some(usd) = price(model, &totals.as_usage(), pricing) {
+            out.cost_usd += usd;
+        }
     }
     out
+}
+
+/// Check the efficiency fold invariant BEFORE taking the residual: `aggregate = parent-own + every
+/// subagent` (`efficiency/src/fold.rs:95-99`, an exact integer union), so every model a subagent used
+/// must appear in the scope's own split carrying at least the subagent's tokens.
+///
+/// This has to be loud. [`subtract_token_totals`] clamps every field at zero, so a broken invariant
+/// would subtract to nothing, silently shrink the residual, and leave the agent-type rows summing
+/// ABOVE `totals.spend-usd` with no trace of why. The impossible state aborts the report instead,
+/// naming the session and the model so the operator can reindex exactly that session.
+fn check_fold_invariant(
+    session_id: &str,
+    scope: &BTreeMap<String, TokenTotals>,
+    attributed: &BTreeMap<String, TokenTotals>,
+) -> Result<()> {
+    for (model, sub) in attributed {
+        let Some(agg) = scope.get(model) else {
+            bail!(
+                "session {session_id}: subagent model `{model}` is absent from the session's own \
+                 per-model token split. The efficiency fold invariant (aggregate = parent + every \
+                 subagent) is broken, so agent-type costs cannot partition this session. Re-run \
+                 `clyde session reindex` to rebuild this session's efficiency, then re-collect."
+            );
+        };
+        if sub.input > agg.input
+            || sub.output > agg.output
+            || sub.cache_5m_write > agg.cache_5m_write
+            || sub.cache_1h_write > agg.cache_1h_write
+            || sub.cache_read > agg.cache_read
+        {
+            bail!(
+                "session {session_id}: subagent tokens for model `{model}` ({} total) exceed the \
+                 session's own total for it ({}). The efficiency fold invariant (aggregate = parent \
+                 + every subagent) is broken, so agent-type costs cannot partition this session. \
+                 Re-run `clyde session reindex` to rebuild this session's efficiency, then \
+                 re-collect.",
+                sub.total,
+                agg.total
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `true` when a residual scope has any real activity (tokens or turns), so an all-zero residual

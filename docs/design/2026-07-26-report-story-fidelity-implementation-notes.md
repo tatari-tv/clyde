@@ -370,3 +370,99 @@ Every figure matches the design doc's stated success criteria exactly: the since
 states, so Phase 3's repo-attribution rework did not move this date-windowing number, as expected
 (attribution and by-day partition the same session set on different axes; changing one should never
 move the other, and it didn't).
+
+## Phase 5: Agent-type becomes a partition
+
+### Design decisions
+- `agent-type-costs` is now built from the SCOPE's own `raw.by_model`, not from the catalog's scalar
+  `cost_usd` -- `report/src/report.rs::agent_type_costs` -- so every bucket is priced through the
+  same fetched `Pricing` that produces `totals.spend-usd`. The catalog's embedded-pricing decision is
+  untouched, exactly as the Resolved Decision "catalog pricing stays embedded" requires: report
+  re-prices at read time.
+- `MAIN_SESSION_BUCKET = "(main-session)"` is a `pub const` beside `WINDOW_NOTE` --
+  `report/src/report.rs` -- parenthesized so it cannot collide with a real agent type, matching
+  `aggregate::UNATTRIBUTED_ORG`'s precedent.
+- The residual is taken ONCE, against the union of every subagent's `by_model`, rather than once per
+  subagent -- `report/src/report.rs::agent_type_costs` -- so the existing `subtract_token_totals`
+  (`report/src/report.rs:558`, the `--no-rollup` path's own helper) is reused unchanged.
+- `check_fold_invariant` runs BEFORE the subtraction -- `report/src/report.rs` -- because
+  `subtract_token_totals` clamps every field at zero and would therefore absorb the impossible state
+  silently, leaving the rows summing above `totals` with nothing to explain why.
+- Bucket costs are NOT rounded to cents -- `report/src/report.rs::price_bucket` -- price is summed
+  LAST over the accumulated per-model `TokenTotals` and rounding happens once at display. Rounding
+  per bucket would drift the partition by up to a cent per row (24 rows on the live window).
+- Coverage strings live on the render view, not the artifact -- `report/src/render.rs::coverage_note`
+  -- because they are a statement ABOUT `totals.spend`, which only exists once the report is
+  assembled. A zero total renders `0.0%`, matching `compute_attribution`'s precedent for the same
+  divide-by-zero.
+- An untyped subagent keeps its own `unknown` row rather than folding into the residual, so its spend
+  stays visible as unattributed-but-delegated rather than being laundered into main-session work.
+
+### Deviations
+- The doc's signature is `fn agent_type_costs(eff: &SessionEfficiency, pricing: &Pricing) ->
+  BTreeMap<String, WorkloadCost>`. Shipped as `fn agent_type_costs(session_id: &str, raw:
+  &RawCounters, subagents: &[SubagentEfficiency], pricing: &Pricing) ->
+  Result<BTreeMap<String, WorkloadCost>>`. Same effect, correct seam: the loud-failure requirement
+  forces `Result`, the error text has to name the session (a `--no-rollup` subagent row's
+  `SessionEfficiency.session_id` is the AGENT id, not the session's), and `entry_from_scope` already
+  holds the scope's `raw` -- which is `efficiency.aggregate.raw` at all three call sites -- so taking
+  it directly avoids implying the function may read the whole passthrough.
+- `build_report`, `expand_entries`, and `entry_from_scope` became fallible to carry that error out.
+  `build_json` was already `Result`, so the public surface is unchanged apart from `build_report`.
+- The fold-invariant check is a strict superset of the doc's bullet. The doc names only "a subagent
+  model absent from the aggregate's `by_model`"; the same clamp also swallows a model that IS present
+  but whose subagent tokens exceed the scope's, which is the review panel's noted clamp hazard. Both
+  states are impossible under `fold` (`efficiency/src/fold.rs:95-99` is an exact integer union), and
+  both are now errors naming the session and the model.
+- Neither template retains the literal phrase "never reconcile" anywhere, rather than keeping it on
+  the skill/MCP sentences. The success criterion only bans it from the agent-type section, but a test
+  cannot scope a substring to a prompt section without brittle heading parsing, so the phrase was
+  reworded to "cannot be reconciled against it" on the tag sets. The non-reconcilable FRAMING for
+  by-skill / by-mcp is kept in full and is asserted by
+  `render::tests::both_templates_declare_agent_type_costs_a_partition`.
+- The render fixture `report_with_efficiency`'s `by_skill` / `by_mcp` costs were lowered
+  (`$1.25`/`$0.30` -> `$0.20`/`$0.05`) so the new coverage strings read as a real share of the
+  fixture's `$0.60` total rather than 208%.
+
+### Tradeoffs
+- Re-pricing in `report` vs re-pricing in the catalog: re-pricing here keeps `cost_usd` reproducible
+  from the same JSONL on a later reindex (`efficiency/src/metrics.rs:130-138`) and needs no
+  `efficiency_json` reset. The cost is that the artifact now carries two pricing bases side by side
+  (fetched for agent-type and models, embedded for by-skill / by-mcp), which is exactly why the
+  coverage strings name their basis in the string itself.
+- Failing the WHOLE report on one broken session vs skipping that session: fail-closed was chosen
+  because the alternative publishes a partition that is quietly short by one session's spend, which
+  is the same class of defect this phase exists to remove. The error names the session and the
+  remedy, so the operator can reindex exactly one session rather than the catalog.
+- Checking every token field rather than just `total`: costs five comparisons per subagent-model
+  pair and catches a split that sums right but distributes wrong (which would misprice, since cache
+  reads and writes carry different rates).
+
+### Open questions
+- The live window emits an `unknown` agent-type row at `$0.00` / `0` tokens (an untyped subagent that
+  consumed nothing). Phase 6's resolved decision drops zero-token models from `totals.models` for
+  precisely this reason ("a model that consumed nothing is not part of the cost story"); the same
+  argument applies to a zero-token agent-type bucket, but the doc scopes that decision to
+  `totals.models`, so this phase left the row alone rather than widening Phase 6's rule unasked.
+
+### Measured on the live 30-day window (`--since 2026-06-26 --until 2026-07-25`)
+
+`clyde report collect --since 2026-06-26 --until 2026-07-25`, 1,523 sessions:
+
+| metric | before Phase 5 | after Phase 5 |
+|---|---|---|
+| `sum(agent-type-costs.spend)` | `$2,427.31` | `$9,450.31` |
+| coverage of `totals.spend-usd` (`$9,450.31`) | 25.7% | 100.0% |
+| unrounded delta against `totals.spend-usd` | n/a | `$0.0046` |
+| agent-type rows | 8 | 24 |
+
+The residual dominates, which is the finding the defect predicted: `(main-session)` is `$7,023.01`
+(7.70B tokens) against `$1,591.85` for `phase-implementer`, the largest delegated bucket. Summing the
+CENT-ROUNDED display strings gives `$9,450.32`, one cent over, since 24 rows each round
+independently; the prompts tell the model to copy `totals.spend` for the total rather than add the
+column, so no reader-facing figure carries that cent.
+
+Coverage strings on the same window:
+
+- `efficiency.by-skill-coverage`: `$1,113.10 of $9,450.31 (11.8%), embedded-price basis` (50 tags)
+- `efficiency.by-mcp-coverage`: `$278.74 of $9,450.31 (2.9%), embedded-price basis` (83 tags)

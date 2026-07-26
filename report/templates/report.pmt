@@ -97,8 +97,17 @@ The JSON context block contains:
   `agent-type-costs` (the HEADLINE: a LIST pre-sorted by spend descending, each row `name`,
   `tokens-human`, `spend`, attributing cost to a subagent TYPE); and `by-skill` / `by-mcp` (the
   same row shape, attributing cost to a skill or an MCP tool). Empty lists mean nothing of that
-  kind was observed. These spend figures are catalog-embedded prices and may not sum to
-  `totals.spend`; present them as attribution, never reconcile them against the model spend.
+  kind was observed.
+- `efficiency.agent-type-costs` is a TRUE PARTITION of `totals.spend`. It is priced on the same
+  basis as the totals, every dollar of the period lands in exactly one row, and the `(main-session)`
+  row is the work the session did itself instead of delegating to a subagent. So these rows DO
+  account for `totals.spend`, and you may say so in prose.
+- `efficiency.by-skill` and `efficiency.by-mcp` are the opposite: attribution TAGS, not a partition.
+  A dollar can carry no tag or several, and they keep the catalog's embedded prices, so they do NOT
+  sum to `totals.spend` and cannot be reconciled against it. Present them as attribution only, and
+  when you show one, quote its coverage string -- `efficiency.by-skill-coverage` /
+  `efficiency.by-mcp-coverage`, binary-computed display strings stating exactly how much of the
+  total that tag set covers.
 - `outcomes.totals`: observed, verifiable counts extracted from session transcripts; any of:
   `sessions-with-commits`, `commits`, `prs-opened`, `confluence-writes`, `jira-writes`,
   `slack-messages`, `files-edited`. Only fields present were observed.
@@ -185,9 +194,12 @@ If `totals.untracked-models` is empty or absent, do not emit this line.
 Emit only if `efficiency.agent-type-costs` is non-empty. A markdown table (`Agent Type` | `Tokens`
 | `Spend`) with one row per entry in `efficiency.agent-type-costs`, IN THE ORDER GIVEN (pre-sorted
 by spend descending; do not re-sort). All values copied verbatim. This is the headline breakdown of
-where the tokens went by the KIND of work each subagent did. One lead-in sentence naming which
-agent type carried the most spend (the first row). Do not sum the rows or reconcile them against
-`totals.spend`: these are catalog-embedded attribution prices, presented as-is.
+where the tokens went by the KIND of work each subagent did, and the `(main-session)` row is the
+work the session did itself rather than delegating. These rows are a true PARTITION of
+`totals.spend`, priced on the same basis: every dollar of the period lands in exactly one row. One
+lead-in sentence naming which agent type carried the most spend (the first row) and stating that
+the table accounts for the whole period spend. Do not add the rows up yourself: when you name the
+total, copy `totals.spend`.
 
 ## The Efficiency Story
 Emit only if `aggregates.cache` OR `efficiency` is present. Present the efficiency signals the
@@ -205,7 +217,10 @@ binary computed, each figure copied verbatim; do not editorialize beyond them.
   (times the context was compacted). Omit any that are `n/a` or zero.
 - If `efficiency.by-skill` or `efficiency.by-mcp` is non-empty, you MAY add one small table each
   (`Skill`/`MCP Tool` | `Tokens` | `Spend`), rows in the order given, values verbatim. Skip an
-  empty list.
+  empty list. Whichever table you show, put its coverage string
+  (`efficiency.by-skill-coverage` / `efficiency.by-mcp-coverage`) verbatim in one sentence beside
+  it: these are tags rather than a partition, so the table covers only part of the period and the
+  coverage string is the binary's statement of how much.
 
 Do not sum, average, or recompute any of these; state only what is given.
 
