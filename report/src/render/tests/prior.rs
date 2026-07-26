@@ -67,7 +67,8 @@ fn build_context_block_includes_prior_when_supplied() {
         crate::aggregate::DEFAULT_OUTLIERS,
         Some(&prior_path),
     )
-    .unwrap();
+    .unwrap()
+    .json;
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let prior = parsed
         .get("prior")
@@ -115,7 +116,8 @@ fn build_context_block_omits_prior_key_without_the_flag() {
         crate::aggregate::DEFAULT_OUTLIERS,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .json;
     let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
     assert!(parsed.get("prior").is_none(), "no --prior -> no prior key at all");
 }
@@ -140,7 +142,8 @@ fn build_context_block_prior_comparable_is_false_on_a_length_mismatch() {
         crate::aggregate::DEFAULT_OUTLIERS,
         Some(&prior_path),
     )
-    .unwrap();
+    .unwrap()
+    .json;
     let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
     let prior = parsed.get("prior").expect("prior key");
     assert_eq!(prior.get("days").and_then(|v| v.as_i64()), Some(14));
@@ -181,7 +184,8 @@ fn build_context_block_prior_states_predates_fields_instead_of_zeros() {
         crate::aggregate::DEFAULT_OUTLIERS,
         Some(&prior_path),
     )
-    .unwrap();
+    .unwrap()
+    .json;
     let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
     let prior = parsed.get("prior").expect("prior key");
 

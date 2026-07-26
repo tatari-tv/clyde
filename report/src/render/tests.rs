@@ -30,6 +30,7 @@ fn ctx(report: &Report, include_tradeoffs: bool) -> String {
         None,
     )
     .unwrap()
+    .json
 }
 
 /// An empty v2 efficiency passthrough for render fixtures (render reads tokens/spend/outcomes; the
@@ -498,7 +499,8 @@ fn build_context_block_embeds_persona_when_present() {
         crate::aggregate::DEFAULT_OUTLIERS,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .json;
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let p = parsed.get("persona").expect("persona key");
     assert_eq!(p.get("name").and_then(|v| v.as_str()), Some("Scott Idler"));
@@ -565,7 +567,9 @@ fn report_with_n_sessions(n: usize) -> Report {
 #[test]
 fn build_context_block_outliers_n_caps_outlier_table_to_exactly_n() {
     let report = report_with_n_sessions(5);
-    let block = build_context_block(&report, false, None, &pricing(), 3, None).unwrap();
+    let block = build_context_block(&report, false, None, &pricing(), 3, None)
+        .unwrap()
+        .json;
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let outliers = parsed
         .get("aggregates")
@@ -1266,10 +1270,13 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
 /// (expects Err) fails -- the test bites.
 #[test]
 fn markdown_guard_rejects_fabricated_number_accepts_verbatim() {
-    let facts = r#"{"totals":{"spend":"$4.12","tokens-human":"5,650"},"period":{"since":"2026-07-01"}}"#;
+    let facts = crate::quotable::QuotableFacts::from_context_json(
+        r#"{"totals":{"spend":"$4.12","tokens-human":"5,650"},"period":{"since":"2026-07-01"}}"#,
+    )
+    .unwrap();
 
     let fabricated = "Spend was $4.12 this period, saving the team $9,999 in engineering time.";
-    let err = reject_foreign_numbers("markdown", fabricated, facts).unwrap_err();
+    let err = reject_foreign_numbers("markdown", fabricated, &facts).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("markdown") && msg.contains("render-invents-nothing"),
@@ -1281,7 +1288,7 @@ fn markdown_guard_rejects_fabricated_number_accepts_verbatim() {
     );
 
     let clean = "Spend was $4.12 across the period beginning 2026-07-01; tokens totaled 5,650.";
-    reject_foreign_numbers("markdown", clean, facts).expect("verbatim prose must pass the guard");
+    reject_foreign_numbers("markdown", clean, &facts).expect("verbatim prose must pass the guard");
 }
 
 /// Break-the-code (html path): the guard runs over VISIBLE TEXT, so CSS/JS geometry (px,
@@ -1290,17 +1297,20 @@ fn markdown_guard_rejects_fabricated_number_accepts_verbatim() {
 /// Err assertion fails if the guard is removed.
 #[test]
 fn html_guard_checks_visible_text_not_css_geometry() {
-    let facts = r#"{"totals":{"spend":"$4.12"},"models":[{"spend-percent-of-max":43.7}]}"#;
+    let facts = crate::quotable::QuotableFacts::from_context_json(
+        r#"{"totals":{"spend":"$4.12"},"models":[{"spend-percent-of-max":43.7}]}"#,
+    )
+    .unwrap();
 
     let good = "<!doctype html><html><head><style>body{padding:24px;color:#1a1a1a}\
         @media(max-width:768px){body{font-size:14px}}</style></head>\
         <body><h1>Total Spend: $4.12</h1><div style=\"width: 43.7%\"></div></body></html>";
-    reject_foreign_numbers("html", &visible_text(good), facts)
+    reject_foreign_numbers("html", &visible_text(good), &facts)
         .expect("css geometry and a verbatim data figure must pass the html guard");
 
     let bad = "<!doctype html><html><head><style>body{padding:24px}</style></head>\
         <body><h1>Saved $9,999 this month</h1></body></html>";
-    let err = reject_foreign_numbers("html", &visible_text(bad), facts).unwrap_err();
+    let err = reject_foreign_numbers("html", &visible_text(bad), &facts).unwrap_err();
     assert!(format!("{err}").contains("html"), "html path error expected: {err}");
 }
 
@@ -1436,3 +1446,5 @@ fn build_context_block_carries_line_counters_present_if_nonzero() {
 mod narrative;
 #[cfg(test)]
 mod prior;
+#[cfg(test)]
+mod quotable;

@@ -861,3 +861,104 @@ live fetch from a cache hit is a `claude-pricing` change this phase's scope excl
   rather than a size guard, since the design did not ask for one in this phase and 500K-char-summary
   sessions are the design's own committed shape (Phase 2 catalog work, `2026-07-24` design), not
   something Phase 9 introduced a defect in.
+
+## Phase 10: Quotable-facts whitelist
+
+### Design decisions
+- Three sets, built beside the context block and carried with it: `figures` (numeric tokens the
+  prose may state), `identifiers` (whole strings the prose may cite verbatim), `geometry` (Phase 11's
+  chart coordinates, never prose) -- `report/src/quotable.rs`, `QuotableFacts`. `build_context_block`
+  now returns a `RenderContext { json, facts }` so the guard can never run against a different block
+  than the one the model was handed.
+- The identifier set is applied as a byte MASK over the prose, and a numeric token is exempt only
+  when EVERY byte of it lands inside a verbatim identifier occurrence --
+  `QuotableFacts::mask` / `foreign_figures`. That is what keeps the second set from re-widening the
+  first: citing session `a14bc3d2` does not add `1`, `4`, `3` and `2` to the prose whitelist, and a
+  cited PR `#1` masks one byte of a fabricated `14`, leaving the token only partly masked and
+  therefore still checked.
+- `title`, `summary` and `tags` are IDENTIFIERS, not figures -- `quotable::IDENTIFIER_KEYS`. Free
+  text the enrich pass wrote is citable verbatim, but a number inside it is evidence of nothing and
+  must not license the same number in a headline. Phase 9 grew the block 48% with summaries; had
+  they been figure-classified they would have handed the whitelist an arbitrary vocabulary of
+  LLM-authored numbers.
+- A calendar date is ONE token, and its YEAR is added back separately --
+  `quotable::numeric_pattern` / `add_figure_tokens`. The pre-change tokenizer split `2026-07-14`
+  into `2026`, `07`, `14`, which is how every day-of-month in the window became a pre-approved
+  standalone integer. The year stays quotable because section headers legitimately state it; the
+  month and day do not.
+- Thousands separators are normalized away, and a comma-grouped number is one token --
+  `quotable::numeric_pattern` / `normalize`. Two wins: `$9,450.31` no longer licenses a bare `9`
+  anywhere in the prose, and a count the binary emits as a bare integer (`6200`) matches the
+  comma-grouped form an artifact prints (`6,200`), which the pre-change guard only got away with by
+  accident. Measured on the real window, this alone turns two fabrications the old guard PASSED into
+  rejections: `"The team saved $184,000 this month."` and `"The 1,845 sessions in the window."`
+- Digit-bearing segments of FIELD NAMES (`session-spend-p90` -> `p90`, `cache-1h-write-fraction` ->
+  `1h`) are added to the mask set -- `QuotableFacts::add_label_segments`. Both prompts describe those
+  signals in words the artifact prints back ("the 1h premium", "the p90 session"), and without this
+  the label text reads as a fabricated number.
+- Function-level DEBUG logging on every entry point, with the narrowing measurement itself logged at
+  DEBUG on each render (`pre-change-tokens raw/distinct` vs `figures`). Per-token decisions are
+  TRACE, never DEBUG.
+
+### Deviations
+- **Implemented as a denylist, not an enumerated allowlist.** The doc says the set is "the leaf
+  values of exactly the fields the prompts license the model to copy". `quotable::classify` instead
+  NAMES the identifier and geometry keys and treats everything else as a figure. Same effect at the
+  correct seam: the context block is string-only display values by construction (Phase 5 -- every
+  raw operand is `#[serde(skip)]`), so an unnamed key is a figure the binary already formatted. An
+  enumerated allowlist would hard-fail the render the first time a later phase adds a field, which
+  is the wrong failure mode for a guard whose false positive is fatal.
+- **`-percent-of-max` values are in BOTH the figure and geometry sets.** The doc lists geometry as
+  separate; these are simultaneously a binary-computed percent the prose may quote and a legitimate
+  bar width. `points`/`viewBox` (Phase 11) remain geometry-ONLY, which is the case the separation
+  exists for.
+- **The pre-change tokenizer is retained**, as `quotable::all_numeric_tokens` /
+  `numeric_token_count`, purely as the measurement baseline. Comparing the new figure set against a
+  re-tokenized baseline would have been a moved goalpost.
+- Success criterion 3 is met against three artifacts built here from a representative fixture, not
+  against Phase 13's committed goldens, which do not exist yet. **Phase 13 must re-run this criterion
+  against the real goldens** (`report/src/render/tests/quotable.rs::all_three_known_good_artifacts_pass`).
+
+### Tradeoffs
+- A false positive is a HARD render failure, so this phase trades one silent-acceptance risk for one
+  loud-rejection risk. That is the right trade, and it is why the known-good corpus is more than one
+  fixture: the corpus deliberately includes an untitled session cited by `short-id`, a prose PR
+  reference in `#619` / `PR 619` / full-url form, a short and full commit sha, a verbatim title
+  quote, and an RFC3339 span, because those are the citations a narrowed whitelist breaks first.
+- Identifier masking is one `match_indices` pass per identifier over the prose (~15K identifiers
+  against a ~30KB artifact on the real window), not a combined automaton. Linear per identifier, run
+  once per render after a multi-minute model call; a trie would be faster and less obvious.
+- Oversized identifiers (> 4096 bytes, only an enrich `summary` can reach it) are skipped rather than
+  scanned. A verbatim quote of a summary that long is not a citation anyone writes, and keeping it
+  would cost a scan per render for a match that cannot happen.
+
+### Open questions
+- **Criterion 1 depends on which denominator "the token count of the pre-change whitelist" means,
+  and only one of the three readings clears 20%.** Measured on the real 30-day window (1,523
+  sessions, 942,128-byte context block): the pre-change whitelist was 36,232 tokens raw / 5,887
+  distinct; the figure whitelist is 2,321 tokens. That is **6.4% of the raw count (criterion met)**,
+  33.7% of the distinct count, and 48.2% of previously-accepted tokens still accepted. The
+  pre-change whitelist was literally a `Vec` scanned with `contains`, so the raw count is its token
+  count and the criterion is met on the literal reading; the CI assertion uses that reading and
+  prints the other two. On the fixture (60 sessions): raw 2,897 / distinct 568 / figures 280 = 9.7%
+  of raw, 49.3% of distinct, 43.3% still accepted. The stricter readings cannot be reached while the
+  doc's own risk mitigation holds ("dates and all display strings stay in the set"): 1,710 of the
+  distinct figures are the per-session `tokens-human` and `spend-display` strings the prompt
+  explicitly licenses for citations.
+- **Criterion 2 holds at fixture scale and NOT on a real window, and no whitelist of VALUES can fix
+  that.** On the real 1,523-session block, `14` is a genuine licensed count: a day with 14 sessions
+  (`aggregates.by-day[].sessions`), a repo with 14 sessions, four sessions that edited 14 files, two
+  PRs numbered 14. So the planted "14 hours of engineering time" still passes there, as do "3x",
+  "42% faster" and "250 hours". What the old guard passed and the new one now catches is every
+  fabrication whose figure does NOT collide with a real count: `$184,000`, `1,845 sessions`, `27.4%`,
+  `96.4%`. The fabrication in "14 hours" is not the number, it is the UNIT -- no field in the block
+  is a duration, and no field is an `x` multiplier. Closing it needs a claim-shaped check (a figure
+  immediately followed by a time unit, or `\d+(\.\d+)?x`), which is a different mechanism than this
+  phase specifies, so it was NOT built here. Recommend a follow-up phase; the prompts already ban
+  exactly these claims in prose ("No speculation about how long it would have taken otherwise"), so
+  the guard would be enforcing an existing rule rather than adding one.
+- Should `sessions[].outcomes` per-session counts stay figure-classified? They are the densest
+  source of small-integer coverage in the figure set (1,523 sessions x six count fields), and the
+  prompt licenses them only for citations, never for aggregate claims. Splitting them out needs
+  path-aware classification (parent key plus leaf key), which is a mechanism change the doc did not
+  ask for.

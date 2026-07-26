@@ -5,6 +5,7 @@ use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_us
 use crate::outcome::OutcomeTotals;
 use crate::persona::{self, PersonaBlock};
 use crate::proc::run_bounded;
+use crate::quotable::{QuotableFacts, RenderContext};
 use crate::report::{Report, SCHEMA_VERSION, SessionEntry};
 use crate::summarize;
 use crate::{OutputDest, RunResult};
@@ -13,7 +14,6 @@ use claude_pricing::Pricing;
 use efficiency::{RawCounters, WorkloadCost, finalize};
 use eyre::{Context, Result, bail};
 use log::debug;
-use regex::Regex;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -21,7 +21,6 @@ use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::sync::OnceLock;
 
 const STDOUT_SIGIL: &str = "-";
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
@@ -254,7 +253,8 @@ fn resolve_transport_for(cfg: &RenderConfig) -> Result<TransportKind> {
     Ok(resolved)
 }
 
-fn render_via_opus_markdown(json_body: &str, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+fn render_via_opus_markdown(context: &RenderContext, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+    let json_body = &context.json;
     debug!(
         "render::render_via_opus_markdown: context bytes={} prompt bytes={} model={} max_output_tokens={}",
         json_body.len(),
@@ -274,19 +274,22 @@ fn render_via_opus_markdown(json_body: &str, prompt: &str, cfg: &RenderConfig) -
         }
     };
     // Render invents nothing: the whole markdown document is prose over the string-only facts, so
-    // every numeric token in it must appear verbatim in the context (which carries only pre-formatted
-    // display strings). A fabricated figure means the model computed or invented a number -> reject.
-    reject_foreign_numbers("markdown", &prose, json_body)?;
+    // every figure in it must be licensed by a QUOTABLE FACT -- a display figure the binary
+    // formatted, or the digits inside an identifier the prose cites verbatim. Not "any numeric token
+    // anywhere in the serialized block", which pre-approved every small integer that happened to
+    // fall inside a session id or a sha (design "Guard weakness (10)").
+    reject_foreign_numbers("markdown", &prose, &context.facts)?;
     Ok(prose)
 }
 
 /// The html-source counterpart to [`render_via_opus_markdown`]. There is NO offline HTML path, so
 /// the missing-key error deliberately does NOT recommend `--template` (which produces markdown and
 /// is rejected for html-source formats).
-fn render_via_opus_html(context: &str, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+fn render_via_opus_html(context: &RenderContext, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+    let json_body = &context.json;
     debug!(
         "render::render_via_opus_html: context bytes={} prompt bytes={} model={} max_output_tokens={}",
-        context.len(),
+        json_body.len(),
         prompt.len(),
         cfg.html_model,
         cfg.html_max_output_tokens
@@ -294,14 +297,16 @@ fn render_via_opus_html(context: &str, prompt: &str, cfg: &RenderConfig) -> Resu
     let model = &cfg.html_model;
     let ceiling = cfg.html_max_output_tokens;
     let html = match resolve_transport_for(cfg)? {
-        TransportKind::Api => summarize::html(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, context)?,
-        TransportKind::Cli => summarize::html(&summarize::CliTransport::resolve()?, model, ceiling, prompt, context)?,
+        TransportKind::Api => {
+            summarize::html(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, json_body)?
+        }
+        TransportKind::Cli => summarize::html(&summarize::CliTransport::resolve()?, model, ceiling, prompt, json_body)?,
     };
     // Render invents nothing (html): CSS/JS geometry is legitimate authored markup full of numbers
     // that are NOT data (px, breakpoints, colors), so the guard runs over the VISIBLE TEXT only
-    // (style/script blocks and tag markup stripped). Every data figure a reader sees must appear
-    // verbatim in the string-only facts; a fabricated figure is rejected.
-    reject_foreign_numbers("html", &visible_text(&html), context)?;
+    // (style/script blocks and tag markup stripped). Every data figure a reader sees must be
+    // licensed by a quotable fact; a fabricated figure is rejected.
+    reject_foreign_numbers("html", &visible_text(&html), &context.facts)?;
     Ok(html)
 }
 
@@ -347,22 +352,28 @@ fn check_schema_version(body: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Reject generated prose that introduced a numeric token absent from the string-only `facts` (the
-/// serialized context block). This is the RUNTIME half of the render-invents-nothing guard, copied
-/// from `efficiency/src/narrate.rs` (`narrate`/`foreign_numbers`): the prompt-level "no arithmetic"
-/// rule is advisory, so a poisoned narrative is caught here and never escapes. `kind` names the path
-/// (markdown / html) for the operator-facing error and WARN. Fail closed.
-fn reject_foreign_numbers(kind: &str, prose: &str, facts: &str) -> Result<()> {
+/// Reject generated prose that stated a figure no quotable fact licenses. This is the RUNTIME half
+/// of the render-invents-nothing guard: the prompt-level "no arithmetic" rule is advisory, so a
+/// poisoned narrative is caught here and never escapes. `kind` names the path (markdown / html) for
+/// the operator-facing error and WARN. Fail closed.
+///
+/// `facts` is the [`QuotableFacts`] set built beside the context block, NOT the serialized block
+/// itself: the block's session ids, timestamps and shas used to pre-approve effectively every
+/// small integer (design "Guard weakness (10)"), which is why a fabricated "14 hours of engineering
+/// time" passed. A false positive here is a hard render failure, so the identifier half of the fact
+/// set exists to keep legitimate citations (an untitled session by `short-id`, a prose PR reference)
+/// passing.
+fn reject_foreign_numbers(kind: &str, prose: &str, facts: &QuotableFacts) -> Result<()> {
     debug!(
-        "render::reject_foreign_numbers: kind={kind} prose_chars={} facts_chars={}",
+        "render::reject_foreign_numbers: kind={kind} prose_chars={} quotable_figures={}",
         prose.chars().count(),
-        facts.chars().count()
+        facts.figure_count()
     );
-    let foreign = foreign_numbers(prose, facts);
+    let foreign = facts.foreign_figures(prose);
     if !foreign.is_empty() {
         log::warn!(
-            "render::reject_foreign_numbers: {kind} path REJECTED -- generated prose introduced \
-             number(s) absent from the string-only facts: {foreign:?}"
+            "render::reject_foreign_numbers: {kind} path REJECTED -- generated prose stated \
+             figure(s) no quotable fact licenses: {foreign:?}"
         );
         bail!(
             "{kind} rendering introduced number(s) absent from the computed facts: {foreign:?} -- the \
@@ -371,31 +382,6 @@ fn reject_foreign_numbers(kind: &str, prose: &str, facts: &str) -> Result<()> {
     }
     debug!("render::reject_foreign_numbers: kind={kind} clean");
     Ok(())
-}
-
-/// Every numeric token (`42`, `4.12`, `155`) in `text`. Copied verbatim from `narrate.rs`, which
-/// already correctly treats a date (`2026-07-01` -> `2026`, `07`, `01`) and a version as separate
-/// tokens that each match the facts, so legitimate dates/versions never read as fabricated.
-fn numeric_tokens(text: &str) -> Vec<String> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\d+(?:\.\d+)?").expect("numeric-token pattern is a valid regex"))
-        .find_iter(text)
-        .map(|m| m.as_str().to_string())
-        .collect()
-}
-
-/// Numbers in `prose` that do NOT appear anywhere in the string-only `facts` -- i.e. numbers the
-/// model invented (a sum, a projection, a fabricated figure). A non-empty result is the
-/// render-invents-nothing violation [`reject_foreign_numbers`] fails on. The `facts` are the
-/// serialized context block, so any figure the binary pre-formatted into it is permitted and any
-/// figure NOT in it is rejected -- checking against the curated string-only facts, never the raw
-/// report (which would widen the whitelist with recombinable operands, design Phase 5).
-fn foreign_numbers(prose: &str, facts: &str) -> Vec<String> {
-    let present = numeric_tokens(facts);
-    numeric_tokens(prose)
-        .into_iter()
-        .filter(|n| !present.contains(n))
-        .collect()
 }
 
 /// The reader-visible text of an HTML document: `<style>`/`<script>` block CONTENTS and all tag
@@ -783,6 +769,9 @@ struct SessionView<'a> {
     outcomes: Option<&'a crate::outcome::Outcomes>,
 }
 
+/// Build the model's context block AND the quotable-facts sets that bound what the artifact may say
+/// about it. The two are returned together ([`RenderContext`]) so the guard can never be run against
+/// a different block than the one the model was handed.
 pub(crate) fn build_context_block(
     report: &Report,
     include_tradeoffs: bool,
@@ -790,7 +779,7 @@ pub(crate) fn build_context_block(
     pricing: &Pricing,
     outliers_n: usize,
     prior_path: Option<&Path>,
-) -> Result<String> {
+) -> Result<RenderContext> {
     debug!(
         "render::build_context_block: sessions={} include_tradeoffs={} outliers-n={} prior={:?}",
         report.sessions.len(),
@@ -821,7 +810,14 @@ pub(crate) fn build_context_block(
             .collect(),
         prior,
     };
-    serde_json::to_string(&block).context("failed to serialize context block to JSON")
+    let json = serde_json::to_string(&block).context("failed to serialize context block to JSON")?;
+    let facts = QuotableFacts::from_context_json(&json)?;
+    debug!(
+        "render::build_context_block: context_bytes={} quotable_figures={}",
+        json.len(),
+        facts.figure_count()
+    );
+    Ok(RenderContext { json, facts })
 }
 
 fn build_period_view(report: &Report, aggregates: &Aggregates) -> PeriodView {
