@@ -63,6 +63,11 @@ The JSON context block contains:
 
 - `persona`: identity fields as above.
 - `options.include-tradeoffs`: boolean; controls the Tradeoffs section.
+- `basis`: the pricing basis for every dollar figure in this document -- `pricing` ("published list
+  rates"), `is-invoice` (always `false`), `feed-source` (which feed resolved the rates), and `note`,
+  one sentence stating that this document's figures are modeled, not billed, and where the billed
+  figure lives. `basis.note` is REQUIRED in the header (see Required structure) and copied verbatim,
+  never paraphrased.
 - `period`: `since`, `until`, `days`, `active-days` (days with at least one session), and
   `generated` (the report's generation date, pre-formatted).
 - `totals`: `sessions`, `repo-count`, `spend` (display string), `tokens-human` (display string),
@@ -143,11 +148,15 @@ tags:
 **Team:** <persona.team>            (omit this line if absent)
 **Period:** <since> - <until>
 **Total Spend:** <totals.spend>
+**Pricing Basis:** <basis.note>
 **Sessions:** <totals.sessions> across <totals.repo-count> repositories
 **Active Days:** <period.active-days> of <period.days>
 
 ---
 ```
+
+`**Pricing Basis:**` is REQUIRED on every render, immediately after `**Total Spend:**` since that is
+the figure it qualifies. Copy `basis.note` verbatim; never paraphrase or drop it.
 
 Then these sections in order. Section bodies are described, not templated; write each one fresh
 based on what is most notable in this month's data.
@@ -302,6 +311,8 @@ justified" claim, no trajectory verdicts, no ROI language.
 # Strict rules
 
 - Output ONLY the markdown document. Nothing before, nothing after.
+- `**Pricing Basis:** <basis.note>` is a REQUIRED header line, copied verbatim from `basis.note`.
+  Every render carries it; never omit it, never rephrase it.
 - Every number is copied verbatim from the context block (Hard prohibition 1). Numbers not in
   the context (hours, days of work, headcount equivalents) are NEVER fabricated.
 - Outcome claims (commits, PRs, pages, tickets, messages) come only from `outcomes` fields.

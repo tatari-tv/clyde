@@ -8,6 +8,38 @@ markdown writeup. A member crate of the [`clyde`](../README.md) umbrella workspa
 Library API: `report::{ReportArgs, ReportCli, run}`. See the top-level README and
 `docs/design/2026-06-24-clyde-umbrella-cli.md` for the umbrella architecture.
 
+## What the dollar figures mean
+
+Every rendered artifact carries this disclosure verbatim, next to the total-spend figure it
+qualifies:
+
+> Total spend is modeled Claude Code catalog spend at published list rates; account-level billed
+> spend comes from Claude Enterprise Analytics.
+
+Every dollar amount this crate emits is **modeled**, not billed. It is token counts multiplied by
+Anthropic's published per-token list rates, sourced from clyde's own pricing feed at
+<https://tatari-tv.github.io/clyde/> (embedded baseline as the fallback; see `pricing/CLAUDE.md`).
+Rates and the cache multipliers it applies (1.25x for a 5m cache write, 2x for 1h, 0.1x for a read)
+come from <https://platform.claude.com/docs/en/about-claude/pricing.md>.
+
+**Tatari is on Claude Enterprise, and the authoritative spend figure is the Claude Enterprise
+Analytics cost report**, not this crate. Pull it with the `anthropic-usage-report` skill
+(`pull-usage-report.py --report cost`, or `--report user-cost` for per-user); it needs an
+owner-created Analytics key with `read:analytics` scope, which clyde itself never holds.
+
+So when a report says `$9,450.31`, read it as "this much token consumption, priced at list." Two
+figures can legitimately differ from it:
+
+- **The Analytics cost report** is the real number. It covers everything the account billed, including
+  claude.ai web and other clients and hosts, so `billed >= modeled` is the expected relationship and a
+  positive delta means usage clyde cannot see, not a miscount.
+- **Per-model spend inside a report** is re-priced from the fetched feed, while the catalog's
+  `efficiency_json` stores costs at the **embedded** baseline on purpose, so a persisted value stays
+  reproducible on a later reindex regardless of network state (`efficiency/src/metrics.rs`).
+
+Reconciling the two automatically (`report render --reconcile <analytics-export.json>`) is designed in
+`docs/design/2026-07-26-report-story-fidelity.md` and not yet shipped.
+
 ## Render output formats
 
 `report render` turns a collected JSON report into one of five output formats, selected with

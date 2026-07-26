@@ -499,6 +499,10 @@ pub(crate) fn resolve_html_prompt(explicit: Option<&Path>, workspace_dir: &Path)
 struct ContextBlock<'a> {
     persona: &'a PersonaBlock,
     options: ContextOptions,
+    /// The pricing basis for every dollar figure below (design "Pricing basis, always present",
+    /// Phase 6): what it is priced against, whether it is an invoice (never), and which feed
+    /// resolved it. `basis.note` is the required, verbatim header disclosure both templates carry.
+    basis: Basis,
     period: PeriodView,
     totals: TotalsView,
     /// How much of `totals.spend` carries a repo and on what evidence, one row per `repo-source`
@@ -598,6 +602,60 @@ struct OutcomeTotalsView {
 #[serde(rename_all = "kebab-case")]
 struct ContextOptions {
     include_tradeoffs: bool,
+}
+
+/// The pricing basis, always present (design Phase 6, "Pricing basis, always present"). Every dollar
+/// figure downstream is `tokens x published per-token rate`, never a billed/invoiced total, and
+/// `note` states that scope in the same sentence as the citation so a finance reader does not expect
+/// this figure to reconcile against the authoritative Analytics cost report (design Resolved
+/// Decisions, "Tatari pays for Claude Enterprise..."; supersedes the earlier "not an amount
+/// invoiced" wording).
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct Basis {
+    /// Always "published list rates" -- `is_invoice` is the machine-checkable half of the same fact.
+    pricing: String,
+    /// Always `false`: this artifact never carries a billed/invoiced total (see `note`).
+    is_invoice: bool,
+    /// Which resolution path produced the [`Pricing`] this render used: `embedded` | `fetched` |
+    /// `override`. NOTE: `claude-pricing` does not distinguish a live network fetch from an on-disk
+    /// cache hit at the type level (both resolve to `Source::Fetched`), so both surface as
+    /// `fetched` here; `override` covers `Source::UserOverride`, a fourth case the doc's
+    /// `embedded | cached | fetched` vocabulary does not name.
+    feed_source: String,
+    /// The resolved feed's own `data-version` (an ISO-8601 timestamp), or `"unknown"` when the
+    /// feed carried none.
+    feed_version: String,
+    /// One sentence, carried verbatim into the required header line by both templates.
+    note: String,
+}
+
+/// The disclosure sentence, verbatim (design Phase 6 / Resolved Decisions "Tatari pays for Claude
+/// Enterprise, and the Analytics cost report is the authoritative spend number"). The scope caveat
+/// rides in the SAME sentence as the citation -- naming only the authoritative source, with no scope
+/// statement, is what let a reader expect the two figures to match and read a mismatch as "clyde
+/// miscounted".
+const BASIS_NOTE: &str = "Total spend is modeled Claude Code catalog spend at published list rates; \
+     account-level billed spend comes from Claude Enterprise Analytics.";
+
+fn build_basis(pricing: &Pricing) -> Basis {
+    let feed_source = match pricing.source() {
+        claude_pricing::Source::Embedded => "embedded",
+        claude_pricing::Source::Fetched { .. } => "fetched",
+        claude_pricing::Source::UserOverride(_) => "override",
+    };
+    debug!(
+        "render::build_basis: feed-source={} feed-version={:?}",
+        feed_source,
+        pricing.data_version()
+    );
+    Basis {
+        pricing: "published list rates".to_string(),
+        is_invoice: false,
+        feed_source: feed_source.to_string(),
+        feed_version: pricing.data_version().unwrap_or("unknown").to_string(),
+        note: BASIS_NOTE.to_string(),
+    }
 }
 
 #[derive(Serialize)]
@@ -702,6 +760,7 @@ pub(crate) fn build_context_block(
     let block = ContextBlock {
         persona: persona.unwrap_or(&default_persona),
         options: ContextOptions { include_tradeoffs },
+        basis: build_basis(pricing),
         period: build_period_view(report, &aggregates),
         totals: build_totals_view(report),
         attribution: aggregate::compute_attribution(report),
@@ -954,7 +1013,7 @@ fn load_template(custom: Option<&Path>) -> Result<Template> {
 pub fn to_markdown(report: &Report, template: &Template, pricing: &Pricing) -> String {
     match template {
         Template::BuiltIn => render_built_in(report, pricing),
-        Template::Custom(body) => render_custom(report, body),
+        Template::Custom(body) => render_custom(report, body, pricing),
     }
 }
 
@@ -972,6 +1031,7 @@ fn render_built_in(report: &Report, pricing: &Pricing) -> String {
     let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
     out.push_str(&format!("- **total tokens:** {}\n", format_int(total_tokens)));
     out.push_str(&format!("- **total spend:** {}\n", format_usd(report.totals.spend_usd)));
+    out.push_str(&format!("- **pricing basis:** {}\n", build_basis(pricing).note));
     if !report.totals.untracked_models.is_empty() {
         out.push_str(&format!(
             "- **untracked models:** {}\n",
@@ -1061,7 +1121,7 @@ fn render_built_in(report: &Report, pricing: &Pricing) -> String {
     out
 }
 
-fn render_custom(report: &Report, body: &str) -> String {
+fn render_custom(report: &Report, body: &str, pricing: &Pricing) -> String {
     let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
     body.replace("{{host}}", &report.host)
         .replace("{{since}}", &report.since.format("%Y-%m-%d").to_string())
@@ -1069,6 +1129,7 @@ fn render_custom(report: &Report, body: &str) -> String {
         .replace("{{session-count}}", &report.totals.sessions.to_string())
         .replace("{{total-tokens}}", &format_int(total_tokens))
         .replace("{{total-spend}}", &format_usd(report.totals.spend_usd))
+        .replace("{{basis-note}}", &build_basis(pricing).note)
 }
 
 fn write_pdf(markdown: &str, output: &Path, pdf_engine: &str) -> Result<()> {

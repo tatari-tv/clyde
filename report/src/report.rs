@@ -346,10 +346,13 @@ pub fn build_report(
     }
 
     // Totals.models + spend: price LAST over the unioned per-model `TokenTotals` (ratio/price of the
-    // sum, never a sum of priced values — the Aggregation invariant applied to money).
+    // sum, never a sum of priced values — the Aggregation invariant applied to money). Zero-token
+    // models are dropped here too ([`has_tokens`]), so a model absent from every session's `models`
+    // never resurfaces in the report-wide union either.
     let totals_model_entries: BTreeMap<String, ModelTokens> = grand
         .by_model
         .iter()
+        .filter(|(_, t)| has_tokens(t))
         .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t, pricing)))
         .collect();
     let totals_spend: f64 = totals_model_entries.values().filter_map(|m| m.spend_usd).sum();
@@ -490,14 +493,27 @@ fn entry_from_scope(
     })
 }
 
+/// A model carries no tokens in any field (`<synthetic>`, an internal Claude Code artifact, is the
+/// live case: design `2026-07-26-report-story-fidelity.md`, defect 5). It consumed nothing, so it
+/// is dropped entirely rather than kept as a `$0` / `(untracked)` row -- the alternative fires the
+/// "the total above understates actual spend" warning on every single run for a model that never
+/// spent a token (Resolved Decisions, "zero-token models are dropped from `totals.models`").
+fn has_tokens(t: &TokenTotals) -> bool {
+    t.total != 0
+}
+
 /// Price a per-model `TokenTotals` map into `ModelTokens`, returning the priced map, the session's
 /// summed spend (`None` when NOTHING priced), and the list of models absent from `pricing.yml`.
+/// Zero-token models are filtered out before pricing ([`has_tokens`]), so they never reach either
+/// the returned map or the untracked list -- a genuinely unpriced model still lands in `untracked`
+/// as long as it carries at least one token.
 fn price_models(
     by_model: &BTreeMap<String, TokenTotals>,
     pricing: &Pricing,
 ) -> (BTreeMap<String, ModelTokens>, Option<f64>, Vec<String>) {
     let models: BTreeMap<String, ModelTokens> = by_model
         .iter()
+        .filter(|(_, t)| has_tokens(t))
         .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t, pricing)))
         .collect();
     let mut priced_sum = 0.0_f64;

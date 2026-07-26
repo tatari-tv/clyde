@@ -294,6 +294,63 @@ fn build_context_block_includes_slim_shape() {
     );
 }
 
+/// Design Phase 6, "Pricing basis, always present": the context block carries a `basis` key on
+/// EVERY render, with the exact disclosure sentence the doc settles on, and it identifies the
+/// resolved feed rather than silently assuming embedded.
+///
+/// BITES: drop `basis` from `ContextBlock` (or from `build_context_block`) and the `expect` fails;
+/// change `BASIS_NOTE`'s wording and the exact-string assertion catches the drift.
+#[test]
+fn build_context_block_always_carries_the_pricing_basis() {
+    let report = sample_report();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+    let basis = parsed.get("basis").expect("basis key must always be present");
+    assert_eq!(
+        basis.get("pricing").and_then(|v| v.as_str()),
+        Some("published list rates")
+    );
+    assert_eq!(basis.get("is-invoice").and_then(|v| v.as_bool()), Some(false));
+    // The test fixture resolves `Pricing::embedded()`.
+    assert_eq!(basis.get("feed-source").and_then(|v| v.as_str()), Some("embedded"));
+    assert!(basis.get("feed-version").and_then(|v| v.as_str()).is_some());
+    assert_eq!(
+        basis.get("note").and_then(|v| v.as_str()),
+        Some(
+            "Total spend is modeled Claude Code catalog spend at published list rates; account-level \
+             billed spend comes from Claude Enterprise Analytics."
+        ),
+        "the disclosure sentence must carry the scope caveat in the same sentence as the citation \
+         (design Resolved Decisions, 'Tatari pays for Claude Enterprise...')"
+    );
+}
+
+/// The built-in offline renderer (`--template` unset, no LLM) is a "rendered artifact" too (design
+/// Phase 6 success criterion: "every rendered artifact contains the basis note").
+#[test]
+fn render_built_in_includes_the_pricing_basis_note() {
+    let report = sample_report();
+    let md = to_markdown(&report, &Template::BuiltIn, &pricing());
+    assert!(
+        md.contains("Total spend is modeled Claude Code catalog spend at published list rates"),
+        "built-in markdown must carry the pricing basis note: {}",
+        md
+    );
+}
+
+/// A user-authored custom template can opt into the same disclosure via `{{basis-note}}`.
+#[test]
+fn custom_template_substitutes_the_basis_note_placeholder() {
+    let report = sample_report();
+    let custom = Template::Custom("basis={{basis-note}}".into());
+    let md = to_markdown(&report, &custom, &pricing());
+    assert_eq!(
+        md,
+        "basis=Total spend is modeled Claude Code catalog spend at published list rates; \
+         account-level billed spend comes from Claude Enterprise Analytics."
+    );
+}
+
 /// Success criterion (design Phase 4): `by-day` length equals `period.days` regardless of whether
 /// `--until` was given as a bare date (parses to local midnight, e.g. `2026-04-30T00:00:00Z`) or as
 /// full RFC 3339 with a nonzero time-of-day. Both `period.days` (`render::build_period_view`) and

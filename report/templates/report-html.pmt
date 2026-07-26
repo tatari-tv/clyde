@@ -113,6 +113,11 @@ The JSON context block contains:
 
 - `persona`: identity fields as above.
 - `options.include-tradeoffs`: boolean; controls the Tradeoffs section.
+- `basis`: the pricing basis for every dollar figure in this document -- `pricing` ("published list
+  rates"), `is-invoice` (always `false`), `feed-source` (which feed resolved the rates), and `note`,
+  one sentence stating that this document's figures are modeled, not billed, and where the billed
+  figure lives. `basis.note` is REQUIRED in the header banner (see Dashboard contract) and copied
+  verbatim, never paraphrased.
 - `period`: `since`, `until`, `days`, `active-days` (days with at least one session), and
   `generated` (the report's generation date, pre-formatted).
 - `totals`: `sessions`, `repo-count`, `spend` (display string), `tokens-human` (display string),
@@ -191,6 +196,10 @@ Produce ONE complete, self-contained HTML document.
 - Light and dark: support both via `@media (prefers-color-scheme: dark)`. Both must be legible.
 - KPI summary cards for the headline totals (total spend, sessions, repositories, active days,
   total tokens), each value copied verbatim from the context block.
+- REQUIRED pricing-basis banner: immediately below the KPI cards (or as a caption on the total-spend
+  card), a visible line of text carrying `basis.note` verbatim -- never omitted, never paraphrased.
+  This is the same disclosure the markdown report carries as `**Pricing Basis:**`; every render
+  states the basis next to the headline figure it qualifies.
 - CSS-proportion bar/column charts, using ONLY `*-percent-of-max` (Hard prohibition 3), for the
   chartable series. Prefer charts for spend-by-repo, spend-by-model, and the by-day temporal
   shape (spend and sessions).

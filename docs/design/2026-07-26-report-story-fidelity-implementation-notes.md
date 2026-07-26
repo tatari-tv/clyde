@@ -466,3 +466,85 @@ Coverage strings on the same window:
 
 - `efficiency.by-skill-coverage`: `$1,113.10 of $9,450.31 (11.8%), embedded-price basis` (50 tags)
 - `efficiency.by-mcp-coverage`: `$278.74 of $9,450.31 (2.9%), embedded-price basis` (83 tags)
+
+## Phase 6: Untracked gate, pricing basis, disclosure
+
+### Design decisions
+- The zero-token gate (`has_tokens`, `report/src/report.rs`) filters `by_model` BEFORE pricing, in
+  both `price_models` (per-session `models` + `untracked_models`) and `build_report`'s report-wide
+  `totals_model_entries` build over the unioned `grand.by_model`. One predicate, two call sites, so a
+  model dropped from every session's `models` cannot resurface in the report-wide union either.
+- `Basis` (design "Pricing basis, always present") lives in `render.rs` as a render-time-only
+  `ContextBlock` field, built from the `Pricing` the CURRENT render resolves -- never persisted in the
+  collected `Report`/JSON artifact. Reasoning: the API Design section's "Context block additions"
+  list places `basis` alongside `unit-costs` and `prior`, i.e. among the render-only view structs, not
+  the artifact schema; and `report collect` and `report render` are separate CLI invocations that each
+  call `Pricing::auto` independently, so a persisted-at-collect-time basis could describe a DIFFERENT
+  feed resolution than the one a later render actually used for its own re-derived figures
+  (`by-skill-coverage`, cache counterfactual, etc.).
+- The exact disclosure sentence ships as a module constant (`BASIS_NOTE`, `render.rs`) rather than
+  being assembled from `Basis`'s other fields at each call site, so the "verbatim, never paraphrased"
+  requirement is enforced by construction (one string, one place it's written) rather than by
+  convention.
+- Added the note to the OFFLINE built-in renderer (`render_built_in`, `to_markdown`'s
+  `Template::BuiltIn` arm) and a `{{basis-note}}` placeholder to the user-authored custom-template
+  path (`render_custom`), even though the design doc's own bullets name only `report.pmt` and
+  `report-html.pmt`. The success criterion says "every rendered artifact", and both additions were
+  one line each.
+
+### Deviations
+- **`feed_source`'s vocabulary is `embedded | fetched | override`, not the doc's `embedded | cached |
+  fetched`.** Traced into `pricing/src/fetch.rs`: `claude-pricing`'s `Source` enum has exactly three
+  variants (`Embedded`, `UserOverride`, `Fetched`), and BOTH a live network fetch and an on-disk cache
+  hit resolve to `Source::Fetched` -- confirmed by the crate's own test commentary
+  (`pricing/src/fetch/tests.rs:1148-1150`: "a `Source` assertion could not tell cache from network and
+  would be vacuous"). So "cached" is not a distinguishable case with the current public API; both
+  surface as `"fetched"` here. `Source::UserOverride` is a real, live case (`Pricing::auto` falls
+  through to it) that the doc's three-value vocabulary does not name at all, so it surfaces as
+  `"override"` rather than being force-fit into "cached" (a `~/.config/<app>/pricing.json` override
+  file is not a cache of the fetched feed; conflating the two would misdescribe a real
+  operator-supplied file as network-derived). Distinguishing a live fetch from a cache hit would
+  require a new field on `claude-pricing::Pricing`, which is out of this phase's scope (`claude-pricing
+  is untouched`, Technical Considerations, Dependencies).
+- Basis is a `render.rs`-only view rather than a field on `report::Report` (see Design decisions
+  above for the reasoning); the doc's Data Model section places the `Basis` struct definition
+  generically rather than inside either module, so this is a seam choice, not a contradiction of an
+  explicit instruction.
+
+### Tradeoffs
+- Filtering `by_model` before pricing (rather than pricing everything and filtering the priced
+  `ModelTokens` map after) means a zero-token model never reaches `ModelTokens::from_totals` at all --
+  cheaper, and it also means a zero-token model can never accidentally acquire a nonzero `spend_usd`
+  from some future pricing rule that prices on turn-count rather than tokens. Chose this over
+  filtering post-pricing for that reason, even though either would satisfy today's success criteria.
+- Kept `has_tokens` checking `TokenTotals::total` (the derived sum) rather than all five component
+  fields individually. `total` is recomputed from the components on every mutation (`TokenTotals::add`,
+  `common/src/metrics.rs`) and can only be zero when every component is zero, so the two checks are
+  equivalent; `total` reads as the more direct statement of intent ("this model spent nothing").
+
+### Open questions
+None. The `feed_source` vocabulary gap (Deviations) is a factual limitation of the current
+`claude-pricing` public API, not a decision needing Scott's input; widening `Source` to distinguish a
+live fetch from a cache hit is a `claude-pricing` change this phase's scope excludes.
+
+### Verification
+- `cargo test -p report`: 274 tests (existing 272 plus two new: `zero_token_model_is_dropped_from_models_and_untracked`,
+  `nonzero_token_unpriced_model_still_flagged_untracked`) plus three render tests
+  (`build_context_block_always_carries_the_pricing_basis`, `render_built_in_includes_the_pricing_basis_note`,
+  `custom_template_substitutes_the_basis_note_placeholder`); all green.
+- Mutation-checked the gate: reverted `has_tokens` to always return `true` and confirmed
+  `zero_token_model_is_dropped_from_models_and_untracked` fails (`<synthetic>` reappears in
+  `entry.models`); restored and reconfirmed green. `nonzero_token_unpriced_model_still_flagged_untracked`
+  proves the negative case: a real unpriced NONZERO-token model still lands in `untracked-models`, so
+  the gate is a token-count filter, not a blanket suppression of the warning.
+- `otto ci`: green (fmt, clippy, check, test, whitespace).
+- Live data, `clyde report collect --since 2026-06-26 --until 2026-07-25` (1,523 sessions,
+  `$9,450.31`, unchanged from Phase 5): `totals.untracked-models` is `[]` and `<synthetic>` is absent
+  from `totals.models` (7 models remain, all priced). Confirmed the disclosure sentence reaches a real
+  rendered artifact end-to-end via `clyde report render --template <file containing {{basis-note}}>`
+  against that same collected JSON (no LLM call): emits the exact sentence verbatim. Did not run the
+  LLM-authored `report.pmt`/`report-html.pmt` path live against the full window (the local `claude` CLI
+  transport did not return within 2 minutes on this 1,523-session context); the header-line instruction
+  and the underlying `basis` context field are verified by unit test
+  (`build_context_block_always_carries_the_pricing_basis`) and by the prompt text itself, but a live
+  opus-authored render was not observed to confirm the model actually reproduces the line.

@@ -247,6 +247,76 @@ fn all_untracked_session_has_none_spend_and_lists_models() {
     assert_eq!(entry.untracked_models, vec!["not-a-real-model".to_string()]);
 }
 
+/// A zero-token model (the live `<synthetic>` shape) is dropped entirely rather than kept as an
+/// `(untracked)` $0 row: design `2026-07-26-report-story-fidelity.md`, defect 5 / Phase 6. It must
+/// vanish from BOTH the session's `models` map and its `untracked-models` list, so the false-alarm
+/// "total above understates actual spend" warning never fires for a model that spent nothing.
+///
+/// BITES: drop the `has_tokens` filter from `price_models` and `<synthetic>` reappears in both
+/// `entry.models` and `entry.untracked_models`.
+#[test]
+fn zero_token_model_is_dropped_from_models_and_untracked() {
+    let mut raw = raw_with("claude-opus-4-7", opus_usage());
+    raw.merge(&raw_with("<synthetic>", small_usage(0)));
+    let s = collected(SID_A, None, session_eff(SID_A, raw, vec![]), None);
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let entry = &report.sessions[SID_A];
+    assert!(
+        !entry.models.contains_key("<synthetic>"),
+        "a zero-token model must not appear in the session's models map"
+    );
+    assert!(
+        entry.untracked_models.is_empty(),
+        "a zero-token model must never trigger the untracked-models warning"
+    );
+    assert!(
+        entry.spend_usd.unwrap() > 0.0,
+        "the real, priced model still contributes spend"
+    );
+
+    // Report-wide totals go through the same gate over the unioned `by_model` (`grand`).
+    assert!(!report.totals.models.contains_key("<synthetic>"));
+    assert!(report.totals.untracked_models.is_empty());
+}
+
+/// The negative case the gate must NOT break: a model that is genuinely unpriced but carries real
+/// (nonzero) tokens still fires the understatement warning. Proves the gate is a token-count filter,
+/// not a blanket suppression of `untracked-models` (design Phase 6 success criteria).
+#[test]
+fn nonzero_token_unpriced_model_still_flagged_untracked() {
+    let s = collected(
+        SID_A,
+        None,
+        session_eff(SID_A, raw_with("not-a-real-model", small_usage(1_000_000)), vec![]),
+        None,
+    );
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        report.totals.untracked_models,
+        vec!["not-a-real-model".to_string()],
+        "a nonzero-token unpriced model must still be reported as untracked"
+    );
+}
+
 #[test]
 fn totals_untracked_models_dedupe_across_sessions() {
     let mut ghost = raw_with("ghost-model", small_usage(10));
