@@ -3,32 +3,30 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Enterprise Usage Report: April 2026</title>
+<title>Claude Enterprise Usage Report: 2026-04-01 to 2026-04-30</title>
 <style>
   :root {
     --bg: #f6f7f9;
     --card: #ffffff;
-    --ink: #1a1d23;
+    --ink: #1a1d21;
     --muted: #5b6470;
-    --line: #e2e6ec;
-    --accent: #4055b5;
-    --accent2: #7b8cd6;
-    --bar1: #4055b5;
-    --bar2: #6fae8f;
-    --flag: #b5842f;
+    --line: #dfe3e8;
+    --accent: #3057c9;
+    --accent2: #7a8aa8;
+    --track: #eef1f5;
+    --good: #2f8f5b;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #14161a;
-      --card: #1e2127;
-      --ink: #e8eaee;
-      --muted: #9aa3b0;
-      --line: #2e333c;
-      --accent: #8494e0;
-      --accent2: #5766a8;
-      --bar1: #6577cc;
-      --bar2: #6fae8f;
-      --flag: #d6a955;
+      --bg: #14171b;
+      --card: #1e2228;
+      --ink: #e8ebef;
+      --muted: #9aa4b0;
+      --line: #313842;
+      --accent: #7fa0f0;
+      --accent2: #55627a;
+      --track: #262c34;
+      --good: #63c48d;
     }
   }
   * { box-sizing: border-box; }
@@ -37,126 +35,87 @@
     background: var(--bg);
     color: var(--ink);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    line-height: 1.55;
-    font-size: 16px;
+    line-height: 1.5;
   }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 1.5rem 1.1rem 4rem; }
-  header.rep { margin-bottom: 1.5rem; }
-  h1 { font-size: 1.7rem; margin: 0 0 .3rem; }
-  h2 { font-size: 1.28rem; margin: 2.4rem 0 .8rem; padding-bottom: .35rem; border-bottom: 2px solid var(--line); }
-  h3 { font-size: 1.05rem; margin: 1.5rem 0 .5rem; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 1.25rem; }
+  header.report { padding-bottom: .5rem; border-bottom: 2px solid var(--line); margin-bottom: 1.5rem; }
+  h1 { font-size: 1.55rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.2rem; margin: 2.25rem 0 .75rem; padding-bottom: .3rem; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
   p { margin: .6rem 0; }
-  .sub { color: var(--muted); font-size: .95rem; }
-  .persona { color: var(--muted); font-size: .92rem; margin-top: .2rem; }
-  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem; margin: 1.2rem 0 .6rem; }
-  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: .9rem 1rem; }
+  .sub { color: var(--muted); font-size: .92rem; }
+  .persona { color: var(--muted); font-size: .95rem; margin: .25rem 0; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; margin: 1rem 0; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: .85rem 1rem; }
   .kpi .label { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-  .kpi .val { font-size: 1.5rem; font-weight: 650; margin-top: .25rem; }
-  .kpi .note { font-size: .8rem; color: var(--muted); margin-top: .2rem; }
-  .basis {
-    background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent);
-    border-radius: 8px; padding: .7rem 1rem; font-size: .9rem; color: var(--muted); margin: .3rem 0 1rem;
-  }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem 1.2rem; margin: 1rem 0; }
-  .card.flagcard { border-left: 4px solid var(--flag); }
+  .kpi .value { font-size: 1.5rem; font-weight: 650; margin-top: .2rem; }
+  .kpi .note { font-size: .78rem; color: var(--muted); margin-top: .2rem; }
+  .basis { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: .7rem 1rem; font-size: .9rem; color: var(--muted); margin: 1rem 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.15rem; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
   .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  table { border-collapse: collapse; width: 100%; font-size: .92rem; min-width: 460px; }
-  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
-  th { font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-size: .76rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.total td { font-weight: 650; border-top: 2px solid var(--line); border-bottom: none; }
-  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em; }
-
-  .chart { display: grid; gap: .3rem .8rem; margin: .8rem 0; }
-  .chart.spend { grid-template-columns: minmax(130px, 200px) 1fr minmax(74px, auto); align-items: center; }
+  .chart { display: grid; grid-template-columns: minmax(120px, 200px) 1fr minmax(74px, auto); gap: .3rem .6rem; align-items: center; margin: .75rem 0; }
   .chart .row { display: contents; }
-  .chart .cl { font-size: .88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chart .track { background: var(--line); border-radius: 4px; height: 15px; overflow: hidden; }
-  .chart .fill { height: 100%; background: var(--bar1); border-radius: 4px; }
-  .chart .fill.b2 { background: var(--bar2); }
-  .chart .cv { font-size: .86rem; text-align: right; font-variant-numeric: tabular-nums; }
-
-  .dual { display: grid; grid-template-columns: minmax(140px, 210px) 1fr; gap: .55rem .8rem; align-items: center; margin: .8rem 0; }
-  .dual .lbl { font-size: .88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dual .stack { display: grid; gap: .28rem; }
-  .dual .bl { display: grid; grid-template-columns: 54px 1fr minmax(64px, auto); gap: .5rem; align-items: center; font-size: .8rem; }
-  .dual .tag { color: var(--muted); }
-  .dual .track { background: var(--line); border-radius: 4px; height: 13px; overflow: hidden; }
-  .dual .fill { height: 100%; border-radius: 4px; }
-  .dual .fill.s { background: var(--bar1); }
-  .dual .fill.c { background: var(--bar2); }
-  .dual .v { text-align: right; font-variant-numeric: tabular-nums; }
-  .dual .none { color: var(--muted); font-style: italic; }
-
-  .trendwrap { margin: 1rem 0; }
-  .trendgrid { display: grid; grid-template-columns: 48px 1fr; gap: .3rem; align-items: stretch; }
-  .ylab { display: flex; flex-direction: column; justify-content: space-between; font-size: .72rem; color: var(--muted); text-align: right; padding: 2px 0; }
-  svg.trend { width: 100%; height: 210px; display: block; color: var(--accent); }
-  svg.trend .lstroke { stroke-width: 2; }
-  .xlab { display: flex; justify-content: space-between; font-size: .72rem; color: var(--muted); margin: .2rem 0 0 48px; flex-wrap: wrap; gap: .2rem; }
-  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
-  .miniflag { display: inline-block; font-size: .72rem; padding: .1rem .45rem; border-radius: 5px; background: var(--line); color: var(--muted); margin-left: .4rem; }
-  ul.clean { padding-left: 1.1rem; }
-  ul.clean li { margin: .35rem 0; }
+  .chart .clabel { font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chart .cval { font-size: .82rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .track { background: var(--track); border-radius: 4px; height: 15px; overflow: hidden; }
+  .bar { height: 100%; background: var(--accent); border-radius: 4px; }
+  .bar.alt { background: var(--accent2); }
+  .dual { display: grid; grid-template-columns: minmax(140px, 220px) 1fr; gap: .3rem .6rem; align-items: center; margin: .75rem 0; }
+  .dual .rowlabel { font-size: .85rem; grid-row: span 2; }
+  .dual .metric { display: grid; grid-template-columns: 3.2rem 1fr 5rem; gap: .5rem; align-items: center; }
+  .dual .metric .tag { font-size: .72rem; color: var(--muted); }
+  .dual .metric .v { font-size: .8rem; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .empty-out { font-size: .78rem; color: var(--muted); font-style: italic; }
+  .trendwrap { display: grid; grid-template-columns: auto 1fr; gap: .35rem; margin: .75rem 0 .25rem; }
+  .ylabels { display: flex; flex-direction: column; justify-content: space-between; font-size: .72rem; color: var(--muted); text-align: right; padding-right: .3rem; font-variant-numeric: tabular-nums; }
+  .xlabels { display: flex; justify-content: space-between; font-size: .72rem; color: var(--muted); grid-column: 2; margin-top: .2rem; }
+  svg.trend { width: 100%; height: 150px; color: var(--accent); display: block; }
+  svg.trend polyline { stroke-width: 2; }
+  .flag { display: inline-block; font-size: .72rem; padding: .1rem .5rem; border-radius: 20px; background: var(--track); color: var(--muted); }
+  ul.tight { margin: .5rem 0; padding-left: 1.2rem; }
+  ul.tight li { margin: .3rem 0; }
   a { color: var(--accent); }
-  .cov { font-size: .82rem; color: var(--muted); font-style: italic; margin-top: .3rem; }
-  .footnote { font-size: .82rem; color: var(--muted); }
-  .signalgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .7rem; margin: .8rem 0; }
-  .signal { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .7rem .8rem; }
-  .signal .s-val { font-size: 1.25rem; font-weight: 650; }
-  .signal .s-lab { font-size: .76rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 720px) { .two { grid-template-columns: 1fr; } .chart { grid-template-columns: minmax(90px,120px) 1fr auto; } }
+  .coverage { font-size: .8rem; color: var(--muted); margin: .3rem 0 .6rem; }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-<header class="rep">
+<header class="report">
   <h1>Claude Enterprise Usage Report</h1>
   <div class="sub">Period 2026-04-01 through 2026-04-30 (30 days, 25 active days). Generated 2026-06-01.</div>
-  <div class="persona">Jordan Rivera &middot; Staff Software Engineer &middot; Platform Tooling &middot; Northwind Media &middot; <a href="mailto:jordan.rivera@northwind-media.example">jordan.rivera@northwind-media.example</a> &middot; @jrivera</div>
+  <div class="persona">Jordan Rivera &middot; Staff Software Engineer &middot; Platform Tooling &middot; Northwind Media &middot; <a href="mailto:jordan.rivera@northwind-media.example">jordan.rivera@northwind-media.example</a> &middot; GitHub: jrivera</div>
 </header>
-
-<section aria-label="Headline totals">
-  <div class="kpis">
-    <div class="kpi">
-      <div class="label">Modeled Spend</div>
-      <div class="val">$671.28</div>
-      <div class="note">list-rate modeled</div>
-    </div>
-    <div class="kpi">
-      <div class="label">Sessions</div>
-      <div class="val">44</div>
-    </div>
-    <div class="kpi">
-      <div class="label">Repositories</div>
-      <div class="val">7</div>
-    </div>
-    <div class="kpi">
-      <div class="label">Active Days</div>
-      <div class="val">25</div>
-      <div class="note">of 30 in window</div>
-    </div>
-    <div class="kpi">
-      <div class="label">Total Tokens</div>
-      <div class="val">961.9M</div>
-    </div>
-  </div>
-  <div class="basis">Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.</div>
-</section>
 
 <section>
   <h2>Executive Summary</h2>
-  <p>Over the April window, modeled Claude Code spend was <strong>$671.28</strong> across <strong>44</strong> sessions in <strong>7</strong> repositories, consuming <strong>961.9M</strong> tokens. Work spanned three source orgs: the employer org <code>northwind-media</code> ($353.04 over 20 sessions, four repos), the open-source org <code>openpipe-oss</code> ($264.78 over 17 sessions in one repo, <code>quill</code>), and Jordan's personal org <code>jrivera</code> ($53.44 over 7 sessions in two repos).</p>
-  <p>The single most expensive repo was <code>openpipe-oss/quill</code> at $264.78, which also carried the most commits and PRs in the period. Two enrichment themes recur across the transcript summaries: release-script hardening and plugin-hook documentation in <code>quill</code>, and ingest reliability work in <code>northwind-media/beacon</code> (dead-letter queue, retry backoff, cold-start tracing). The heaviest single day was 2026-04-23 at $77.16, driven by the retry-backoff session <code>ccf3945e</code> in <code>beacon</code> ($72.45), the period's costliest single session.</p>
-  <p class="cov">30 of 44 sessions in the window (68.2%) carry an enrich summary; the rest are cited by title only.</p>
+  <p>Over 30 calendar days (25 with at least one session), 44 sessions across 7 repositories drew a modeled <strong>$671.28</strong> against <strong>961.9M</strong> tokens. The largest single share of that spend was the main-session work itself ($479.74 of $671.28, per the agent-type partition below). Work concentrated in two repositories: the open-source <code>openpipe-oss/quill</code> ($264.78) and the employer's <code>northwind-media/beacon</code> ($165.84).</p>
+  <p>The heaviest single day was 2026-04-23 ($77.16), driven by session <code>ccf3945e</code> ("Wire the ingest retry backoff") in <code>northwind-media/beacon</code> at $72.45, the period's most expensive session. Cache reads accounted for 92.2% of token traffic. The reader is presented these figures to judge the spend directly.</p>
 </section>
+
+<div class="kpis">
+  <div class="kpi"><div class="label">Total Spend</div><div class="value">$671.28</div><div class="note">modeled, list rates</div></div>
+  <div class="kpi"><div class="label">Sessions</div><div class="value">44</div></div>
+  <div class="kpi"><div class="label">Repositories</div><div class="value">7</div></div>
+  <div class="kpi"><div class="label">Active Days</div><div class="value">25</div><div class="note">of 30</div></div>
+  <div class="kpi"><div class="label">Total Tokens</div><div class="value">961.9M</div></div>
+</div>
+
+<div class="basis">Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.</div>
 
 <section>
   <h2>Quantified Output</h2>
-  <p>These are observed counts extracted from session transcripts, globally deduped across the period.</p>
-  <div class="scroll">
+  <p>The following counts are observed, verifiably, from session transcripts across the whole window (deduped globally, not summed across repos).</p>
+  <div class="scroll card">
     <table>
-      <thead><tr><th>Measure</th><th class="num">Count</th></tr></thead>
+      <thead><tr><th>Output</th><th class="num">Count</th></tr></thead>
       <tbody>
         <tr><td>Sessions with commits</td><td class="num">35</td></tr>
         <tr><td>Commits</td><td class="num">93</td></tr>
@@ -165,124 +124,108 @@
         <tr><td>Jira writes</td><td class="num">11</td></tr>
         <tr><td>Slack messages</td><td class="num">20</td></tr>
         <tr><td>Files edited</td><td class="num">442</td></tr>
-        <tr><td>Lines written (edit payload volume)</td><td class="num">34,331</td></tr>
-        <tr><td>Lines replaced (edit payload volume)</td><td class="num">9,402</td></tr>
+        <tr><td>Lines written (edit payload volume, not a git diff stat)</td><td class="num">34,331</td></tr>
+        <tr><td>Lines replaced (edit payload volume, not a git diff stat)</td><td class="num">9,402</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="footnote">Lines written and lines replaced are counted off the edit payloads themselves; they are not a git-diff stat and are not a net change figure.</p>
 
   <h3>Spend against output, by repository</h3>
-  <p class="sub">Each row shows the repo's spend bar and its commits bar, side by side, for comparison. Each bar is scaled within its own series (spend against the biggest-spending repo, commits against the busiest repo). They are never combined into a third figure.</p>
+  <p class="sub">Two independent bars per repo, each scaled within its own series (spend against the busiest repo's spend, commits against the busiest repo's commits). They are shown side by side for comparison and never combined into a third figure.</p>
   <div class="dual">
-    <div class="lbl"><code>openpipe-oss/quill</code></div>
-    <div class="stack">
-      <div class="bl"><span class="tag">spend</span><span class="track"><span class="fill s" style="width:100.0%"></span></span><span class="v">$264.78</span></div>
-      <div class="bl"><span class="tag">commits</span><span class="track"><span class="fill c" style="width:100.0%"></span></span><span class="v">30</span></div>
-    </div>
-    <div class="lbl"><code>northwind-media/beacon</code></div>
-    <div class="stack">
-      <div class="bl"><span class="tag">spend</span><span class="track"><span class="fill s" style="width:62.6%"></span></span><span class="v">$165.84</span></div>
-      <div class="bl"><span class="tag">commits</span><span class="track"><span class="fill c" style="width:80.0%"></span></span><span class="v">24</span></div>
-    </div>
-    <div class="lbl"><code>northwind-media/tideline</code></div>
-    <div class="stack">
-      <div class="bl"><span class="tag">spend</span><span class="track"><span class="fill s" style="width:31.5%"></span></span><span class="v">$83.29</span></div>
-      <div class="bl"><span class="tag">commits</span><span class="track"><span class="fill c" style="width:26.7%"></span></span><span class="v">8</span></div>
-    </div>
-    <div class="lbl"><code>northwind-media/halyard</code></div>
-    <div class="stack">
-      <div class="bl"><span class="tag">spend</span><span class="track"><span class="fill s" style="width:22.1%"></span></span><span class="v">$58.42</span></div>
-      <div class="bl"><span class="tag">commits</span><span class="track"><span class="fill c" style="width:50.0%"></span></span><span class="v">15</span></div>
-    </div>
-    <div class="lbl"><code>jrivera/driftwood</code></div>
-    <div class="stack">
-      <div class="bl"><span class="tag">spend</span><span class="track"><span class="fill s" style="width:18.6%"></span></span><span class="v">$49.28</span></div>
-      <div class="bl"><span class="tag">commits</span><span class="track"><span class="fill c" style="width:20.0%"></span></span><span class="v">6</span></div>
-    </div>
-    <div class="lbl"><code>northwind-media/almanac</code></div>
-    <div class="stack">
-      <div class="bl"><span class="tag">spend</span><span class="track"><span class="fill s" style="width:17.2%"></span></span><span class="v">$45.49</span></div>
-      <div class="bl"><span class="tag">commits</span><span class="track"><span class="fill c" style="width:20.0%"></span></span><span class="v">6</span></div>
-    </div>
-    <div class="lbl"><code>jrivera/sextant</code></div>
-    <div class="stack">
-      <div class="bl"><span class="tag">spend</span><span class="track"><span class="fill s" style="width:1.6%"></span></span><span class="v">$4.16</span></div>
-      <div class="bl"><span class="tag">commits</span><span class="track"><span class="fill c" style="width:13.3%"></span></span><span class="v">4</span></div>
-    </div>
+    <div class="rowlabel">openpipe-oss/quill</div>
+    <div class="metric"><span class="tag">spend</span><span class="track"><span class="bar" style="width:100.0%"></span></span><span class="v">$264.78</span></div>
+    <div class="metric"><span class="tag">commits</span><span class="track"><span class="bar alt" style="width:100.0%"></span></span><span class="v">30</span></div>
+
+    <div class="rowlabel">northwind-media/beacon</div>
+    <div class="metric"><span class="tag">spend</span><span class="track"><span class="bar" style="width:62.6%"></span></span><span class="v">$165.84</span></div>
+    <div class="metric"><span class="tag">commits</span><span class="track"><span class="bar alt" style="width:80.0%"></span></span><span class="v">24</span></div>
+
+    <div class="rowlabel">northwind-media/tideline</div>
+    <div class="metric"><span class="tag">spend</span><span class="track"><span class="bar" style="width:31.5%"></span></span><span class="v">$83.29</span></div>
+    <div class="metric"><span class="tag">commits</span><span class="track"><span class="bar alt" style="width:26.7%"></span></span><span class="v">8</span></div>
+
+    <div class="rowlabel">northwind-media/halyard</div>
+    <div class="metric"><span class="tag">spend</span><span class="track"><span class="bar" style="width:22.1%"></span></span><span class="v">$58.42</span></div>
+    <div class="metric"><span class="tag">commits</span><span class="track"><span class="bar alt" style="width:50.0%"></span></span><span class="v">15</span></div>
+
+    <div class="rowlabel">jrivera/driftwood</div>
+    <div class="metric"><span class="tag">spend</span><span class="track"><span class="bar" style="width:18.6%"></span></span><span class="v">$49.28</span></div>
+    <div class="metric"><span class="tag">commits</span><span class="track"><span class="bar alt" style="width:20.0%"></span></span><span class="v">6</span></div>
+
+    <div class="rowlabel">northwind-media/almanac</div>
+    <div class="metric"><span class="tag">spend</span><span class="track"><span class="bar" style="width:17.2%"></span></span><span class="v">$45.49</span></div>
+    <div class="metric"><span class="tag">commits</span><span class="track"><span class="bar alt" style="width:20.0%"></span></span><span class="v">6</span></div>
+
+    <div class="rowlabel">jrivera/sextant</div>
+    <div class="metric"><span class="tag">spend</span><span class="track"><span class="bar" style="width:1.6%"></span></span><span class="v">$4.16</span></div>
+    <div class="metric"><span class="tag">commits</span><span class="track"><span class="bar alt" style="width:13.3%"></span></span><span class="v">4</span></div>
   </div>
 
-  <h3>Spend against calendar and output (ratios)</h3>
-  <p>The period spent $671.28 and produced 93 commits, a ratio of <strong>$7.22</strong> per commit. Against the 32 PRs opened, the ratio is <strong>$20.98</strong> per PR. Framed against the calendar and session count, spend ran at <strong>$26.85</strong> per active day and <strong>$15.26</strong> per session.</p>
-  <div class="signalgrid">
-    <div class="signal"><div class="s-val">$7.22</div><div class="s-lab">Spend per commit (ratio)</div></div>
-    <div class="signal"><div class="s-val">$20.98</div><div class="s-lab">Spend per PR (ratio)</div></div>
-    <div class="signal"><div class="s-val">$26.85</div><div class="s-lab">Spend per active day (ratio)</div></div>
-    <div class="signal"><div class="s-val">$15.26</div><div class="s-lab">Spend per session (ratio)</div></div>
-    <div class="signal"><div class="s-val">$12.71</div><div class="s-lab">Session spend, median (p50)</div></div>
-    <div class="signal"><div class="s-val">$28.43</div><div class="s-lab">Session spend, p90</div></div>
+  <h3>Spend against output as ratios</h3>
+  <p class="sub">These are ratios of two stated figures, not prices. Each ratio's numerator is the period's whole spend, including sessions that produced no output of that kind.</p>
+  <div class="kpis">
+    <div class="kpi"><div class="label">Spend per commit (ratio)</div><div class="value">$7.22</div><div class="note">$671.28 spent, 93 commits</div></div>
+    <div class="kpi"><div class="label">Spend per PR (ratio)</div><div class="value">$20.98</div><div class="note">$671.28 spent, 32 PRs opened</div></div>
+    <div class="kpi"><div class="label">Spend per active day (ratio)</div><div class="value">$26.85</div><div class="note">$671.28 over 25 active days</div></div>
+    <div class="kpi"><div class="label">Spend per session (ratio)</div><div class="value">$15.26</div><div class="note">$671.28 over 44 sessions</div></div>
+    <div class="kpi"><div class="label">Session spend, median</div><div class="value">$12.71</div></div>
+    <div class="kpi"><div class="label">Session spend, 90th pct</div><div class="value">$28.43</div></div>
   </div>
-  <p class="footnote">These are ratios of two stated figures, not the price of producing any single item. The per-commit and per-PR numerators include every session in the window, including sessions that produced no commit or PR.</p>
 </section>
 
 <section>
   <h2>Cost Summary</h2>
+
   <h3>Spend by model</h3>
-  <div class="chart spend">
-    <div class="row"><div class="cl"><code>claude-opus-4-7</code></div><div class="track"><div class="fill" style="width:100.0%"></div></div><div class="cv">$386.51</div></div>
-    <div class="row"><div class="cl"><code>claude-sonnet-4-6</code></div><div class="track"><div class="fill" style="width:63.0%"></div></div><div class="cv">$243.46</div></div>
-    <div class="row"><div class="cl"><code>claude-haiku-4-5</code></div><div class="track"><div class="fill" style="width:10.7%"></div></div><div class="cv">$41.31</div></div>
+  <div class="chart">
+    <div class="row"><div class="clabel">claude-opus-4-7</div><div class="track"><div class="bar" style="width:100.0%"></div></div><div class="cval">$386.51</div></div>
+    <div class="row"><div class="clabel">claude-sonnet-4-6</div><div class="track"><div class="bar" style="width:63.0%"></div></div><div class="cval">$243.46</div></div>
+    <div class="row"><div class="clabel">claude-haiku-4-5</div><div class="track"><div class="bar" style="width:10.7%"></div></div><div class="cval">$41.31</div></div>
   </div>
-  <div class="scroll">
+  <div class="scroll card">
     <table>
       <thead><tr><th>Model</th><th class="num">Sessions using</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
       <tbody>
-        <tr><td><code>claude-opus-4-7</code></td><td class="num">18</td><td class="num">346.4M</td><td class="num">$386.51</td></tr>
-        <tr><td><code>claude-sonnet-4-6</code></td><td class="num">26</td><td class="num">403.7M</td><td class="num">$243.46</td></tr>
-        <tr><td><code>claude-haiku-4-5</code></td><td class="num">18</td><td class="num">211.8M</td><td class="num">$41.31</td></tr>
-        <tr class="total"><td>Total</td><td class="num">44</td><td class="num">961.9M</td><td class="num">$671.28</td></tr>
+        <tr><td>claude-opus-4-7</td><td class="num">18</td><td class="num">346.4M</td><td class="num">$386.51</td></tr>
+        <tr><td>claude-sonnet-4-6</td><td class="num">26</td><td class="num">403.7M</td><td class="num">$243.46</td></tr>
+        <tr><td>claude-haiku-4-5</td><td class="num">18</td><td class="num">211.8M</td><td class="num">$41.31</td></tr>
+        <tr><td><strong>Total</strong></td><td class="num"><strong>44</strong></td><td class="num"><strong>961.9M</strong></td><td class="num"><strong>$671.28</strong></td></tr>
       </tbody>
     </table>
   </div>
 
-  <h3>Spend by org</h3>
-  <div class="chart spend">
-    <div class="row"><div class="cl"><code>northwind-media</code></div><div class="track"><div class="fill" style="width:100.0%"></div></div><div class="cv">$353.04</div></div>
-    <div class="row"><div class="cl"><code>openpipe-oss</code></div><div class="track"><div class="fill" style="width:75.0%"></div></div><div class="cv">$264.78</div></div>
-    <div class="row"><div class="cl"><code>jrivera</code></div><div class="track"><div class="fill" style="width:15.1%"></div></div><div class="cv">$53.44</div></div>
-  </div>
-
   <h3>Spend by repository</h3>
-  <div class="chart spend">
-    <div class="row"><div class="cl"><code>openpipe-oss/quill</code></div><div class="track"><div class="fill" style="width:100.0%"></div></div><div class="cv">$264.78</div></div>
-    <div class="row"><div class="cl"><code>northwind-media/beacon</code></div><div class="track"><div class="fill" style="width:62.6%"></div></div><div class="cv">$165.84</div></div>
-    <div class="row"><div class="cl"><code>northwind-media/tideline</code></div><div class="track"><div class="fill" style="width:31.5%"></div></div><div class="cv">$83.29</div></div>
-    <div class="row"><div class="cl"><code>northwind-media/halyard</code></div><div class="track"><div class="fill" style="width:22.1%"></div></div><div class="cv">$58.42</div></div>
-    <div class="row"><div class="cl"><code>jrivera/driftwood</code></div><div class="track"><div class="fill" style="width:18.6%"></div></div><div class="cv">$49.28</div></div>
-    <div class="row"><div class="cl"><code>northwind-media/almanac</code></div><div class="track"><div class="fill" style="width:17.2%"></div></div><div class="cv">$45.49</div></div>
-    <div class="row"><div class="cl"><code>jrivera/sextant</code></div><div class="track"><div class="fill" style="width:1.6%"></div></div><div class="cv">$4.16</div></div>
+  <div class="chart">
+    <div class="row"><div class="clabel">openpipe-oss/quill</div><div class="track"><div class="bar" style="width:100.0%"></div></div><div class="cval">$264.78</div></div>
+    <div class="row"><div class="clabel">northwind-media/beacon</div><div class="track"><div class="bar" style="width:62.6%"></div></div><div class="cval">$165.84</div></div>
+    <div class="row"><div class="clabel">northwind-media/tideline</div><div class="track"><div class="bar" style="width:31.5%"></div></div><div class="cval">$83.29</div></div>
+    <div class="row"><div class="clabel">northwind-media/halyard</div><div class="track"><div class="bar" style="width:22.1%"></div></div><div class="cval">$58.42</div></div>
+    <div class="row"><div class="clabel">jrivera/driftwood</div><div class="track"><div class="bar" style="width:18.6%"></div></div><div class="cval">$49.28</div></div>
+    <div class="row"><div class="clabel">northwind-media/almanac</div><div class="track"><div class="bar" style="width:17.2%"></div></div><div class="cval">$45.49</div></div>
+    <div class="row"><div class="clabel">jrivera/sextant</div><div class="track"><div class="bar" style="width:1.6%"></div></div><div class="cval">$4.16</div></div>
   </div>
 </section>
 
 <section>
   <h2>Reconciliation</h2>
-  <div class="card flagcard">
+  <div class="card">
     <p>This render's modeled total was reconciled against the Claude Enterprise Analytics cost export for this exact window; see the Reconciliation section for the billed figure and the scope note.</p>
     <div class="kpis">
-      <div class="kpi"><div class="label">Billed (Analytics)</div><div class="val">$910.78</div></div>
-      <div class="kpi"><div class="label">Modeled (this report)</div><div class="val">$671.28</div></div>
-      <div class="kpi"><div class="label">Unseen account spend</div><div class="val">+$239.50</div></div>
+      <div class="kpi"><div class="label">Billed (Analytics)</div><div class="value">$910.78</div></div>
+      <div class="kpi"><div class="label">Modeled (this report)</div><div class="value">$671.28</div></div>
+      <div class="kpi"><div class="label">Unseen account spend</div><div class="value">+$239.50</div></div>
     </div>
     <p class="sub">Source: anthropic enterprise analytics &middot; Window: 2026-04-01 to 2026-04-30</p>
-    <p class="footnote">An Analytics export covers everything the account billed: claude.ai web, other clients, and other hosts. clyde report covers only the Claude Code sessions in one catalog. Billed spend meeting or exceeding modeled spend is the expected relationship here; a positive unseen-account-spend figure means usage clyde does not see, never that clyde miscounted.</p>
+    <p class="sub">An Analytics export covers everything the account billed: claude.ai web, other clients, and other hosts. clyde report covers only the Claude Code sessions in one catalog. Billed spend meeting or exceeding modeled spend is the expected relationship here; a positive unseen-account-spend figure means usage clyde does not see, never that clyde miscounted.</p>
     <div class="scroll">
       <table>
         <thead><tr><th>Model</th><th class="num">Billed</th><th class="num">Modeled</th><th class="num">Unseen Account Spend</th></tr></thead>
         <tbody>
-          <tr><td><code>claude-opus-4-7</code></td><td class="num">$534.59</td><td class="num">$386.51</td><td class="num">+$148.08</td></tr>
-          <tr><td><code>claude-sonnet-4-6</code></td><td class="num">$229.11</td><td class="num">$243.46</td><td class="num">-$14.35</td></tr>
-          <tr><td><code>claude-opus-4-8</code></td><td class="num">$73.90</td><td class="num">$0.00</td><td class="num">+$73.90</td></tr>
-          <tr><td><code>claude-haiku-4-5</code></td><td class="num">$73.18</td><td class="num">$41.31</td><td class="num">+$31.87</td></tr>
+          <tr><td>claude-opus-4-7</td><td class="num">$534.59</td><td class="num">$386.51</td><td class="num">+$148.08</td></tr>
+          <tr><td>claude-sonnet-4-6</td><td class="num">$229.11</td><td class="num">$243.46</td><td class="num">-$14.35</td></tr>
+          <tr><td>claude-opus-4-8</td><td class="num">$73.90</td><td class="num">$0.00</td><td class="num">+$73.90</td></tr>
+          <tr><td>claude-haiku-4-5</td><td class="num">$73.18</td><td class="num">$41.31</td><td class="num">+$31.87</td></tr>
         </tbody>
       </table>
     </div>
@@ -291,15 +234,15 @@
 
 <section>
   <h2>Agent-Type Cost Attribution</h2>
-  <p>These rows are a true partition of the period's <strong>$671.28</strong> modeled spend: every dollar lands in exactly one row, priced on the same basis as the totals. The largest is <strong>(main-session)</strong> at $479.74, the work sessions did themselves rather than delegating to a subagent; the rest is delegated subagent time led by <code>phase-implementer</code>.</p>
-  <div class="scroll">
+  <p>This breakdown is a true partition of the period's <strong>$671.28</strong>: every dollar lands in exactly one row, and the <code>(main-session)</code> row is the work sessions did directly rather than delegating. The main session dominates at $479.74; the remainder is spread across three subagent types, the largest being phase-implementer at $79.33.</p>
+  <div class="scroll card">
     <table>
       <thead><tr><th>Agent type</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
       <tbody>
-        <tr><td><code>(main-session)</code></td><td class="num">639.6M</td><td class="num">$479.74</td></tr>
-        <tr><td><code>phase-implementer</code></td><td class="num">133.4M</td><td class="num">$79.33</td></tr>
-        <tr><td><code>doc-writer</code></td><td class="num">103.5M</td><td class="num">$61.78</td></tr>
-        <tr><td><code>code-reviewer</code></td><td class="num">85.4M</td><td class="num">$50.42</td></tr>
+        <tr><td>(main-session)</td><td class="num">639.6M</td><td class="num">$479.74</td></tr>
+        <tr><td>phase-implementer</td><td class="num">133.4M</td><td class="num">$79.33</td></tr>
+        <tr><td>doc-writer</td><td class="num">103.5M</td><td class="num">$61.78</td></tr>
+        <tr><td>code-reviewer</td><td class="num">85.4M</td><td class="num">$50.42</td></tr>
       </tbody>
     </table>
   </div>
@@ -307,132 +250,133 @@
 
 <section>
   <h2>The Efficiency Story</h2>
-  <p>Cache reads made up <strong>92.2%</strong> of read volume this period. Against input tokens of 11.6M, cache-read tokens totalled 883.3M. At published per-token rates the binary computes a list-price equivalent of <strong>$3,201.82</strong> for that read volume had it been served uncached, versus a modeled cache savings of <strong>$2,530.54</strong>. This is the one sanctioned counterfactual in this report and uses only the precomputed cache figures.</p>
-  <div class="signalgrid">
-    <div class="signal"><div class="s-val">92.2%</div><div class="s-lab">Cache-read share</div></div>
-    <div class="signal"><div class="s-val">4.2%</div><div class="s-lab">Tool-error rate</div></div>
-    <div class="signal"><div class="s-val">7.4%</div><div class="s-lab">Cache 1h-write fraction</div></div>
-    <div class="signal"><div class="s-val">29</div><div class="s-lab">Interrupts</div></div>
-    <div class="signal"><div class="s-val">6</div><div class="s-lab">Compactions</div></div>
+  <p>Cache reads accounted for <strong>92.2%</strong> of token traffic (883.3M cache-read tokens against 11.6M input tokens). Priced at published rates, the same traffic without caching would model to a list-price equivalent of <strong>$3,201.82</strong>; the cache brought that to the modeled total, a difference of <strong>$2,530.54</strong>. This counterfactual is deterministic arithmetic on published per-token rates, computed by the binary.</p>
+  <div class="kpis">
+    <div class="kpi"><div class="label">Cache-read share</div><div class="value">92.2%</div></div>
+    <div class="kpi"><div class="label">Tool-error rate</div><div class="value">4.2%</div></div>
+    <div class="kpi"><div class="label">1h cache-write fraction</div><div class="value">7.4%</div></div>
+    <div class="kpi"><div class="label">Interrupts</div><div class="value">29</div></div>
+    <div class="kpi"><div class="label">Compactions</div><div class="value">6</div></div>
   </div>
 
-  <h3>Attribution by skill</h3>
-  <div class="scroll">
-    <table>
-      <thead><tr><th>Skill</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
-      <tbody>
-        <tr><td><code>schema-review</code></td><td class="num">24.1M</td><td class="num">$44.59</td></tr>
-        <tr><td><code>release-notes</code></td><td class="num">14.8M</td><td class="num">$27.44</td></tr>
-      </tbody>
-    </table>
+  <div class="two">
+    <div>
+      <h3>By skill (attribution tags)</h3>
+      <p class="coverage">$72.03 of $671.28 (10.7%), embedded-price basis. These are attribution tags, not a partition; they do not reconcile against the period total.</p>
+      <div class="scroll card">
+        <table>
+          <thead><tr><th>Skill</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+          <tbody>
+            <tr><td>schema-review</td><td class="num">24.1M</td><td class="num">$44.59</td></tr>
+            <tr><td>release-notes</td><td class="num">14.8M</td><td class="num">$27.44</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div>
+      <h3>By MCP tool (attribution tags)</h3>
+      <p class="coverage">$58.34 of $671.28 (8.7%), embedded-price basis. These are attribution tags, not a partition; they do not reconcile against the period total.</p>
+      <div class="scroll card">
+        <table>
+          <thead><tr><th>MCP tool</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+          <tbody>
+            <tr><td>tracker-search</td><td class="num">21.9M</td><td class="num">$40.51</td></tr>
+            <tr><td>wiki-write</td><td class="num">9.6M</td><td class="num">$17.83</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
-  <p class="cov">Coverage: $72.03 of $671.28 (10.7%), embedded-price basis. These are attribution tags, not a partition, and do not reconcile against the total.</p>
-
-  <h3>Attribution by MCP tool</h3>
-  <div class="scroll">
-    <table>
-      <thead><tr><th>MCP tool</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
-      <tbody>
-        <tr><td><code>tracker-search</code></td><td class="num">21.9M</td><td class="num">$40.51</td></tr>
-        <tr><td><code>wiki-write</code></td><td class="num">9.6M</td><td class="num">$17.83</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p class="cov">Coverage: $58.34 of $671.28 (8.7%), embedded-price basis. Attribution tags only; not summed against the total.</p>
 </section>
 
 <section>
   <h2>What This Funded</h2>
+  <p class="coverage">30 of 44 sessions in the window (68.2%) carry an enrich summary; the rest are cited by title only.</p>
+
+  <div class="chart">
+    <div class="row"><div class="clabel">northwind-media</div><div class="track"><div class="bar" style="width:100.0%"></div></div><div class="cval">$353.04</div></div>
+    <div class="row"><div class="clabel">openpipe-oss</div><div class="track"><div class="bar" style="width:75.0%"></div></div><div class="cval">$264.78</div></div>
+    <div class="row"><div class="clabel">jrivera</div><div class="track"><div class="bar" style="width:15.1%"></div></div><div class="cval">$53.44</div></div>
+  </div>
 
   <h3>Employer org: northwind-media</h3>
-  <p>$353.04 over 20 sessions across four repos. In <code>beacon</code> ($165.84), the summaries describe ingest reliability work: session <code>14fabbe1</code> added a dead-letter queue so a parser-rejected record is parked with its failure reason instead of retried forever; <code>4b1d68f6</code> traced a cold start to a synchronous hostname lookup and moved it behind a warmed cache; <code>54f9d4bb</code> audited the retention policy against what the storage layer actually deletes. In <code>tideline</code> ($83.29), <code>18c8897c</code> ported the dashboard to new theme tokens and <code>f01b33b8</code> profiled the slow dashboard query and added a missing composite index. In <code>halyard</code> ($58.42), the rollout-plan and rollback-trigger sessions (<code>07dce623</code>, <code>2ad5c741</code>) drafted a staged cutover and wired its rollback to the existing health check. In <code>almanac</code> ($45.49), <code>519daf85</code> added cursor pagination to the list endpoint and <code>f9e95abd</code> repaired the nightly backfill to resume from the last completed partition.</p>
+  <p class="sub">4 repos, 20 sessions, 504.0M tokens, $353.04.</p>
+  <p>The employer org's spend spread across reliability and rollout work. In <code>beacon</code> ($165.84), session <code>14fabbe1</code> added a dead-letter queue so a rejected record is parked with its failure reason instead of retried forever behind the live stream, and session <code>4b1d68f6</code> traced a cold start to a synchronous hostname lookup on the request path and moved it behind a warmed cache with a regression test. In <code>halyard</code> ($58.42), <code>07dce623</code> drafted the cutover rollout plan (staged traffic shift, rollback trigger, gating dashboards) and <code>2ad5c741</code> and <code>4e15c3a5</code> then added the rollback trigger the plan called for and rehearsed it against the staging fleet. In <code>tideline</code> ($83.29), <code>f01b33b8</code> profiled the slow dashboard query to a missing composite index behind a filter the UI always sends. In <code>almanac</code> ($45.49), <code>519daf85</code> added cursor pagination to the list endpoint while keeping the old offset parameter working.</p>
 
-  <h3>Personal and open-source: openpipe-oss and jrivera</h3>
-  <p><code>openpipe-oss/quill</code> ($264.78, 17 sessions) dominated the open-source tier. Two summary themes repeat: hardening the release script (session <code>05981637</code> made it refuse to publish on a dirty tree, an existing tag, or a missing changelog entry) and documenting the plugin hooks against the code rather than the wiki, dropping two hooks the loader no longer calls (<code>2dc73697</code>, <code>3aed06b6</code> and others). In Jordan's personal org <code>jrivera</code> ($53.44, two repos): <code>driftwood</code> parser work (session <code>86b0fd93</code> taught the parser to carry a line and column into its error type; <code>93071145</code> split it into a tokenizer and a shape builder) and <code>sextant</code> test work (<code>4bf28f14</code> rewrote the snapshot harness to compare structurally rather than by rendered string).</p>
-  <p class="cov">30 of 44 sessions in the window (68.2%) carry an enrich summary; the rest are cited by title only. Where a title stands in for a summary, the theme claim rests on the opening exchange rather than the full transcript.</p>
+  <h3>Open source: openpipe-oss</h3>
+  <p class="sub">1 repo, 17 sessions, 370.0M tokens, $264.78.</p>
+  <p>All open-source spend went to <code>openpipe-oss/quill</code>, the period's single largest repo. Recurring themes from session summaries: hardening the release script so it refuses to publish on a dirty tree, an existing tag, or a missing changelog entry (<code>05981637</code>, <code>93c4b9e8</code>, <code>e3d9d683</code>), and documenting the plugin hooks against the code rather than the wiki, dropping two hooks the loader no longer calls (<code>6bb58fd4</code>, <code>2dc73697</code>, <code>3aed06b6</code>, <code>45f45aca</code>, and others). This repo carried 30 commits and 16 PRs opened, the most of any repo.</p>
+
+  <h3>Personal org: jrivera</h3>
+  <p class="sub">2 repos, 7 sessions, 87.9M tokens, $53.44.</p>
+  <p>In <code>driftwood</code> ($49.28), a parser thread ran through several sessions: <code>86b0fd93</code>, <code>89cf1386</code> and <code>eaffd2a6</code> taught the parser to carry a line and column through to its error type so a malformed document is reported where it broke, and <code>93071145</code> split the parser into a tokenizer and shape builder. In <code>sextant</code> ($4.16), <code>4bf28f14</code> and <code>b1cb8b81</code> rewrote the snapshot test harness to compare fixtures structurally rather than by rendered string, removing an ordering flake that had been retried rather than fixed.</p>
 </section>
 
 <section>
   <h2>Usage Profile</h2>
 
   <h3>Temporal shape</h3>
-  <p>Sessions ran across most of the month, with five zero-session days (2026-04-10, 2026-04-13, 2026-04-15, 2026-04-25, and 2026-04-30). Spend was not evenly spread: the single tallest day was 2026-04-23 at $77.16, and a mid-to-late cluster (2026-04-16 through 2026-04-18, then 2026-04-26 through 2026-04-29) carried much of the work, with 2026-04-26 the busiest by session count (4 sessions, $50.05). Carried-in spend for this window is $0.00, so the by-day columns account for the full window's dated activity.</p>
+  <p>Activity was spread fairly evenly across the month rather than clustered: 25 of 30 days were active, with zero-session gaps on 2026-04-10, 2026-04-13, 2026-04-15, 2026-04-25 and 2026-04-30. Spend peaked on 2026-04-23 ($77.16), followed by 2026-04-04 ($50.94) and 2026-04-26 ($50.05). The busiest days by session count were 2026-04-26 (4 sessions) and the trio 2026-04-02, 2026-04-17 and 2026-04-18 (3 sessions each). Carried-in sessions were $0.00, so the daily chart's visual total is not reduced by pre-window work.</p>
 
   <div class="trendwrap">
-    <h3>Daily spend</h3>
-    <div class="trendgrid">
-      <div class="ylab"><span>$77.16</span><span>$38.58</span><span>$0.00</span></div>
-      <svg viewBox="0 0 1000 300" class="trend"><title>Daily modeled spend, 2026-04-01 through 2026-04-30</title>
-        <polyline points="0,223 34,190 69,268 103,105 138,234 172,135 207,193 241,285 276,228 310,290 345,214 379,232 414,290 448,271 483,290 517,173 552,129 586,128 621,246 655,232 690,193 724,211 759,10 793,244 828,290 862,108 897,235 931,140 966,187 1000,290" fill="none" stroke="currentColor" class="lstroke"/></svg>
-    </div>
-    <div class="xlab"><span>2026-04-01</span><span>2026-04-07</span><span>2026-04-13</span><span>2026-04-18</span><span>2026-04-24</span><span>2026-04-30</span></div>
+    <div class="ylabels"><span>$77.16</span><span>$38.58</span><span>$0.00</span></div>
+    <svg viewBox="0 0 1000 300" class="trend"><title>Daily spend, 2026-04-01 to 2026-04-30</title>
+      <polyline points="0,223 34,190 69,268 103,105 138,234 172,135 207,193 241,285 276,228 310,290 345,214 379,232 414,290 448,271 483,290 517,173 552,129 586,128 621,246 655,232 690,193 724,211 759,10 793,244 828,290 862,108 897,235 931,140 966,187 1000,290" fill="none" stroke="currentColor"/></svg>
   </div>
+  <div class="xlabels"><span>2026-04-01</span><span>2026-04-07</span><span>2026-04-13</span><span>2026-04-18</span><span>2026-04-24</span><span>2026-04-30</span></div>
 
   <div class="trendwrap">
-    <h3>Daily sessions</h3>
-    <div class="trendgrid">
-      <div class="ylab"><span>4</span><span>2</span><span>0</span></div>
-      <svg viewBox="0 0 1000 300" class="trend"><title>Daily session count, 2026-04-01 through 2026-04-30</title>
-        <polyline points="0,150 34,80 69,220 103,150 138,220 172,150 207,150 241,220 276,150 310,290 345,220 379,220 414,290 448,150 483,290 517,220 552,80 586,80 621,220 655,150 690,220 724,150 759,150 793,220 828,290 862,10 897,220 931,150 966,220 1000,290" fill="none" stroke="currentColor" class="lstroke"/></svg>
-    </div>
-    <div class="xlab"><span>2026-04-01</span><span>2026-04-07</span><span>2026-04-13</span><span>2026-04-18</span><span>2026-04-24</span><span>2026-04-30</span></div>
+    <div class="ylabels"><span>4</span><span>2</span><span>0</span></div>
+    <svg viewBox="0 0 1000 300" class="trend"><title>Daily session count, 2026-04-01 to 2026-04-30</title>
+      <polyline points="0,150 34,80 69,220 103,150 138,220 172,150 207,150 241,220 276,150 310,290 345,220 379,220 414,290 448,150 483,290 517,220 552,80 586,80 621,220 655,150 690,220 724,150 759,150 793,220 828,290 862,10 897,220 931,150 966,220 1000,290" fill="none" stroke="currentColor"/></svg>
   </div>
+  <div class="xlabels"><span>2026-04-01</span><span>2026-04-07</span><span>2026-04-13</span><span>2026-04-18</span><span>2026-04-24</span><span>2026-04-30</span></div>
 
   <h3>Model mix</h3>
-  <p>By spend, <code>claude-opus-4-7</code> led at $386.51 across 18 sessions, ahead of <code>claude-sonnet-4-6</code> at $243.46 (used in 26 sessions, the widest reach) and <code>claude-haiku-4-5</code> at $41.31. Most work repos list all three models; <code>jrivera/sextant</code> is the exception, listing only <code>claude-haiku-4-5</code>.</p>
+  <p>claude-opus-4-7 carried the most spend ($386.51 across 18 sessions) despite claude-sonnet-4-6 appearing in more sessions (26) and moving more tokens (403.7M). claude-haiku-4-5 appeared in 18 sessions at $41.31. All three models appeared together in the largest repos <code>quill</code>, <code>beacon</code>, <code>tideline</code>, <code>halyard</code> and <code>almanac</code>.</p>
 
-  <h3>Top sessions by spend</h3>
-  <div class="scroll">
+  <h3>Outlier sessions</h3>
+  <div class="scroll card">
     <table>
       <thead><tr><th>Session</th><th>Title</th><th>Repo</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
       <tbody>
-        <tr><td class="mono">ccf3945e</td><td>Wire the ingest retry backoff</td><td><code>northwind-media/beacon</code></td><td class="num">83.1M</td><td class="num">$72.45</td></tr>
-        <tr><td class="mono">6bb58fd4</td><td>Document the quill plugin hooks</td><td><code>openpipe-oss/quill</code></td><td class="num">43.8M</td><td class="num">$41.12</td></tr>
-        <tr><td class="mono">3aed06b6</td><td><span class="sub">(untitled)</span></td><td><code>openpipe-oss/quill</code></td><td class="num">35.3M</td><td class="num">$34.04</td></tr>
-        <tr><td class="mono">54f9d4bb</td><td><span class="sub">(untitled)</span></td><td><code>northwind-media/beacon</code></td><td class="num">29.4M</td><td class="num">$32.27</td></tr>
-        <tr><td class="mono">45f45aca</td><td>Document the quill plugin hooks</td><td><code>openpipe-oss/quill</code></td><td class="num">27.9M</td><td class="num">$28.43</td></tr>
-        <tr><td class="mono">18c8897c</td><td><span class="sub">(untitled)</span></td><td><code>northwind-media/tideline</code></td><td class="num">24.9M</td><td class="num">$26.74</td></tr>
-        <tr><td class="mono">2ad5c741</td><td>Add a rollback trigger to halyard</td><td><code>northwind-media/halyard</code></td><td class="num">66.6M</td><td class="num">$26.70</td></tr>
-        <tr><td class="mono">93c4b9e8</td><td>Harden the quill release script</td><td><code>openpipe-oss/quill</code></td><td class="num">27.4M</td><td class="num">$26.36</td></tr>
-        <tr><td class="mono">14fabbe1</td><td>Add a dead-letter queue to the ingest path</td><td><code>northwind-media/beacon</code></td><td class="num">25.3M</td><td class="num">$25.96</td></tr>
-        <tr><td class="mono">f9e95abd</td><td>Repair the nightly almanac backfill</td><td><code>northwind-media/almanac</code></td><td class="num">23.7M</td><td class="num">$24.98</td></tr>
+        <tr><td><code>ccf3945e</code></td><td>Wire the ingest retry backoff</td><td>northwind-media/beacon</td><td class="num">83.1M</td><td class="num">$72.45</td></tr>
+        <tr><td><code>6bb58fd4</code></td><td>Document the quill plugin hooks</td><td>openpipe-oss/quill</td><td class="num">43.8M</td><td class="num">$41.12</td></tr>
+        <tr><td><code>3aed06b6</code></td><td>(untitled)</td><td>openpipe-oss/quill</td><td class="num">35.3M</td><td class="num">$34.04</td></tr>
+        <tr><td><code>54f9d4bb</code></td><td>(untitled)</td><td>northwind-media/beacon</td><td class="num">29.4M</td><td class="num">$32.27</td></tr>
+        <tr><td><code>45f45aca</code></td><td>Document the quill plugin hooks</td><td>openpipe-oss/quill</td><td class="num">27.9M</td><td class="num">$28.43</td></tr>
+        <tr><td><code>18c8897c</code></td><td>(untitled)</td><td>northwind-media/tideline</td><td class="num">24.9M</td><td class="num">$26.74</td></tr>
+        <tr><td><code>2ad5c741</code></td><td>Add a rollback trigger to halyard</td><td>northwind-media/halyard</td><td class="num">66.6M</td><td class="num">$26.70</td></tr>
+        <tr><td><code>93c4b9e8</code></td><td>Harden the quill release script</td><td>openpipe-oss/quill</td><td class="num">27.4M</td><td class="num">$26.36</td></tr>
+        <tr><td><code>14fabbe1</code></td><td>Add a dead-letter queue to the ingest path</td><td>northwind-media/beacon</td><td class="num">25.3M</td><td class="num">$25.96</td></tr>
+        <tr><td><code>f9e95abd</code></td><td>Repair the nightly almanac backfill</td><td>northwind-media/almanac</td><td class="num">23.7M</td><td class="num">$24.98</td></tr>
       </tbody>
     </table>
   </div>
+  <p class="sub">The top outlier, <code>ccf3945e</code>, is cited by title only (unenriched). Where a summary exists, the theme rests on it: <code>14fabbe1</code>'s summary describes adding a dead-letter queue for rejected records, and <code>54f9d4bb</code>'s describes auditing the retention policy against what the storage layer actually deletes.</p>
 </section>
 
 <section>
   <h2>Month over Month</h2>
-  <p>The prior period (2026-03-02 through 2026-03-31) covered 30 days, the same length as this window, so the two are directly comparable in duration. Figures are shown side by side; no difference is computed.</p>
-  <div class="scroll">
-    <table>
-      <thead><tr><th>Measure</th><th class="num">Prior (March)</th><th class="num">This period (April)</th></tr></thead>
-      <tbody>
-        <tr><td>Modeled spend</td><td class="num">$523.17</td><td class="num">$671.28</td></tr>
-        <tr><td>Sessions</td><td class="num">31</td><td class="num">44</td></tr>
-        <tr><td>Repositories</td><td class="num">7</td><td class="num">7</td></tr>
-        <tr><td>Total tokens</td><td class="num">765.8M</td><td class="num">961.9M</td></tr>
-        <tr><td>Commits</td><td class="num">67</td><td class="num">93</td></tr>
-        <tr><td>PRs opened</td><td class="num">26</td><td class="num">32</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <ul class="clean">
-    <li>Model spend leadership held: <code>claude-opus-4-7</code> led both periods ($322.31 prior, $386.51 this period).</li>
-    <li>Repo mix shifted at the top: <code>openpipe-oss/quill</code> was the top-spend repo in both periods ($106.61 prior, $264.78 this period), while <code>northwind-media/beacon</code> rose from $75.46 to $165.84.</li>
-    <li>By org, <code>northwind-media</code> led both periods ($282.71 prior, $353.04 this period); the personal org <code>jrivera</code> was $133.82 prior and $53.44 this period.</li>
+  <p class="sub">Prior period 2026-03-02 to 2026-03-31 (30 days). Both periods cover 30 days, so they are compared as equal ground.</p>
+  <ul class="tight">
+    <li>Spend: $671.28 this period against $523.17 prior.</li>
+    <li>Sessions: 44 this period against 31 prior; repo count held at 7 in both.</li>
+    <li>Tokens: 961.9M this period against 765.8M prior.</li>
+    <li>Repo mix: <code>openpipe-oss/quill</code> led both periods ($264.78 now, $106.61 prior). <code>northwind-media/beacon</code> rose to $165.84 from $75.46. This period's repos also include <code>northwind-media/halyard</code> ($58.42), present prior at $42.84.</li>
+    <li>Model mix: claude-opus-4-7 led spend in both periods ($386.51 now, $322.31 prior); claude-sonnet-4-6 was $243.46 now against $161.96 prior; claude-haiku-4-5 was $41.31 now against $38.90 prior.</li>
+    <li>Output: 93 commits and 32 PRs opened this period against 67 commits and 26 PRs opened prior.</li>
   </ul>
 </section>
 
 <section>
   <h2>Forward-Looking Note</h2>
-  <p>Two work streams concentrated this period's spend and are likely to recur: <code>quill</code> release and documentation hardening in the open-source tier, and <code>beacon</code> ingest reliability in the employer tier. Cache-read share sat at 92.2% and the tool-error rate at 4.2%; 29 interrupts and 6 compactions were observed. The billed Analytics figure ($910.78) exceeds this report's modeled Claude Code figure ($671.28) because Analytics also covers claude.ai web and other clients this report does not see, including <code>claude-opus-4-8</code> ($73.90 billed) which was never seen in a Claude Code session here. Readers tracking total account cost should reference the Analytics export directly.</p>
+  <p>The reconciliation shows claude-opus-4-8 billed $73.90 at the account level with no modeled Claude Code spend in this catalog; if that model enters Claude Code use, future modeled totals will begin to reflect it. Cache-read share stood at 92.2% this period, and the tool-error rate was 4.2% with 29 interrupts and 6 compactions recorded. These signals are presented for the reader to track across the recurring monthly reports.</p>
 </section>
 
 <section>
   <h2>Conclusion</h2>
-  <p>April's modeled Claude Code spend was $671.28 over 44 sessions and 7 repositories, producing 93 commits and 32 PRs against 442 files edited. The largest single repository was <code>openpipe-oss/quill</code> ($264.78), the largest single session was the <code>beacon</code> retry-backoff work <code>ccf3945e</code> ($72.45), and the (main-session) partition accounted for $479.74 of the total. The figures above are presented as recorded; the reader is left to judge them against their own bar.</p>
-  <p class="footnote">All dollar figures are modeled at published list rates, not billed. This render was reconciled against the Claude Enterprise Analytics export for the same window; the authoritative billed figure is $910.78.</p>
+  <p>Over 2026-04-01 to 2026-04-30, 44 sessions across 7 repositories produced a modeled $671.28 in Claude Code spend, 93 commits and 32 PRs opened. Work concentrated in <code>openpipe-oss/quill</code> and <code>northwind-media/beacon</code>, with claude-opus-4-7 carrying the largest spend share. Account-level billed spend was $910.78 for the same window, the difference being usage outside Claude Code that this report does not cover. The figures above are presented as measured; the judgment of whether the spend was warranted rests with the reader.</p>
 </section>
 
 </div>

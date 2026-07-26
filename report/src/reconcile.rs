@@ -14,7 +14,7 @@ use crate::fmt::{format_optional_usd, format_usd, format_usd_signed};
 use crate::report::Report;
 use chrono::{DateTime, Utc};
 use eyre::{Context, Result, bail};
-use log::debug;
+use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -48,10 +48,16 @@ pub const SCOPE_NOTE: &str = "An Analytics export covers everything the account 
 #[derive(Debug, Deserialize)]
 struct CostRecord {
     model: Option<String>,
-    /// Decimal-string dollars, e.g. `"3640.325000"`. This is the export's ACTUAL billed figure
-    /// (`amount`), after any negotiated-discount pricing the org has -- not `list_amount`, the
-    /// export's separate undiscounted list-rate figure. "Billed" per this design's own wording
-    /// means the real account-level bill, so `amount` is what [`fold`] reports as `billed`.
+    /// Decimal-string **CENTS**, e.g. `"41280.000000"` is `$412.80`. The Analytics cost endpoints
+    /// report minor units and `pull-usage-report.py` writes them through as-is, so this MUST be
+    /// divided by [`CENTS_PER_DOLLAR`] before it is treated as money (see the skill's SKILL.md,
+    /// "Amount fields on cost endpoints are decimal-string cents"). Reading it as dollars overstates
+    /// the authoritative billed figure by 100x.
+    ///
+    /// This is the export's ACTUAL billed figure (`amount`), after any negotiated-discount pricing
+    /// the org has -- not `list_amount`, the export's separate undiscounted list-rate figure.
+    /// "Billed" per this design's own wording means the real account-level bill, so `amount` is what
+    /// [`fold`] reports as `billed`.
     amount: String,
     starting_at: DateTime<Utc>,
     ending_at: DateTime<Utc>,
@@ -88,6 +94,10 @@ pub struct ReconRow {
     #[serde(rename = "unseen-account-spend")]
     pub delta: String,
 }
+
+/// The Analytics cost endpoints report money in minor units (cents). Every `amount` read out of an
+/// export is divided by this exactly once, in [`fold`], so nothing downstream has to remember.
+const CENTS_PER_DOLLAR: f64 = 100.0;
 
 /// Round a dollar figure to cents, normalizing negative zero to `+0.0` (same convention as
 /// `report::round_cents` / `merge::round_cents` -- every dollar choke point in this crate
@@ -184,13 +194,17 @@ pub fn fold(export_path: &Path, report: &Report) -> Result<Reconciliation> {
     let mut billed_by_model: BTreeMap<String, f64> = BTreeMap::new();
     for record in &records {
         let model = record.model.clone().unwrap_or_else(|| UNGROUPED_MODEL.to_string());
-        let dollars: f64 = record.amount.trim().parse().with_context(|| {
+        let cents: f64 = record.amount.trim().parse().with_context(|| {
             format!(
                 "unparseable cost amount {:?} for model {model} in --reconcile export at {}",
                 record.amount,
                 export_path.display()
             )
         })?;
+        // The export reports minor units; see `CostRecord::amount`. Convert once, here, so every
+        // figure downstream of this loop is already dollars.
+        let dollars = cents / CENTS_PER_DOLLAR;
+        trace!("fold: model={model} cents={cents} dollars={dollars}");
         *billed_by_model.entry(model).or_insert(0.0) += dollars;
     }
 

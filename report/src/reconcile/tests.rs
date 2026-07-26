@@ -49,7 +49,8 @@ fn report_with(since: &str, until: &str, spend_usd: f64, models: Vec<(&str, Opti
 }
 
 /// One `pull-usage-report.py --report cost` export row: `model`, `amount` (decimal-string
-/// dollars), and the daily bucket `[starting_at, ending_at)` it belongs to.
+/// **CENTS**, matching the real export -- `"7000.00"` is `$70.00`), and the daily bucket
+/// `[starting_at, ending_at)` it belongs to.
 fn record(model: &str, amount: &str, starting_at: &str, ending_at: &str) -> serde_json::Value {
     serde_json::json!({
         "product": null,
@@ -81,10 +82,15 @@ fn fold_computes_billed_modeled_and_unseen_account_spend_on_matching_window() {
         &dir,
         "export.json",
         vec![
-            record("claude-opus-5", "70.00", "2026-06-26T00:00:00Z", "2026-06-27T00:00:00Z"),
+            record(
+                "claude-opus-5",
+                "7000.00",
+                "2026-06-26T00:00:00Z",
+                "2026-06-27T00:00:00Z",
+            ),
             record(
                 "claude-sonnet-5",
-                "40.00",
+                "4000.00",
                 "2026-06-26T00:00:00Z",
                 "2026-06-27T00:00:00Z",
             ),
@@ -92,7 +98,7 @@ fn fold_computes_billed_modeled_and_unseen_account_spend_on_matching_window() {
             // point of "billed >= modeled" being expected rather than an error.
             record(
                 "claude-haiku-4-5",
-                "20.00",
+                "2000.00",
                 "2026-07-24T00:00:00Z",
                 "2026-07-25T00:00:00Z",
             ),
@@ -202,8 +208,18 @@ fn fold_marks_a_modeled_untracked_model_as_untracked_not_zero() {
         &dir,
         "export.json",
         vec![
-            record("claude-opus-5", "60.00", "2026-06-26T00:00:00Z", "2026-06-27T00:00:00Z"),
-            record("claude-fable-5", "5.00", "2026-06-26T00:00:00Z", "2026-06-27T00:00:00Z"),
+            record(
+                "claude-opus-5",
+                "6000.00",
+                "2026-06-26T00:00:00Z",
+                "2026-06-27T00:00:00Z",
+            ),
+            record(
+                "claude-fable-5",
+                "500.00",
+                "2026-06-26T00:00:00Z",
+                "2026-06-27T00:00:00Z",
+            ),
         ],
     );
 
@@ -230,11 +246,16 @@ fn fold_includes_a_model_present_only_in_export_with_zero_modeled() {
         &dir,
         "export.json",
         vec![
-            record("claude-opus-5", "60.00", "2026-06-26T00:00:00Z", "2026-06-27T00:00:00Z"),
+            record(
+                "claude-opus-5",
+                "6000.00",
+                "2026-06-26T00:00:00Z",
+                "2026-06-27T00:00:00Z",
+            ),
             // a model clyde's catalog never saw at all this window: someone else's claude.ai chat.
             record(
                 "claude-sonnet-5",
-                "15.00",
+                "1500.00",
                 "2026-06-26T00:00:00Z",
                 "2026-06-27T00:00:00Z",
             ),
@@ -250,4 +271,38 @@ fn fold_includes_a_model_present_only_in_export_with_zero_modeled() {
     assert_eq!(row.modeled, "$0.00");
     assert_eq!(row.billed, "$15.00");
     assert_eq!(row.delta, "+$15.00");
+}
+
+#[test]
+fn fold_reads_the_export_amount_as_cents_not_dollars() {
+    // Regression: the Analytics cost endpoints report MINOR UNITS. `fold` originally parsed
+    // `amount` straight into dollars, which overstated the authoritative billed figure by 100x --
+    // on the real 2026-06-26..2026-07-25 window that published "<withheld> billed" for an
+    // actual bill of <withheld>, in the one block whose entire job is citing the real number to a
+    // finance reader. The skill documents the unit explicitly: "Amount fields on cost endpoints are
+    // decimal-string cents (e.g. `\"41280.000000\"` = $412.80)".
+    let report = report_with(
+        "2026-06-26T00:00:00Z",
+        "2026-06-27T00:00:00Z",
+        100.0,
+        vec![("claude-opus-5", Some(100.0))],
+    );
+    let dir = TempDir::new().unwrap();
+    let export = write_export(
+        &dir,
+        "export.json",
+        vec![record(
+            "claude-opus-5",
+            // the skill's own worked example
+            "41280.000000",
+            "2026-06-26T00:00:00Z",
+            "2026-06-27T00:00:00Z",
+        )],
+    );
+
+    let recon = fold(&export, &report).unwrap();
+    assert_eq!(recon.billed, "$412.80", "41280 cents is $412.80, not $41,280.00");
+    assert_eq!(recon.by_model[0].billed, "$412.80");
+    // and the derived figure inherits the correction rather than being fixed up separately
+    assert_eq!(recon.delta, "+$312.80");
 }

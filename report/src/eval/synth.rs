@@ -366,7 +366,10 @@ pub fn analytics_export(report: &Report) -> Result<String> {
         .map(|(model, amount)| {
             serde_json::json!({
                 "model": model,
-                "amount": format!("{:.6}", (amount * 100.0).round() / 100.0),
+                // The real Analytics cost endpoints report MINOR UNITS, so a synthesized export
+                // must too or the fixture stops being the shape production parses. `amount` here is
+                // dollars; emit it as cents. See `reconcile::CostRecord::amount`.
+                "amount": format!("{:.6}", (amount * 100.0).round()),
                 "starting_at": report.since.to_rfc3339(),
                 "ending_at": report.until.to_rfc3339(),
             })

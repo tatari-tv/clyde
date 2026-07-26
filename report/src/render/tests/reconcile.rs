@@ -10,6 +10,7 @@ fn write_export(dir: &TempDir, name: &str, records: Vec<serde_json::Value>) -> s
     path
 }
 
+/// `amount` is decimal-string CENTS, matching the real export -- `"110.00"` is `$1.10`.
 fn cost_record(model: &str, amount: &str, starting_at: &str, ending_at: &str) -> serde_json::Value {
     serde_json::json!({
         "model": model,
@@ -65,7 +66,7 @@ fn build_context_block_reconciliation_present_when_window_matches() {
         "export.json",
         vec![cost_record(
             "claude-opus-4-7",
-            "1.10",
+            "110.00",
             "2026-04-01T00:00:00Z",
             "2026-04-30T00:00:00Z",
         )],
@@ -125,7 +126,7 @@ fn build_context_block_bails_on_reconcile_window_mismatch_naming_both_windows() 
         "export.json",
         vec![cost_record(
             "claude-opus-4-7",
-            "1.10",
+            "110.00",
             "2026-05-01T00:00:00Z",
             "2026-05-31T00:00:00Z",
         )],
