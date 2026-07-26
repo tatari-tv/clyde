@@ -933,3 +933,291 @@ fn by_repo_marks_a_row_with_its_strongest_provenance() {
         "a row nobody ever observed is marked as the guess it is"
     );
 }
+
+// ---- Phase 7: by-repo outcomes, output geometry, unit costs ----
+
+/// Attach a session's observed outcomes to a fixture entry.
+fn with_outcomes(
+    mut e: SessionEntry,
+    commits: &[&str],
+    pr_urls: &[&str],
+    files: u64,
+    lines: (u64, u64),
+) -> SessionEntry {
+    use crate::outcome::{Outcomes, PrRef};
+    e.outcomes = Some(Outcomes {
+        commits: commits.iter().map(|s| s.to_string()).collect(),
+        prs: pr_urls
+            .iter()
+            .enumerate()
+            .map(|(i, url)| PrRef {
+                number: i as u64 + 1,
+                url: url.to_string(),
+                repository: None,
+            })
+            .collect(),
+        confluence_writes: 0,
+        jira_writes: 0,
+        slack_messages: 0,
+        files_edited: files,
+        lines_written: lines.0,
+        lines_replaced: lines.1,
+        ..Default::default()
+    });
+    e
+}
+
+fn outcome_report() -> Report {
+    let clyde_a = with_outcomes(
+        entry_sourced(Some("tatari-tv/clyde"), Some(RepoSource::GitOrigin), 100.0),
+        // `sha-shared` also appears in clyde-b: deduped WITHIN the repo row.
+        &["sha-a", "sha-shared"],
+        &["https://github.com/tatari-tv/clyde/pull/1"],
+        3,
+        (120, 40),
+    );
+    let clyde_b = with_outcomes(
+        entry_sourced(Some("tatari-tv/clyde"), Some(RepoSource::GitOrigin), 60.0),
+        &["sha-shared", "sha-b"],
+        &["https://github.com/tatari-tv/clyde/pull/1"],
+        2,
+        (30, 10),
+    );
+    let philo = with_outcomes(
+        entry_sourced(Some("tatari-tv/philo"), Some(RepoSource::GitOrigin), 40.0),
+        &["sha-c"],
+        &[],
+        1,
+        (10, 0),
+    );
+    let mut report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-10T00:00:00Z",
+        vec![("s1", clyde_a), ("s2", clyde_b), ("s3", philo)],
+    );
+    report.totals.outcomes = Some(crate::outcome::rollup(
+        report.sessions.values().map(|e| e.outcomes.as_ref()),
+    ));
+    report
+}
+
+#[test]
+fn by_repo_carries_outcomes_deduped_within_each_row() {
+    let rows = compute_by_repo(&outcome_report());
+    let clyde = rows.iter().find(|r| r.repo == "tatari-tv/clyde").unwrap();
+    let outcomes = clyde.outcomes.as_ref().expect("an observed repo carries outcomes");
+    assert_eq!(
+        outcomes.commits, 3,
+        "sha-shared appears in both of the repo's sessions and counts once in the row"
+    );
+    assert_eq!(outcomes.prs_opened, 1, "the same PR url from two sessions counts once");
+    assert_eq!(outcomes.files_edited, 5, "per-session distinct counts sum");
+    assert_eq!((outcomes.lines_written, outcomes.lines_replaced), (150, 50));
+}
+
+/// The phase's success criterion: the GLOBAL dedupe over the by-repo rows matches
+/// `totals.outcomes` for commits and PRs, so a commit touching two repos does not double-count
+/// into the total. Asserted by rebuilding the global rollup from the same attributed sessions and
+/// comparing it against the deduped totals, then showing the naive ROW SUM overshoots -- which is
+/// exactly why the rows are documented as never-summed.
+#[test]
+fn by_repo_outcomes_globally_dedupe_to_totals() {
+    let mut report = outcome_report();
+    // Move one session to a second repo so `sha-shared` now spans two REPOS, not just two sessions.
+    report.sessions.get_mut("s2").unwrap().repo = Some("tatari-tv/philo".to_string());
+    report.totals.outcomes = Some(crate::outcome::rollup(
+        report.sessions.values().map(|e| e.outcomes.as_ref()),
+    ));
+    let totals = report.totals.outcomes.clone().unwrap();
+    let rows = compute_by_repo(&report);
+
+    let global = crate::outcome::rollup(report.sessions.values().map(|e| e.outcomes.as_ref()));
+    assert_eq!(
+        (global.commits, global.prs_opened),
+        (totals.commits, totals.prs_opened),
+        "every session in this fixture has a repo, so the global dedupe over the by-repo rows IS \
+         totals.outcomes: 4 distinct shas, 1 distinct PR url"
+    );
+    assert_eq!((totals.commits, totals.prs_opened), (4, 1));
+
+    let row_sum: u64 = rows.iter().filter_map(|r| r.outcomes.as_ref()).map(|o| o.commits).sum();
+    assert_eq!(
+        row_sum, 5,
+        "the row sum double-counts the cross-repo sha (2 + 3); totals.outcomes is the deduped \
+         figure and the rows are never summed"
+    );
+}
+
+/// The other half of the same criterion, and the case the real 30-day window actually hits: an
+/// outcome observed in an UNATTRIBUTED session reaches `totals.outcomes` and can reach no by-repo
+/// row, because `by-repo` has no row to put it in. So the equality above is scoped to the
+/// attributed sessions, and the residual is a coverage fact rather than a dedupe bug (measured
+/// 2026-07-26: 490 total commits, 484 across attributed sessions, 6 in sessions with no repo).
+#[test]
+fn by_repo_outcomes_cannot_carry_an_unattributed_session() {
+    let mut report = outcome_report();
+    let orphan = with_outcomes(
+        entry_sourced(None, None, 25.0),
+        &["sha-orphan"],
+        &["https://github.com/tatari-tv/clyde/pull/9"],
+        1,
+        (5, 1),
+    );
+    report.sessions.insert("s4".to_string(), orphan);
+    report.totals.sessions = report.sessions.len();
+    report.totals.outcomes = Some(crate::outcome::rollup(
+        report.sessions.values().map(|e| e.outcomes.as_ref()),
+    ));
+    let totals = report.totals.outcomes.clone().unwrap();
+    let rows = compute_by_repo(&report);
+
+    let attributed = crate::outcome::rollup(
+        report
+            .sessions
+            .values()
+            .filter(|e| e.repo.is_some())
+            .map(|e| e.outcomes.as_ref()),
+    );
+    assert_eq!(
+        (totals.commits, attributed.commits),
+        (5, 4),
+        "the orphan sha counts in the period total and in no repo row"
+    );
+    assert!(
+        rows.iter().all(|r| r.repo != UNATTRIBUTED_ORG),
+        "by-repo never invents a row for unattributed spend; `attribution` is where that lives"
+    );
+}
+
+#[test]
+fn by_repo_output_geometry_is_absent_for_a_repo_with_no_outcomes() {
+    let mut report = outcome_report();
+    report.sessions.get_mut("s3").unwrap().outcomes = None;
+    let rows = compute_by_repo(&report);
+    let philo = rows.iter().find(|r| r.repo == "tatari-tv/philo").unwrap();
+    assert!(philo.outcomes.is_none(), "no observation -> no outcomes block");
+    assert!(
+        philo.commits_percent_of_max.is_none() && philo.prs_percent_of_max.is_none(),
+        "an unobserved repo gets no bar at all, never a zero-length one"
+    );
+
+    let clyde = rows.iter().find(|r| r.repo == "tatari-tv/clyde").unwrap();
+    assert_eq!(
+        clyde.commits_percent_of_max,
+        Some(100.0),
+        "the series max copies to 100%, geometry the model never computes"
+    );
+}
+
+#[test]
+fn by_repo_pr_geometry_is_absent_when_no_repo_opened_a_pr() {
+    let mut report = outcome_report();
+    for sid in ["s1", "s2"] {
+        report
+            .sessions
+            .get_mut(sid)
+            .unwrap()
+            .outcomes
+            .as_mut()
+            .unwrap()
+            .prs
+            .clear();
+    }
+    let rows = compute_by_repo(&report);
+    assert!(
+        rows.iter().all(|r| r.prs_percent_of_max.is_none()),
+        "an all-zero series has no meaningful proportion, so the field is absent everywhere"
+    );
+    assert!(
+        rows.iter().any(|r| r.commits_percent_of_max.is_some()),
+        "the commit series is unaffected"
+    );
+}
+
+#[test]
+fn unit_costs_divide_the_period_spend_by_each_denominator() {
+    let report = outcome_report();
+    let (by_day, _) = compute_by_day(&report);
+    let costs = compute_unit_costs(&report, &by_day);
+    // $200.00 over 4 distinct commits, 1 distinct PR url, 3 sessions, 1 active day.
+    assert_eq!(costs.per_commit.as_deref(), Some("$50.00"), "200 / 4 distinct commits");
+    assert_eq!(costs.per_pr.as_deref(), Some("$200.00"), "200 / 1 distinct PR url");
+    assert_eq!(costs.per_session.as_deref(), Some("$66.67"), "200 / 3 sessions");
+    let active = by_day.iter().filter(|d| d.active).count();
+    assert_eq!(active, 1, "every fixture session begins on the same day");
+    assert_eq!(costs.per_active_day.as_deref(), Some("$200.00"), "200 / 1 active day");
+    assert_eq!(
+        (costs.session_spend_p50.as_deref(), costs.session_spend_p90.as_deref()),
+        (Some("$60.00"), Some("$100.00")),
+        "nearest-rank over [40, 60, 100]: p50 is a real session's spend, never an interpolation"
+    );
+}
+
+#[test]
+fn unit_costs_are_absent_on_every_zero_denominator() {
+    let mut report = outcome_report();
+    // Zero-commit, zero-PR window: the outcome rollup is present but empty.
+    for sid in ["s1", "s2", "s3"] {
+        let outcomes = report.sessions.get_mut(sid).unwrap().outcomes.as_mut().unwrap();
+        outcomes.commits.clear();
+        outcomes.prs.clear();
+    }
+    report.totals.outcomes = Some(crate::outcome::rollup(
+        report.sessions.values().map(|e| e.outcomes.as_ref()),
+    ));
+    let (by_day, _) = compute_by_day(&report);
+    let costs = compute_unit_costs(&report, &by_day);
+    assert!(
+        costs.per_commit.is_none() && costs.per_pr.is_none(),
+        "no $Inf, no dollars-per-zero-commits: the field is absent"
+    );
+    assert!(
+        costs.per_session.is_some(),
+        "the denominators that are nonzero still divide"
+    );
+
+    let json = serde_json::to_string(&costs).unwrap();
+    assert!(
+        !json.contains("per-commit"),
+        "an absent field is ABSENT from the context, never null: {json}"
+    );
+}
+
+#[test]
+fn unit_costs_are_absent_when_the_report_carries_no_outcome_rollup() {
+    let mut report = outcome_report();
+    report.totals.outcomes = None;
+    let (by_day, _) = compute_by_day(&report);
+    let costs = compute_unit_costs(&report, &by_day);
+    assert!(
+        costs.per_commit.is_none() && costs.per_pr.is_none(),
+        "`--no-outcomes` leaves no output denominator to divide by"
+    );
+}
+
+#[test]
+fn unit_cost_percentiles_ignore_unpriced_sessions() {
+    let mut report = outcome_report();
+    // An untracked-model session has an UNKNOWN spend, not a $0 one.
+    let s3 = report.sessions.get_mut("s3").unwrap();
+    s3.spend_usd = None;
+    let (by_day, _) = compute_by_day(&report);
+    let costs = compute_unit_costs(&report, &by_day);
+    assert_eq!(
+        costs.session_spend_p50.as_deref(),
+        Some("$60.00"),
+        "the distribution is [60, 100]; folding the unpriced session in as $0 would drag it to $40"
+    );
+}
+
+#[test]
+fn unit_costs_are_all_absent_on_an_empty_window() {
+    let report = report_with("2026-06-01T00:00:00Z", "2026-06-10T00:00:00Z", vec![]);
+    let (by_day, _) = compute_by_day(&report);
+    let costs = compute_unit_costs(&report, &by_day);
+    assert_eq!(
+        serde_json::to_string(&costs).unwrap(),
+        "{}",
+        "a window with no sessions, no active days, and no outcomes emits no unit costs at all"
+    );
+}

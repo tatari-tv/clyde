@@ -8,12 +8,12 @@
 //! the single aggregate entry point; the counterfactual is the sole sanctioned computation.
 
 use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
-use crate::outcome::Outcomes;
+use crate::outcome::{self, Outcomes};
 use crate::report::Report;
 use chrono::NaiveDate;
 use claude_pricing::{Pricing, TokenUsage};
 use common::repo::RepoSource;
-use log::{debug, warn};
+use log::{debug, trace, warn};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
@@ -102,6 +102,20 @@ pub struct RepoRow {
     /// See [`OrgRow::spend_percent_of_max`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend_percent_of_max: Option<f64>,
+    /// What this repo's spend PRODUCED (design Phase 7, gap 8: "`RepoRow` carries no outcomes, so
+    /// spend against output per repo cannot be charted"). Absent when the repo observed no outcome
+    /// at all, so a zero can never be mistaken for an observation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcomes: Option<RepoOutcomes>,
+    /// See [`OrgRow::spend_percent_of_max`], scaled against the max `outcomes.commits` across
+    /// `by-repo`. This is the second dimension a spend-against-output chart needs: the spend bar
+    /// and the commit bar for one repo are both verbatim copies, so the comparison is drawable
+    /// without the model computing a coordinate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commits_percent_of_max: Option<f64>,
+    /// Same, scaled against the max `outcomes.prs-opened` across `by-repo`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prs_percent_of_max: Option<f64>,
     pub models: Vec<String>,
     /// The STRONGEST evidence any session in this row has for the slug existing at all
     /// (`git-origin` beats `known-path` beats `files-touched` beats `path-guess`), so a row whose
@@ -115,6 +129,49 @@ pub struct RepoRow {
     /// `None` on a merged pre-v10 artifact whose sessions carry no provenance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_source: Option<String>,
+}
+
+/// One repo's share of the window's observed output, built by the SAME [`outcome::rollup`] the
+/// report-wide totals use, restricted to the sessions attributed to this repo. So commits dedupe by
+/// sha and PRs by url WITHIN the row exactly as they do globally.
+///
+/// **These rows are never summed.** A commit sha or PR url observed in sessions attributed to two
+/// different repos counts once in EACH row and once in `totals.outcomes`, which is the deduped
+/// global figure. Summing the rows would double-count it; that is why the prompts cite
+/// `totals.outcomes` for any period-wide output figure and the per-repo counts only per repo.
+///
+/// Attribution is by the SESSION's repo, the same key the row's spend is bucketed under, so the two
+/// numbers in a spend-against-output comparison describe the same set of sessions. A session in one
+/// repo that opened a PR against another therefore lands under the session's repo; `prs[].repository`
+/// carries the PR's own slug for anyone who needs the other view.
+///
+/// Confluence/Jira/Slack writes are deliberately absent: they are not repo-scoped work, so a
+/// per-repo row is the wrong place to count them. They stay in `outcomes.totals`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct RepoOutcomes {
+    /// Distinct commit shas across this repo's sessions.
+    pub commits: u64,
+    /// Distinct PR urls opened across this repo's sessions.
+    pub prs_opened: u64,
+    /// Sum of each session's own distinct-file count.
+    pub files_edited: u64,
+    /// Lines of file content written (see `efficiency::Outcomes::lines_written`).
+    pub lines_written: u64,
+    /// Lines of file content replaced (see `efficiency::Outcomes::lines_replaced`).
+    pub lines_replaced: u64,
+}
+
+impl RepoOutcomes {
+    /// `true` when nothing at all was observed for the repo, which is what keeps
+    /// [`RepoRow::outcomes`] ABSENT rather than a row of zeroes.
+    fn is_empty(&self) -> bool {
+        self.commits == 0
+            && self.prs_opened == 0
+            && self.files_edited == 0
+            && self.lines_written == 0
+            && self.lines_replaced == 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -356,16 +413,19 @@ fn compute_by_org(report: &Report) -> Vec<OrgRow> {
 }
 
 #[derive(Default)]
-struct RepoAcc {
+struct RepoAcc<'a> {
     sessions: usize,
     tokens: u64,
     spend: f64,
     models: BTreeSet<String>,
     /// The best (lowest-rank) [`RepoSource`] seen for this repo; see [`RepoRow::repo_source`].
     best_source: Option<RepoSource>,
+    /// Every attributed session's observed outcomes, folded by [`outcome::rollup`] once the repo's
+    /// sessions are all in, so the row's dedupe is the global dedupe restricted to this repo.
+    outcomes: Vec<&'a Outcomes>,
 }
 
-impl RepoAcc {
+impl RepoAcc<'_> {
     /// Fold one session's provenance in, keeping the strongest. `RepoSource`'s derived `Ord` is
     /// confidence order (best first), so `min` IS "strongest evidence" with no rank arithmetic here.
     /// An unparseable value is ignored rather than allowed to weaken the row: it is not evidence of
@@ -394,11 +454,15 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
         acc.spend += entry.spend_usd.unwrap_or(0.0);
         acc.models.extend(entry.models.keys().cloned());
         acc.observe(entry.repo_source.as_deref());
+        if let Some(outcomes) = entry.outcomes.as_ref() {
+            acc.outcomes.push(outcomes);
+        }
     }
     let mut rows: Vec<RepoRow> = repos
         .into_iter()
         .map(|(repo, acc)| {
             let org = org_of(Some(&repo));
+            let outcomes = repo_outcomes(&repo, &acc.outcomes);
             RepoRow {
                 repo,
                 org,
@@ -408,22 +472,64 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
                 spend_raw: acc.spend,
                 spend: format_usd(acc.spend),
                 spend_percent_of_max: None,
+                outcomes,
+                commits_percent_of_max: None,
+                prs_percent_of_max: None,
                 models: acc.models.into_iter().collect(),
                 repo_source: acc.best_source.map(|s| s.as_str().to_string()),
             }
         })
         .collect();
     let max_spend = rows.iter().map(|r| r.spend_raw).fold(0.0_f64, f64::max);
+    let max_commits = rows.iter().filter_map(|r| r.outcomes.as_ref()).map(|o| o.commits).max();
+    let max_prs = rows
+        .iter()
+        .filter_map(|r| r.outcomes.as_ref())
+        .map(|o| o.prs_opened)
+        .max();
     for row in &mut rows {
         row.spend_percent_of_max = percent_of_max(row.spend_raw, max_spend);
+        // A row with no outcomes gets no output geometry at all (absent, not 0.0): the chart rule
+        // is "no scale field -> not drawn", and drawing a zero-length bar for an unobserved repo
+        // would state an observation nobody made.
+        if let Some(o) = row.outcomes.as_ref() {
+            row.commits_percent_of_max = percent_of_max(o.commits as f64, max_commits.unwrap_or(0) as f64);
+            row.prs_percent_of_max = percent_of_max(o.prs_opened as f64, max_prs.unwrap_or(0) as f64);
+        }
     }
     sort_by_spend_desc(&mut rows, |r| r.spend_raw);
     debug!(
-        "aggregate::compute_by_repo: rows={} max-spend={}",
+        "aggregate::compute_by_repo: rows={} rows-with-outcomes={} max-spend={} max-commits={:?} max-prs={:?}",
         rows.len(),
-        max_spend
+        rows.iter().filter(|r| r.outcomes.is_some()).count(),
+        max_spend,
+        max_commits,
+        max_prs
     );
     rows
+}
+
+/// Fold one repo's attributed sessions into its [`RepoOutcomes`], or `None` when the repo observed
+/// nothing. Delegates to [`outcome::rollup`] so the row's dedupe rules cannot drift from the
+/// report-wide ones they are a restriction of.
+fn repo_outcomes(repo: &str, outcomes: &[&Outcomes]) -> Option<RepoOutcomes> {
+    let totals = outcome::rollup(outcomes.iter().copied().map(Some));
+    let row = RepoOutcomes {
+        commits: totals.commits,
+        prs_opened: totals.prs_opened,
+        files_edited: totals.files_edited,
+        lines_written: totals.lines_written,
+        lines_replaced: totals.lines_replaced,
+    };
+    if row.is_empty() {
+        trace!("aggregate::repo_outcomes: {repo} observed no outcomes; row absent");
+        return None;
+    }
+    trace!(
+        "aggregate::repo_outcomes: {repo} commits={} prs-opened={} files={} lines-written={} lines-replaced={}",
+        row.commits, row.prs_opened, row.files_edited, row.lines_written, row.lines_replaced
+    );
+    Some(row)
 }
 
 #[derive(Default)]
@@ -653,6 +759,113 @@ pub fn compute_attribution(report: &Report) -> Attribution {
         uncovered: format_usd(uncovered),
         covered_share,
     }
+}
+
+/// Period spend set against the period's own output and calendar, binary-computed (design "Unit
+/// costs, binary-computed", finding 9). Every field is a ratio of two figures the artifact already
+/// states, so the prose can quote one instead of doing arithmetic the prompt forbids it.
+///
+/// **These are ratios, not prices.** `per-commit` is the period's WHOLE spend divided by the
+/// period's distinct commits: the numerator includes every session in the window, including the
+/// ones that produced no commit, so it is not "what a commit cost" and no template may frame it
+/// that way. The honest reading is "this period spent $X and produced N commits"; the dishonest one
+/// is a price tag, and the difference is one word.
+///
+/// Every field is `None` (and, via `skip_serializing_if`, ABSENT from the context) on a zero
+/// denominator. No `$Inf`, no dollars-per-zero-commits.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct UnitCosts {
+    /// `totals.spend-usd / totals.outcomes.commits`. `None` when the report carries no outcome
+    /// rollup or observed no commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_commit: Option<String>,
+    /// `totals.spend-usd / totals.outcomes.prs-opened`. PRs OPENED, the only PR outcome the
+    /// extractor counts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_pr: Option<String>,
+    /// `totals.spend-usd / period.active-days`, the Phase 4 figure (rows with `active: true`), not
+    /// the window's calendar length: dividing by inactive days would understate every active one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_active_day: Option<String>,
+    /// `totals.spend-usd / totals.sessions`, the arithmetic MEAN. Compare it against
+    /// [`Self::session_spend_p50`]: a mean far above the median is the signature of a few large
+    /// sessions carrying the period.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_session: Option<String>,
+    /// Median spend of a single session (nearest-rank over priced sessions). Unlike the four ratios
+    /// above this is an observed session's own figure, not a quotient.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_spend_p50: Option<String>,
+    /// 90th-percentile session spend, same method.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_spend_p90: Option<String>,
+}
+
+/// Divide the period's spend by a count, or `None` on a zero denominator (never `$Inf`, never a
+/// dollars-per-nothing figure).
+fn per_unit(spend: f64, count: u64) -> Option<String> {
+    if count == 0 {
+        return None;
+    }
+    Some(format_usd(spend / count as f64))
+}
+
+/// Nearest-rank percentile over an ASCENDING-sorted slice: index `ceil(p * n) - 1`, so p50 of an
+/// even-length series is the lower of the two middle values rather than an interpolated figure no
+/// session actually spent. Every value it can return is a real session's own spend.
+fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let rank = (p * sorted.len() as f64).ceil().max(1.0) as usize;
+    sorted.get(rank - 1).copied()
+}
+
+/// Compute [`UnitCosts`] for the window. `by_day` supplies the active-day denominator so this uses
+/// the SAME corrected figure `period.active-days` prints (Phase 4: rows with `active: true`, not
+/// the row count), rather than a second definition of "active day".
+pub fn compute_unit_costs(report: &Report, by_day: &[DayRow]) -> UnitCosts {
+    let active_days = by_day.iter().filter(|r| r.active).count() as u64;
+    debug!(
+        "aggregate::compute_unit_costs: spend={:.2} sessions={} active-days={} outcomes={}",
+        report.totals.spend_usd,
+        report.totals.sessions,
+        active_days,
+        report.totals.outcomes.is_some()
+    );
+    let spend = report.totals.spend_usd;
+    let (commits, prs) = match &report.totals.outcomes {
+        Some(o) => (o.commits, o.prs_opened),
+        None => (0, 0),
+    };
+
+    // Unpriced sessions are EXCLUDED from the distribution rather than counted as $0: a session
+    // whose model is untracked has an unknown spend, and folding it in as zero would drag both
+    // percentiles down with a number nobody measured.
+    let mut spends: Vec<f64> = report.sessions.values().filter_map(|e| e.spend_usd).collect();
+    spends.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let costs = UnitCosts {
+        per_commit: per_unit(spend, commits),
+        per_pr: per_unit(spend, prs),
+        per_active_day: per_unit(spend, active_days),
+        per_session: per_unit(spend, report.totals.sessions as u64),
+        session_spend_p50: percentile(&spends, 0.50).map(format_usd),
+        session_spend_p90: percentile(&spends, 0.90).map(format_usd),
+    };
+    debug!(
+        "aggregate::compute_unit_costs: per-commit={:?} per-pr={:?} per-active-day={:?} \
+         per-session={:?} p50={:?} p90={:?} priced-sessions={}",
+        costs.per_commit,
+        costs.per_pr,
+        costs.per_active_day,
+        costs.per_session,
+        costs.session_spend_p50,
+        costs.session_spend_p90,
+        spends.len()
+    );
+    costs
 }
 
 /// Top-`outliers_n` sessions by spend (untracked/unpriced sessions rank as $0, ties broken by

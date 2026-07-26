@@ -548,3 +548,142 @@ live fetch from a cache hit is a `claude-pricing` change this phase's scope excl
   and the underlying `basis` context field are verified by unit test
   (`build_context_block_always_carries_the_pricing_basis`) and by the prompt text itself, but a live
   opus-authored render was not observed to confirm the model actually reproduces the line.
+
+## Phase 7: by-repo outcomes, extended counters, unit costs
+
+### Design decisions
+- Per-repo outcomes are built by the SAME `outcome::rollup` the report-wide totals use, restricted to
+  the repo's sessions -- `aggregate::repo_outcomes` -- so a row's dedupe rules (commits by sha, PRs by
+  url) cannot drift from the global ones they are a restriction of. No second dedupe implementation.
+- `RepoOutcomes` carries commits / prs-opened / files-edited / lines-written / lines-replaced and
+  deliberately NOT the Confluence/Jira/Slack counts -- `aggregate.rs` -- because those are not
+  repo-scoped work and a per-repo row is the wrong place to count them. They stay in `outcomes.totals`.
+- Outcome attribution follows the SESSION's repo, the same key the row's spend is bucketed under
+  (`compute_by_repo`), so the two numbers in a spend-against-output comparison describe the same set
+  of sessions. A PR opened against a different repo than the session's lands under the session's repo;
+  `prs[].repository` still carries the PR's own slug for anyone who needs the other view.
+- `RepoRow::outcomes` is ABSENT (not a row of zeroes) for a repo that observed nothing, and its
+  `commits-percent-of-max` / `prs-percent-of-max` are absent with it -- `compute_by_repo` -- so the
+  house "no scale field -> not drawn" rule applies with no special case, and no unobserved repo gets a
+  zero-length bar that reads as a measured zero.
+- New counters are `lines_written` / `lines_replaced` on `efficiency::Outcomes`, counted off the same
+  success-confirmed Edit/Write calls `files_edited` already rides (`outcome::extract`,
+  `apply_confirmed`). A call with no `file_path` contributes neither, so the two counters always
+  describe the same set of calls.
+- A `Write` contributes lines WRITTEN only, never replaced (`efficiency/src/outcome.rs`): the record
+  carries the new content and not what it overwrote, so the replaced count is unobservable and this
+  fails closed toward an undercount rather than sniffing the tool_result prose for "File created
+  successfully at" to guess whether the file was new.
+- `UnitCosts` divides by the Phase 4 active-day figure by taking `by_day` as a parameter
+  (`compute_unit_costs(report, &aggregates.by_day)`) rather than recounting active days, so there is
+  one definition of "active day" in the codebase, not two.
+- Percentiles are NEAREST-RANK (`percentile`), so `session-spend-p50` is always a real session's own
+  spend and never an interpolated figure nobody spent. Unpriced sessions (`spend_usd: None`) are
+  excluded from the distribution rather than folded in as `$0`: an untracked model's spend is unknown,
+  and counting it as zero would drag both percentiles down with a number nobody measured.
+- Both templates carry the exact ratio wording, and `both_templates_license_unit_costs_as_ratios_and_by_repo_outcomes`
+  (`render/tests.rs`) pins it mechanically: the "These are RATIOS, not prices" sentence, the statement
+  that the numerator includes sessions that produced no commit, and the by-name ban on "each commit
+  cost". The prompt-edit ledger is a test, not a habit.
+
+### Deviations
+- **No PR-merged counter, and this contradicts the doc's Phase 0 finding.** The doc records "**Yes**
+  to a PR-merged counter (`gitOperation.pr.action == "merged"`)". Phase 0 proved the FIELD occurs; it
+  did not check what the field MEANS. All four live `pr.action == "merged"` records were read in full
+  this phase, and none of them is a merge: `pr#23` and `pr#67` are `"! Pull request tatari-tv/marquee#23
+  was already merged"` (an idempotent no-op on an already-merged PR), and `pr#92` and `pr#1963` are
+  `"X Pull request tatari-tv/platform-infra#1786 is not mergeable: the base branch policy prohibits the
+  merge"` (a FAILED merge). The field classifies the `gh pr merge` ATTEMPT, not its outcome. Shipping
+  the counter would have published "4 PRs merged" for a period in which zero PRs were merged by these
+  sessions, in a finance-facing document whose entire premise is that its numbers are observed and
+  verifiable. Also noted: 3 of the 4 records carry no `url`, so the counter had no dedupe key either,
+  and on `pr#92` the recorded url (`private-helm-charts/pull/92`) belongs to a different PR than the
+  one the command acted on (`platform-infra#1786`).
+- **No branches-merged counter.** `branch.action == "merged"` (18 live occurrences) IS a confirmed
+  completed `git merge` ("Fast-forward", "Merge made by the 'ort' strategy"), but its `ref` mixes two
+  opposite meanings: `ref: reject-dotted-names` is a feature branch landing (delivery), while
+  `ref: origin/main` is main being merged INTO a feature branch (a sync). Separating them needs a
+  default-branch-name heuristic that Phase 0 never measured and the doc never authorized, so it is not
+  built. Recorded as an open question rather than guessed at.
+- The line counters are named `lines-written` / `lines-replaced`, not the doc's "line delta". A signed
+  net would hide the volume (a 500-line rewrite and a no-op both net ~0) and "lines added/removed"
+  would read as a `git diff` stat, which this is not: an Edit that rewrites a 3-line block counts 3
+  written and 3 replaced. Both templates carry that caveat verbatim. No `net` field is emitted, per the
+  house rule that a field derived from two others is dropped rather than kept in sync.
+- No migration ships with this phase and none is needed: v10 already nulls `efficiency_json` and
+  `outcome_json` and the whole doc ships as one release, so the single full reindex v10 already forces
+  populates `lines-written` in the same pass as `repos-touched`. Until that reindex runs, the counters
+  read 0 and `outcomes.totals` OMITS them (present-if-nonzero), so a stale catalog says nothing rather
+  than claiming 4,242 edited files produced no lines.
+
+### Tradeoffs
+- Per-repo counts deduped WITHIN the repo, vs a globally-deduped split that assigns each shared commit
+  to exactly one repo. Chose within-repo: a split would need an arbitrary tie-break rule, and each row
+  is then honest about its own repo. Cost: the rows do not sum to `totals.outcomes` (measured live: row
+  sum 487 vs 484 deduped across attributed sessions, 3 commits observed in sessions attributed to two
+  different repos). Both templates therefore state that the per-repo counts are never summed and that
+  `outcomes.totals` is the period figure.
+- `RepoOutcomes` as its own struct vs reusing `OutcomeTotals` on the row. Chose a dedicated struct: it
+  keeps the non-repo-scoped MCP write counts out of a repo row, and it makes the chartable pair
+  (`commits`, `prs-opened`) the visible shape of the type.
+- Labels live in the templates, not the binary (the doc's `UnitCosts` is six `Option<String>` fields
+  and nothing else). A binary-owned label string would be drift-proof, but it deviates from a spec the
+  doc is explicit about; the mechanical template test is the mitigation.
+
+### Open questions
+- **The doc's Phase 0 finding "Yes to a PR-merged counter" is wrong on semantics and should be
+  corrected in Resolved Decisions** with the four live payloads above. Phase 7 shipped no merged
+  counter as a result. If Scott wants a merged-PR figure anyway, the options are: (a) sniff the
+  `toolUseResult.stdout` for a success pattern, which has ZERO live positive examples to calibrate
+  against and fails open on a wording change; (b) build it on `branch.action == "merged"` plus a
+  default-branch heuristic to separate landings from syncs; or (c) leave PRs-opened as the only PR
+  outcome. Recommendation: (c), and correct the doc.
+- Phase 13's synthesized fixtures should include a zero-commit fixture, which is what makes the
+  "`unit-costs.per-commit` is absent on a zero-commit fixture" criterion an artifact-level check rather
+  than the unit-level one this phase shipped (`unit_costs_are_absent_on_every_zero_denominator`).
+
+### Verification
+- `otto ci`: green (fmt, clippy, check, test, whitespace).
+- 12 new tests: 3 in `efficiency/src/outcome/tests.rs` (happy path, failed-edit error path, insertion +
+  unconfirmed-call edge), 9 in `report/src/aggregate/tests.rs`, 2 in `report/src/render/tests.rs`, plus
+  the template ledger test.
+- Mutation-checked that the tests bite: removing the zero-denominator guard in `per_unit` and emitting
+  output geometry for an outcome-less repo failed exactly four tests
+  (`unit_costs_are_absent_on_every_zero_denominator`, `unit_costs_are_absent_when_the_report_carries_no_outcome_rollup`,
+  `unit_costs_are_all_absent_on_an_empty_window`, `by_repo_output_geometry_is_absent_for_a_repo_with_no_outcomes`);
+  restored and reconfirmed green.
+- **Live figures**, `clyde report collect --since 2026-06-26 --until 2026-07-25` (1,523 sessions,
+  `$9,450.31`, 29 of 30 active days, 490 commits, 166 PRs opened), computed by `compute_unit_costs`
+  over the collected artifact:
+
+  | field | value |
+  |---|---|
+  | `per-commit` | `$19.29` |
+  | `per-pr` | `$56.93` |
+  | `per-active-day` | `$325.87` |
+  | `per-session` | `$6.21` |
+  | `session-spend-p50` | `$0.63` |
+  | `session-spend-p90` | `$17.58` |
+
+  The mean (`$6.21`) is nearly 10x the median (`$0.63`): the period is carried by a small number of
+  large sessions, which is exactly the shape the p50/p90 pair exists to expose and which no figure in
+  the artifact could show before.
+- **Live by-repo outcomes**: 46 of 57 rows carry an `outcomes` object. Top rows:
+  `tatari-tv/clyde` `$1,336.82` / 84 commits / 43 PRs (100% on all three bars),
+  `scottidler/second-brain` `$1,127.43` / 49 commits / 1 PR (spend 84.3%, commits 58.3%, PRs 2.3%),
+  `tatari-tv/marquee` `$1,032.14` / 42 commits / 23 PRs. The spend-and-output divergence on
+  `second-brain` (second-highest spend, near-zero PRs) is precisely the comparison gap 8 said could not
+  be drawn.
+- **Global-dedupe criterion, measured**: over the sessions that HAVE a repo, the deduped rollup is 484
+  commits / 159 PRs and the by-repo row sum is 487 / 159, so the row sum double-counts 3 cross-repo
+  commits and the dedupe is doing its job. `totals.outcomes` is 490 / 166; the residual (6 commits, 7
+  PRs) belongs to sessions with NO repo, which by-repo has no row to hold. The criterion as literally
+  written ("global dedupe matches `totals.outcomes`") therefore holds only on a window where every
+  outcome-bearing session is attributed; both halves are pinned by test
+  (`by_repo_outcomes_globally_dedupe_to_totals`, `by_repo_outcomes_cannot_carry_an_unattributed_session`).
+- **Live line counters**: the catalog's stored `outcome_json` predates these fields, so a collect today
+  reports `lines-written: 0` (and the context omits the key). Extraction itself is confirmed against
+  real transcripts: running `efficiency::outcome::extract` over the 46 transcripts under
+  `~/.claude/projects/-home-saidler-repos-tatari-tv-clyde` yields **36,057 lines written / 7,833 lines
+  replaced** (e.g. one session: 8 files edited, 947 written, 33 replaced). The release's v10 reindex is
+  what makes those figures reach a report.

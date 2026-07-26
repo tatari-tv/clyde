@@ -53,6 +53,27 @@ fn edit_use_line(id: &str, name: &str, file_path: &str) -> String {
     )
 }
 
+/// An `Edit` `tool_use` carrying the `old_string` / `new_string` pair verbatim, the live shape
+/// Phase 0 confirmed (session `0055fcaa-eca2-42c7-b8c4-d06cdb689da4`). `\n` is embedded as a JSON
+/// escape so the parsed value really is a multi-line string.
+fn edit_lines_use_line(id: &str, file_path: &str, old_lines: usize, new_lines: usize) -> String {
+    let joined = |n: usize| (0..n).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\\n");
+    format!(
+        r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"Edit","input":{{"file_path":"{file_path}","old_string":"{}","new_string":"{}"}}}}]}}}}"#,
+        joined(old_lines),
+        joined(new_lines)
+    )
+}
+
+/// A `Write` `tool_use` carrying the full file body in `input.content`, the live shape Phase 0
+/// confirmed.
+fn write_content_use_line(id: &str, file_path: &str, lines: usize) -> String {
+    let content = (0..lines).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\\n");
+    format!(
+        r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"Write","input":{{"file_path":"{file_path}","content":"{content}"}}}}]}}}}"#
+    )
+}
+
 fn tool_result_line(id: &str, is_error: bool) -> String {
     format!(
         r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","is_error":{is_error},"content":"ok"}}]}}}}"#
@@ -239,6 +260,8 @@ fn union_dedupes_commits_and_prs_globally_sums_mcp_and_counts_distinct_files() {
         jira_writes: 0,
         slack_messages: 2,
         files_edited: BTreeSet::from(["/x.rs".to_string()]),
+        lines_written: 10,
+        lines_replaced: 4,
     };
     let subagent = FileOutcomes {
         // Shares sha-b (dedup) + adds sha-c; re-references the same PR url (dedup).
@@ -249,6 +272,8 @@ fn union_dedupes_commits_and_prs_globally_sums_mcp_and_counts_distinct_files() {
         slack_messages: 1,
         // Shares /x.rs (dedup) + adds /y.rs.
         files_edited: BTreeSet::from(["/x.rs".to_string(), "/y.rs".to_string()]),
+        lines_written: 5,
+        lines_replaced: 1,
     };
     let out = union(&[parent, subagent], Path::new("/repos"));
 
@@ -262,6 +287,12 @@ fn union_dedupes_commits_and_prs_globally_sums_mcp_and_counts_distinct_files() {
     assert_eq!(out.jira_writes, 3);
     assert_eq!(out.slack_messages, 3, "MCP counts sum across files");
     assert_eq!(out.files_edited, 2, "distinct edited paths across files");
+    assert_eq!(
+        (out.lines_written, out.lines_replaced),
+        (15, 5),
+        "line volumes SUM across files: two edits to one file are two real writes, so unlike \
+         `files-edited` there is nothing to dedupe"
+    );
 }
 
 #[test]
@@ -316,6 +347,9 @@ fn full_session_extract_then_union_matches_reports_per_session_outcome() {
         jira_writes: 1,
         slack_messages: 1,
         files_edited: 2,
+        // The `edit_use_line` builder carries only `file_path`, no content fields.
+        lines_written: 0,
+        lines_replaced: 0,
         // `/repo/a.rs` and `/repo/b.rs` are not under `/repos`, so no slug is inferred.
         repos_touched: BTreeMap::new(),
     };
@@ -340,11 +374,15 @@ fn outcomes_serialize_kebab_case_and_round_trip() {
         jira_writes: 3,
         slack_messages: 4,
         files_edited: 5,
+        lines_written: 120,
+        lines_replaced: 45,
         repos_touched: BTreeMap::from([("o/r".to_string(), 5)]),
     };
     let json = serde_json::to_string(&outcomes).unwrap();
     assert!(json.contains("\"confluence-writes\":2"), "kebab-case key: {json}");
     assert!(json.contains("\"files-edited\":5"), "kebab-case key: {json}");
+    assert!(json.contains("\"lines-written\":120"), "kebab-case key: {json}");
+    assert!(json.contains("\"lines-replaced\":45"), "kebab-case key: {json}");
     assert!(json.contains("\"repos-touched\":{\"o/r\":5}"), "kebab-case key: {json}");
     let back: Outcomes = serde_json::from_str(&json).unwrap();
     assert_eq!(back, outcomes, "outcome_json round-trips");
@@ -363,6 +401,82 @@ fn pre_v10_outcome_json_parses_with_an_empty_repos_touched() {
         parsed.repos_touched.is_empty(),
         "a blob predating the field parses to an empty map, not a parse error"
     );
+    assert_eq!(
+        (parsed.lines_written, parsed.lines_replaced),
+        (0, 0),
+        "a blob predating the line counters parses to zero, not a parse error"
+    );
+}
+
+// ---- lines written / replaced (Phase 7) ----
+
+/// The happy path: an Edit contributes `new_string`'s lines written and `old_string`'s lines
+/// replaced, a Write contributes its whole `content` as written and nothing replaced (the record
+/// does not carry what it overwrote, so guessing one is not on the table).
+#[test]
+fn extract_counts_lines_written_and_replaced_from_edit_and_write_inputs() {
+    let dir = TempDir::new().unwrap();
+    let path = write_jsonl(
+        &dir,
+        "a.jsonl",
+        &[
+            &edit_lines_use_line("e1", "/repo/a.rs", 4, 9),
+            &tool_result_line("e1", false),
+            &write_content_use_line("w1", "/repo/b.rs", 30),
+            &tool_result_line("w1", false),
+        ],
+    );
+    let out = extract(&path).unwrap();
+    assert_eq!(
+        out.lines_written, 39,
+        "9 from the edit's new_string + 30 from the write"
+    );
+    assert_eq!(
+        out.lines_replaced, 4,
+        "the edit's old_string only; a Write replaces nothing"
+    );
+    assert_eq!(out.files_edited.len(), 2);
+}
+
+/// The error path: an edit whose `tool_result` reports `is_error` contributes NO lines, the same
+/// success gate `files-edited` rides. Break the coupling in `apply_confirmed` and this fails.
+#[test]
+fn extract_counts_no_lines_for_a_failed_edit() {
+    let dir = TempDir::new().unwrap();
+    let path = write_jsonl(
+        &dir,
+        "a.jsonl",
+        &[
+            &edit_lines_use_line("e1", "/repo/a.rs", 4, 9),
+            &tool_result_line("e1", true),
+        ],
+    );
+    let out = extract(&path).unwrap();
+    assert_eq!(
+        (out.lines_written, out.lines_replaced, out.files_edited.len()),
+        (0, 0, 0),
+        "a rejected edit produced nothing, so it counts nothing"
+    );
+}
+
+/// An Edit that INSERTS (empty `old_string`) replaces zero lines rather than counting the empty
+/// string as one line, and an unconfirmed edit (no `tool_result` at all) counts nothing.
+#[test]
+fn extract_lines_handles_insertion_and_unconfirmed_calls() {
+    let dir = TempDir::new().unwrap();
+    let path = write_jsonl(
+        &dir,
+        "a.jsonl",
+        &[
+            &edit_lines_use_line("e1", "/repo/a.rs", 0, 3),
+            &tool_result_line("e1", false),
+            // No confirming result for e2: still pending at EOF, so it never applies.
+            &edit_lines_use_line("e2", "/repo/c.rs", 7, 7),
+        ],
+    );
+    let out = extract(&path).unwrap();
+    assert_eq!(out.lines_written, 3, "only the confirmed insertion counts");
+    assert_eq!(out.lines_replaced, 0, "an empty old_string replaced nothing");
 }
 
 /// `repos_touched` is derived by PURE path parsing against the repo root: the slug comes from the

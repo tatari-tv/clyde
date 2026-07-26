@@ -1,4 +1,4 @@
-use crate::aggregate::{self, Aggregates, Attribution};
+use crate::aggregate::{self, Aggregates, Attribution, UnitCosts};
 use crate::cli::Format;
 use crate::config::{RenderConfig, TransportKind};
 use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
@@ -510,6 +510,13 @@ struct ContextBlock<'a> {
     /// ABOUT the whole figure, not another rollup of it, and because the prose cites it next to the
     /// headline. The rows sum to `totals.spend` by construction.
     attribution: Attribution,
+    /// The period's spend set against its own output and calendar (design Phase 7, finding 9):
+    /// `per-commit`, `per-pr`, `per-active-day`, `per-session`, and the session-spend percentiles,
+    /// each a display string the binary divided. Top-level for the same reason as `attribution`: it
+    /// is a statement ABOUT the headline figure, not another rollup of it. Fields are ABSENT on a
+    /// zero denominator, and both templates carry the exact wording that keeps a ratio from being
+    /// read as a price tag (see [`UnitCosts`]).
+    unit_costs: UnitCosts,
     aggregates: &'a Aggregates,
     /// The v2 efficiency signal set, all pre-formatted display strings (design Phase 5): the
     /// agent-type cost headline plus the report-wide cache/tool/interrupt/compaction signals and the
@@ -596,6 +603,13 @@ struct OutcomeTotalsView {
     slack_messages: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     files_edited: Option<u64>,
+    /// Volume of file content produced (Phase 7), the evidence `files-edited`'s bare path count
+    /// lacks. Absent until a session is reindexed under Phase 7, so a pre-Phase-7 catalog omits it
+    /// rather than reporting zero lines against thousands of edited files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lines_written: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lines_replaced: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -764,6 +778,7 @@ pub(crate) fn build_context_block(
         period: build_period_view(report, &aggregates),
         totals: build_totals_view(report),
         attribution: aggregate::compute_attribution(report),
+        unit_costs: aggregate::compute_unit_costs(report, &aggregates.by_day),
         aggregates: &aggregates,
         efficiency: build_efficiency_view(report),
         outcomes: build_outcomes_view(report),
@@ -867,6 +882,8 @@ fn build_outcomes_view(report: &Report) -> Option<OutcomesView> {
             jira_writes: nonzero(totals.jira_writes),
             slack_messages: nonzero(totals.slack_messages),
             files_edited: nonzero(totals.files_edited),
+            lines_written: nonzero(totals.lines_written),
+            lines_replaced: nonzero(totals.lines_replaced),
         },
     })
 }

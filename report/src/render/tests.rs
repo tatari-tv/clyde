@@ -811,6 +811,8 @@ fn report_with_outcomes() -> Report {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 7,
+        lines_written: 310,
+        lines_replaced: 96,
     });
     let entry = report.sessions.get_mut("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042").unwrap();
     entry.outcomes = Some(Outcomes {
@@ -1080,6 +1082,51 @@ fn both_templates_declare_agent_type_costs_a_partition() {
     }
 }
 
+/// Phase 7's prompt-edit ledger: BOTH templates license the `unit-costs` block, both carry the
+/// EXACT ratio wording (the one word between an honest ratio and a fabricated price tag), both ban
+/// the price-tag phrasings by name, and both document the per-repo `outcomes` a spend-against-output
+/// chart rests on.
+///
+/// BITES: soften either template's "each commit cost" ban, or drop the ratio sentence, and the
+/// matching assertion fails.
+#[test]
+fn both_templates_license_unit_costs_as_ratios_and_by_repo_outcomes() {
+    for (name, tpl) in [("report.pmt", DEFAULT_PROMPT), ("report-html.pmt", DEFAULT_HTML_PROMPT)] {
+        assert!(
+            tpl.contains("`unit-costs`"),
+            "{name} must document the unit-costs block or the model cannot quote it"
+        );
+        assert!(
+            tpl.contains("These are RATIOS, not prices"),
+            "{name} must frame unit costs as ratios"
+        );
+        assert!(
+            tpl.contains("including the ones that produced no commit"),
+            "{name} must state what the numerator actually covers"
+        );
+        assert!(
+            tpl.contains("NEVER write \"each commit cost\""),
+            "{name} must ban the price-tag phrasing by name"
+        );
+        assert!(
+            tpl.contains("summed across repos"),
+            "{name} must state that per-repo outcome counts are not summable"
+        );
+        assert!(
+            tpl.contains("`lines-written`"),
+            "{name} must document the new line counters"
+        );
+        assert!(
+            tpl.contains("NOT a `git diff` stat"),
+            "{name} must stop the line counters being labeled as diff stats"
+        );
+    }
+    assert!(
+        DEFAULT_HTML_PROMPT.contains("commits-percent-of-max"),
+        "the html template must license the output geometry its chart needs"
+    );
+}
+
 /// A stale schema-v1 artifact is rejected by VERSION, naming both versions and the re-collect
 /// remedy, rather than by a serde error about an internal field.
 ///
@@ -1292,4 +1339,72 @@ fn offline_template_path_requires_no_anthropic_key() {
         None => unsafe { std::env::remove_var("ANTHROPIC_API_KEY") },
     }
     drop(guard);
+}
+
+/// Phase 7: the context carries top-level `unit-costs` display strings, and `by-repo` rows carry
+/// the outcome counts plus their output geometry, so a spend-against-output chart is drawable and
+/// a ratio quotable without the model computing either.
+#[test]
+fn build_context_block_carries_unit_costs_and_by_repo_outcomes() {
+    let report = report_with_outcomes();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+
+    let unit = parsed.get("unit-costs").expect("top-level unit-costs key");
+    for field in ["per-commit", "per-pr", "per-active-day", "per-session"] {
+        let value = unit
+            .get(field)
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("unit-costs.{field} must be a display string: {unit}"));
+        assert!(value.starts_with('$'), "a pre-formatted dollar string, got {value}");
+    }
+    assert!(
+        unit.get("session-spend-p50").is_some() && unit.get("session-spend-p90").is_some(),
+        "session-spend percentiles ride the same block: {unit}"
+    );
+
+    let repo_row = parsed
+        .get("aggregates")
+        .and_then(|a| a.get("by-repo"))
+        .and_then(|v| v.as_array())
+        .expect("by-repo rows")
+        .iter()
+        .find(|r| r.get("outcomes").is_some())
+        .expect("the repo whose session carries outcomes has an outcomes block");
+    let outcomes = repo_row.get("outcomes").unwrap();
+    assert_eq!(outcomes.get("commits").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(outcomes.get("prs-opened").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(outcomes.get("files-edited").and_then(|v| v.as_u64()), Some(7));
+    assert_eq!(
+        repo_row.get("commits-percent-of-max").and_then(|v| v.as_f64()),
+        Some(100.0),
+        "the top row of the commit series is 100%, copied never computed"
+    );
+}
+
+/// The outcome counters Phase 7 adds reach the prompt through `outcomes.totals` under the same
+/// present-if-nonzero rule as their siblings, so a pre-Phase-7 catalog (zero lines recorded)
+/// omits them rather than claiming thousands of edited files produced no lines.
+#[test]
+fn build_context_block_carries_line_counters_present_if_nonzero() {
+    let mut report = report_with_outcomes();
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let totals = parsed
+        .get("outcomes")
+        .and_then(|o| o.get("totals"))
+        .expect("outcomes.totals key");
+    assert_eq!(totals.get("lines-written").and_then(|v| v.as_u64()), Some(310));
+    assert_eq!(totals.get("lines-replaced").and_then(|v| v.as_u64()), Some(96));
+
+    let outcomes = report.totals.outcomes.as_mut().unwrap();
+    outcomes.lines_written = 0;
+    outcomes.lines_replaced = 0;
+    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let totals = parsed.get("outcomes").and_then(|o| o.get("totals")).unwrap();
+    assert!(
+        totals.get("lines-written").is_none() && totals.get("lines-replaced").is_none(),
+        "an unreindexed catalog records no lines, so the field is absent: {totals}"
+    );
 }

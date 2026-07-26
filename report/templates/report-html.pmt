@@ -80,8 +80,9 @@ computed dimension is forbidden.
 Rules for charts:
 - Only a series whose rows carry a `*-percent-of-max` field may be drawn as a bar/column chart.
   Chartable series in this context: `totals.models` (`spend-percent-of-max`),
-  `aggregates.by-org` (`spend-percent-of-max`), `aggregates.by-repo` (`spend-percent-of-max`),
-  and `aggregates.by-day` (`spend-percent-of-max` and `sessions-percent-of-max`).
+  `aggregates.by-org` (`spend-percent-of-max`), `aggregates.by-repo` (`spend-percent-of-max`,
+  `commits-percent-of-max`, and `prs-percent-of-max`), and `aggregates.by-day`
+  (`spend-percent-of-max` and `sessions-percent-of-max`).
 - A series WITHOUT `*-percent-of-max` fields (e.g. `aggregates.outliers`) is rendered as a table,
   never as a chart.
 - Every visible label on a chart (the value beside a bar, the axis category) is copied verbatim
@@ -89,6 +90,12 @@ Rules for charts:
   the `repo`/`org`/`model` name. Never label a bar with the raw percent.
 - A row whose `*-percent-of-max` field is absent (its series max was zero) is omitted from the
   chart or shown with a zero-width bar; never invent a proportion for it.
+- A spend-against-output chart is TWO bars on one row, never a computed combination of them: the
+  repo's `spend-percent-of-max` sets one bar, its `commits-percent-of-max` (or
+  `prs-percent-of-max`) sets the other, each a verbatim copy scaled within its OWN series. Do not
+  divide, subtract, or index one against the other, and do not draw a bar for a row whose output
+  field is absent (that repo observed no output; leave its output track empty and say so in the
+  label, never a zero-length bar that reads as a measured zero).
 - A bar's width is the verbatim `*-percent-of-max` from ITS OWN row and nothing else. You MUST NOT
   re-scale, re-normalize, or recompute proportions for any subset of rows - not when you group
   repos by org, not for a "top N" view, not for any section or sub-chart. `spend-percent-of-max` is
@@ -129,7 +136,12 @@ The JSON context block contains:
 - `aggregates.by-org`: one row per source org (e.g. the employer GitHub org, the user's personal
   org, third-party), each with `org`, `repos`, `sessions`, `tokens-human`, `spend`.
 - `aggregates.by-repo`: one row per repo, pre-sorted by spend descending, each with `repo`,
-  `org`, `sessions`, `tokens-human`, `spend`, `models`.
+  `org`, `sessions`, `tokens-human`, `spend`, `models`, and, when that repo observed any output, an
+  `outcomes` object (`commits`, `prs-opened`, `files-edited`, and when recorded `lines-written` /
+  `lines-replaced`). A row with no `outcomes` key observed no output; say nothing about its output
+  rather than reporting zero. These per-repo counts are deduped WITHIN the repo and are never
+  summed across repos: for a period-wide output figure copy `outcomes.totals`, which is the
+  globally deduped one.
 - `aggregates.by-day`: one row per CALENDAR DAY in the window (every date from `since` through
   `until`, including days with no session), each with `date`, `sessions`, `spend`, and `active`
   (`false` on a zero-session day -- render its bar/column at zero width/height so the gap is
@@ -167,7 +179,23 @@ The JSON context block contains:
   total that tag set covers.
 - `outcomes.totals`: observed, verifiable counts extracted from session transcripts; any of:
   `sessions-with-commits`, `commits`, `prs-opened`, `confluence-writes`, `jira-writes`,
-  `slack-messages`, `files-edited`. Only fields present were observed.
+  `slack-messages`, `files-edited`, `lines-written`, `lines-replaced`. Only fields present were
+  observed. `lines-written` is the volume of file content the period's edits produced and
+  `lines-replaced` the volume they replaced; they are counted off the edit payloads themselves, so
+  they are NOT a `git diff` stat and must never be labeled "lines added" or "net change".
+- `unit-costs`: the period's spend set against its own output and calendar, each a display string
+  the binary divided: `per-commit`, `per-pr` (PRs opened), `per-active-day`, `per-session`, plus
+  `session-spend-p50` and `session-spend-p90` (the median and 90th-percentile spend of a single
+  session). A field is ABSENT when its denominator is zero; write nothing for an absent field.
+  These are RATIOS, not prices, and the difference is one word. `per-commit` is the period's WHOLE
+  spend divided by the period's distinct commits, and that numerator includes every session in the
+  window, including the ones that produced no commit. Quote it as the ratio of two stated figures:
+  "the period spent <totals.spend> and produced <outcomes.totals.commits> commits, a ratio of
+  <unit-costs.per-commit> per commit". NEVER write "each commit cost", "the price of a commit",
+  "commits cost $X apiece", or any phrasing that presents the ratio as what producing one commit
+  cost. The same rule holds for `per-pr`, `per-active-day`, and `per-session`. A unit-cost figure
+  may be shown as a KPI card or a caption, and its card label carries the ratio wording too: "spend
+  per commit (ratio)", never "cost of a commit".
 - `sessions`: per-session entries with `short-id`, `title`, `repo`, `begin`, `end`,
   `tokens-human`, `spend-display` (display string, `(untracked)` when unpriced), `models`, and an
   optional `outcomes` object (`commits`: list of shas; `prs`: list of
@@ -178,9 +206,13 @@ The JSON context block contains:
 
 - Chart-scale fields (deterministically precomputed, one decimal, 0-100): rows in
   `totals.models`, `aggregates.by-org`, and `aggregates.by-repo` carry `spend-percent-of-max`;
-  rows in `aggregates.by-day` carry both `spend-percent-of-max` and `sessions-percent-of-max`.
-  Each is `round(value / series-max * 1000) / 10`, computed by the binary. A field is ABSENT when
-  its series maximum is zero. These are the ONLY inputs to chart geometry (Hard prohibition 3).
+  `aggregates.by-repo` rows that observed output also carry `commits-percent-of-max` and
+  `prs-percent-of-max`; rows in `aggregates.by-day` carry both `spend-percent-of-max` and
+  `sessions-percent-of-max`. Each is `round(value / series-max * 1000) / 10`, computed by the
+  binary, and each is normalized within its OWN series (a repo's commit bar is scaled against the
+  busiest repo's commits, not against its own spend). A field is ABSENT when its series maximum is
+  zero or that row observed nothing. These are the ONLY inputs to chart geometry (Hard
+  prohibition 3).
 
 # Dashboard contract
 
@@ -203,6 +235,13 @@ Produce ONE complete, self-contained HTML document.
 - CSS-proportion bar/column charts, using ONLY `*-percent-of-max` (Hard prohibition 3), for the
   chartable series. Prefer charts for spend-by-repo, spend-by-model, and the by-day temporal
   shape (spend and sessions).
+- REQUIRED when at least one `aggregates.by-repo` row carries an `outcomes` object: a
+  spend-against-output chart. One row per by-repo row that has outcomes, in the order given, each
+  row showing the repo's spend bar (`spend-percent-of-max`) and, in a second track, its
+  `commits-percent-of-max` bar, with the verbatim `spend` and `commits` strings as the labels.
+  Each bar is its own series' verbatim proportion; the two are shown SIDE BY SIDE for the reader to
+  compare, never combined into a third number. This is the chart that answers "what did the spend
+  produce", which no chart in this report could show before.
 - Bar alignment: within a single chart, every bar shares ONE set of column tracks - an identical
   left edge and an identical right edge on every row, no matter how long that row's label or value
   string is. Lay the whole chart out as a SINGLE CSS grid (rows as `display: contents`, or a
@@ -215,7 +254,8 @@ Produce ONE complete, self-contained HTML document.
   the quantified-output counts, and the efficiency attribution tables (agent-type, by-skill,
   by-mcp).
 - Every section has an HTML counterpart: an executive summary, quantified output (the outcome
-  counts), a cost summary, an agent-type cost attribution table (the HEADLINE breakdown from
+  counts, the spend-against-output chart, and the `unit-costs` ratios in their exact framing when
+  present), a cost summary, an agent-type cost attribution table (the HEADLINE breakdown from
   `efficiency.agent-type-costs`, rows in the order given, with a lead-in naming the top row and
   stating that the rows account for the whole period spend), the
   efficiency story (cache-read-share plus the `efficiency` signals -- tool-error-rate,

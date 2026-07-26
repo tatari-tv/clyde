@@ -78,7 +78,12 @@ The JSON context block contains:
 - `aggregates.by-org`: one row per source org (e.g. the employer GitHub org, the user's personal
   org, third-party), each with `org`, `repos`, `sessions`, `tokens-human`, `spend`.
 - `aggregates.by-repo`: one row per repo, pre-sorted by spend descending, each with `repo`,
-  `org`, `sessions`, `tokens-human`, `spend`, `models`.
+  `org`, `sessions`, `tokens-human`, `spend`, `models`, and, when that repo observed any output, an
+  `outcomes` object (`commits`, `prs-opened`, `files-edited`, and when recorded `lines-written` /
+  `lines-replaced`). A row with no `outcomes` key observed no output; say nothing about its output
+  rather than reporting zero. These per-repo counts are deduped WITHIN the repo and are never
+  summed across repos: for a period-wide output figure copy `outcomes.totals`, which is the
+  globally deduped one.
 - `aggregates.by-day`: one row per CALENDAR DAY in the window (every date from `since` through
   `until`, including days with no session), each with `date`, `sessions`, `spend`, and `active`
   (`false` on a day with zero sessions -- cite these to name a gap, never infer a gap from a
@@ -115,7 +120,21 @@ The JSON context block contains:
   total that tag set covers.
 - `outcomes.totals`: observed, verifiable counts extracted from session transcripts; any of:
   `sessions-with-commits`, `commits`, `prs-opened`, `confluence-writes`, `jira-writes`,
-  `slack-messages`, `files-edited`. Only fields present were observed.
+  `slack-messages`, `files-edited`, `lines-written`, `lines-replaced`. Only fields present were
+  observed. `lines-written` is the volume of file content the period's edits produced and
+  `lines-replaced` the volume they replaced; they are counted off the edit payloads themselves, so
+  they are NOT a `git diff` stat and must never be labeled "lines added" or "net change".
+- `unit-costs`: the period's spend set against its own output and calendar, each a display string
+  the binary divided: `per-commit`, `per-pr` (PRs opened), `per-active-day`, `per-session`, plus
+  `session-spend-p50` and `session-spend-p90` (the median and 90th-percentile spend of a single
+  session). A field is ABSENT when its denominator is zero; write nothing for an absent field.
+  These are RATIOS, not prices, and the difference is one word. `per-commit` is the period's WHOLE
+  spend divided by the period's distinct commits, and that numerator includes every session in the
+  window, including the ones that produced no commit. Quote it as the ratio of two stated figures:
+  "the period spent <totals.spend> and produced <outcomes.totals.commits> commits, a ratio of
+  <unit-costs.per-commit> per commit". NEVER write "each commit cost", "the price of a commit",
+  "commits cost $X apiece", or any phrasing that presents the ratio as what producing one commit
+  cost. The same rule holds for `per-pr`, `per-active-day`, and `per-session`.
 - `sessions`: per-session entries with `short-id`, `title`, `repo`, `begin`, `end`,
   `tokens-human`, `spend-display` (display string, `(untracked)` when unpriced), `models`, and an
   optional `outcomes` object (`commits`: list of shas; `prs`: list of
@@ -177,9 +196,24 @@ what happened.
 Emit only if `outcomes.totals` is present and non-empty. A two-column markdown table
 (`Metric` | `Count`) with one row per field present in `outcomes.totals`, using plain-English
 labels ("Sessions producing commits", "Pull requests opened", "Confluence pages written or
-updated", etc.). These are observed tool invocations extracted from session transcripts, not
-estimates; you may say exactly that in a single lead-in sentence. Do not pad the table with
-metrics that are not in the data.
+updated", "Lines of file content written", "Lines of file content replaced", etc.). These are
+observed tool invocations extracted from session transcripts, not estimates; you may say exactly
+that in a single lead-in sentence. Do not pad the table with metrics that are not in the data.
+
+Then, when `aggregates.by-repo` has at least one row carrying an `outcomes` object, a
+spend-against-output table: `Repo` | `Spend` | `Commits` | `PRs Opened` | `Files Edited`, one row
+per by-repo row that has outcomes, IN THE ORDER GIVEN (pre-sorted by spend descending; do not
+re-sort, do not add a total row, do not add rows for repos with no `outcomes` key). Every value
+copied verbatim. This is the section that lets a reader see spend beside what it produced, per
+repo, without either of you doing arithmetic. One factual lead-in sentence may name which repo
+carried the most spend and what it produced; it may not rank repos by output per dollar, which is
+a ratio you would have to compute.
+
+Then, when `unit-costs` is present, two or three factual sentences quoting the fields that are
+present, each as the ratio it is and never as a price (see the `unit-costs` schema entry for the
+exact framing and the banned phrasings). `session-spend-p50` next to `per-session` is the most
+useful pair: a mean well above the median means a few large sessions carried the period, and you
+may say that in words, citing both figures. Omit any absent field silently.
 
 ## Cost Summary
 A markdown table showing every model in `totals.models`, in the order given (pre-sorted).
@@ -258,7 +292,9 @@ row. A repo with one major outcome deserves prose.
 Per-repo summary lines use the pre-computed values from `aggregates.by-repo`, format:
 
 - `<repo-slug>` (N sessions, T tokens, $S spend): one-line factual summary citing 1-3 session
-  titles and observed outcomes.
+  titles and observed outcomes. When the row carries an `outcomes` object, prefer ITS counts
+  (`commits`, `prs-opened`) for that repo's output over recounting per-session lists; they are
+  already deduped for the repo.
 
 **Synthesize, don't enumerate.** Within each theme, pick at most 3-5 representative session
 titles, chosen for what they convey, not for their cost. Per-session dollar amounts appear in
@@ -315,8 +351,10 @@ justified" claim, no trajectory verdicts, no ROI language.
   Every render carries it; never omit it, never rephrase it.
 - Every number is copied verbatim from the context block (Hard prohibition 1). Numbers not in
   the context (hours, days of work, headcount equivalents) are NEVER fabricated.
-- Outcome claims (commits, PRs, pages, tickets, messages) come only from `outcomes` fields.
+- Outcome claims (commits, PRs, pages, tickets, messages, lines) come only from `outcomes` fields.
   If `outcomes` is absent, make no outcome claims and omit the Quantified Output section.
+- `unit-costs` figures are ratios of two stated figures, never prices. "A ratio of $X per commit"
+  is permitted; "each commit cost $X" is not, in any section, in any wording.
 - No em dashes (the long dash). Use regular hyphens, commas, or semicolons. No exceptions.
 - Voice: factual, restrained, specific. The data carries the argument; the prose stays out of
   the way.

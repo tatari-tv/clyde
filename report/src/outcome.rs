@@ -36,6 +36,14 @@ pub struct OutcomeTotals {
     pub slack_messages: u64,
     /// Sum of each session's own distinct-file count (no cross-session identity to dedupe on).
     pub files_edited: u64,
+    /// Sum of each session's `lines-written` (Phase 7): the volume of file content the period's
+    /// Edit/Write calls produced. See [`Outcomes::lines_written`] for why this is not a diff stat.
+    /// `0` for any session indexed before Phase 7 until its transcript is reindexed.
+    #[serde(default)]
+    pub lines_written: u64,
+    /// Sum of each session's `lines-replaced`. See [`Outcomes::lines_replaced`].
+    #[serde(default)]
+    pub lines_replaced: u64,
 }
 
 /// Roll up a set of per-session [`Outcomes`] into the persisted [`OutcomeTotals`], deduping commits
@@ -51,6 +59,8 @@ pub fn rollup<'a>(sessions: impl Iterator<Item = Option<&'a Outcomes>>) -> Outco
     let mut jira_writes: u64 = 0;
     let mut slack_messages: u64 = 0;
     let mut files_edited: u64 = 0;
+    let mut lines_written: u64 = 0;
+    let mut lines_replaced: u64 = 0;
     let mut session_count: u64 = 0;
 
     for outcomes in sessions.flatten() {
@@ -64,6 +74,8 @@ pub fn rollup<'a>(sessions: impl Iterator<Item = Option<&'a Outcomes>>) -> Outco
         jira_writes += outcomes.jira_writes;
         slack_messages += outcomes.slack_messages;
         files_edited += outcomes.files_edited;
+        lines_written += outcomes.lines_written;
+        lines_replaced += outcomes.lines_replaced;
     }
 
     let totals = OutcomeTotals {
@@ -74,10 +86,12 @@ pub fn rollup<'a>(sessions: impl Iterator<Item = Option<&'a Outcomes>>) -> Outco
         jira_writes,
         slack_messages,
         files_edited,
+        lines_written,
+        lines_replaced,
     };
     debug!(
         "outcome::rollup: sessions-with-outcomes={} sessions-with-commits={} distinct-commits={} \
-         distinct-prs={} confluence={} jira={} slack={} files={}",
+         distinct-prs={} confluence={} jira={} slack={} files={} lines-written={} lines-replaced={}",
         session_count,
         totals.sessions_with_commits,
         totals.commits,
@@ -85,7 +99,9 @@ pub fn rollup<'a>(sessions: impl Iterator<Item = Option<&'a Outcomes>>) -> Outco
         totals.confluence_writes,
         totals.jira_writes,
         totals.slack_messages,
-        totals.files_edited
+        totals.files_edited,
+        totals.lines_written,
+        totals.lines_replaced
     );
     totals
 }
