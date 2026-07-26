@@ -6,7 +6,7 @@
 //! the resolved [`DateTz`](crate::DateTz) into [`parse_since`](crate::parse_since), keeping the
 //! parser pure.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eyre::{Context, Result};
 use serde::Deserialize;
@@ -355,6 +355,13 @@ pub struct Config {
     /// Thresholds `clyde efficiency` scores a session against. Absent -> all-defaults.
     #[serde(default)]
     efficiency: EfficiencyConfig,
+    /// Where `<org>/<repo>` clones live. Absent -> `<home>/repos`.
+    ///
+    /// Read by [`crate::repo`]'s rule 4, the last-resort `<repo-root>/<org>/<repo>[/...]` guess. It
+    /// is config rather than a wildcard on purpose: rule 4 matches only under this root, so an
+    /// arbitrary path cannot manufacture an org.
+    #[serde(default = "default_repo_root", deserialize_with = "de_repo_root")]
+    repo_root: PathBuf,
 }
 
 impl Default for Config {
@@ -365,8 +372,49 @@ impl Default for Config {
             projects_dir: None,
             reindex_on_start: default_reindex_on_start(),
             efficiency: EfficiencyConfig::default(),
+            repo_root: default_repo_root(),
         }
     }
+}
+
+/// The default clone root when `repo-root` is unset: `<home>/repos`.
+///
+/// With no `$HOME` at all this yields the relative `repos`, which rule 4 can never match against an
+/// absolute cwd. That is the fail-closed answer: no attribution rather than a fabricated one.
+fn default_repo_root() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join("repos"))
+        .unwrap_or_else(|| PathBuf::from("repos"))
+}
+
+/// Validate an explicitly configured `repo-root`: it must be an absolute path AND an existing
+/// directory.
+///
+/// Both halves are load-time errors because both fail SILENTLY at use time: a relative root never
+/// matches an absolute cwd, and a typo'd root matches nothing, so in either case rule 4 just stops
+/// firing and attribution quietly degrades with no signal. The key is hardcoded into the message
+/// for the same reason the render ceilings each carry theirs (see [`nonzero_ceiling`]).
+///
+/// The DEFAULT is deliberately not existence-checked: a machine with no `~/repos` must still run
+/// every clyde command, and there the only consequence is that rule 4 never fires.
+fn de_repo_root<'de, D>(deserializer: D) -> std::result::Result<PathBuf, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let path = PathBuf::deserialize(deserializer)?;
+    if !path.is_absolute() {
+        return Err(serde::de::Error::custom(format!(
+            "repo-root must be an absolute path, got {}",
+            path.display()
+        )));
+    }
+    if !path.is_dir() {
+        return Err(serde::de::Error::custom(format!(
+            "repo-root must be an existing directory, but {} is not one",
+            path.display()
+        )));
+    }
+    Ok(path)
 }
 
 /// The serde default for `reindex-on-start`: on. A one-shot startup reindex keeps the served
@@ -437,6 +485,11 @@ impl Config {
     /// The `efficiency:` scoring thresholds (all-defaults when the section is absent).
     pub fn efficiency(&self) -> &EfficiencyConfig {
         &self.efficiency
+    }
+
+    /// The clone root repo attribution's rule 4 matches against (`<home>/repos` when unset).
+    pub fn repo_root(&self) -> &Path {
+        &self.repo_root
     }
 }
 

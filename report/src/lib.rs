@@ -12,7 +12,6 @@ pub mod outcome;
 pub mod persona;
 pub mod proc;
 pub mod render;
-pub mod repo;
 pub mod report;
 pub mod summarize;
 pub mod title;
@@ -28,6 +27,9 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 pub use cli::ReportArgs;
+/// Repo attribution moved to `common::repo` (index and collect both need it, and `sessions` cannot
+/// depend on `report`). Re-exported under its old path so `report::repo::...` keeps resolving.
+pub use common::repo;
 pub use config::{Config, ResolvedCommand};
 pub use tools::tool_validation_help;
 

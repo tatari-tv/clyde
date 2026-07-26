@@ -93,8 +93,21 @@ $XDG_CONFIG_HOME/clyde/pricing.json  # merged pricing override (was ccu/ + cr/)
 
 `clyde.yml` is optional and strict (`deny_unknown_fields`): a missing file is all-defaults, but a
 typo'd key is a hard error. Today it carries `date-tz` (how `report collect --since <date>`
-interprets a bare date), a `render:` section (below), and an `efficiency:` section (below) with the
-thresholds `clyde efficiency` scores sessions against.
+interprets a bare date), `repo-root` (below), a `render:` section (below), and an `efficiency:`
+section (below) with the thresholds `clyde efficiency` scores sessions against.
+
+```yaml
+# ~/.config/clyde/clyde.yml
+repo-root: /home/you/repos       # where <org>/<repo> clones live; default <home>/repos
+```
+
+`repo-root` is the last resort of repo attribution: when a session's working directory is gone and
+clyde has never seen it alive, a cwd matching `<repo-root>/<org>/<repo>[/...]` is *guessed* to be
+that repo, and the guess is labeled as one (`repo-source: path-guess`) rather than presented as
+fact. Matching is confined to this root, so an arbitrary path cannot manufacture an org. An
+explicitly set value must be an absolute path and an existing directory, or the config fails to
+load; the default is not existence-checked, and on a machine with no `~/repos` the only consequence
+is that the guess never fires.
 
 The `render:` defaults for `report render` (all optional; a missing section is all-defaults):
 
