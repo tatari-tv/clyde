@@ -35,13 +35,23 @@ no matter how natural they read:
 
 Qualitative characterizations that require reading but not computing are licensed narrative:
 whether `by-day` looks clustered or evenly spread, which date ranges carried the most work,
-which repos a model appeared in, what themes dominate a repo's session titles. These are your
+which repos a model appeared in, what themes dominate a repo's sessions. These are your
 job. Two conditions: a characterization may never introduce a figure, count, percentage, or
 duration that is not itself in the context block, AND any claim about temporal shape, model
-mix, or concentration must cite the specific dates, repos, or session titles from the context
+mix, or concentration must cite the specific dates, repos, or sessions from the context
 it rests on ("clustered at month-end: 2026-06-28 through 2026-06-30 carried the heaviest
 by-day rows"), so a wrong characterization is immediately falsifiable against the block. A
 shape claim with no citation is not permitted.
+
+A session's `title` is Claude Code's own `ai-title`, resolved from the OPENING exchange alone; it
+names what a session started with, not what it did. `summary` is the enrich pass's own digest of
+the FULL transcript and is the evidence a theme claim should rest on. When citing what a session
+was ABOUT or what work it did, cite `summary`; use `title` only as the session's LABEL in a table
+or list (the thing you print next to the dollar figure), never as the evidence for a theme. For a
+session with no `summary` (an unenriched session -- see `enrichment-coverage` below), fall back to
+`title` as the theme evidence too; that fallback is expected and does not need an apology, but do
+not present a title-derived theme with the same confidence as a summary-derived one when both kinds
+appear in the same section.
 
 # Hard prohibition 2: no speculative quantification
 
@@ -201,6 +211,18 @@ The JSON context block contains:
   optional `outcomes` object (`commits`: list of shas; `prs`: list of
   `{number, url, repository}`; `confluence-writes`, `jira-writes`, `slack-messages`,
   `files-edited` counts). Use these for THEMES and CITATIONS, never for counting or summing.
+  `summary`, present only for an enriched session, is the enrich pass's digest of the session's
+  actual work and is the evidence a theme claim should cite; `title` is Claude Code's own
+  `ai-title` from the OPENING exchange and is a LABEL, not evidence -- print it to identify a
+  session in a table, but do not treat it as what the session was about. `tags`, present only when
+  the enrich pass or the user set any, are topic labels you may mention alongside a theme. A
+  session with neither `summary` nor `tags` was never enriched; cite its `title` instead, and see
+  `enrichment-coverage` for how common that is this period.
+- `enrichment-coverage`: one factual sentence stating how many of this period's sessions carry an
+  enrich `summary`, e.g. "972 of 1,523 sessions in the window (63.9%) carry an enrich summary; the
+  rest are cited by title only." When coverage is low, this is worth a visible caption near the
+  narrative sections so the reader knows most of it rests on titles, not summaries; quote the
+  sentence verbatim rather than paraphrasing its numbers.
 - `prior`: OPTIONAL, present only when `--prior <report.json>` was supplied. The prior period,
   aggregated the SAME way as this one: `since`, `until`, `days`, `totals` (same shape as the
   top-level `totals`), `by-repo`, `by-org`, and, when recorded, `outcomes` (same shape as the
@@ -287,8 +309,8 @@ Produce ONE complete, self-contained HTML document.
   comparing this period against `prior` (both figures copied, never subtracted): spend and session
   totals side by side, repos that newly appeared or wound down, model-mix shifts. State facts, not
   verdicts; no "trend is improving" language.
-- HTML-escape every interpolated string (titles, repo slugs) so a stray character cannot break
-  the markup.
+- HTML-escape every interpolated string (titles, summaries, repo slugs) so a stray character
+  cannot break the markup.
 - Never use an em-dash (the Unicode character U+2014) anywhere in the document: not in the title,
   not in prose, not in labels. Use a spaced double hyphen (` -- `), a colon, parentheses, or split
   the sentence instead. This applies to text you author; strings copied verbatim from the context

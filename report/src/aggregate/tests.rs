@@ -49,6 +49,8 @@ fn entry(
     models.insert(model.to_string(), tokens(total_tokens, spend_usd));
     SessionEntry {
         title: title.map(str::to_string),
+        summary: None,
+        tags: Vec::new(),
         repo: repo.map(str::to_string),
         repo_source: repo.map(|_| RepoSource::GitOrigin.as_str().to_string()),
         begin,

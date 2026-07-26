@@ -23,13 +23,23 @@ or "~"; a number is either in the context block or it is not in the report.
 
 Qualitative characterizations that require reading but not computing are licensed narrative:
 whether `by-day` looks clustered or evenly spread, which date ranges carried the most work,
-which repos a model appeared in, what themes dominate a repo's session titles. These are your
+which repos a model appeared in, what themes dominate a repo's sessions. These are your
 job. Two conditions: a characterization may never introduce a figure, count, percentage, or
 duration that is not itself in the context block, AND any claim about temporal shape, model
-mix, or concentration must cite the specific dates, repos, or session titles from the context
+mix, or concentration must cite the specific dates, repos, or sessions from the context
 it rests on ("clustered at month-end: 2026-06-28 through 2026-06-30 carried the heaviest
 by-day rows"), so a wrong characterization is immediately falsifiable against the block. A
 shape claim with no citation is not permitted.
+
+A session's `title` is Claude Code's own `ai-title`, resolved from the OPENING exchange alone; it
+names what a session started with, not what it did. `summary` is the enrich pass's own digest of
+the FULL transcript and is the evidence a theme claim should rest on. When citing what a session
+was ABOUT or what work it did, cite `summary`; use `title` only as the session's LABEL in a table
+or list (the thing you print next to the dollar figure), never as the evidence for a theme. For a
+session with no `summary` (an unenriched session -- see `enrichment-coverage` below), fall back to
+`title` as the theme evidence too; that fallback is expected and does not need an apology, but do
+not present a title-derived theme with the same confidence as a summary-derived one when both kinds
+appear in the same section.
 
 # Hard prohibition 2: no speculative quantification
 
@@ -140,6 +150,19 @@ The JSON context block contains:
   optional `outcomes` object (`commits`: list of shas; `prs`: list of
   `{number, url, repository}`; `confluence-writes`, `jira-writes`, `slack-messages`,
   `files-edited` counts). Use these for THEMES and CITATIONS, never for counting or summing.
+  `summary`, present only for an enriched session, is the enrich pass's digest of the session's
+  actual work and is the evidence a theme claim should cite; `title` is Claude Code's own
+  `ai-title` from the OPENING exchange and is a LABEL, not evidence -- print it to identify a
+  session in a table, but do not treat it as what the session was about. `tags`, present only when
+  the enrich pass or the user set any, are topic labels you may mention alongside a theme. A
+  session with neither `summary` nor `tags` was never enriched; cite its `title` instead, and see
+  `enrichment-coverage` for how common that is this period.
+- `enrichment-coverage`: one factual sentence stating how many of this period's sessions carry an
+  enrich `summary`, e.g. "972 of 1,523 sessions in the window (63.9%) carry an enrich summary; the
+  rest are cited by title only." When coverage is low, this is worth one sentence near the top of
+  the report (or wherever you first lean on session narrative) so the reader knows most of the
+  narrative below rests on titles, not summaries; quote the sentence verbatim rather than
+  paraphrasing its numbers.
 - `prior`: OPTIONAL, present only when `--prior <report.json>` was supplied. The prior period,
   aggregated the SAME way as this one: `since`, `until`, `days`, `totals` (same shape as the
   top-level `totals`), `by-repo`, `by-org`, and, when recorded, `outcomes` (same shape as the
@@ -293,23 +316,23 @@ shows a personal-org tool being used in employer-org sessions, say so; that is t
 of the connection.
 
 WITHIN each tier, group by theme based on what actually happened this month, not a fixed taxonomy.
-Surface specific repos and what was done, citing session titles and per-session outcomes
-(commits, PRs, docs) where they ground a claim. A repo with two trivial sessions does not need a
-row. A repo with one major outcome deserves prose.
+Surface specific repos and what was done, citing session summaries (titles when a session carries
+no summary) and per-session outcomes (commits, PRs, docs) where they ground a claim. A repo with
+two trivial sessions does not need a row. A repo with one major outcome deserves prose.
 
 Per-repo summary lines use the pre-computed values from `aggregates.by-repo`, format:
 
-- `<repo-slug>` (N sessions, T tokens, $S spend): one-line factual summary citing 1-3 session
-  titles and observed outcomes. When the row carries an `outcomes` object, prefer ITS counts
-  (`commits`, `prs-opened`) for that repo's output over recounting per-session lists; they are
-  already deduped for the repo.
+- `<repo-slug>` (N sessions, T tokens, $S spend): one-line factual summary citing 1-3 sessions'
+  `summary` text (falling back to `title` for a session that carries none) and observed outcomes.
+  When the row carries an `outcomes` object, prefer ITS counts (`commits`, `prs-opened`) for that
+  repo's output over recounting per-session lists; they are already deduped for the repo.
 
-**Synthesize, don't enumerate.** Within each theme, pick at most 3-5 representative session
-titles, chosen for what they convey, not for their cost. Per-session dollar amounts appear in
-exactly two sanctioned places: the per-repo summary line and the Outlier Sessions table; nowhere
-else. If a theme has 19 sessions, name the theme and cite a few exemplars; do not list all 19.
-Prefer citing an outcome ("landed 4 PRs on persona-cli") over a title-dump wherever outcome data
-exists.
+**Synthesize, don't enumerate.** Within each theme, pick at most 3-5 representative sessions,
+chosen for what they convey, not for their cost, citing their `summary` (or `title` when a
+session carries no `summary`). Per-session dollar amounts appear in exactly two sanctioned places:
+the per-repo summary line and the Outlier Sessions table; nowhere else. If a theme has 19
+sessions, name the theme and cite a few exemplars; do not list all 19. Prefer citing an outcome
+("landed 4 PRs on persona-cli") over a title-dump wherever outcome data exists.
 
 ## Usage Profile
 Describe the shape of the month, factually:
@@ -319,14 +342,16 @@ Describe the shape of the month, factually:
   literal run of `active: false` rows in `aggregates.by-day`, not an absence of a row -- cite the
   date range of the run. If `aggregates.carried-in` is nonzero, name it here as spend the by-day
   series does not cover, rather than a gap or a day-one figure.
-- **Model mix**: one factual line per model on what it was used for, drawn from the titles and
-  repos in which each model appears (e.g. "Opus sessions clustered on design documents and
-  architecture reviews"). No per-model numbers here; the Cost Summary already has them.
+- **Model mix**: one factual line per model on what it was used for, drawn from the summaries
+  (titles when a session carries no summary) and repos in which each model appears (e.g. "Opus
+  sessions clustered on design documents and architecture reviews"). No per-model numbers here;
+  the Cost Summary already has them.
 - **Outlier sessions**: a markdown table of the rows in `aggregates.outliers`, as given.
-  Columns: `Session` (title, or `short-id` if untitled), `Repo`, `Tokens`, `Spend`,
-  `What it produced`. The last column is a one-line factual statement drawn from the session's
-  outcome fields when present, otherwise from the title. No speculation about how long it
-  would have taken otherwise.
+  Columns: `Session` (title, or `short-id` if untitled -- `title` is a LABEL here, identifying the
+  row, not evidence), `Repo`, `Tokens`, `Spend`, `What it produced`. The last column is a one-line
+  factual statement drawn from the session's outcome fields when present, otherwise cross-reference
+  the same session in `sessions[]` for its `summary` if one exists, otherwise fall back to `title`.
+  No speculation about how long it would have taken otherwise.
 
 ## Month over Month
 Emit only if `prior` is present in the context block; otherwise omit the section entirely,
@@ -343,7 +368,8 @@ improving" language.
 ONLY emit this section if `options.include-tradeoffs` is `true`. A frank, specific assessment of
 where the spend was less effective this period: workflows that did not pan out, sessions that
 produced little, friction encountered, models or tools that disappointed. 3 to 6 bullets, each
-specific to this period's data (cite the repo or session title). No generic AI complaints.
+specific to this period's data (cite the repo, or a session's `summary`/`title`). No generic AI
+complaints.
 
 ## Forward-Looking
 Two or three items. What's changing next month, phrased as factual statements about projects in
@@ -370,8 +396,8 @@ justified" claim, no trajectory verdicts, no ROI language.
 - No em dashes (the long dash). Use regular hyphens, commas, or semicolons. No exceptions.
 - Voice: factual, restrained, specific. The data carries the argument; the prose stays out of
   the way.
-- Exact strings: repo slugs, model names, dollar amounts, token figures, and session titles come
-  straight from the context block.
+- Exact strings: repo slugs, model names, dollar amounts, token figures, and session titles/
+  summaries come straight from the context block.
 - Preserve the ordering of pre-sorted lists (`totals.models`, `aggregates.by-repo`,
   `aggregates.outliers`); do not re-sort.
 - Do not invent sections, tiers, or themes that don't apply this period; drop them.

@@ -73,6 +73,8 @@ fn entry_with_outcomes(model: &str, mt: ModelTokens, outcomes: Option<Outcomes>)
     models.insert(model.to_string(), mt);
     SessionEntry {
         title: None,
+        summary: None,
+        tags: Vec::new(),
         repo: None,
         repo_source: None,
         begin: ts("2026-04-10T10:00:00Z"),

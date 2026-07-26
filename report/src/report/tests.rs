@@ -78,6 +78,8 @@ fn collected(
     CollectedSession {
         session_id: sid.into(),
         title: title.map(str::to_string),
+        summary: None,
+        tags: Vec::new(),
         repo: Some("tatari-tv/claude-report".into()),
         repo_source: Some(RepoSource::GitOrigin),
         begin: ts("2026-04-10T10:00:00Z"),
@@ -143,6 +145,62 @@ fn write_json_round_trips_and_emits_schema_v2() {
     assert!(entry.untracked_models.is_empty());
     assert_eq!(entry.jsonl_paths, vec![PathBuf::from("/path/to/parent.jsonl")]);
     assert!(entry.spend_usd.unwrap() > 0.0);
+}
+
+/// Design Phase 9 (narrative evidence): the enrich `summary`/`tags` travel from the catalog's
+/// `CollectedSession` through to the artifact's `SessionEntry`, independently of `title` -- the two
+/// evidence sources must never collapse into one field.
+#[test]
+fn build_report_carries_enrich_summary_and_tags_through_to_session_entry() {
+    let mut s = opus_session(SID_A, Some("do the thing"));
+    s.summary = Some("investigated the failing build and fixed a race in the retry loop".into());
+    s.tags = vec!["backend".into(), "bugfix".into()];
+
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let entry = &report.sessions[SID_A];
+    assert_eq!(
+        entry.summary.as_deref(),
+        Some("investigated the failing build and fixed a race in the retry loop")
+    );
+    assert_eq!(entry.tags, vec!["backend".to_string(), "bugfix".to_string()]);
+    // `title` travels independently -- setting `summary` never overwrites it.
+    assert_eq!(entry.title.as_deref(), Some("do the thing"));
+}
+
+/// An unenriched session (the `collected()` fixture default) carries neither field, and the
+/// serialized artifact OMITS both keys rather than emitting `"summary": null` / `"tags": []` for
+/// every unenriched row -- the whole point of `skip_serializing_if` on both.
+#[test]
+fn build_report_omits_summary_and_tags_when_unenriched() {
+    let s = opus_session(SID_A, None);
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let entry = &report.sessions[SID_A];
+    assert!(entry.summary.is_none());
+    assert!(entry.tags.is_empty());
+
+    let json = serde_json::to_string(entry).unwrap();
+    assert!(!json.contains("\"summary\""), "got: {json}");
+    assert!(!json.contains("\"tags\""), "got: {json}");
 }
 
 #[test]

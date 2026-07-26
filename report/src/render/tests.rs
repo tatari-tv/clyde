@@ -57,6 +57,8 @@ fn session_entry(
 ) -> SessionEntry {
     SessionEntry {
         title: title.map(str::to_string),
+        summary: None,
+        tags: Vec::new(),
         repo: repo.map(str::to_string),
         repo_source: repo.map(|_| RepoSource::GitOrigin.as_str().to_string()),
         begin,
@@ -1430,5 +1432,7 @@ fn build_context_block_carries_line_counters_present_if_nonzero() {
     );
 }
 
+#[cfg(test)]
+mod narrative;
 #[cfg(test)]
 mod prior;

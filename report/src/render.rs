@@ -513,6 +513,12 @@ struct ContextBlock<'a> {
     /// ABOUT the whole figure, not another rollup of it, and because the prose cites it next to the
     /// headline. The rows sum to `totals.spend` by construction.
     attribution: Attribution,
+    /// How much of the window's sessions carry an enrich `summary` (design Phase 9, "Systemic
+    /// property"): the evidence base the narrative should cite. `run_collect` already warns on
+    /// stderr when this falls below `--min-enrichment` (Phase 3); this is the SAME fact carried into
+    /// the prompt so the narrative can state the gap in prose and correctly fall back to `title`
+    /// for the sessions it does not cover, rather than silently treating every session as enriched.
+    enrichment_coverage: String,
     /// The period's spend set against its own output and calendar (design Phase 7, finding 9):
     /// `per-commit`, `per-pr`, `per-active-day`, `per-session`, and the session-spend percentiles,
     /// each a display string the binary divided. Top-level for the same reason as `attribution`: it
@@ -742,16 +748,28 @@ struct TotalRow {
     spend: String,
 }
 
-/// Slim per-session view: `short-id`, `title`, `repo`, `begin`/`end`, `tokens-human`,
-/// `spend-display`, and model NAMES only (no per-model token detail). No `jsonl-paths`, and NO raw
-/// `spend` operand (design Phase 5, string-only context): sessions feed THEMES and CITATIONS only
-/// (never counting or summing), so the display string is all the model needs; `short-id` backs the
-/// untitled-session fallback.
+/// Slim per-session view: `short-id`, `title`, `summary`, `tags`, `repo`, `begin`/`end`,
+/// `tokens-human`, `spend-display`, and model NAMES only (no per-model token detail). No
+/// `jsonl-paths`, and NO raw `spend` operand (design Phase 5, string-only context): sessions feed
+/// THEMES and CITATIONS only (never counting or summing), so the display string is all the model
+/// needs; `short-id` backs the untitled-session fallback.
+///
+/// `title` is Claude Code's own `ai-title`, resolved from the session's OPENING exchange alone
+/// (design "Systemic property"): a label for identifying a session in a table or citation, never
+/// evidence of a theme. `summary` is the enrich pass's own digest of the FULL transcript (head +
+/// tail up to 500K chars) and is the evidence a theme should cite; `None` for a session the enrich
+/// pass never reached, in which case the prompt falls back to `title` (see the top-level
+/// `enrichment-coverage` field for how much of the window that affects). `tags` is the enrich
+/// pass's topic labels, empty when absent.
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct SessionView<'a> {
     short_id: String,
     title: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<&'a str>,
     repo: Option<&'a str>,
     begin: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -791,6 +809,7 @@ pub(crate) fn build_context_block(
         period,
         totals: build_totals_view(report),
         attribution: aggregate::compute_attribution(report),
+        enrichment_coverage: build_enrichment_coverage(report),
         unit_costs: aggregate::compute_unit_costs(report, &aggregates.by_day),
         aggregates: &aggregates,
         efficiency: build_efficiency_view(report),
@@ -879,6 +898,26 @@ fn build_totals_view(report: &Report) -> TotalsView {
             spend: format_usd(report.totals.spend_usd),
         },
     }
+}
+
+/// The `enrichment-coverage` context field (design Phase 9): how many of the window's sessions
+/// carry an enrich `summary`, as a single factual sentence the model may quote verbatim rather than
+/// recompute. Counted over `report.sessions` -- the SAME collection `sessions` in the context is
+/// built from -- so the figure matches exactly what the model can see, not a separate collect-time
+/// sample. `run_collect`'s `--min-enrichment` warning (Phase 3) fires on the same underlying fact at
+/// collect time; this is that fact's render-time counterpart, carried where the prompt can cite it.
+fn build_enrichment_coverage(report: &Report) -> String {
+    let total = report.sessions.len();
+    let enriched = report.sessions.values().filter(|e| e.summary.is_some()).count();
+    debug!("render::build_enrichment_coverage: enriched={enriched} total={total}");
+    if total == 0 {
+        return "0 of 0 sessions carry an enrich summary".to_string();
+    }
+    let share = enriched as f64 / total as f64 * 100.0;
+    format!(
+        "{enriched} of {total} sessions in the window ({share:.1}%) carry an enrich summary; the \
+         rest are cited by title only"
+    )
 }
 
 /// Re-expose the persisted `Totals.outcomes` rollup as the context's `outcomes.totals`, fields
@@ -1010,6 +1049,8 @@ fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a>
     SessionView {
         short_id: short_id(sid).to_string(),
         title: entry.title.as_deref(),
+        summary: entry.summary.as_deref(),
+        tags: entry.tags.iter().map(String::as_str).collect(),
         repo: entry.repo.as_deref(),
         begin: entry.begin,
         end: entry.end,

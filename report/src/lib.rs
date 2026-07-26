@@ -14,7 +14,6 @@ pub mod proc;
 pub mod render;
 pub mod report;
 pub mod summarize;
-pub mod title;
 pub mod tools;
 
 use crate::config::{CollectConfig, Output};
@@ -340,8 +339,9 @@ fn enrichment_warning(entries: &[CatalogEntry], floor: f64) -> Option<String> {
 /// Parse one catalog row into a [`report::CollectedSession`]. `efficiency_json` is guaranteed
 /// present here (the NULL fail-closed guard already returned), so a NULL past this point is an
 /// internal invariant break, and an unparseable blob is a LOUD error (bad data ≠ no data). Titles,
-/// repo, and the window timestamps all come from the catalog row — no JSONL is read and no resolver
-/// runs. The repo was resolved at INDEX time, when the filesystem could still answer for it.
+/// `summary`/`tags` (design Phase 9, narrative evidence), repo, and the window timestamps all come
+/// from the catalog row — no JSONL is read and no resolver runs. The repo was resolved at INDEX
+/// time, when the filesystem could still answer for it.
 fn to_collected(entry: &CatalogEntry, outcomes_enabled: bool) -> Result<report::CollectedSession> {
     let rec = &entry.record;
     let json = entry.efficiency_json.as_deref().ok_or_else(|| {
@@ -400,6 +400,8 @@ fn to_collected(entry: &CatalogEntry, outcomes_enabled: bool) -> Result<report::
     Ok(report::CollectedSession {
         session_id: rec.session_id.clone(),
         title: rec.title.clone(),
+        summary: rec.summary.clone(),
+        tags: rec.tags.clone(),
         repo,
         repo_source,
         begin,

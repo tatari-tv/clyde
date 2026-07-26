@@ -773,3 +773,91 @@ live fetch from a cache hit is a `claude-pricing` change this phase's scope excl
   work this period, none of them fabricated.
 - Reran `report render` on the prior-only artifact WITHOUT `--prior`: the rendered markdown carries
   no "Month over Month" section at all, live-confirming the absence case alongside the unit test.
+
+## Phase 9: Narrative evidence
+
+### Design decisions
+- `CollectedSession`/`SessionEntry` (`report/src/report.rs`) each gain `summary: Option<String>` and
+  `tags: Vec<String>`, threaded straight through `to_collected` (`report/src/lib.rs`, reading
+  `sessions::SessionRecord.summary`/`.tags`, already persisted by the enrich pass) and
+  `entry_from_scope` (`report/src/report.rs`) alongside the existing `title` passthrough. Both are
+  `#[serde(default, skip_serializing_if = ...)]` (`Option::is_none` / `Vec::is_empty`) so an
+  unenriched session's artifact row omits both keys entirely rather than emitting `"summary": null` /
+  `"tags": []` for the common case (36.1% enriched on the live window, so most rows take this path).
+- `SessionView` (`report/src/render.rs`) gains the same two fields with the same skip rule, so the
+  context block carries the identical contrast: an enriched session's row has `summary`/`tags`, an
+  unenriched one has neither, and the model can tell the two apart without a sentinel value.
+- New top-level `enrichment-coverage: String` context field (`build_enrichment_coverage`,
+  `report/src/render.rs`), counted over `report.sessions` -- the SAME collection `sessions[]` in the
+  context is built from -- so the quoted "N of M sessions carry an enrich summary" figure can never
+  drift from what the model can actually see in the same render. This is deliberately a render-time
+  fact, not a copy of `run_collect`'s collect-time `--min-enrichment` warning (Phase 3): the two can
+  differ (e.g. a merged report, or a re-render of an older collected JSON), and the context field
+  must describe the artifact actually being rendered.
+- Both prompt templates (`report.pmt`, `report-html.pmt`) gained the same paragraph naming the
+  defect plainly: `title` is Claude Code's own `ai-title`, resolved from a session's OPENING exchange
+  alone, and is a LABEL only; `summary` is the enrich pass's digest of the FULL transcript and is the
+  evidence a theme claim should cite. Every place either template previously said "session titles" as
+  evidence (Hard Prohibition 1's qualitative-narrative clause, the per-repo summary-line format, the
+  "Synthesize, don't enumerate" paragraph, the Usage Profile "Model mix" bullet, the Tradeoffs
+  citation instruction) now says "summary (falling back to title when a session carries none)"; the
+  Outlier Sessions table (`aggregates.outliers`, an `OutlierRow` with no `summary` field -- see
+  Deviations) is told to cross-reference the same session's `summary` in `sessions[]` by `short-id`
+  rather than gaining a duplicate field.
+- `report/src/title.rs` and `report/src/title/tests.rs` deleted (`git rm`); `pub mod title;` removed
+  from `report/src/lib.rs`. Nothing called `title::haiku` or `title::extract_prefix` anywhere in the
+  tree (confirmed by `rg`), so this is dead-code removal, not a behavior change. The one stray
+  reference (`report/src/summarize/api.rs`'s doc comment naming `title::haiku` as the other
+  `ANTHROPIC_API_KEY` consumer) is reworded to note the path was removed rather than left dangling.
+
+### Deviations
+- The doc's context-field list (API Design section) also names `notes` as a future context addition
+  ("`Report.notes` exists today and never reaches the prompt"). That bullet is not assigned to any
+  phase in the Implementation Plan table, and the team-lead task scoped Phase 9 to exactly
+  `summary`/`tags`/`enrichment-coverage`/the prompt edits/the `title.rs` deletion. Left `notes`
+  unaddressed here; it is either a later phase's job or a gap in the plan worth flagging (see Open
+  Questions).
+- `aggregates.outliers` (`OutlierRow`, `report/src/aggregate.rs`) was NOT extended with a `summary`
+  field, even though the design's "Systemic property" paragraph and this phase's narrative-evidence
+  goal apply equally to the Outlier Sessions table. The team-lead task scoped this phase to
+  `SessionView` (the `sessions[]` context field) specifically; extending a second struct was outside
+  that scope. Same effect, correct seam for THIS phase: the outlier table's `short-id` already lets
+  the model cross-reference the same session in `sessions[]` for its `summary`, so both templates
+  were worded to do that rather than claim a field that does not exist. Flagged as an open question
+  for whichever phase (or a follow-up) is authorized to touch `OutlierRow`.
+
+### Tradeoffs
+- `enrichment-coverage` is a single pre-formatted display string (matching the house
+  `by-skill-coverage`/`by-mcp-coverage` precedent) rather than a structured
+  `{enriched, total, coverage}` object. A structured object would let the prompt quote the raw counts
+  independently of the sentence wording, but every other coverage-style field in this codebase is a
+  single string the model quotes verbatim, and splitting this one would be an unrequested
+  inconsistency for no reader-facing gain.
+- Considered computing `enrichment-coverage` from the ORIGINAL catalog window (mirroring
+  `run_collect`'s `enrichment_warning` in `lib.rs` exactly) instead of from `report.sessions` at
+  render time. Rejected: a merged report or a re-render of an older `report.json` has no live catalog
+  to re-query, and the render-time count is the one guaranteed to match what the model is actually
+  looking at in `sessions[]` for THIS render, which is the property the field exists to guarantee.
+
+### Open questions
+- Should `Report.notes` become a context field in a later phase (or is it already covered by a phase
+  not yet implemented)? It is in the design's consolidated API-Design field list but not assigned a
+  phase number in the Implementation Plan table.
+- Should `OutlierRow` gain its own `summary` field in a later phase, so the Outlier Sessions
+  table's "What it produced" column can cite it directly instead of requiring the model to
+  cross-reference `sessions[]` by `short-id`? Left as a cross-reference in this phase per its scope.
+- **Context block size grew substantially more than the doc's Performance section anticipated.**
+  Measured on the real 30-day window (`--since 2026-06-26 --until 2026-07-25`, 1,523 sessions,
+  550 enriched, 36.1% coverage): the context block WITH `summary`/`tags`/`enrichment-coverage` is
+  942,127 bytes; the same block with those three additions stripped back out (simulating
+  pre-Phase-9) is 636,515 bytes -- a 305,612-byte (48%) increase, not the "roughly cancel" the doc
+  predicted against dropping `<synthetic>` (that drop already shipped in Phase 6, before this
+  measurement). Using a crude bytes/4 approximation (not a real tokenizer -- none is vendored here),
+  that is approximately 159,000 tokens before and 236,000 tokens after. `render.markdown-max-output-
+  tokens` (default 32,000) governs the model's OUTPUT length, not the input context, so this growth
+  does not trip that ceiling directly -- but a context block this large is worth checking against the
+  actual model's context-window budget (alongside the system prompt and the rest of the request)
+  before relying on this render for a full month at low enrichment coverage. Left as an open question
+  rather than a size guard, since the design did not ask for one in this phase and 500K-char-summary
+  sessions are the design's own committed shape (Phase 2 catalog work, `2026-07-24` design), not
+  something Phase 9 introduced a defect in.

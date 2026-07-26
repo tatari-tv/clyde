@@ -94,6 +94,15 @@ pub struct Totals {
 #[serde(rename_all = "kebab-case")]
 pub struct SessionEntry {
     pub title: Option<String>,
+    /// The enrich pass's summary, carried straight through from [`CollectedSession::summary`]
+    /// (design Phase 9): the evidence a theme should cite. `None` for an unenriched session, in
+    /// which case the prompt falls back to `title` -- see [`crate::render`]'s `enrichment-coverage`
+    /// context field for how much of the window this affects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The enrich pass's topic labels, carried straight through from [`CollectedSession::tags`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     pub repo: Option<String>,
     /// Which rule resolved [`Self::repo`] (`git-origin` | `known-path` | `files-touched` |
     /// `path-guess`), carried through from the catalog so provenance travels WITH the slug. Absent
@@ -200,6 +209,14 @@ impl ModelTokens {
 pub struct CollectedSession {
     pub session_id: String,
     pub title: Option<String>,
+    /// The enrich pass's own digest of the transcript (head + tail up to 500K chars), `None` until
+    /// enrichment runs (design Phase 9, "Systemic property"). This is the evidence a theme should
+    /// cite -- `title` is Claude Code's `ai-title`, resolved from the session's OPENING exchange
+    /// alone (`session/src/model.rs:64`, `ai_title -> first_prompt -> command_name`), so it names
+    /// what the session started with, not what it did.
+    pub summary: Option<String>,
+    /// The enrich pass's topic labels; empty when the session was never enriched or tagged.
+    pub tags: Vec<String>,
     /// The PERSISTED catalog attribution (schema v10), not a collect-time resolution.
     pub repo: Option<String>,
     /// Which rule produced `repo`; `None` exactly when `repo` is `None`.
@@ -472,6 +489,8 @@ fn entry_from_scope(
     let signals = &efficiency.aggregate;
     Ok(SessionEntry {
         title: s.title.clone(),
+        summary: s.summary.clone(),
+        tags: s.tags.clone(),
         repo: s.repo.clone(),
         repo_source: s.repo_source.map(|src| src.as_str().to_string()),
         begin: s.begin,

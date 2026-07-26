@@ -38,7 +38,8 @@ impl Kind {
 }
 
 /// Reads `ANTHROPIC_API_KEY`, treating whitespace-only as absent. Lives here because after the
-/// transport split this is the ONLY consumer of a key: `title::haiku` takes its key as a parameter.
+/// transport split (and the removal of the vestigial `report::title` haiku path, design Phase 9)
+/// this is the ONLY consumer of the key.
 pub fn api_key_from_env() -> Option<String> {
     std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.trim().is_empty())
 }
