@@ -8,11 +8,28 @@
 use chrono::{DateTime, Utc};
 use common::repo::{PathMap, Resolved};
 use eyre::Result;
-use log::debug;
+use log::{debug, trace, warn};
 use rusqlite::{OptionalExtension, params};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::Db;
+
+/// The `outcome_json` key holding rule 3's input. Spelled here rather than imported because
+/// `sessions` deliberately does not depend on `efficiency` (that dependency runs the other way, to
+/// persist); this reads ONE key out of an otherwise opaque blob.
+const REPOS_TOUCHED_KEY: &str = "repos-touched";
+
+/// One session's inputs to the repo chain, as read back from the catalog: everything
+/// [`common::repo::Resolver::resolve`] needs, with no transcript scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoCandidate {
+    pub session_id: String,
+    pub cwd: String,
+    /// `Outcomes::repos_touched` for this session, empty when the session has no `outcome_json` yet
+    /// (rule 3 then abstains, exactly as it does for a session that edited nothing).
+    pub repos_touched: BTreeMap<String, u64>,
+}
 
 /// The persisted repo attribution for one session, as read back by [`Db::repo_of`]. `repo` and
 /// `source` are `None` before any resolution has ever been written; `rank` stays the schema default
@@ -101,6 +118,57 @@ impl Db {
         Ok(n)
     }
 
+    /// Rule 3's input for one session: `Outcomes::repos_touched` out of the stored `outcome_json`.
+    /// An absent blob, an absent key, or an unparseable one all yield an EMPTY map, which makes
+    /// rule 3 abstain — the same answer as a session that edited nothing. That is the fail-closed
+    /// direction here (no attribution beats a wrong one), and a malformed blob is WARNed rather
+    /// than swallowed so it cannot go unnoticed.
+    pub fn repos_touched(&self, session_id: &str) -> Result<BTreeMap<String, u64>> {
+        let blob: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT outcome_json FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(parse_repos_touched(session_id, blob.as_deref()))
+    }
+
+    /// Every session the repo chain could still IMPROVE, with the inputs to run it: those whose
+    /// stored `repo_rank` is worse than `max_rank`, and which have a cwd to resolve.
+    ///
+    /// The rank filter is what makes the post-efficiency pass cheap: the write is upgrade-only, so a
+    /// session already at a better rank cannot change, and re-running the chain for it would be pure
+    /// cost (a `git` spawn per live cwd) for a guaranteed no-op.
+    pub fn repo_candidates(&self, max_rank: i64) -> Result<Vec<RepoCandidate>> {
+        debug!("Db::repo_candidates: max_rank={max_rank}");
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, cwd, outcome_json FROM sessions \
+             WHERE cwd IS NOT NULL AND repo_rank > ?1",
+        )?;
+        let rows: Vec<(String, String, Option<String>)> = stmt
+            .query_map(params![max_rank], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let candidates: Vec<RepoCandidate> = rows
+            .into_iter()
+            .map(|(session_id, cwd, blob)| {
+                let repos_touched = parse_repos_touched(&session_id, blob.as_deref());
+                RepoCandidate {
+                    session_id,
+                    cwd,
+                    repos_touched,
+                }
+            })
+            .collect();
+        debug!(
+            "Db::repo_candidates: max_rank={max_rank} candidates={}",
+            candidates.len()
+        );
+        Ok(candidates)
+    }
+
     /// The persisted [`RepoAttribution`] for one session. Returns `None` for a session id absent
     /// from the catalog. Exposed for introspection (tests, and any future `clyde session
     /// doctor`-style reporting) — the report/export-facing surface (`SessionRecord`, `session
@@ -122,6 +190,32 @@ impl Db {
             )
             .optional()?;
         Ok(row)
+    }
+}
+
+/// Pull the `repos-touched` map out of an `outcome_json` blob. See [`Db::repos_touched`] for the
+/// fail-closed contract.
+fn parse_repos_touched(session_id: &str, blob: Option<&str>) -> BTreeMap<String, u64> {
+    let Some(blob) = blob else {
+        trace!("db::parse_repos_touched: session_id={session_id} has no outcome_json");
+        return BTreeMap::new();
+    };
+    let value: serde_json::Value = match serde_json::from_str(blob) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("db::parse_repos_touched: session_id={session_id} has an unparseable outcome_json: {e}");
+            return BTreeMap::new();
+        }
+    };
+    match value.get(REPOS_TOUCHED_KEY) {
+        None => BTreeMap::new(),
+        Some(v) => match serde_json::from_value(v.clone()) {
+            Ok(map) => map,
+            Err(e) => {
+                warn!("db::parse_repos_touched: session_id={session_id} has a malformed {REPOS_TOUCHED_KEY}: {e}");
+                BTreeMap::new()
+            }
+        },
     }
 }
 

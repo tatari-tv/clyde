@@ -47,9 +47,10 @@ use crate::model::{
 ///    upgrade-only (strictly-improving `repo_rank`, never `COALESCE`) by `db::repo::Db::upsert_repo`
 ///    from the `common::repo` four-rule chain, plus the `repo_paths` learned-path map (rule 2's
 ///    backing store, latest-observation-wins via `db::repo::Db::record_repo_path`) — see
-///    [`migrate::migrate_v10_repo`] and `docs/design/2026-07-26-report-story-fidelity.md`. Phase 3
-///    EXTENDS this same migration with the outcome-blob reset (NULLs `efficiency_json` AND
-///    `outcome_json`) rather than bumping to v11; do not add a v11 step for that reset.
+///    [`migrate::migrate_v10_repo`] and `docs/design/2026-07-26-report-story-fidelity.md`. The SAME
+///    migration also INVALIDATES the efficiency + outcome blobs (NULLs `efficiency_json`, the three
+///    scalars, and `outcome_json`) so the next `reindex_efficiency` pass computes
+///    `Outcomes::repos_touched`, rule 3's input, which the v8/v9 blobs do not carry.
 const SCHEMA_VERSION: i64 = 10;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
@@ -173,7 +174,7 @@ END;
 /// stays in sync with one source of truth.
 const COLS: &str = "s.id, s.session_id, s.cwd, s.project_dir, s.transcript_path, s.title, \
      s.first_prompt, s.summary, s.tags, s.git_branch, s.model, s.n_msgs, s.created, s.modified, \
-     s.cost, s.host, s.archived, s.staged_path, s.tags_source";
+     s.cost, s.host, s.archived, s.staged_path, s.tags_source, s.repo, s.repo_source";
 
 /// Outcome of a single [`Db::upsert_session`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1066,10 +1067,10 @@ impl Db {
                     Ok(SearchHit {
                         record: map_record(row)?,
                         matched,
-                        // COLS has 19 columns (indices 0..=18); bm25 score is appended at index
-                        // 19, and the snippet() excerpt at index 20.
-                        score: row.get(19)?,
-                        snippet: row.get(20)?,
+                        // COLS has 21 columns (indices 0..=20); bm25 score is appended at index
+                        // 21, and the snippet() excerpt at index 22.
+                        score: row.get(21)?,
+                        snippet: row.get(22)?,
                         // Coverage is filled in later, only for the body tier under OR fallback
                         // (see `Db::annotate_body_coverage`); `None` on every raw hit.
                         terms_matched: None,
@@ -1169,7 +1170,9 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
     // 15  s.host
     // 16  s.archived
     // 17  s.staged_path
-    // 18  s.tags_source  <-- appended last so prior indices are stable
+    // 18  s.tags_source
+    // 19  s.repo         <-- v10, appended so prior indices stay stable
+    // 20  s.repo_source
     let tags: String = row.get(8)?;
     let created: Option<String> = row.get(12)?;
     let modified: String = row.get(13)?;
@@ -1186,6 +1189,8 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         tags: tags.split_whitespace().map(str::to_string).collect(),
         tags_source: row.get::<_, Option<String>>(18)?,
         git_branch: row.get(9)?,
+        repo: row.get(19)?,
+        repo_source: row.get(20)?,
         model: row.get(10)?,
         n_msgs: row.get(11)?,
         created: created.as_deref().and_then(parse_dt),

@@ -16,6 +16,7 @@ use crate::outcome::{self, OutcomeTotals, Outcomes};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
 use common::metrics::{TokenTotals, price};
+use common::repo::RepoSource;
 use efficiency::{RawCounters, SessionEfficiency, SubagentEfficiency, WorkloadCost, finalize};
 use eyre::{Context, Result};
 use log::debug;
@@ -85,6 +86,13 @@ pub struct Totals {
 pub struct SessionEntry {
     pub title: Option<String>,
     pub repo: Option<String>,
+    /// Which rule resolved [`Self::repo`] (`git-origin` | `known-path` | `files-touched` |
+    /// `path-guess`), carried through from the catalog so provenance travels WITH the slug. Absent
+    /// when `repo` is absent, and on a pre-v10 artifact merged in (its repos were resolved before
+    /// provenance existed, and `attribution` buckets those separately rather than calling them
+    /// observed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_source: Option<String>,
     pub begin: DateTime<Utc>,
     pub end: DateTime<Utc>,
     #[serde(default)]
@@ -181,7 +189,10 @@ impl ModelTokens {
 pub struct CollectedSession {
     pub session_id: String,
     pub title: Option<String>,
+    /// The PERSISTED catalog attribution (schema v10), not a collect-time resolution.
     pub repo: Option<String>,
+    /// Which rule produced `repo`; `None` exactly when `repo` is `None`.
+    pub repo_source: Option<RepoSource>,
     pub begin: DateTime<Utc>,
     pub end: DateTime<Utc>,
     pub jsonl_paths: Vec<PathBuf>,
@@ -440,6 +451,7 @@ fn entry_from_scope(
     SessionEntry {
         title: s.title.clone(),
         repo: s.repo.clone(),
+        repo_source: s.repo_source.map(|src| src.as_str().to_string()),
         begin: s.begin,
         end: s.end,
         spend_usd,

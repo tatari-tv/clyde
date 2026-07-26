@@ -26,8 +26,8 @@ use crate::score::scored;
 /// scope), so the session's own files' mtime is the correct-seam substitute -- the same signal
 /// `common::scan::filter_by_date_range`'s date prefilter already uses.
 ///
-/// `outcomes` is populated ONLY on the reindex path ([`collect_ids`], `with_outcomes = true`): the
-/// catalog persists per-session outcomes (Phase 2), but the live `clyde efficiency` surfaces
+/// `outcomes` is populated ONLY on the reindex path ([`collect_ids`], which passes a `repo_root`):
+/// the catalog persists per-session outcomes (Phase 2), but the live `clyde efficiency` surfaces
 /// (`session`/`daily`/`weekly`/`--worst`) do not render them, so [`collect_all`]/[`collect_matching`]
 /// skip the second per-file scan and leave this at its all-empty default.
 #[derive(Debug, Clone)]
@@ -50,7 +50,7 @@ pub fn collect_all(projects_dir: &Path, config: &EfficiencyConfig) -> Result<Vec
 
     let sessions: Vec<CollectedSession> = groups
         .par_iter()
-        .map(|(session_id, group_files)| build_session(session_id, group_files, config, false))
+        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None))
         .collect();
 
     Ok(sessions)
@@ -67,7 +67,7 @@ pub fn collect_matching(projects_dir: &Path, id: &str, config: &EfficiencyConfig
     let matches: Vec<CollectedSession> = groups
         .iter()
         .filter(|(session_id, _)| session_id.starts_with(id))
-        .map(|(session_id, group_files)| build_session(session_id, group_files, config, false))
+        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None))
         .collect();
     debug!("collect_matching: id={id} matches={}", matches.len());
     Ok(matches)
@@ -79,15 +79,22 @@ pub fn collect_matching(projects_dir: &Path, id: &str, config: &EfficiencyConfig
 /// annotated sessions) rather than the whole tree. Empty `ids` is an empty result (no scan work
 /// beyond the directory walk). Parallel over the matched groups, same shape as [`collect_all`].
 ///
-/// This is the ONLY collector that extracts outcomes (`with_outcomes = true`): the reindex path
-/// persists per-session outcomes into the catalog's `outcome_json` column (Phase 2), so it pays the
-/// second per-file scan the live surfaces skip.
+/// This is the ONLY collector that extracts outcomes: the reindex path persists per-session outcomes
+/// into the catalog's `outcome_json` column (Phase 2), so it pays the second per-file scan the live
+/// surfaces skip. `repo_root` is the configured clone root the edited-file paths are bucketed
+/// against for `Outcomes::repos_touched` (repo attribution's rule 3).
 pub fn collect_ids(
     projects_dir: &Path,
     ids: &BTreeSet<String>,
     config: &EfficiencyConfig,
+    repo_root: &Path,
 ) -> Result<Vec<CollectedSession>> {
-    debug!("collect_ids: projects_dir={} ids={}", projects_dir.display(), ids.len());
+    debug!(
+        "collect_ids: projects_dir={} ids={} repo_root={}",
+        projects_dir.display(),
+        ids.len(),
+        repo_root.display()
+    );
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -96,7 +103,7 @@ pub fn collect_ids(
     let sessions: Vec<CollectedSession> = groups
         .par_iter()
         .filter(|(session_id, _)| ids.contains(*session_id))
-        .map(|(session_id, group_files)| build_session(session_id, group_files, config, true))
+        .map(|(session_id, group_files)| build_session(session_id, group_files, config, Some(repo_root)))
         .collect();
     debug!("collect_ids: requested={} computed={}", ids.len(), sessions.len());
     Ok(sessions)
@@ -110,11 +117,15 @@ fn group_by_session(files: &[SessionFile]) -> BTreeMap<String, Vec<&SessionFile>
     groups
 }
 
+/// `outcomes_repo_root` is BOTH the outcome switch and rule 3's parsing root: `Some(root)` extracts
+/// outcomes (bucketing edited paths under `root`), `None` skips the second per-file scan entirely.
+/// One parameter rather than a `bool` plus a path, so asking for outcomes without a root is not
+/// expressible.
 fn build_session(
     session_id: &str,
     group_files: &[&SessionFile],
     config: &EfficiencyConfig,
-    with_outcomes: bool,
+    outcomes_repo_root: Option<&Path>,
 ) -> CollectedSession {
     let file_effs: Vec<FileEfficiency> = group_files
         .iter()
@@ -127,27 +138,28 @@ fn build_session(
         })
         .collect();
 
-    // Outcomes are extracted only for the reindex path (`with_outcomes`); a per-file scan failure is
-    // warn-and-skipped (same robustness contract as efficiency extract) so one bad file cannot fail
-    // the whole session's annotation. An empty session unions to the all-empty default (a stored,
-    // non-NULL `outcome_json` distinct from "not yet reindexed").
-    let outcomes = if with_outcomes {
-        let file_outcomes: Vec<outcome::FileOutcomes> = group_files
-            .iter()
-            .filter_map(|f| match outcome::extract(&f.path) {
-                Ok(fo) => Some(fo),
-                Err(e) => {
-                    warn!(
-                        "collect: outcome extract failed for {}: {e} (file skipped)",
-                        f.path.display()
-                    );
-                    None
-                }
-            })
-            .collect();
-        outcome::union(&file_outcomes)
-    } else {
-        Outcomes::default()
+    // Outcomes are extracted only for the reindex path (`outcomes_repo_root` is `Some`); a per-file
+    // scan failure is warn-and-skipped (same robustness contract as efficiency extract) so one bad
+    // file cannot fail the whole session's annotation. An empty session unions to the all-empty
+    // default (a stored, non-NULL `outcome_json` distinct from "not yet reindexed").
+    let outcomes = match outcomes_repo_root {
+        Some(repo_root) => {
+            let file_outcomes: Vec<outcome::FileOutcomes> = group_files
+                .iter()
+                .filter_map(|f| match outcome::extract(&f.path) {
+                    Ok(fo) => Some(fo),
+                    Err(e) => {
+                        warn!(
+                            "collect: outcome extract failed for {}: {e} (file skipped)",
+                            f.path.display()
+                        );
+                        None
+                    }
+                })
+                .collect();
+            outcome::union(&file_outcomes, repo_root)
+        }
+        None => Outcomes::default(),
     };
 
     let last_active: SystemTime = group_files
@@ -160,10 +172,12 @@ fn build_session(
     let efficiency = scored(fold(session_id, &file_effs), config);
     debug!(
         "collect::build_session: session_id={session_id} files={} last_active={last_active} \
-         with_outcomes={with_outcomes} commits={} prs={}",
+         with_outcomes={} commits={} prs={} repos-touched={}",
         group_files.len(),
+        outcomes_repo_root.is_some(),
         outcomes.commits.len(),
         outcomes.prs.len(),
+        outcomes.repos_touched.len(),
     );
 
     CollectedSession {

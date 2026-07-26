@@ -19,17 +19,19 @@ pub mod tools;
 
 use crate::config::{CollectConfig, Output};
 use claude_pricing::Pricing;
+use common::repo::RepoSource;
 use efficiency::{Outcomes, SessionEfficiency};
 use eyre::{Context, Result};
 use log::{LevelFilter, debug};
 use sessions::{CatalogEntry, Db, Filters};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 pub use cli::ReportArgs;
-/// Repo attribution moved to `common::repo` (index and collect both need it, and `sessions` cannot
-/// depend on `report`). Re-exported under its old path so `report::repo::...` keeps resolving.
-pub use common::repo;
+// The `report::repo` re-export is gone with its last caller. Repo attribution lives in
+// `common::repo` and now runs at INDEX time only; collect reads the persisted `sessions.repo`
+// column. Leaving an alias to a resolver `report` must never call again would be an invitation to
+// reintroduce exactly the collect-time decay this phase removed.
 pub use config::{Config, ResolvedCommand};
 pub use tools::tool_validation_help;
 
@@ -171,12 +173,13 @@ pub(crate) fn run_with_pricing(config: &Config, pricing: &Pricing) -> Result<Run
 /// (exit 0); an unparseable blob is a LOUD error (bad data ≠ no data).
 fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     debug!(
-        "run_collect: db_path={} since={} until={} no_rollup={} no_outcomes={}",
+        "run_collect: db_path={} since={} until={} no_rollup={} no_outcomes={} min_enrichment={}",
         cfg.db_path.display(),
         cfg.since,
         cfg.until,
         cfg.no_rollup,
-        cfg.no_outcomes
+        cfg.no_outcomes,
+        cfg.min_enrichment
     );
 
     let db = Db::open_at(&cfg.db_path)
@@ -234,10 +237,34 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     }
 
     let outcomes_enabled = !cfg.no_outcomes;
-    let mut resolver = repo::Resolver::new();
+
+    // Same fail-closed contract as the efficiency guard above, for the other blob. With outcomes
+    // ON, a NULL `outcome_json` is a session the reindex never reached, and quietly treating it as
+    // "no outcomes" would understate the window's output AND silently strip its `repos-touched`
+    // (rule 3's input), so `by-repo` would decay for a reason the artifact never states. The v10
+    // migration NULLs both blobs together, so this guard is the one that fires after an upgrade.
+    if outcomes_enabled {
+        let missing_outcomes = entries.iter().filter(|e| e.outcome_json.is_none()).count();
+        if missing_outcomes > 0 {
+            eprintln!(
+                "error: {missing_outcomes} session(s) in the window have no outcome data in the \
+                 catalog (not yet indexed). Run `clyde session reindex` to backfill them, then \
+                 re-run `report collect`. No report was written."
+            );
+            return Err(eyre::eyre!(
+                "incomplete catalog: {missing_outcomes} session(s) missing outcome data; run `clyde session reindex`"
+            ));
+        }
+    }
+
+    if let Some(warning) = enrichment_warning(&entries, cfg.min_enrichment) {
+        log::warn!("run_collect: {warning}");
+        eprintln!("{warning}");
+    }
+
     let mut collected: Vec<report::CollectedSession> = Vec::with_capacity(entries.len());
     for entry in &entries {
-        collected.push(to_collected(entry, outcomes_enabled, &mut resolver)?);
+        collected.push(to_collected(entry, outcomes_enabled)?);
     }
 
     let host = gethostname::gethostname().to_string_lossy().into_owned();
@@ -282,15 +309,40 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     })
 }
 
+/// The enrich-coverage warning for a window, or `None` when there is nothing to warn about.
+///
+/// Returns the message rather than printing it (house rule: return data, not side effects), so the
+/// threshold behavior is unit-testable without capturing stderr. Advisory, NEVER fatal: the report's
+/// themes are supposed to cite each session's enrich `summary`, so a mostly-unenriched window yields
+/// a narrative resting on `ai-title` strings; naming the gap costs nothing and refusing to report
+/// would be the worse trade. Silent on an empty window -- 0 of 0 is not a coverage problem.
+fn enrichment_warning(entries: &[CatalogEntry], floor: f64) -> Option<String> {
+    let total = entries.len();
+    if total == 0 {
+        return None;
+    }
+    let enriched = entries.iter().filter(|e| e.record.summary.is_some()).count();
+    let coverage = enriched as f64 / total as f64;
+    debug!("enrichment_warning: enriched={enriched} total={total} coverage={coverage:.3} floor={floor:.3}");
+    if coverage >= floor {
+        return None;
+    }
+    Some(format!(
+        "warning: only {enriched} of {total} sessions in the window ({:.1}%) carry an enrich \
+         summary, below the {:.1}% floor. The narrative will cite session titles rather than \
+         summaries for the rest. Run `clyde session enrich` to raise coverage, or lower \
+         --min-enrichment / clyde.yml's `min-enrichment`.",
+        coverage * 100.0,
+        floor * 100.0
+    ))
+}
+
 /// Parse one catalog row into a [`report::CollectedSession`]. `efficiency_json` is guaranteed
 /// present here (the NULL fail-closed guard already returned), so a NULL past this point is an
 /// internal invariant break, and an unparseable blob is a LOUD error (bad data ≠ no data). Titles,
-/// repo (from `cwd`), and the window timestamps all come from the catalog row — no JSONL is read.
-fn to_collected(
-    entry: &CatalogEntry,
-    outcomes_enabled: bool,
-    resolver: &mut repo::Resolver,
-) -> Result<report::CollectedSession> {
+/// repo, and the window timestamps all come from the catalog row — no JSONL is read and no resolver
+/// runs. The repo was resolved at INDEX time, when the filesystem could still answer for it.
+fn to_collected(entry: &CatalogEntry, outcomes_enabled: bool) -> Result<report::CollectedSession> {
     let rec = &entry.record;
     let json = entry.efficiency_json.as_deref().ok_or_else(|| {
         eyre::eyre!(
@@ -320,7 +372,26 @@ fn to_collected(
         None
     };
 
-    let repo = rec.cwd.as_deref().and_then(|c| resolver.detect(Path::new(c)));
+    // The catalog writes `repo` and `repo_source` in one statement, so a slug with no provenance is
+    // an invariant break, not a legacy shape — fail LOUDLY rather than laundering an unknown-origin
+    // slug into `by-repo` as if it were observed. An unrecognized spelling is likewise loud
+    // (`RepoSource::from_str` names the legal set).
+    let repo = rec.repo.clone();
+    let repo_source = match (&repo, rec.repo_source.as_deref()) {
+        (Some(_), Some(src)) => Some(RepoSource::from_str(src).with_context(|| {
+            format!(
+                "session {} has an unrecognized repo_source in the catalog",
+                rec.session_id
+            )
+        })?),
+        (Some(slug), None) => {
+            return Err(eyre::eyre!(
+                "internal: session {} has repo {slug:?} with no repo_source; the catalog writes both together",
+                rec.session_id
+            ));
+        }
+        (None, _) => None,
+    };
     // Session-level window (M2): begin = the session's created time (fallback modified), end = its
     // modified time. These bound the artifact's day/outlier attribution, not a per-record scan.
     let begin = rec.created.unwrap_or(rec.modified);
@@ -330,6 +401,7 @@ fn to_collected(
         session_id: rec.session_id.clone(),
         title: rec.title.clone(),
         repo,
+        repo_source,
         begin,
         end,
         jsonl_paths: vec![rec.transcript_path.clone()],

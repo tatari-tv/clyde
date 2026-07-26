@@ -139,6 +139,14 @@ pub struct CollectArgs {
     /// Default: outcomes on.
     #[arg(long)]
     pub no_outcomes: bool,
+
+    /// Warn when fewer than this FRACTION of the window's sessions carry an enrich summary
+    /// (`0.5` = 50%). The report's themes cite session summaries, so a low-coverage window produces
+    /// a narrative resting on titles instead; the warning states the gap and the artifact is still
+    /// written. When omitted, falls back to `min-enrichment` in `clyde.yml`, and to `0.5` if that
+    /// too is unset.
+    #[arg(long)]
+    pub min_enrichment: Option<f64>,
 }
 
 #[derive(clap::Args, Debug)]

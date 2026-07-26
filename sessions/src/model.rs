@@ -26,6 +26,15 @@ pub struct SessionRecord {
     /// `"enrich"` (written by the enrichment pass), or `None` (never tagged / cleared).
     pub tags_source: Option<String>,
     pub git_branch: Option<String>,
+    /// The persisted `<org>/<repo>` attribution (schema v10), resolved at INDEX time by the
+    /// `common::repo` four-rule chain and written upgrade-only. `None` until a rule has fired.
+    /// Consumers read this column rather than re-deriving from `cwd`: the filesystem evidence is
+    /// gone by the time a report is collected, which is the decay this column exists to stop.
+    pub repo: Option<String>,
+    /// Which rule resolved [`Self::repo`] (`git-origin` | `known-path` | `files-touched` |
+    /// `path-guess`), so a guess is never rendered as an observation. Always written together with
+    /// `repo`; `None` exactly when `repo` is `None`.
+    pub repo_source: Option<String>,
     pub model: Option<String>,
     pub n_msgs: i64,
     pub created: Option<DateTime<Utc>>,

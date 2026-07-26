@@ -472,3 +472,37 @@ fn the_chain_returns_none_when_every_rule_declines() {
         None
     );
 }
+
+/// `slug_under_root` is the ONE definition of the `<repo-root>/<org>/<repo>` shape: rule 4 reads a
+/// session's cwd through it, and `efficiency::outcome::union` reads every edited file's parent
+/// directory through it to build rule 3's input. Two readers deriving the shape independently is
+/// exactly how the two would drift.
+#[test]
+fn slug_under_root_reads_the_first_two_components_only() {
+    let root = Path::new("/home/saidler/repos");
+    assert_eq!(
+        slug_under_root(&root.join("tatari-tv/clyde"), root).as_deref(),
+        Some("tatari-tv/clyde")
+    );
+    assert_eq!(
+        slug_under_root(&root.join("tatari-tv/clyde/report/src"), root).as_deref(),
+        Some("tatari-tv/clyde"),
+        "depth below the repo slot does not change the slug"
+    );
+}
+
+#[test]
+fn slug_under_root_declines_anything_that_is_not_the_shape() {
+    let root = Path::new("/home/saidler/repos");
+    assert_eq!(slug_under_root(root, root), None, "the root itself names no repo");
+    assert_eq!(
+        slug_under_root(&root.join("tatari-tv"), root),
+        None,
+        "an org with no repo component is not a slug"
+    );
+    assert_eq!(
+        slug_under_root(Path::new("/tmp/scratch/a/b"), root),
+        None,
+        "matching is confined to the configured root, so an arbitrary path cannot manufacture an org"
+    );
+}

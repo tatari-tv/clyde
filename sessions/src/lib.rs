@@ -26,7 +26,7 @@ pub use export::{
     EXPORT_SCHEMA_VERSION, EnrichStatus, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters,
     ExportRecord,
 };
-pub use index::reindex;
+pub use index::{reindex, resolve_repos};
 pub use llm::{
     AnthropicClient, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment, NARRATE_MODEL, Narrator,
 };

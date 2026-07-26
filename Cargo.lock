@@ -1938,6 +1938,7 @@ dependencies = [
  "log",
  "rayon",
  "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "session",

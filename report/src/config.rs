@@ -40,6 +40,9 @@ pub struct CollectConfig {
     pub no_rollup: bool,
     /// `true` for `--no-outcomes`: omit catalog outcomes from the report. Default `false`.
     pub no_outcomes: bool,
+    /// Enrichment-coverage floor, as a fraction: below it, collect warns on stderr and still writes
+    /// the artifact. Resolved flag > `clyde.yml`'s `min-enrichment` > `0.5`.
+    pub min_enrichment: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -160,11 +163,11 @@ const DEFAULT_RENDER_INPUT: &str = "./claude-report.json";
 pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> {
     let resolved = match command {
         crate::cli::Command::Collect(args) => {
-            // Collect is the sole consumer of the date-tz convention, so it loads clyde.yml for that.
-            // This load is NOT what protects `merge` — `render` below loads config unconditionally
-            // now (the model pins live there), so only `merge` is still config-independent.
-            let tz = common::config::load()?.date_tz();
-            ResolvedCommand::Collect(collect_config_from_args(args, tz)?)
+            // Collect reads clyde.yml for the date-tz convention and the enrichment floor. This load
+            // is NOT what protects `merge` — `render` below loads config unconditionally now (the
+            // model pins live there), so only `merge` is still config-independent.
+            let file = common::config::load()?;
+            ResolvedCommand::Collect(collect_config_from_args(args, file.date_tz(), file.min_enrichment())?)
         }
         crate::cli::Command::Render(args) => {
             // Config is now loaded UNCONDITIONALLY, which is a deliberate behavior change from the
@@ -234,7 +237,7 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
     Ok(resolved)
 }
 
-fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConfig> {
+fn collect_config_from_args(args: CollectArgs, tz: DateTz, config_min_enrichment: f64) -> Result<CollectConfig> {
     // Shared parser (common::parse_since) so `--since 2d` (a relative span) now works for report,
     // not just RFC 3339 / YYYY-MM-DD. The bare-date midnight convention follows the configured tz.
     let since = match args.since {
@@ -256,6 +259,16 @@ fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConf
     };
     // Collect reads the canonical catalog; `--db` overrides the path (tests inject one directly).
     let db_path = args.db.unwrap_or_else(session::paths::sessions_db_path);
+    // Precedence, house convention: flag > config > default. The flag is validated HERE (the config
+    // path validates at deserialize) so `--min-enrichment 50` fails with the same named message
+    // instead of warning on every run.
+    let min_enrichment = match args.min_enrichment {
+        Some(v) if !v.is_finite() || !(0.0..=1.0).contains(&v) => {
+            bail!("--min-enrichment must be a finite fraction in 0.0..=1.0 (0.5 means 50%), got {v}");
+        }
+        Some(v) => v,
+        None => config_min_enrichment,
+    };
     Ok(CollectConfig {
         since,
         until,
@@ -263,6 +276,7 @@ fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConf
         db_path,
         no_rollup: args.no_rollup,
         no_outcomes: args.no_outcomes,
+        min_enrichment,
     })
 }
 

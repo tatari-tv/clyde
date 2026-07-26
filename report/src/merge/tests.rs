@@ -74,6 +74,7 @@ fn entry_with_outcomes(model: &str, mt: ModelTokens, outcomes: Option<Outcomes>)
     SessionEntry {
         title: None,
         repo: None,
+        repo_source: None,
         begin: ts("2026-04-10T10:00:00Z"),
         end: ts("2026-04-10T11:00:00Z"),
         spend_usd: session_spend,
@@ -370,6 +371,7 @@ fn merged_outcomes_totals_are_the_deduped_union_of_both_inputs() {
             jira_writes: 0,
             slack_messages: 0,
             files_edited: 2,
+            ..Default::default()
         }),
     );
     let r2 = report_with_outcomes(
@@ -386,6 +388,7 @@ fn merged_outcomes_totals_are_the_deduped_union_of_both_inputs() {
             jira_writes: 3,
             slack_messages: 0,
             files_edited: 4,
+            ..Default::default()
         }),
     );
 
@@ -420,6 +423,7 @@ fn merge_with_one_input_not_outcomes_enabled_yields_absent_rollup_and_false_flag
             jira_writes: 0,
             slack_messages: 0,
             files_edited: 1,
+            ..Default::default()
         }),
     );
     let mut r2 = report(

@@ -583,3 +583,131 @@ fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_a
         "writing efficiency+outcomes does not move the cursor"
     );
 }
+
+/// Build a genuine v9 DB on disk: the v6 shape plus the v8 `outcome_json` column, with BOTH the
+/// efficiency annotation and an outcome blob populated for row A, at `user_version = 9`. That is
+/// exactly the state a real pre-Phase-3 catalog is in: outcomes present, but written before
+/// `repos-touched` existed.
+fn build_v9_db_with_efficiency_and_outcomes(path: &Path) {
+    build_v6_db_with_efficiency(path);
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch("ALTER TABLE sessions ADD COLUMN outcome_json TEXT;")
+        .unwrap();
+    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
+        .unwrap();
+    conn.execute(
+        "UPDATE sessions SET outcome_json='{\"commits\":[],\"prs\":[],\"confluence-writes\":0,\
+         \"jira-writes\":0,\"slack-messages\":0,\"files-edited\":3}' WHERE session_id=?1",
+        rusqlite::params![UUID_A],
+    )
+    .unwrap();
+    conn.execute_batch(V5_TRIGGERS_SQL).unwrap();
+    conn.pragma_update(None, "user_version", 9i64).unwrap();
+}
+
+/// v9 -> v10 migration: adds the repo columns AND invalidates BOTH blobs so the next
+/// `reindex_efficiency` computes `Outcomes::repos_touched` (rule 3's input), WITHOUT advancing the
+/// export cursor.
+///
+/// BITES three ways. Drop `outcome_json` from the reset and the stale blob survives with no
+/// `repos-touched`, so rule 3 is inert forever. Drop `efficiency_json` from the reset and NOTHING
+/// picks the row up at all: `sessions_missing_efficiency` (`efficiency_json IS NULL`) is the only
+/// reindex predicate there is. Drop the trigger suppression and NULLing every row advances every
+/// consumer's `--cursor`.
+#[test]
+fn v10_migration_from_v9_invalidates_both_blobs_without_advancing_cursor() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("v9.db");
+    build_v9_db_with_efficiency_and_outcomes(&path);
+
+    // Sanity on the pre-migration v9 DB (a bare connection, so this peek does NOT trigger
+    // `migrate`): both blobs are populated and the repo columns do not exist yet.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let (eff, outcome): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT efficiency_json, outcome_json FROM sessions WHERE session_id = ?1",
+                rusqlite::params![UUID_A],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(eff.is_some(), "the v9 DB starts with efficiency populated");
+        let outcome = outcome.expect("the v9 DB starts with an outcome blob");
+        assert!(
+            !outcome.contains("repos-touched"),
+            "and that blob predates repos-touched, which is the whole reason for the reset",
+        );
+    }
+
+    let db = Db::open_at(&path).unwrap();
+    let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
+    assert_eq!(
+        SCHEMA_VERSION, 10,
+        "this test pins the v9->v10 hop; raise me deliberately"
+    );
+
+    assert!(has_column(&db, "repo"), "v10 adds the repo column");
+    assert!(has_column(&db, "repo_source"), "v10 adds the repo_source column");
+    assert!(has_column(&db, "repo_rank"), "v10 adds the repo_rank column");
+    assert_eq!(
+        efficiency_of(&db, UUID_A),
+        (None, None, None, None),
+        "v10 nulls efficiency: it is the ONLY predicate that re-picks the row for reindex",
+    );
+    assert_eq!(
+        outcome_json_of(&db, UUID_A),
+        None,
+        "v10 nulls the outcome blob so repos_touched is computed on the next pass",
+    );
+
+    // ...and the export cursor is UNTOUCHED.
+    assert_eq!(
+        updated_at_of(&db, UUID_A),
+        10,
+        "row A revision preserved across v9->v10"
+    );
+    assert_eq!(
+        updated_at_of(&db, UUID_B),
+        20,
+        "row B revision preserved across v9->v10"
+    );
+    assert_eq!(
+        revision_counter(&db),
+        20,
+        "the export_meta counter is preserved (the v10 reset is cursor-neutral)",
+    );
+}
+
+/// The v10 reset is version-gated: reopening an already-v10 catalog must NOT null the blobs a
+/// previous reindex just paid to compute. Without the `from_version` gate every `Db::open_at` would
+/// wipe the whole catalog's efficiency and force a full recompute on the next reindex.
+#[test]
+fn v10_migration_does_not_reset_an_already_migrated_catalog() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("v9.db");
+    build_v9_db_with_efficiency_and_outcomes(&path);
+
+    // First open performs the v9 -> v10 hop (and the reset), then a reindex-equivalent write
+    // repopulates both blobs.
+    {
+        let db = Db::open_at(&path).unwrap();
+        db.set_efficiency_many(&[EfficiencyWrite {
+            session_id: UUID_A,
+            efficiency_json: r#"{"aggregate":{"raw":{"by-model":{}}}}"#,
+            cache_read_share: Some(0.5),
+            tool_errors: 0,
+            cost_usd: 1.0,
+            outcome_json: r#"{"repos-touched":{"tatari-tv/clyde":2}}"#,
+        }])
+        .unwrap();
+    }
+
+    // Second open is a no-op migration.
+    let db = Db::open_at(&path).unwrap();
+    assert_eq!(
+        outcome_json_of(&db, UUID_A).as_deref(),
+        Some(r#"{"repos-touched":{"tatari-tv/clyde":2}}"#),
+        "reopening an already-v10 catalog must not re-run the reset",
+    );
+}

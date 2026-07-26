@@ -165,3 +165,136 @@ None.
 
 ### Open questions
 None.
+
+## Phase 3: `repos_touched`, rule 3, and report reads the catalog
+
+### Design decisions
+- `common::repo::slug_under_root` is extracted as the ONE definition of the
+  `<repo-root>/<org>/<repo>` shape, and both readers go through it: rule 4 (`from_path_guess`, on a
+  session's cwd) and `efficiency::outcome::union` (on every edited file). Two readers deriving the
+  same shape independently is precisely how the two would drift, and rule 3's whole value depends on
+  its slugs being comparable to rule 4's.
+- `repos_touched` is read from each edited file's PARENT directory, not the file path. That is what
+  makes the depth requirement fall out for free: `<root>/<org>/<repo>/src/main.rs` and
+  `<root>/<org>/<repo>/README.md` both bucket to `<org>/<repo>`, while a loose file at
+  `<root>/<org>/notes.txt` buckets to nothing instead of fabricating the slug `<org>/notes.txt`.
+- `union` gained ONE parameter, `repo_root: &Path`, and nothing else -- no cwd, no config struct, no
+  map. The function stays pure over `&[FileOutcomes]` plus a path, so its tests need no SQLite and no
+  catalog, which is the property the doc's "PURE path parsing" bullet is protecting.
+- `build_session`'s `with_outcomes: bool` became `outcomes_repo_root: Option<&Path>`
+  (`efficiency/src/collect.rs`). One parameter instead of a bool plus a path makes "extract outcomes
+  without a parsing root" unrepresentable, rather than a runtime decision about what to pass.
+- **`sessions::index::resolve_repos` is new, and it closes an ordering hole the doc does not name.**
+  Rule 3's input is written by `efficiency::reindex_efficiency`, which runs AFTER `sessions::reindex`
+  in `cmd_reindex`. So on the pass that follows the v10 reset, every `outcome_json` is still NULL
+  while the repo chain is running and rule 3 can fire for nobody. Without a second pass the feature
+  would need two consecutive `clyde session reindex` runs to converge, which is exactly the kind of
+  "run it twice and it gets better" behavior that makes a number untrustworthy. `resolve_repos` is
+  catalog-driven (cwd and the outcome blob are both columns, so no transcript is re-read), scoped to
+  `repo_rank > files-touched` (the upgrade-only write means a better-ranked session cannot change),
+  and shares `apply_chain` with `reindex` so the two passes can never disagree on which rules run.
+- `Db::repos_touched` / `Db::repo_candidates` read ONE key (`repos-touched`) out of the otherwise
+  opaque `outcome_json`. `sessions` still does not depend on `efficiency` (that dependency runs the
+  other way, to persist), so the key is spelled as a const in `db/repo.rs` rather than imported.
+- `attribution`'s `(unattributed)` row absorbs the difference between `totals.spend-usd` and the sum
+  of the per-session spends, which is what makes "the rows sum to `totals.spend-usd`" true by
+  construction rather than approximately. The difference is a pricing artifact, not attribution:
+  `totals.spend-usd` prices the UNIONED per-model token counts once, each session is priced on its
+  own, and the two diverge whenever a model's >200k long-context tier is crossed by the union but not
+  by any one session. Measured on the 30-day window it is `-$0.06`. It is WARNed above a cent so it
+  can never grow unnoticed, and folding it anywhere else would attribute money to a repo that no
+  session's own price supports.
+- `RepoRow.repo_source` carries the STRONGEST evidence any session in the row has, not the weakest.
+  The question a marked row answers is "is this repo real?", and a slug is fabricated only if NO
+  session ever observed it -- so `tatari-tv/clyde-ft` (all guesses) is marked and `tatari-tv/clyde`
+  (500 observations plus one guess) is not. Per-source spend, which is the "how much of this is
+  guessed" question, lives in `attribution`.
+- `(unknown-source)` is a real bucket, not defensive padding: `report merge` can fold in a pre-v10
+  artifact whose repos were resolved before provenance existed. Bucketing those as `observed` would
+  launder them; bucketing them as `(unattributed)` would contradict `by-repo`, which does count them.
+  A locally-collected window can never produce it -- `to_collected` fails loudly on a slug with no
+  source, because the catalog writes both columns in one statement.
+- The v10 reset is gated on `6 <= from_version < 10`, and the second half of that range matters as
+  much as the first: without it every `Db::open_at` on an already-migrated catalog would wipe the
+  efficiency a reindex just paid to compute. There is a test for that specific case.
+- `report::repo` (Phase 1's compatibility re-export) is DELETED along with its last caller. Leaving
+  an alias to a resolver `report` must never call again is an invitation to reintroduce the
+  collect-time decay this phase exists to remove.
+- `session::repo_slug` is deleted for the same reason: `session export` was its only production
+  caller, and a second cwd-to-slug function sitting next to the persisted column is the "two fields
+  with one name and two answers" hazard the doc names.
+
+### Deviations
+- The doc's Data Model shows `AttributionRow { source, sessions, spend, confidence }`; the shipped
+  struct adds a `#[serde(skip)] spend_raw: f64`. Same effect, correct seam: the rows must be
+  pre-sorted by spend descending (every other context table is), and the string-only context rule
+  forbids a numeric operand reaching the model, so the sort key is carried and skipped -- exactly the
+  shape `OrgRow`/`RepoRow`/`ModelRow` already use for `spend_raw`.
+- `Attribution` is computed by `aggregate::compute_attribution` and placed at the TOP level of the
+  context block, not inside `Aggregates`. The doc's context-additions list spells it `attribution`
+  (top-level), and it is a statement about the whole figure rather than another rollup of it.
+- Phase 3 edits NO prompt template, per the phase table's "touches prompts: no" and the prompt-edit
+  ledger (Phase 3 is not one of the seven). `RepoRow.repo_source` and `attribution` are therefore in
+  the context block and unread by either prompt until a later phase quotes them. The doc's "both
+  templates mark guessed rows where `by-repo` renders" lands with Phase 7, which owns `by-repo`'s
+  prompt surface.
+- The doc's Phase 3 bullet for `--min-enrichment` says only "config key + CLI override + example";
+  the shipped change also includes the READER (the collect warning), because Phase 1 flagged that a
+  config key with no reader cannot be tested end to end. Phase 9 still owns `enrichment-coverage` in
+  the context block.
+- `report` gains `rusqlite` as a DEV-dependency. The catalog's write path lands `efficiency_json` and
+  `outcome_json` in one statement by design, so the state the new fail-closed guard exists to catch
+  is not reachable through it; the test reaches past it with a raw connection. No production code in
+  `report` touches SQLite.
+
+### Tradeoffs
+- `resolve_repos` runs on every explicit `clyde session reindex`, costing one `git` attempt per
+  distinct unresolved cwd (memoized per pass; a vanished directory short-circuits on `exists()` with
+  no spawn). Measured on the live 1,706-session catalog the whole reindex including this pass ran
+  well inside a minute. The alternative -- resolving repo only inside `reindex`, before outcomes
+  exist -- is free but needs two reindex runs to converge, and a number that improves on a second
+  identical run is a number nobody should trust.
+- `resolve_repos` is wired into `cmd_reindex` only, NOT into `lazy_reindex` (the cheap incremental
+  refresh before every query). Same reasoning the efficiency pass already uses: a `clyde session ls`
+  must not pay a catalog-wide repo re-resolution.
+- The enrich-coverage check returns its message rather than printing it (`enrichment_warning`), so
+  the threshold behavior is unit-testable without capturing stderr. Cost: the caller does the
+  `eprintln!`, one extra line at the call site.
+- `min-enrichment` is a fraction, not a percent, matching `cache-read-share-floor` and
+  `tool-error-rate-ceiling`. `min-enrichment: 50` is rejected BY NAME at load and `--min-enrichment
+  50` at resolution, because silently accepting it configures a floor no window can meet and warns on
+  every single run.
+
+### Open questions
+None.
+
+### Measured on the live 30-day window (`--since 2026-06-26 --until 2026-07-25`, after a full reindex)
+
+Same window as the doc's baseline table: 1,523 sessions, `$9,450.31`.
+
+| repo-source | sessions | spend | share |
+|---|---|---|---|
+| `git-origin` | 961 | `$5,604.45` | 59.3% |
+| `files-touched` | 87 | `$1,585.18` | 16.8% |
+| `known-path` | 243 | `$1,561.49` | 16.5% |
+| `path-guess` | 27 | `$44.86` | 0.5% |
+| `(unattributed)` | 205 | `$654.33` | 6.9% |
+
+- **`by-repo` coverage: 93.1% (`$8,795.98` of `$9,450.31`), against the 59.3% baseline.** Unattributed
+  spend fell from `$3,845.92` to `$654.33`, and the repo count rose from 47 to 57.
+- The `git-origin` row reproduces the baseline exactly (`$5,604.45` vs the doc's measured
+  `$5,604.39`), which is the check that the other rows are recovery rather than reshuffling.
+- **Rule 3 against its ceiling.** Phase 0 measured 73 sessions / `$1,207.92` of unique-argmax recovery
+  in the 279-session cold-cwd (`$HOME` / temp-dir) subset. Rule 3 delivered **74 sessions /
+  `$1,245.68`** there -- the ceiling is met, and the one-session difference is catalog movement
+  between the two measurements the same day (this reindex upserted 3 sessions). Rule 3 ALSO served 13
+  sessions / `$339.50` whose cwd is rule-4 shaped but was never seen alive, beating rule 4 in the
+  chain as designed (inferred outranks guessed); those are outside the ceiling's subset, which is why
+  the row totals 87 sessions rather than 74.
+- 206 of the 562 previously-unattributed sessions remain unattributed, all cold-cwd, matching Phase
+  0's "199 sessions rule 3 cannot serve at all" plus the 7 that tie and abstain.
+- `path-guess` is `$44.86`, 0.5% of the window: rule 4's fabrication hazard is real but tiny, and it
+  is now labeled everywhere it renders.
+- Attribution rows sum to `totals.spend-usd`: the per-session spends summed to `$9,450.37` against a
+  headline of `$9,450.31`, and the `-$0.06` pricing residual is carried in `(unattributed)`.
+- The enrich-coverage warning fired live: 550 of 1,523 sessions (36.1%) below the 50% floor.

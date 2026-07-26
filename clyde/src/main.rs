@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
 use eyre::{Context, Result};
-use log::{LevelFilter, warn};
+use log::{LevelFilter, debug, warn};
 
 use cli::{
     Cli, Command, EnrichArgs, ExportArgs, LsArgs, ReindexArgs, ResumeArgs, SearchArgs, SessionsCommand, StageArgs,
@@ -687,7 +687,13 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     // deliberately does NOT advance the export `updated_at` cursor. Wired here (the explicit reindex),
     // not into `lazy_reindex`, so a query's cheap incremental refresh never pays the transcript
     // re-read the efficiency compute costs.
-    let eff = efficiency::reindex_efficiency(db, &projects_dir, cfg.efficiency())?;
+    let eff = efficiency::reindex_efficiency(db, &projects_dir, cfg.efficiency(), cfg.repo_root())?;
+    // Repo attribution's rule 3 reads `Outcomes::repos_touched`, which the efficiency pass above is
+    // what writes. Re-run the chain now that those blobs exist, so a session whose cwd is `$HOME` or
+    // a temp dir is attributed within THIS command rather than on some later reindex. Scoped to
+    // sessions the chain could still improve, so it is a no-op for the already-resolved majority.
+    let reresolved = sessions::resolve_repos(db, cfg.repo_root())?;
+    debug!("cmd_reindex: post-efficiency repo pass evaluated {reresolved} session(s)");
     print_reindex(&stats, &eff);
     Ok(())
 }

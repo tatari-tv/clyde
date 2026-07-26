@@ -23,8 +23,10 @@
 //! - Confluence / Jira / Slack: assistant `tool_use` whose name suffix (after the final `__`) matches
 //!   the outcome vocabulary, counted ONLY when the paired `tool_result` is not an error.
 //! - Files edited: `tool_use` name `Edit` / `Write`, distinct `input.file_path` across successful calls.
+//! - Repos touched (v10): the same edited-file paths, bucketed by the `<repo-root>/<org>/<repo>`
+//!   shape via `common::repo::slug_under_root`. Pure path parsing; see [`union`].
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
@@ -52,6 +54,17 @@ pub struct Outcomes {
     pub slack_messages: u64,
     /// Distinct file paths across successful Edit/Write calls in the session group.
     pub files_edited: u64,
+    /// `<org>/<repo>` -> distinct edited-file count, derived from the same Edit/Write paths that
+    /// `files_edited` collapses to a bare count. Backs repo attribution's rule 3
+    /// ([`common::repo::from_files_touched`]): a session whose cwd is `$HOME` or a temp dir can
+    /// still be attributed to the repo it actually edited. Empty when no edited path fell under the
+    /// configured `repo-root`.
+    ///
+    /// The PATHS themselves are deliberately not persisted (4,242 distinct paths in one 30-day
+    /// window is payload nobody asked for); the slug counts carry the whole signal.
+    /// `#[serde(default)]` so a pre-v10 `outcome_json` still parses.
+    #[serde(default)]
+    pub repos_touched: BTreeMap<String, u64>,
 }
 
 /// A single opened pull request. `repository` is derived ONLY from the exact
@@ -100,8 +113,18 @@ struct Pending {
 /// always returns a concrete [`Outcomes`] (an all-empty default for a session with no observed
 /// outcome), because the catalog stores a non-NULL `outcome_json` for every reindexed session — a
 /// stored empty object means "reindexed, no outcomes", distinct from a NULL "not yet reindexed".
-pub fn union(files: &[FileOutcomes]) -> Outcomes {
-    debug!("outcome::union: files={}", files.len());
+///
+/// `repo_root` is the configured clone root ([`common::config::Config::repo_root`]), and it is the
+/// ONLY extra input: [`Outcomes::repos_touched`] is built by PURE path parsing of the edited-file
+/// set against the `<root>/<org>/<repo>` shape. No cwd, no catalog lookup, no `repo_paths` — rule 2's
+/// learned map lives in SQLite and dragging it in here would make this function unusable without a
+/// database.
+pub fn union(files: &[FileOutcomes], repo_root: &Path) -> Outcomes {
+    debug!(
+        "outcome::union: files={} repo-root={}",
+        files.len(),
+        repo_root.display()
+    );
     let mut commits: BTreeSet<String> = BTreeSet::new();
     let mut prs: Vec<PrRef> = Vec::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
@@ -123,6 +146,7 @@ pub fn union(files: &[FileOutcomes]) -> Outcomes {
         slack_messages += fo.slack_messages;
     }
 
+    let repos_touched = repos_touched(&files_edited, repo_root);
     let outcomes = Outcomes {
         commits: commits.into_iter().collect(),
         prs,
@@ -130,17 +154,50 @@ pub fn union(files: &[FileOutcomes]) -> Outcomes {
         jira_writes,
         slack_messages,
         files_edited: files_edited.len() as u64,
+        repos_touched,
     };
     debug!(
-        "outcome::union: commits={} prs={} confluence={} jira={} slack={} files={}",
+        "outcome::union: commits={} prs={} confluence={} jira={} slack={} files={} repos-touched={}",
         outcomes.commits.len(),
         outcomes.prs.len(),
         outcomes.confluence_writes,
         outcomes.jira_writes,
         outcomes.slack_messages,
-        outcomes.files_edited
+        outcomes.files_edited,
+        outcomes.repos_touched.len()
     );
     outcomes
+}
+
+/// Count the distinct edited files per `<org>/<repo>` slug, by pure path parsing against
+/// `repo_root`.
+///
+/// The slug is read from the file's PARENT directory, not from the file path itself. That is what
+/// makes the depth requirement right: `<root>/<org>/<repo>/src/main.rs` and
+/// `<root>/<org>/<repo>/README.md` both yield `<org>/<repo>`, while a loose file sitting directly at
+/// `<root>/<org>/notes.txt` yields nothing (its parent has only one component under the root) rather
+/// than fabricating the slug `<org>/notes.txt`. A path outside `repo_root` contributes nothing at
+/// all, which is the fail-closed answer for scratchpad-only sessions.
+fn repos_touched(files_edited: &BTreeSet<String>, repo_root: &Path) -> BTreeMap<String, u64> {
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    for path in files_edited {
+        let path = Path::new(path);
+        let Some(parent) = path.parent() else {
+            trace!("outcome::repos_touched: {} has no parent; skipped", path.display());
+            continue;
+        };
+        match common::repo::slug_under_root(parent, repo_root) {
+            Some(slug) => {
+                trace!("outcome::repos_touched: {} -> {slug}", path.display());
+                *counts.entry(slug).or_default() += 1;
+            }
+            None => trace!(
+                "outcome::repos_touched: {} is not under the repo root; skipped",
+                path.display()
+            ),
+        }
+    }
+    counts
 }
 
 /// Extract every outcome from one session-transcript JSONL (NO period filter -- the catalog holds

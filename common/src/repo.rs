@@ -353,13 +353,25 @@ pub fn from_path_guess(cwd: &Path, repo_root: &Path) -> Option<Resolved> {
         cwd.display(),
         repo_root.display()
     );
+    let slug = slug_under_root(cwd, repo_root)?;
+    debug!("repo::from_path_guess: {} -> {slug} (guessed)", cwd.display());
+    Some(Resolved::new(slug, RepoSource::PathGuess))
+}
 
-    let rest = match cwd.strip_prefix(repo_root) {
+/// The `<org>/<repo>` slug named by the first two path components under `repo_root`, or `None` when
+/// `path` is not under the root or does not carry two plain directory names there.
+///
+/// PURE path parsing, no filesystem and no catalog: this is the one definition of the
+/// `<repo-root>/<org>/<repo>` shape, shared by rule 4 ([`from_path_guess`], which reads a session's
+/// cwd) and by `efficiency::outcome::union` (which reads the EDITED FILE paths that back rule 3).
+/// Two readers deriving the same shape independently is exactly how the two would drift.
+pub fn slug_under_root(path: &Path, repo_root: &Path) -> Option<String> {
+    let rest = match path.strip_prefix(repo_root) {
         Ok(rest) => rest,
         Err(_) => {
-            debug!(
-                "repo::from_path_guess: {} is not under the repo root {}",
-                cwd.display(),
+            trace!(
+                "repo::slug_under_root: {} is not under the repo root {}",
+                path.display(),
                 repo_root.display()
             );
             return None;
@@ -369,9 +381,7 @@ pub fn from_path_guess(cwd: &Path, repo_root: &Path) -> Option<Resolved> {
     let mut components = rest.components();
     let org = next_normal(&mut components)?;
     let repo = next_normal(&mut components)?;
-    let slug = format!("{org}/{repo}");
-    debug!("repo::from_path_guess: {} -> {slug} (guessed)", cwd.display());
-    Some(Resolved::new(slug, RepoSource::PathGuess))
+    Some(format!("{org}/{repo}"))
 }
 
 /// The next plain directory name under the repo root, or `None` for an exhausted path or anything
@@ -381,7 +391,7 @@ fn next_normal(components: &mut std::path::Components<'_>) -> Option<String> {
     match components.next()? {
         Component::Normal(name) => name.to_str().map(str::to_string),
         other => {
-            debug!("repo::from_path_guess: unexpected path component {other:?}; declining");
+            debug!("repo::slug_under_root: unexpected path component {other:?}; declining");
             None
         }
     }

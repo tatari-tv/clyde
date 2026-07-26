@@ -1,4 +1,4 @@
-use crate::aggregate::{self, Aggregates};
+use crate::aggregate::{self, Aggregates, Attribution};
 use crate::cli::Format;
 use crate::config::{RenderConfig, TransportKind};
 use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
@@ -501,6 +501,11 @@ struct ContextBlock<'a> {
     options: ContextOptions,
     period: PeriodView,
     totals: TotalsView,
+    /// How much of `totals.spend` carries a repo and on what evidence, one row per `repo-source`
+    /// plus `(unattributed)`. Top-level rather than under `aggregates` because it is a statement
+    /// ABOUT the whole figure, not another rollup of it, and because the prose cites it next to the
+    /// headline. The rows sum to `totals.spend` by construction.
+    attribution: Attribution,
     aggregates: &'a Aggregates,
     /// The v2 efficiency signal set, all pre-formatted display strings (design Phase 5): the
     /// agent-type cost headline plus the report-wide cache/tool/interrupt/compaction signals and the
@@ -683,6 +688,7 @@ pub(crate) fn build_context_block(
         options: ContextOptions { include_tradeoffs },
         period: build_period_view(report, &aggregates),
         totals: build_totals_view(report),
+        attribution: aggregate::compute_attribution(report),
         aggregates: &aggregates,
         efficiency: build_efficiency_view(report),
         outcomes: build_outcomes_view(report),

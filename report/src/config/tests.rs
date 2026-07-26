@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use common::config::DEFAULT_MIN_ENRICHMENT;
 
 // NOTE: `resolve_command` reads `clyde.yml` from `$XDG_CONFIG_HOME`; env mutation is not
 // parallel-safe, so every test here serializes on the CRATE-WIDE `ENV_LOCK` (`crate::ENV_LOCK`).
@@ -114,8 +115,9 @@ fn collect_accepts_relative_span_since() {
         db: None,
         no_rollup: false,
         no_outcomes: false,
+        min_enrichment: None,
     };
-    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    let cfg = collect_config_from_args(args, DateTz::Utc, DEFAULT_MIN_ENRICHMENT).unwrap();
     assert!(cfg.since < Utc::now());
 }
 
@@ -128,8 +130,9 @@ fn collect_accepts_rfc3339_and_bare_date_since() {
         db: None,
         no_rollup: false,
         no_outcomes: false,
+        min_enrichment: None,
     };
-    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    let cfg = collect_config_from_args(args, DateTz::Utc, DEFAULT_MIN_ENRICHMENT).unwrap();
     assert_eq!(cfg.since.to_rfc3339(), "2026-04-01T00:00:00+00:00");
     assert_eq!(cfg.until.to_rfc3339(), "2026-04-02T00:00:00+00:00");
 }
@@ -143,8 +146,9 @@ fn collect_rejects_garbage_since() {
         db: None,
         no_rollup: false,
         no_outcomes: false,
+        min_enrichment: None,
     };
-    assert!(collect_config_from_args(args, DateTz::Utc).is_err());
+    assert!(collect_config_from_args(args, DateTz::Utc, DEFAULT_MIN_ENRICHMENT).is_err());
 }
 
 #[test]
@@ -168,8 +172,9 @@ fn explicit_output_selects_file_target() {
         db: None,
         no_rollup: false,
         no_outcomes: false,
+        min_enrichment: None,
     };
-    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    let cfg = collect_config_from_args(args, DateTz::Utc, DEFAULT_MIN_ENRICHMENT).unwrap();
     match cfg.output {
         Output::File(p) => assert_eq!(p, PathBuf::from("/tmp/custom-report.json")),
         Output::Stdout => panic!("expected File output, got Stdout"),
@@ -186,8 +191,9 @@ fn omitting_output_selects_stdout() {
         db: None,
         no_rollup: false,
         no_outcomes: false,
+        min_enrichment: None,
     };
-    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    let cfg = collect_config_from_args(args, DateTz::Utc, DEFAULT_MIN_ENRICHMENT).unwrap();
     assert!(matches!(cfg.output, Output::Stdout));
 }
 
@@ -200,8 +206,9 @@ fn collect_config_carries_no_outcomes_flag() {
         db: None,
         no_rollup: false,
         no_outcomes: true,
+        min_enrichment: None,
     };
-    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    let cfg = collect_config_from_args(args, DateTz::Utc, DEFAULT_MIN_ENRICHMENT).unwrap();
     assert!(cfg.no_outcomes);
 }
 
@@ -214,8 +221,9 @@ fn collect_config_no_outcomes_defaults_false() {
         db: None,
         no_rollup: false,
         no_outcomes: false,
+        min_enrichment: None,
     };
-    let cfg = collect_config_from_args(args, DateTz::Utc).unwrap();
+    let cfg = collect_config_from_args(args, DateTz::Utc, DEFAULT_MIN_ENRICHMENT).unwrap();
     assert!(!cfg.no_outcomes, "extraction is on by default");
 }
 
@@ -383,6 +391,7 @@ fn resolve_command_collect_threads_no_outcomes_into_config() {
         db: None,
         no_rollup: false,
         no_outcomes: true,
+        min_enrichment: None,
     };
     // `collect` also loads clyde.yml (for the date-tz convention), so this must hold ENV_LOCK too —
     // same race as the render tests, just via the other branch of `resolve_command`.
@@ -616,4 +625,67 @@ fn invalid_llm_value_fails_loudly() {
     });
     let msg = format!("{err:#}");
     assert!(msg.contains("clyde.yml") || msg.contains("telepathy"), "got: {msg}");
+}
+
+/// `--min-enrichment` follows the house precedence: flag > `clyde.yml` > default.
+#[test]
+fn collect_min_enrichment_flag_beats_config() {
+    let args = CollectArgs {
+        since: None,
+        until: None,
+        output: None,
+        db: None,
+        no_rollup: false,
+        no_outcomes: false,
+        min_enrichment: Some(0.9),
+    };
+    let cfg = collect_config_from_args(args, DateTz::Utc, 0.25).unwrap();
+    assert_eq!(cfg.min_enrichment, 0.9);
+}
+
+#[test]
+fn collect_min_enrichment_falls_back_to_config_then_default() {
+    let args = CollectArgs {
+        since: None,
+        until: None,
+        output: None,
+        db: None,
+        no_rollup: false,
+        no_outcomes: false,
+        min_enrichment: None,
+    };
+    let cfg = collect_config_from_args(args, DateTz::Utc, 0.25).unwrap();
+    assert_eq!(cfg.min_enrichment, 0.25, "config value when the flag is absent");
+
+    let args = CollectArgs {
+        since: None,
+        until: None,
+        output: None,
+        db: None,
+        no_rollup: false,
+        no_outcomes: false,
+        min_enrichment: None,
+    };
+    let cfg = collect_config_from_args(args, DateTz::Utc, DEFAULT_MIN_ENRICHMENT).unwrap();
+    assert_eq!(cfg.min_enrichment, DEFAULT_MIN_ENRICHMENT);
+}
+
+/// `--min-enrichment 50` (meaning 50%) is rejected at resolution, naming the units, rather than
+/// configuring a floor no window can meet and warning on every run.
+#[test]
+fn collect_min_enrichment_rejects_a_percent() {
+    let args = CollectArgs {
+        since: None,
+        until: None,
+        output: None,
+        db: None,
+        no_rollup: false,
+        no_outcomes: false,
+        min_enrichment: Some(50.0),
+    };
+    let err = collect_config_from_args(args, DateTz::Utc, DEFAULT_MIN_ENRICHMENT)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("--min-enrichment"), "must name the flag: {err}");
+    assert!(err.contains("0.5 means 50%"), "must say what the units are: {err}");
 }

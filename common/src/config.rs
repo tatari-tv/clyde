@@ -362,6 +362,41 @@ pub struct Config {
     /// arbitrary path cannot manufacture an org.
     #[serde(default = "default_repo_root", deserialize_with = "de_repo_root")]
     repo_root: PathBuf,
+    /// Enrichment-coverage floor for `report collect`, as a fraction in `0.0..=1.0`. Absent -> `0.5`.
+    ///
+    /// The report's themes are supposed to cite each session's enrich `summary`, so a window where
+    /// most sessions were never enriched produces a narrative resting on `ai-title` strings instead.
+    /// Below this floor, collect WARNS on stderr and still writes the artifact: the gap is stated
+    /// rather than hidden, and a low-coverage report is still worth having.
+    #[serde(default = "default_min_enrichment", deserialize_with = "de_min_enrichment")]
+    min_enrichment: f64,
+}
+
+/// The default enrichment-coverage floor when `min-enrichment` is unset: half the window. Exposed
+/// so `report` names this value rather than carrying its own copy of `0.5`.
+pub const DEFAULT_MIN_ENRICHMENT: f64 = 0.5;
+
+fn default_min_enrichment() -> f64 {
+    DEFAULT_MIN_ENRICHMENT
+}
+
+/// Deserialize `min-enrichment`, rejecting anything outside `0.0..=1.0` BY NAME.
+///
+/// It is a FRACTION, not a percent, and that is the confusion worth failing loudly on: a reader who
+/// writes `min-enrichment: 50` meaning "50%" would otherwise configure a floor no window can meet
+/// and get the warning on every single run. The key is hardcoded into the message for the same
+/// reason the render ceilings each carry theirs (see [`nonzero_ceiling`]).
+fn de_min_enrichment<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = f64::deserialize(deserializer)?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom(format!(
+            "min-enrichment must be a finite fraction in 0.0..=1.0 (0.5 means 50%), got {value}"
+        )));
+    }
+    Ok(value)
 }
 
 impl Default for Config {
@@ -373,6 +408,7 @@ impl Default for Config {
             reindex_on_start: default_reindex_on_start(),
             efficiency: EfficiencyConfig::default(),
             repo_root: default_repo_root(),
+            min_enrichment: default_min_enrichment(),
         }
     }
 }
@@ -490,6 +526,11 @@ impl Config {
     /// The clone root repo attribution's rule 4 matches against (`<home>/repos` when unset).
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
+    }
+
+    /// The enrichment-coverage floor `report collect` warns below, as a fraction (`0.5` when unset).
+    pub fn min_enrichment(&self) -> f64 {
+        self.min_enrichment
     }
 }
 

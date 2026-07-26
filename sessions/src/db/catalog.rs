@@ -47,17 +47,17 @@ impl Db {
     }
 }
 
-/// Map one row to a [`CatalogEntry`]: [`map_record`] consumes the [`COLS`] prefix (indices 0..=18,
+/// Map one row to a [`CatalogEntry`]: [`map_record`] consumes the [`COLS`] prefix (indices 0..=20,
 /// per its own doc comment), and the five catalog columns this query appends land at the fixed
-/// trailing indices 19..=23, in the same order as the `SELECT` above.
+/// trailing indices 21..=25, in the same order as the `SELECT` above.
 fn map_catalog_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
     Ok(CatalogEntry {
         record: map_record(row)?,
-        efficiency_json: row.get(19)?,
-        outcome_json: row.get(20)?,
-        cache_read_share: row.get(21)?,
-        tool_errors: row.get(22)?,
-        cost_usd: row.get(23)?,
+        efficiency_json: row.get(21)?,
+        outcome_json: row.get(22)?,
+        cache_read_share: row.get(23)?,
+        tool_errors: row.get(24)?,
+        cost_usd: row.get(25)?,
     })
 }
 

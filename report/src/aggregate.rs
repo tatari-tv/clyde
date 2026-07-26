@@ -12,12 +12,22 @@ use crate::outcome::Outcomes;
 use crate::report::Report;
 use chrono::NaiveDate;
 use claude_pricing::{Pricing, TokenUsage};
-use log::debug;
+use common::repo::RepoSource;
+use log::{debug, warn};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 
-/// Org bucket for sessions whose repo could not be detected (`SessionEntry.repo == None`).
+/// Org bucket for sessions whose repo could not be detected (`SessionEntry.repo == None`). Doubles
+/// as the [`Attribution`] bucket for the same sessions, deliberately: one spelling for one concept.
 pub const UNATTRIBUTED_ORG: &str = "(unattributed)";
+
+/// [`Attribution`] bucket for a session that HAS a repo but no recorded provenance: a pre-v10
+/// artifact folded in by `report merge`, whose repo was resolved before `repo_source` existed.
+/// Parenthesized so it cannot collide with a real `RepoSource` spelling, matching
+/// [`UNATTRIBUTED_ORG`]'s precedent. Never produced from a locally-collected window: `to_collected`
+/// fails loudly on a slug with no source.
+pub const UNKNOWN_SOURCE: &str = "(unknown-source)";
 
 /// Default outlier-table size until Phase 5 wires `--outliers <N>` through to this value.
 pub const DEFAULT_OUTLIERS: usize = 10;
@@ -89,6 +99,18 @@ pub struct RepoRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend_percent_of_max: Option<f64>,
     pub models: Vec<String>,
+    /// The STRONGEST evidence any session in this row has for the slug existing at all
+    /// (`git-origin` beats `known-path` beats `files-touched` beats `path-guess`), so a row whose
+    /// value is `path-guess` is one that NO session ever observed — the fabricated-sibling case
+    /// (`<root>/tatari-tv/clyde-ft` guessing `tatari-tv/clyde-ft`) rule 4 can produce.
+    ///
+    /// Strongest, not weakest, because the question this answers is "is this repo real?", not "was
+    /// every session in it observed". One guessed session among five hundred git-origin ones does
+    /// not make `tatari-tv/clyde` a fabrication; per-source spend lives in `attribution`.
+    ///
+    /// `None` on a merged pre-v10 artifact whose sessions carry no provenance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -315,6 +337,24 @@ struct RepoAcc {
     tokens: u64,
     spend: f64,
     models: BTreeSet<String>,
+    /// The best (lowest-rank) [`RepoSource`] seen for this repo; see [`RepoRow::repo_source`].
+    best_source: Option<RepoSource>,
+}
+
+impl RepoAcc {
+    /// Fold one session's provenance in, keeping the strongest. `RepoSource`'s derived `Ord` is
+    /// confidence order (best first), so `min` IS "strongest evidence" with no rank arithmetic here.
+    /// An unparseable value is ignored rather than allowed to weaken the row: it is not evidence of
+    /// a guess, it is a merged artifact from before provenance existed.
+    fn observe(&mut self, source: Option<&str>) {
+        let Some(parsed) = source.and_then(|s| RepoSource::from_str(s).ok()) else {
+            return;
+        };
+        self.best_source = Some(match self.best_source {
+            Some(current) => current.min(parsed),
+            None => parsed,
+        });
+    }
 }
 
 fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
@@ -329,6 +369,7 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
         acc.tokens += entry.total_tokens();
         acc.spend += entry.spend_usd.unwrap_or(0.0);
         acc.models.extend(entry.models.keys().cloned());
+        acc.observe(entry.repo_source.as_deref());
     }
     let mut rows: Vec<RepoRow> = repos
         .into_iter()
@@ -344,6 +385,7 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
                 spend: format_usd(acc.spend),
                 spend_percent_of_max: None,
                 models: acc.models.into_iter().collect(),
+                repo_source: acc.best_source.map(|s| s.as_str().to_string()),
             }
         })
         .collect();
@@ -406,6 +448,154 @@ fn compute_by_day(report: &Report) -> Vec<DayRow> {
         max_sessions
     );
     rows
+}
+
+/// How much of the window's money carries a repo, and on what evidence.
+///
+/// This is what lets the prose state coverage as a FACT instead of the report quietly presenting a
+/// fraction of the money as if it were all of it. [`Attribution::rows`] sum to `totals.spend-usd`
+/// by construction (see [`compute_attribution`]), so a reader can check the partition themselves.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Attribution {
+    /// One row per observed `repo-source`, plus [`UNATTRIBUTED_ORG`]. Pre-sorted by spend
+    /// descending, ties broken by source name for determinism.
+    pub rows: Vec<AttributionRow>,
+    /// Display: spend carrying a repo, on ANY evidence.
+    pub covered: String,
+    /// Display: spend still carrying none.
+    pub uncovered: String,
+    /// Display percent: `covered` as a share of `totals.spend-usd`.
+    pub covered_share: String,
+}
+
+/// One `repo-source` bucket of the window's spend.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AttributionRow {
+    /// `git-origin` | `known-path` | `files-touched` | `path-guess` | [`UNKNOWN_SOURCE`] |
+    /// [`UNATTRIBUTED_ORG`].
+    pub source: String,
+    pub sessions: usize,
+    /// Raw bucket spend, kept ONLY to sort the rows; not serialized, so no numeric operand reaches
+    /// the model (the string-only context rule).
+    #[serde(skip)]
+    pub spend_raw: f64,
+    pub spend: String,
+    /// How much weight the row's evidence carries: `observed` (rules 1 and 2 both SAW the repo),
+    /// `inferred` (rule 3 read it off the files the session edited), `guessed` (rule 4 pattern-matched
+    /// a path and may have invented the slug), `unknown`, `unattributed`.
+    pub confidence: String,
+}
+
+/// The confidence word for a `repo-source`, spelled once here so the vocabulary cannot drift between
+/// the row and the prompt that quotes it.
+fn confidence_of(source: RepoSource) -> &'static str {
+    match source {
+        RepoSource::GitOrigin | RepoSource::KnownPath => "observed",
+        RepoSource::FilesTouched => "inferred",
+        RepoSource::PathGuess => "guessed",
+    }
+}
+
+/// Partition `totals.spend-usd` across the rules that resolved each session's repo.
+///
+/// The buckets are measured from the per-session spends, with ONE deliberate adjustment: the
+/// `(unattributed)` row absorbs the difference between `totals.spend-usd` and the sum of the
+/// per-session spends, so the rows sum to the headline figure exactly. That difference is a pricing
+/// artifact, not attribution: `totals.spend-usd` prices the UNIONED per-model token counts once,
+/// while each session is priced on its own, and the two disagree whenever a model's long-context
+/// (>200k) tier is crossed by the union but not by an individual session. Folding it anywhere else
+/// would attribute money to a repo that no session's own price supports; folding it into
+/// "unattributed" says exactly what it is. It is WARNed when it exceeds a cent, so it can never grow
+/// unnoticed into a number that matters.
+pub fn compute_attribution(report: &Report) -> Attribution {
+    debug!("aggregate::compute_attribution: sessions={}", report.sessions.len());
+    let mut buckets: BTreeMap<String, (usize, f64)> = BTreeMap::new();
+    let mut measured_total = 0.0_f64;
+    let mut covered = 0.0_f64;
+
+    for entry in report.sessions.values() {
+        let spend = entry.spend_usd.unwrap_or(0.0);
+        measured_total += spend;
+        let key = match (&entry.repo, entry.repo_source.as_deref()) {
+            (None, _) => UNATTRIBUTED_ORG.to_string(),
+            (Some(_), Some(src)) => match RepoSource::from_str(src) {
+                Ok(parsed) => {
+                    covered += spend;
+                    parsed.as_str().to_string()
+                }
+                Err(_) => {
+                    covered += spend;
+                    UNKNOWN_SOURCE.to_string()
+                }
+            },
+            (Some(_), None) => {
+                covered += spend;
+                UNKNOWN_SOURCE.to_string()
+            }
+        };
+        let bucket = buckets.entry(key).or_insert((0, 0.0));
+        bucket.0 += 1;
+        bucket.1 += spend;
+    }
+
+    // Reconcile to the headline figure. See the doc comment: this is a pricing-basis residual, and
+    // the unattributed bucket is where an unattributable dollar belongs.
+    let residual = report.totals.spend_usd - measured_total;
+    if residual.abs() > 0.01 {
+        warn!(
+            "aggregate::compute_attribution: per-session spends sum to {measured_total:.2} but \
+             totals.spend-usd is {:.2}; the {residual:.2} difference (long-context tiering across \
+             the unioned token counts) is carried in the ({UNATTRIBUTED_ORG}) bucket",
+            report.totals.spend_usd
+        );
+    }
+    if residual != 0.0 {
+        let bucket = buckets.entry(UNATTRIBUTED_ORG.to_string()).or_insert((0, 0.0));
+        bucket.1 += residual;
+    }
+    let uncovered = report.totals.spend_usd - covered;
+
+    let mut rows: Vec<AttributionRow> = buckets
+        .into_iter()
+        .map(|(source, (sessions, spend))| {
+            let confidence = match RepoSource::from_str(&source) {
+                Ok(parsed) => confidence_of(parsed).to_string(),
+                Err(_) if source == UNATTRIBUTED_ORG => "unattributed".to_string(),
+                Err(_) => "unknown".to_string(),
+            };
+            AttributionRow {
+                source,
+                sessions,
+                spend_raw: spend,
+                spend: format_usd(spend),
+                confidence,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.spend_raw
+            .partial_cmp(&a.spend_raw)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.source.cmp(&b.source))
+    });
+
+    let covered_share = if report.totals.spend_usd == 0.0 {
+        "0.0%".to_string()
+    } else {
+        format!("{:.1}%", covered / report.totals.spend_usd * 100.0)
+    };
+    debug!(
+        "aggregate::compute_attribution: rows={} covered={covered:.2} uncovered={uncovered:.2} share={covered_share}",
+        rows.len()
+    );
+    Attribution {
+        rows,
+        covered: format_usd(covered),
+        uncovered: format_usd(uncovered),
+        covered_share,
+    }
 }
 
 /// Top-`outliers_n` sessions by spend (untracked/unpriced sessions rank as $0, ties broken by

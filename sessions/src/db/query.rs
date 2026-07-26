@@ -29,7 +29,7 @@ use crate::transcript::transcript_layout_parts;
 const EXPORT_COLS: &str = "s.session_id, s.host, s.cwd, s.project_dir, s.git_branch, s.created, \
      s.modified, s.updated_at, s.title, s.first_prompt, s.n_msgs, s.model, s.summary, s.tags, \
      s.tags_source, s.enriched_at, s.enrich_status, s.enrich_model, s.prompt_version, \
-     s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.efficiency_json";
+     s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.efficiency_json, s.repo";
 
 impl Db {
     /// Bulk metadata export: the versioned envelope of [`ExportRecord`] for every row matching
@@ -249,6 +249,8 @@ struct ExportRaw {
     archived: bool,
     /// The full nested `SessionEfficiency` JSON blob (schema v6); `None` when un-annotated.
     efficiency_json: Option<String>,
+    /// The PERSISTED `<org>/<repo>` attribution (schema v10); `None` until a rule has fired.
+    repo: Option<String>,
 }
 
 /// Map one row to [`ExportRaw`]. Index order mirrors [`EXPORT_COLS`] exactly.
@@ -278,12 +280,13 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
         staged_path: row.get(21)?,
         archived: row.get::<_, i64>(22)? != 0,
         efficiency_json: row.get(23)?,
+        repo: row.get(24)?,
     })
 }
 
 /// Derive an [`ExportRecord`] from raw columns plus the injected clock. This is where the contract's
 /// derived fields are computed: `scope` re-derived via `classify(cwd)` (never the stored NULLable
-/// column, finding S1); `repo` from `cwd` (finding R1); `duration-secs` as `modified - created`
+/// column, finding S1); `duration-secs` as `modified - created`
 /// (equal to the doc's "mtime - earliest ts" on live rows and the reaped fallback, since `modified`
 /// IS the transcript mtime, finding D1); `dormant` request-relative against the injected `now`
 /// (finding T1). `body` is left `None` (the bulk path); [`Db::export_one`] fills it under
@@ -295,7 +298,11 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
 fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono::Duration) -> Result<ExportRecord> {
     let cwd_path = raw.cwd.as_deref().map(Path::new);
     let scope = session::classify(cwd_path).as_str().to_string();
-    let repo = session::repo_slug(cwd_path);
+    // `repo` is the PERSISTED v10 column, NOT `session::repo_slug(cwd)`. Deriving it from the cwd
+    // here meant export and `report collect` answered differently for the same session the moment a
+    // worktree was deleted: two fields with one name and two answers. Index time resolved it while
+    // the evidence existed; export just reports what was resolved.
+    let repo = raw.repo;
     let enrich_status = raw
         .enrich_status
         .as_deref()

@@ -91,11 +91,10 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
     // `message.id`, inflating tokens/cost ~2-3x) so the next reindex recomputes it correctly. Pure
     // invalidation, no schema change. Gated on the genuine v8->v9 hop.
     migrate_v9_reset_efficiency(&tx, version)?;
-    // v10: add persisted repo attribution (`repo`/`repo_source`/`repo_rank` + `repo_paths`).
-    // Idempotent; safe to run every migration. Phase 3 EXTENDS this function with the outcome-blob
-    // reset (nulling `efficiency_json` + `outcome_json`) rather than adding a v11 step -- see the
-    // design doc's Data Model section and `migrate_v10_repo`'s own doc comment.
-    migrate_v10_repo(&tx)?;
+    // v10: add persisted repo attribution (`repo`/`repo_source`/`repo_rank` + `repo_paths`) AND
+    // invalidate the efficiency/outcome blobs so `Outcomes::repos_touched` (rule 3's input, new in
+    // this version) is computed for every session. Idempotent; the reset is version-gated.
+    migrate_v10_repo(&tx, version)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -299,12 +298,25 @@ fn migrate_v9_reset_efficiency(conn: &Connection, from_version: i64) -> Result<(
 /// nothing itself — `sessions::index::reindex` populates the columns on the next reindex pass via
 /// `Db::upsert_repo` / `Db::record_repo_path`.
 ///
-/// PHASE 3 EXTENDS THIS FUNCTION rather than adding a v11 step: it bundles in the outcome-blob reset
-/// (nulling `efficiency_json` AND `outcome_json` so `repos_touched` recomputes) here, on the genuine
-/// pre-v10 hop, mirroring `migrate_v7_reset_efficiency`'s trigger-suppressed reset pattern. Do NOT
-/// create a `migrate_v11_*` function for that reset.
-fn migrate_v10_repo(conn: &Connection) -> Result<()> {
-    debug!("migrate_v10_repo: add repo/repo_source/repo_rank columns + repo_paths table");
+/// It ALSO bundles the outcome-blob reset (Phase 3) rather than adding a v11 step: `Outcomes` gained
+/// `repos_touched` in this version (repo attribution's rule 3 reads it), so every stored blob is one
+/// field short and has to be recomputed.
+///
+/// The reset NULLs `efficiency_json` and the three indexed scalars ALONGSIDE `outcome_json`, and that
+/// pairing is load-bearing, not belt-and-braces: there is exactly ONE reindex predicate,
+/// [`super::Db::sessions_missing_efficiency`] (`efficiency_json IS NULL`), and
+/// `efficiency::reindex_efficiency` writes both blobs in lock step. Nulling only `outcome_json` would
+/// be picked up by nothing and the rows would stay empty forever.
+///
+/// Gated on the genuine pre-v10 hop with efficiency data to lose (`6 <= from_version < 10`): a fresh
+/// DB has nothing to reset, and an already-v10 DB must never be reset again. Mirrors the v7/v8/v9
+/// trigger-suppressed pattern so invalidating a DERIVED annotation does not advance `updated_at` and
+/// force every `session export --cursor` consumer to re-fetch the whole catalog.
+fn migrate_v10_repo(conn: &Connection, from_version: i64) -> Result<()> {
+    debug!(
+        "migrate_v10_repo: from_version={from_version} (add repo columns + repo_paths; reset runs on the \
+         genuine 6<=v<10 hop)"
+    );
     ensure_column(conn, "sessions", "repo", "TEXT")?;
     ensure_column(conn, "sessions", "repo_source", "TEXT")?;
     ensure_column(conn, "sessions", "repo_rank", "INTEGER NOT NULL DEFAULT 99")?;
@@ -317,6 +329,23 @@ fn migrate_v10_repo(conn: &Connection) -> Result<()> {
         );",
     )
     .context("v10: create repo_paths table")?;
+
+    if !(6..10).contains(&from_version) {
+        return Ok(());
+    }
+    // Suppress the revision UPDATE trigger for the invalidation (see `Db::set_efficiency_many`).
+    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
+        .context("v10: suppress the revision UPDATE trigger")?;
+    let reset = conn
+        .execute(
+            "UPDATE sessions SET efficiency_json=NULL, cache_read_share=NULL, tool_errors=NULL, cost_usd=NULL, \
+             outcome_json=NULL",
+            [],
+        )
+        .context("v10: null efficiency + outcome columns so repos_touched is computed")?;
+    conn.execute_batch(V5_TRIGGERS_SQL)
+        .context("v10: restore the revision UPDATE trigger")?;
+    debug!("migrate_v10_repo: invalidated efficiency+outcomes on {reset} rows (updated_at unchanged)");
     Ok(())
 }
 

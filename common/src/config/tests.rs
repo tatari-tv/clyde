@@ -450,6 +450,54 @@ fn repo_root_rejects_the_typo_form() {
     );
 }
 
+// ---- min-enrichment ------------------------------------------------------------------------------
+
+#[test]
+fn min_enrichment_defaults_to_half() {
+    assert_eq!(Config::default().min_enrichment(), DEFAULT_MIN_ENRICHMENT);
+    assert_eq!(DEFAULT_MIN_ENRICHMENT, 0.5, "the documented default is 50%");
+}
+
+#[test]
+fn min_enrichment_override_from_clyde_yml() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "min-enrichment: 0.8\n").unwrap();
+    assert_eq!(load_from(&path).unwrap().min_enrichment(), 0.8);
+}
+
+/// `min-enrichment: 50` (meaning 50%) is the confusion worth failing on: silently accepted, it
+/// would configure a floor no window can ever meet and warn on every single run.
+#[test]
+fn min_enrichment_rejects_a_percent_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "min-enrichment: 50\n").unwrap();
+    let err = format!("{:#}", load_from(&path).unwrap_err());
+    assert!(err.contains("min-enrichment"), "must name the key the user set: {err}");
+    assert!(err.contains("0.5 means 50%"), "must say what the units are: {err}");
+}
+
+#[test]
+fn min_enrichment_rejects_a_negative_fraction() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "min-enrichment: -0.1\n").unwrap();
+    assert!(load_from(&path).is_err());
+}
+
+#[test]
+fn min_enrichment_rejects_the_typo_form() {
+    // deny_unknown_fields: `min-enrichement` must fail LOUD rather than silently keeping 0.5.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "min-enrichement: 0.8\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "deny_unknown_fields should reject `min-enrichement`"
+    );
+}
+
 #[test]
 fn xdg_config_dir_honors_env_and_falls_back() {
     let guard = ENV_LOCK.lock().unwrap();

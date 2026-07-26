@@ -79,6 +79,7 @@ fn collected(
         session_id: sid.into(),
         title: title.map(str::to_string),
         repo: Some("tatari-tv/claude-report".into()),
+        repo_source: Some(RepoSource::GitOrigin),
         begin: ts("2026-04-10T10:00:00Z"),
         end: ts("2026-04-10T11:00:00Z"),
         jsonl_paths: vec![PathBuf::from("/path/to/parent.jsonl")],
@@ -442,6 +443,7 @@ fn no_rollup_keeps_outcomes_for_fully_subagent_session() {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 3,
+        ..Default::default()
     };
     let s = collected(SID_A, None, eff, Some(outcomes));
 
@@ -491,6 +493,7 @@ fn build_report_rolls_up_outcomes_with_global_dedupe() {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 2,
+        ..Default::default()
     };
     let o2 = Outcomes {
         commits: vec!["sha-a".to_string(), "sha-b".to_string()],
@@ -499,6 +502,7 @@ fn build_report_rolls_up_outcomes_with_global_dedupe() {
         jira_writes: 4,
         slack_messages: 0,
         files_edited: 3,
+        ..Default::default()
     };
     let s1 = collected(
         SID_A,
@@ -541,6 +545,7 @@ fn build_report_with_outcomes_disabled_strips_all_outcomes() {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 1,
+        ..Default::default()
     };
     let s = collected(
         SID_A,

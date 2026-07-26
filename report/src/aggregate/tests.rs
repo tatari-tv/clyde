@@ -50,6 +50,7 @@ fn entry(
     SessionEntry {
         title: title.map(str::to_string),
         repo: repo.map(str::to_string),
+        repo_source: repo.map(|_| RepoSource::GitOrigin.as_str().to_string()),
         begin,
         end: begin,
         spend_usd,
@@ -683,4 +684,160 @@ fn cache_counterfactual_present_when_unpriced_model_has_no_cache_tokens() {
     let aggregates = compute(&report, DEFAULT_OUTLIERS, &p);
     assert!(aggregates.cache.list_price_equivalent.is_some());
     assert!(aggregates.cache.cache_savings.is_some());
+}
+
+/// Build an entry with an explicit `repo_source`, for the provenance rollups.
+fn entry_sourced(repo: Option<&str>, source: Option<RepoSource>, spend_usd: f64) -> SessionEntry {
+    let mut e = entry(
+        None,
+        repo,
+        ts("2026-06-10T10:00:00Z"),
+        "claude-opus-4-8",
+        100,
+        Some(spend_usd),
+    );
+    e.repo_source = source.map(|s| s.as_str().to_string());
+    e
+}
+
+/// `attribution` partitions `totals.spend-usd`: one row per `repo-source` plus `(unattributed)`,
+/// and the rows sum to the headline figure exactly. BITES: drop a bucket or double-count one and
+/// the sum assertion fails.
+#[test]
+fn attribution_rows_sum_to_totals_spend() {
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T00:00:00Z",
+        vec![
+            (
+                "a",
+                entry_sourced(Some("tatari-tv/clyde"), Some(RepoSource::GitOrigin), 100.0),
+            ),
+            (
+                "b",
+                entry_sourced(Some("tatari-tv/clyde"), Some(RepoSource::KnownPath), 50.0),
+            ),
+            (
+                "c",
+                entry_sourced(Some("scottidler/sb"), Some(RepoSource::FilesTouched), 25.0),
+            ),
+            (
+                "d",
+                entry_sourced(Some("tatari-tv/clyde-ft"), Some(RepoSource::PathGuess), 20.0),
+            ),
+            ("e", entry_sourced(None, None, 5.0)),
+        ],
+    );
+    let attribution = compute_attribution(&report);
+
+    let summed: f64 = attribution.rows.iter().map(|r| r.spend_raw).sum();
+    assert!(
+        (summed - report.totals.spend_usd).abs() < 0.005,
+        "rows must sum to totals.spend-usd: {summed} vs {}",
+        report.totals.spend_usd
+    );
+    assert_eq!(attribution.covered, "$195.00", "everything but the repo-less session");
+    assert_eq!(attribution.uncovered, "$5.00");
+    assert_eq!(attribution.covered_share, "97.5%");
+
+    let by_source: BTreeMap<&str, (usize, &str)> = attribution
+        .rows
+        .iter()
+        .map(|r| (r.source.as_str(), (r.sessions, r.confidence.as_str())))
+        .collect();
+    assert_eq!(by_source["git-origin"], (1, "observed"));
+    assert_eq!(by_source["known-path"], (1, "observed"));
+    assert_eq!(by_source["files-touched"], (1, "inferred"));
+    assert_eq!(by_source["path-guess"], (1, "guessed"));
+    assert_eq!(by_source["(unattributed)"], (1, "unattributed"));
+}
+
+/// The `(unattributed)` row absorbs the difference between `totals.spend-usd` and the sum of the
+/// per-session spends, so the partition holds even when the two pricing bases disagree (a model's
+/// long-context tier crossed by the unioned token counts but not by any one session).
+#[test]
+fn attribution_carries_the_pricing_residual_in_the_unattributed_bucket() {
+    let mut report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T00:00:00Z",
+        vec![(
+            "a",
+            entry_sourced(Some("tatari-tv/clyde"), Some(RepoSource::GitOrigin), 100.0),
+        )],
+    );
+    // The union priced $10 higher than the sessions did on their own.
+    report.totals.spend_usd = 110.0;
+
+    let attribution = compute_attribution(&report);
+    let summed: f64 = attribution.rows.iter().map(|r| r.spend_raw).sum();
+    assert!(
+        (summed - 110.0).abs() < 0.005,
+        "rows still sum to the headline: {summed}"
+    );
+    let unattributed = attribution
+        .rows
+        .iter()
+        .find(|r| r.source == UNATTRIBUTED_ORG)
+        .expect("the residual creates the bucket");
+    assert_eq!(unattributed.spend, "$10.00");
+    assert_eq!(unattributed.sessions, 0, "no session is invented to carry it");
+}
+
+/// A pre-v10 artifact folded in by `report merge` has repos with no provenance. Those are bucketed
+/// as `(unknown-source)`, never silently counted as observed.
+#[test]
+fn attribution_buckets_a_repo_with_no_provenance_as_unknown() {
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T00:00:00Z",
+        vec![("a", entry_sourced(Some("tatari-tv/clyde"), None, 40.0))],
+    );
+    let attribution = compute_attribution(&report);
+    assert_eq!(attribution.rows.len(), 1);
+    assert_eq!(attribution.rows[0].source, UNKNOWN_SOURCE);
+    assert_eq!(attribution.rows[0].confidence, "unknown");
+    assert_eq!(
+        attribution.covered, "$40.00",
+        "it still counts as covered; it has a repo"
+    );
+}
+
+/// `by-repo` marks a row with the STRONGEST evidence any of its sessions has for the slug. A repo
+/// only ever guessed at is marked `path-guess` (the fabricated-sibling case); a repo with even one
+/// observed session is not, however many guesses it also carries.
+#[test]
+fn by_repo_marks_a_row_with_its_strongest_provenance() {
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T00:00:00Z",
+        vec![
+            (
+                "a",
+                entry_sourced(Some("tatari-tv/clyde"), Some(RepoSource::PathGuess), 10.0),
+            ),
+            (
+                "b",
+                entry_sourced(Some("tatari-tv/clyde"), Some(RepoSource::GitOrigin), 90.0),
+            ),
+            (
+                "c",
+                entry_sourced(Some("tatari-tv/clyde-ft"), Some(RepoSource::PathGuess), 30.0),
+            ),
+        ],
+    );
+    let rows = compute_by_repo(&report);
+    let by_repo: BTreeMap<&str, Option<&str>> = rows
+        .iter()
+        .map(|r| (r.repo.as_str(), r.repo_source.as_deref()))
+        .collect();
+    assert_eq!(
+        by_repo["tatari-tv/clyde"],
+        Some("git-origin"),
+        "one observed session proves the repo is real"
+    );
+    assert_eq!(
+        by_repo["tatari-tv/clyde-ft"],
+        Some("path-guess"),
+        "a row nobody ever observed is marked as the guess it is"
+    );
 }

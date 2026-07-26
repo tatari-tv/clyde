@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 use session::ParsedSession;
 use tempfile::TempDir;
 
+use common::repo::{RepoSource, Resolved};
+
 use crate::db::{Db, EnrichSuccess};
 use crate::export::{ExportContext, ExportFilters};
 
@@ -69,13 +71,17 @@ fn export_re_derives_scope_from_cwd_never_the_stored_null_column() {
     assert_eq!(env.sessions.len(), 1);
     let rec = &env.sessions[0];
     assert_eq!(rec.scope, "personal", "NULL stored scope must re-derive to personal");
-    assert_eq!(rec.repo.as_deref(), Some("scottidler/manifest"));
+    assert_eq!(
+        rec.repo, None,
+        "repo is the PERSISTED v10 column, so a session no reindex has attributed exports null - \
+         it is NOT re-derived from the cwd (that derivation is what decayed)"
+    );
     assert!(rec.enrich_status.is_none(), "never-enriched -> enrich-status null");
     assert_eq!(env.schema_version, crate::export::EXPORT_SCHEMA_VERSION);
 }
 
 #[test]
-fn export_work_session_derives_work_scope_and_repo_and_enrichment() {
+fn export_work_session_derives_work_scope_and_reports_the_persisted_repo_and_enrichment() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(
         &parsed_cwd(
@@ -85,6 +91,14 @@ fn export_work_session_derives_work_scope_and_repo_and_enrichment() {
             "2026-06-21T10:00:00Z",
         ),
         "desk",
+    )
+    .unwrap();
+    db.upsert_repo(
+        UUID_A,
+        &Resolved {
+            repo: "tatari-tv/drata-cli".to_string(),
+            source: RepoSource::GitOrigin,
+        },
     )
     .unwrap();
     db.set_enrichment(
@@ -634,4 +648,41 @@ fn export_excludes_archived_unless_requested() {
         .unwrap();
     assert_eq!(with_archived.sessions.len(), 1);
     assert!(with_archived.sessions[0].archived);
+}
+
+/// `export`'s `repo` is the PERSISTED column, never a re-derivation from `cwd`. The two answers
+/// diverge exactly where it matters: a sibling worktree at `<root>/tatari-tv/clyde-ft` belongs to
+/// `tatari-tv/clyde` (git origin says so), while the path pattern would fabricate
+/// `tatari-tv/clyde-ft`. Break the field back to `session::repo_slug(cwd)` and this fails, because
+/// export and `report collect` would then answer differently about the same session.
+#[test]
+fn export_repo_is_the_persisted_column_not_a_cwd_derivation() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "/home/saidler/repos/tatari-tv/clyde-ft",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+    db.upsert_repo(
+        UUID_A,
+        &Resolved {
+            repo: "tatari-tv/clyde".to_string(),
+            source: RepoSource::GitOrigin,
+        },
+    )
+    .unwrap();
+
+    let env = db
+        .export(&ExportFilters::default(), &export_ctx("2026-07-01T00:00:00Z"))
+        .unwrap();
+    assert_eq!(
+        env.sessions[0].repo.as_deref(),
+        Some("tatari-tv/clyde"),
+        "the resolved slug wins over the cwd's directory name"
+    );
 }

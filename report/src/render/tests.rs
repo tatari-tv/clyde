@@ -5,6 +5,7 @@ use crate::config::{Config, RenderConfig, ResolvedCommand};
 use crate::report::{ModelTokens, Report, SessionEntry, Totals};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
+use common::repo::RepoSource;
 use efficiency::{RawCounters, SessionEfficiency, WorkloadCost, finalize};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
@@ -43,6 +44,7 @@ fn session_entry(
     SessionEntry {
         title: title.map(str::to_string),
         repo: repo.map(str::to_string),
+        repo_source: repo.map(|_| RepoSource::GitOrigin.as_str().to_string()),
         begin,
         end,
         spend_usd,
@@ -709,6 +711,7 @@ fn report_with_outcomes() -> Report {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 7,
+        ..Default::default()
     });
     report
 }
