@@ -201,6 +201,16 @@ pub struct ReindexArgs {
     /// Override the Claude projects dir (default: ~/.claude/projects).
     #[arg(long)]
     pub projects_dir: Option<PathBuf>,
+    /// Clear the persisted repo attribution (`repo`/`repo-source`/`repo-rank`) for the named
+    /// session(s), or every session when `--session` is omitted, then re-run resolution against
+    /// current cwd / `repo-paths` state. The repair path a strictly-improving write requires: once
+    /// a session's repo is persisted, only a HIGHER-confidence source can ever overwrite it, so a
+    /// wrong first resolution needs an explicit operator reset.
+    #[arg(long)]
+    pub reresolve_repo: bool,
+    /// Limit `--reresolve-repo` to these session ids (space-separated). Requires `--reresolve-repo`.
+    #[arg(long, num_args = 1..)]
+    pub session: Option<Vec<String>>,
 }
 
 #[derive(clap::Args, Debug)]

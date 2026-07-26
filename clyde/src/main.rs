@@ -91,7 +91,7 @@ fn main() -> Result<()> {
         let reindex_on_start = cfg.reindex_on_start();
         let io = mcp_io::mcp_io!();
         std::process::exit(cmd.run(&io, || {
-            sessions::build_server(&db_path, &projects_dir, reindex_on_start)
+            sessions::build_server(&db_path, &projects_dir, reindex_on_start, cfg.repo_root())
         }));
     }
 
@@ -656,9 +656,32 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     // Load and validate clyde.yml BEFORE the content reindex mutates the catalog: an invalid
     // `efficiency:` section (a typo'd key, an out-of-range threshold) must fail closed, before any
     // write happens, not after the catalog has already been rewritten. Config supplies the scoring
-    // thresholds for the efficiency pass below.
+    // thresholds for the efficiency pass below, and `repo-root` for repo attribution's rule 4.
     let cfg = common::config::load().context("failed to load clyde config for the efficiency pass")?;
-    let stats = sessions::reindex(db, &projects_dir)?;
+
+    if args.session.is_some() && !args.reresolve_repo {
+        eyre::bail!("--session requires --reresolve-repo");
+    }
+    if args.reresolve_repo {
+        let cleared = match &args.session {
+            Some(ids) => {
+                let mut total = 0usize;
+                for id in ids {
+                    let session_id = resolve_one_session_id(db, id)?;
+                    total += db.clear_repo(Some(&session_id))?;
+                }
+                total
+            }
+            None => db.clear_repo(None)?,
+        };
+        println!(
+            "{} cleared repo attribution for {} session(s); reresolving...",
+            "✓".green(),
+            cleared
+        );
+    }
+
+    let stats = sessions::reindex(db, &projects_dir, cfg.repo_root())?;
     // Phase 6: after the content reindex, annotate every un-annotated session (`efficiency_json
     // IS NULL`) with its computed efficiency signals. This writes a derived read-side annotation and
     // deliberately does NOT advance the export `updated_at` cursor. Wired here (the explicit reindex),
@@ -667,6 +690,18 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     let eff = efficiency::reindex_efficiency(db, &projects_dir, cfg.efficiency())?;
     print_reindex(&stats, &eff);
     Ok(())
+}
+
+/// Resolve `needle` to exactly one session id, erroring loudly on zero or multiple matches. Shared
+/// by `--reresolve-repo <session>` so an ambiguous or absent id is a clear, named failure rather than
+/// a silent no-op clear.
+fn resolve_one_session_id(db: &Db, needle: &str) -> Result<String> {
+    let ids = db.resolve_id(needle)?;
+    match ids.as_slice() {
+        [id] => Ok(id.clone()),
+        [] => eyre::bail!("no session matches {needle:?}"),
+        many => eyre::bail!("{needle:?} is ambiguous ({} matches)", many.len()),
+    }
 }
 
 fn cmd_stage(db: &Db, args: StageArgs, tz: common::DateTz) -> Result<()> {
@@ -749,7 +784,15 @@ fn lazy_reindex(db: &Db, skip: bool) {
         warn!("lazy_reindex: cannot resolve ~/.claude/projects; querying stored data only");
         return;
     };
-    if let Err(e) = sessions::reindex(db, &projects_dir) {
+    // A broken clyde.yml degrades to the default repo-root (rule 4 only) rather than skipping the
+    // whole cheap incremental refresh -- "stale data beats no answer" applies here too.
+    let repo_root = common::config::load()
+        .map(|cfg| cfg.repo_root().to_path_buf())
+        .unwrap_or_else(|e| {
+            warn!("lazy_reindex: failed to load clyde config, falling back to the default repo-root: {e}");
+            common::config::Config::default().repo_root().to_path_buf()
+        });
+    if let Err(e) = sessions::reindex(db, &projects_dir, &repo_root) {
         warn!("lazy_reindex: reindex failed, querying stored data only: {e}");
     }
 }

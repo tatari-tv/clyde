@@ -7,11 +7,45 @@
 //! module imports them from the parent. Each migration step is idempotent and the whole ladder plus
 //! the version bump commit in ONE transaction, so a crash mid-migration never half-applies.
 
+use std::path::{Path, PathBuf};
+
 use eyre::{Context, Result};
 use log::debug;
 use rusqlite::Connection;
 
 use super::{SCHEMA_SQL, SCHEMA_VERSION, V5_TRIGGERS_SQL};
+
+/// Snapshot the on-disk DB file to `<path>.pre-v10.bak` (plus any `-wal`/`-shm` sidecars) before the
+/// v10 migration's first run, per the house migration-verification rule (`rules/rust.md`: "Snapshot
+/// the DB before the first run of a schema change"). Fires only when there is real pre-v10 state to
+/// protect — a genuinely pre-existing catalog whose PRE-migration `user_version` is in `1..10` — so a
+/// brand-new catalog (`user_version == 0`, nothing written yet) is skipped, and so is a DB already at
+/// v10 or later (this predicate can never match again once the migration below bumps the version, so
+/// the snapshot fires exactly once per DB, ever).
+pub(super) fn snapshot_before_v10(conn: &Connection, path: &Path) -> Result<()> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    debug!("snapshot_before_v10: pre-migration user_version={version}");
+    if !(1..10).contains(&version) || !path.exists() {
+        return Ok(());
+    }
+    let snapshot = PathBuf::from(format!("{}.pre-v10.bak", path.display()));
+    debug!(
+        "snapshot_before_v10: snapshotting {} -> {}",
+        path.display(),
+        snapshot.display()
+    );
+    std::fs::copy(path, &snapshot)
+        .with_context(|| format!("failed to snapshot {} to {}", path.display(), snapshot.display()))?;
+    for ext in ["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{ext}", path.display()));
+        if sidecar.exists() {
+            let sidecar_bak = PathBuf::from(format!("{}{ext}", snapshot.display()));
+            std::fs::copy(&sidecar, &sidecar_bak)
+                .with_context(|| format!("failed to snapshot sidecar {}", sidecar.display()))?;
+        }
+    }
+    Ok(())
+}
 
 /// Create the schema and bump `user_version` in one transaction (idempotent DDL).
 pub(super) fn migrate(conn: &Connection) -> Result<()> {
@@ -57,6 +91,11 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
     // `message.id`, inflating tokens/cost ~2-3x) so the next reindex recomputes it correctly. Pure
     // invalidation, no schema change. Gated on the genuine v8->v9 hop.
     migrate_v9_reset_efficiency(&tx, version)?;
+    // v10: add persisted repo attribution (`repo`/`repo_source`/`repo_rank` + `repo_paths`).
+    // Idempotent; safe to run every migration. Phase 3 EXTENDS this function with the outcome-blob
+    // reset (nulling `efficiency_json` + `outcome_json`) rather than adding a v11 step -- see the
+    // design doc's Data Model section and `migrate_v10_repo`'s own doc comment.
+    migrate_v10_repo(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -249,6 +288,35 @@ fn migrate_v9_reset_efficiency(conn: &Connection, from_version: i64) -> Result<(
     conn.execute_batch(V5_TRIGGERS_SQL)
         .context("v9: restore the revision UPDATE trigger")?;
     debug!("migrate_v9_reset_efficiency: invalidated efficiency on {reset} rows (updated_at unchanged)");
+    Ok(())
+}
+
+/// Apply the schema v10 catalog extension inside the caller's migration transaction: three new
+/// `sessions` columns for persisted repo attribution (`repo`, `repo_source`, `repo_rank`, default
+/// rank `99` meaning "unresolved") plus the `repo_paths` learned-path map (rule 2's backing store,
+/// `docs/design/2026-07-26-report-story-fidelity.md` Data Model). Idempotent (`ensure_column` probes
+/// `pragma_table_info`; the table uses `IF NOT EXISTS`), safe to run on every migration. Writes
+/// nothing itself — `sessions::index::reindex` populates the columns on the next reindex pass via
+/// `Db::upsert_repo` / `Db::record_repo_path`.
+///
+/// PHASE 3 EXTENDS THIS FUNCTION rather than adding a v11 step: it bundles in the outcome-blob reset
+/// (nulling `efficiency_json` AND `outcome_json` so `repos_touched` recomputes) here, on the genuine
+/// pre-v10 hop, mirroring `migrate_v7_reset_efficiency`'s trigger-suppressed reset pattern. Do NOT
+/// create a `migrate_v11_*` function for that reset.
+fn migrate_v10_repo(conn: &Connection) -> Result<()> {
+    debug!("migrate_v10_repo: add repo/repo_source/repo_rank columns + repo_paths table");
+    ensure_column(conn, "sessions", "repo", "TEXT")?;
+    ensure_column(conn, "sessions", "repo_source", "TEXT")?;
+    ensure_column(conn, "sessions", "repo_rank", "INTEGER NOT NULL DEFAULT 99")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS repo_paths (
+            path       TEXT PRIMARY KEY,
+            repo       TEXT NOT NULL,
+            first_seen TEXT NOT NULL,
+            last_seen  TEXT NOT NULL
+        );",
+    )
+    .context("v10: create repo_paths table")?;
     Ok(())
 }
 

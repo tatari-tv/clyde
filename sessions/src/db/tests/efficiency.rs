@@ -268,14 +268,15 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
     let path = tmp.path().join("v5.db");
     build_v5_db(&path);
 
-    // Reopen: migrate v5 forward to the current schema (v9). from_version=5 (< 6), so the v7, v8, and
-    // v9 efficiency resets are all skipped — there was never any v6 efficiency to invalidate — and
-    // the v5 cursor backfill stays gated off, so revisions are preserved exactly as below.
+    // Reopen: migrate v5 forward to the current schema (v10). from_version=5 (< 6), so the v7, v8,
+    // and v9 efficiency resets are all skipped — there was never any v6 efficiency to invalidate —
+    // and the v5 cursor backfill stays gated off, so revisions are preserved exactly as below. v10's
+    // repo-attribution columns/table are idempotent DDL only; they touch no cursor.
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 9,
+        SCHEMA_VERSION, 10,
         "this test pins the v5->current hop; bump me deliberately"
     );
 
@@ -520,12 +521,12 @@ fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_a
         assert!(!has_outcome, "the v7 DB has no outcome_json column yet");
     }
 
-    // Reopen: migrate v7 -> v8.
+    // Reopen: migrate v7 -> current (v10).
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 9,
+        SCHEMA_VERSION, 10,
         "this test pins the v7->current hop; bump me deliberately"
     );
 

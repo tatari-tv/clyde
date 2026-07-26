@@ -43,7 +43,14 @@ use crate::model::{
 ///    column and INVALIDATES the v6/v7 efficiency annotation (NULLs `efficiency_json` + the three
 ///    scalars + `outcome_json`) so the next `reindex_efficiency` pass repopulates BOTH per-model
 ///    tokens and outcomes. Like v7, cursor-neutral (see [`migrate_v8_extend_efficiency`]).
-const SCHEMA_VERSION: i64 = 9;
+/// v10 added persisted repo attribution: `repo`/`repo_source`/`repo_rank` on `sessions`, written
+///    upgrade-only (strictly-improving `repo_rank`, never `COALESCE`) by `db::repo::Db::upsert_repo`
+///    from the `common::repo` four-rule chain, plus the `repo_paths` learned-path map (rule 2's
+///    backing store, latest-observation-wins via `db::repo::Db::record_repo_path`) — see
+///    [`migrate::migrate_v10_repo`] and `docs/design/2026-07-26-report-story-fidelity.md`. Phase 3
+///    EXTENDS this same migration with the outcome-blob reset (NULLs `efficiency_json` AND
+///    `outcome_json`) rather than bumping to v11; do not add a v11 step for that reset.
+const SCHEMA_VERSION: i64 = 10;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -228,18 +235,25 @@ impl Db {
         }
         let conn =
             Connection::open(path).with_context(|| format!("failed to open sessions.db at {}", path.display()))?;
-        Self::init(conn)
+        Self::init(conn, Some(path))
     }
 
     /// In-memory store for tests.
     pub fn open_memory() -> Result<Self> {
         debug!("Db::open_memory");
         let conn = Connection::open_in_memory().context("failed to open in-memory sessions.db")?;
-        Self::init(conn)
+        Self::init(conn, None)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    /// `path` is `None` for an in-memory store (nothing on disk to snapshot). For an on-disk store,
+    /// [`migrate::snapshot_before_v10`] runs BEFORE the migration ladder, per the house
+    /// migration-verification rule (`rules/rust.md`: "Snapshot the DB before the first run of a
+    /// schema change").
+    fn init(conn: Connection, path: Option<&Path>) -> Result<Self> {
         apply_pragmas(&conn).context("failed to apply PRAGMAs")?;
+        if let Some(path) = path {
+            migrate::snapshot_before_v10(&conn, path).context("failed to snapshot the DB before the v10 migration")?;
+        }
         migrate::migrate(&conn).context("failed to migrate schema")?;
         Ok(Self { conn })
     }
@@ -1351,10 +1365,15 @@ mod query;
 /// discipline, mirroring `query`'s own-columns-and-mapper shape.
 mod catalog;
 
-/// Schema creation + `PRAGMA user_version` migrations (the v1..v8 ladder + `ensure_column`). Split
+/// Schema creation + `PRAGMA user_version` migrations (the v1..v10 ladder + `ensure_column`). Split
 /// out of `db.rs` for file-size discipline; the schema/trigger consts and `SCHEMA_VERSION` stay here
 /// (referenced by the write path too) and are imported by the submodule.
 mod migrate;
+
+/// Schema v10 repo attribution: `Db::upsert_repo`, `Db::record_repo_path`, `Db::clear_repo`, and the
+/// catalog-backed `common::repo::PathMap` impl. Split out for file-size discipline, mirroring
+/// `catalog`/`query`'s own-concern-per-file shape.
+mod repo;
 
 #[cfg(test)]
 mod tests;

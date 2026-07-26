@@ -520,16 +520,22 @@ impl ServerHandler for SessionsMcpServer {
 /// handler. Runs at most one incremental reindex at startup (per `reindex_on_start`) so *today's*
 /// sessions are findable without a per-query write storm; the reindex is synchronous, so a slow
 /// one delays the MCP `initialize` response (accepted, config-tunable via `reindex-on-start`).
-pub fn build_server(db_path: &Path, projects_dir: &Path, reindex_on_start: bool) -> Result<SessionsMcpServer> {
+pub fn build_server(
+    db_path: &Path,
+    projects_dir: &Path,
+    reindex_on_start: bool,
+    repo_root: &Path,
+) -> Result<SessionsMcpServer> {
     info!(
-        "build_server: db_path={} projects_dir={} reindex_on_start={}",
+        "build_server: db_path={} projects_dir={} reindex_on_start={} repo_root={}",
         db_path.display(),
         projects_dir.display(),
         reindex_on_start,
+        repo_root.display(),
     );
     let db = Db::open_at(db_path)?;
     if reindex_on_start {
-        let stats = crate::reindex(&db, projects_dir)?;
+        let stats = crate::reindex(&db, projects_dir, repo_root)?;
         info!(
             "build_server: startup reindex scanned={} upserted={} skipped={} archived={}",
             stats.scanned, stats.upserted, stats.skipped_unchanged, stats.archived,
