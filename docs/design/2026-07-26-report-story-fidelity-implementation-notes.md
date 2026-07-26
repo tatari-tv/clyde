@@ -1036,3 +1036,114 @@ live fetch from a cache hit is a `claude-pricing` change this phase's scope excl
 - `text` and `title` are on the doc's permitted-element list; with coordinates unlicensed, `<text>`
   has no real use inside the subtree. Keep it (harmless, and a future labeled chart may want it) or
   drop it to shrink the surface?
+
+## Phase 12: `render --reconcile`
+
+### Design decisions
+- **API Design overrides the phase-table heading.** The plan table calls this phase `report
+  reconcile`; the API Design section explicitly says reconciliation is a FLAG on `render`
+  (`--reconcile <file>`), never a subcommand. Followed API Design, per the team-lead's explicit
+  instruction and the doc's own override note.
+- **New crate module `report::reconcile`, per the Architecture table.** Holds the export parser
+  (`CostRecord`), the fold (`fold`), and the `Reconciliation`/`ReconRow` types themselves --
+  pure, no render-context concerns, fully unit-testable without an LLM. `render::reconciliation`
+  (a NEW render submodule, not `render.rs` inline) owns only the render-context wiring: the
+  stderr warning, the always-present `reconciliation-status` sentence, and
+  `build_reconciliation_view`. Two modules for two jobs, matching Phase 11's `chart`/`geometry`
+  split and for the same reason (`render.rs`'s own line-count ceiling -- see Deviations).
+- **`billed` is the export's `amount` field, not `list_amount`.** The Anthropic cost export
+  carries both: `amount` (the actual account-level bill, reflecting any negotiated-discount
+  pricing) and `list_amount` (undiscounted, computed the same way clyde's own modeled figure is).
+  Confirmed live: for some models (`claude-haiku-4-5-20251001`) the two differ; for others they're
+  identical. The design's own wording -- "account-level billed spend comes from Claude Enterprise
+  Analytics" -- means the real invoice figure, so `amount` is what `billed` reports. This does mean
+  the `unseen-account-spend` delta absorbs both the scope difference AND any discount, which the
+  doc's `scope_note` doesn't discuss -- flagged in Open Questions.
+- **Window match is exact-instant equality**, not a fuzzy date compare: `export_start ==
+  report.since && export_end == report.until`, both derived from `min(starting_at)`/
+  `max(ending_at)` across every export record. This is the natural result of the intended workflow
+  (pull the export with the same `--since`/`--until` as `report collect`) and it is what "never a
+  silent comparison of different periods" cashes out to mechanically.
+- **A `ModeledFigure` tri-state (`Zero` | `Untracked` | `Priced(f64)`), not `Option<f64>`,** backs
+  each by-model row's `modeled` figure. A bare `Option` cannot distinguish "clyde's catalog never
+  used this model at all this window" (a real priced zero, `$0.00`) from "clyde saw it but has no
+  price for it" (Phase 6's untracked gate, `(untracked)`) -- collapsing both to `None` would render
+  a genuinely zero-usage model as `(untracked)`, overstating how much of its billed spend is a
+  pricing gap versus simply not this catalog's traffic. Verified live: `claude-opus-4-6` and
+  `claude-opus-4-1-20250805` (models the real 30-day window never used) render `$0.00` modeled,
+  correctly distinct from an untracked row.
+- **The reader-facing rename (`unseen-account-spend`) applies to the per-model rows too**, not just
+  the top-level figure. The doc's callout names only the top-level field; the same misreading risk
+  ("delta" as clyde's error) applies identically at the row level, so the same `#[serde(rename)]`
+  was applied there for consistency. The Rust field name stays `delta` on both structs; only the
+  serialized key changes.
+- **The Reconciliation section is UNCONDITIONAL in both templates** (never "emit only if"), unlike
+  Month over Month. `reconciliation-status` is a required, always-present context field the section
+  quotes verbatim regardless of whether `reconciliation` itself is present -- this is the mechanical
+  expression of "absence is never silent."
+- **The stderr warning is a pure function** (`no_reconcile_warning`), mirroring `lib.rs`'s
+  `enrichment_warning`: returns the message, `render::run` is the one call site that actually
+  `eprintln!`s it. Kept it unconditional in `run()` (fires even for the offline `--template` path,
+  which carries none of this design's other fidelity fields either) rather than scoping it to the
+  opus-only paths, since the doc's wording is "a render without --reconcile warns on stderr" with no
+  format carve-out.
+
+### Deviations
+- **`render.rs` split into three files, not one.** Landing `reconciliation`/`reconciliation_status`
+  plus their wiring pushed `render.rs` from 1,470 to 1,565 lines, 65 over the house 1,500-line file
+  cap (`otto ci`'s `bloat` task, confirmed failing before this fix). Extracting only the new
+  Phase 12 code (`render/reconciliation.rs`) left it at 1,515 -- still 15 over -- so the
+  PRE-EXISTING offline `--template` path (`Template` enum, `load_template`, `to_markdown`,
+  `render_built_in`, `render_custom`; ~150 lines, untouched by this design since 2026-07-04) was
+  also extracted into `render/template.rs`, a mechanical move with no behavior change. Not
+  requested by the doc, but necessary to land Phase 12 at all under the house file-size rule;
+  recorded here rather than silently expanding scope.
+- **Live validation happened in this phase, unlike Phase 11's.** Phase 11 shipped with no live
+  render (no key, no schema-v2 report on disk at the time). This phase collected a REAL 30-day
+  window (`--since 2026-06-26 --until 2026-07-25`, 1,523 sessions, `$9,450.31` modeled, matching the
+  doc's reference figures exactly), pulled a REAL Analytics `cost` export for the identical window
+  via the `anthropic-usage-report` skill, and ran live `--llm api` renders (both `--format markdown`
+  and `--format html`) with and without `--reconcile`, plus a deliberately mismatched-window export
+  through the actual CLI. All four success criteria observed directly in rendered output, not just
+  inferred from unit tests.
+- **One stochastic HTML-render failure, unrelated to this phase, surfaced and is recorded rather
+  than hidden.** The first `--format html --reconcile` live render failed Phase 11's geometry
+  validator (`preserveaspectratio` on a chart `<svg>`, not in the permitted-attribute list). A
+  second identical invocation succeeded. Isolated by re-running `--format html` WITHOUT
+  `--reconcile`, which also succeeded -- confirming the failure is Phase 11's own documented open
+  risk ("the first place the new prompt text meets an actual model is a live render... a rejected
+  render costs a paid model call") materializing on an unrelated code path, not a Phase 12
+  regression. No code changed for this; noted for Phase 13 / Scott.
+
+### Tradeoffs
+- **`amount` (actual billed) vs `list_amount` (undiscounted list rate) for `billed`:** `amount` is
+  the literal, real account-level bill, matching the design's own wording; `list_amount` would be
+  the more apples-to-apples comparison against clyde's own list-rate modeled figure, isolating pure
+  scope difference from pricing-discount difference. Chose `amount` because "billed" means the real
+  invoice, not a second modeled number -- see Open Questions for the alternative reading.
+- **Exact-instant window match vs a tolerant/fuzzy compare:** strictly stronger and simpler, at the
+  cost that a report collected with a bare-date `--until` under a non-UTC `date-tz` and an export
+  pulled with a slightly different ISO instant will fail to reconcile even though a human would call
+  the periods "the same window." The doc calls for a loud error on mismatch and gives no tolerance
+  band, so exactness is the safe default; a fuzzy match risks silently reconciling two different
+  periods, the exact failure mode the design forbids.
+- **A three-state `ModeledFigure` enum vs `Option<f64>` plus a boolean:** the enum makes the three
+  meanings exhaustive and unrepresentable-wrong (can't accidentally set the "seen but unpriced" flag
+  on a model with a price), at the cost of one more type in the module than the doc's own sketch
+  (`Reconciliation.by_model: Vec<ReconRow>` gives no field-level detail on this).
+
+### Open questions
+- **Does `billed` = `amount` (discounted) or `list_amount` (undiscounted) match Scott's intent?**
+  The doc's Resolved Decisions establish that Tatari has a real billing arrangement but never
+  discusses a discount vs list-rate distinction on the Analytics export itself -- this was not a
+  question the doc anticipated. If Tatari's Enterprise pricing carries no discount today, the two
+  fields are identical in practice and this is moot; if they diverge, `amount` mixes "usage clyde
+  doesn't see" with "pricing clyde doesn't model" into one `unseen-account-spend` figure. Confirm
+  which reading is wanted before this ships broadly.
+- **The `render/template.rs` extraction is a mechanical move, not requested by this design** -- it
+  was the only way to land Phase 12 under the house file-size cap without shrinking Phase 12's own
+  content below what the doc requires. Flagging it explicitly rather than letting it pass as an
+  unremarked scope change.
+- Phase 13's synthesized fixtures will need a `reconciliation` case (present and absent) to keep the
+  `otto ci` mechanical layer's coverage of this phase; not built here since Phase 13 owns the
+  fixture generator.

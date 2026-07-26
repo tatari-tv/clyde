@@ -51,6 +51,7 @@ fn render_args(format: Option<crate::cli::Format>, output: Option<PathBuf>) -> c
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
+        reconcile: None,
     }
 }
 
@@ -244,6 +245,7 @@ fn resolve_command_render_threads_outliers_into_config() {
         pdf_engine: "wkhtmltopdf".into(),
         outliers: 3,
         prior: None,
+        reconcile: None,
     };
     let resolved = with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(args)).unwrap());
     match resolved {
@@ -267,6 +269,7 @@ fn resolve_command_render_threads_format_and_space_into_config() {
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
+        reconcile: None,
     };
     let resolved = with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(args)).unwrap());
     match resolved {
@@ -294,6 +297,7 @@ fn resolve_command_render_rejects_output_with_marquee_format() {
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
+        reconcile: None,
     };
     let err = with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(args)).unwrap_err());
     let msg = format!("{err}");
@@ -318,6 +322,7 @@ fn resolve_command_render_allows_output_with_local_format() {
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
+        reconcile: None,
     };
     assert!(with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(
         args

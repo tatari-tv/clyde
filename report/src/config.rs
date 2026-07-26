@@ -81,6 +81,10 @@ pub struct RenderConfig {
     /// Prior-period report JSON (`--prior`), lighting up the Month over Month section. `None`
     /// omits the section entirely from the render.
     pub prior: Option<PathBuf>,
+    /// Analytics cost export (`--reconcile`), lighting up the Reconciliation section. `None` omits
+    /// the reconciliation block but never the fact of its absence -- see `render::run`'s stderr
+    /// warning and the artifact's `reconciliation-status` field.
+    pub reconcile: Option<PathBuf>,
 }
 
 /// The RESOLVED transport: which backend actually performs the call.
@@ -223,6 +227,7 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
                 html_max_output_tokens: file.render_html_max_output_tokens(),
                 prior: args.prior,
+                reconcile: args.reconcile,
             })
         }
         crate::cli::Command::Merge(args) => {

@@ -224,6 +224,17 @@ pub struct RenderArgs {
     /// absent from the rendered artifact, not an empty header.
     #[arg(long)]
     pub prior: Option<PathBuf>,
+
+    /// Anthropic Enterprise Analytics cost export (produced OUTSIDE clyde by the
+    /// `anthropic-usage-report` skill's `pull-usage-report.py --report cost`; clyde never holds the
+    /// Analytics key). Lights up the Reconciliation section in both templates: billed spend from
+    /// the export against clyde's own modeled total, plus the reader-facing `unseen-account-spend`
+    /// figure. The export's window must match this report's `since`/`until` EXACTLY, or the render
+    /// fails naming both windows. Omitted -> the render still succeeds, but warns on stderr and the
+    /// artifact states that no authoritative export was supplied -- this figure is never silently
+    /// missing.
+    #[arg(long)]
+    pub reconcile: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug)]

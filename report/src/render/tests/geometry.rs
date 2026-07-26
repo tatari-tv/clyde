@@ -58,6 +58,7 @@ fn context(report: &Report) -> RenderContext {
         &pricing(),
         crate::aggregate::DEFAULT_OUTLIERS,
         None,
+        None,
     )
     .unwrap()
 }

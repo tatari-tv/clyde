@@ -51,6 +51,17 @@ pub fn format_optional_usd(n: Option<f64>) -> String {
     }
 }
 
+/// `format_usd`, but a non-negative value gets an explicit `+` sign, so a signed figure (a
+/// reconciliation delta) never reads as ambiguous about direction: `12.5` -> `"+$12.50"`, `-12.5`
+/// -> `"-$12.50"` (unchanged, `format_usd` already signs a negative), `0.0` -> `"+$0.00"`.
+pub fn format_usd_signed(n: f64) -> String {
+    if n < 0.0 {
+        format_usd(n)
+    } else {
+        format!("+{}", format_usd(n))
+    }
+}
+
 /// Human-scale token count: billions get two decimals (`"9.53B"`), millions get one
 /// (`"287.8M"`), and anything below a million is a plain comma-grouped integer (`"35,373"`) -
 /// there is no "K" tier. Computed once in code so the model never sums or scales token counts

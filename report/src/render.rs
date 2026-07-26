@@ -1,12 +1,13 @@
 use crate::aggregate::{self, Aggregates, Attribution, OrgRow, RepoRow, UnitCosts};
 use crate::cli::Format;
 use crate::config::{RenderConfig, TransportKind};
-use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
+use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::geometry;
 use crate::outcome::OutcomeTotals;
 use crate::persona::{self, PersonaBlock};
 use crate::proc::run_bounded;
 use crate::quotable::{QuotableFacts, RenderContext};
+use crate::reconcile::Reconciliation;
 use crate::report::{Report, SCHEMA_VERSION, SessionEntry};
 use crate::summarize;
 use crate::{OutputDest, RunResult};
@@ -23,6 +24,11 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+mod reconciliation;
+use reconciliation::{build_reconciliation_view, no_reconcile_warning};
+mod template;
+use template::{load_template, to_markdown};
+
 const STDOUT_SIGIL: &str = "-";
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
 const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
@@ -31,13 +37,21 @@ const WORKSPACE_HTML_PROMPT_PATH: &str = "templates/report-html.pmt";
 
 pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
-        "render::run: input={} format={:?} space={:?} prompt={:?} outliers={}",
+        "render::run: input={} format={:?} space={:?} prompt={:?} outliers={} reconcile={:?}",
         cfg.input.display(),
         cfg.format,
         cfg.space,
         cfg.prompt,
-        cfg.outliers
+        cfg.outliers,
+        cfg.reconcile
     );
+
+    // Design Phase 12, "Absence is never silent" -- stderr half; the artifact's half is
+    // `reconciliation::NO_RECONCILE_NOTE`. Advisory only, mirroring the `--min-enrichment` warning.
+    if let Some(warning) = no_reconcile_warning(cfg.reconcile.as_deref()) {
+        log::warn!("render::run: {warning}");
+        eprintln!("{warning}");
+    }
 
     if let Some(ext) = cfg.input.extension().and_then(OsStr::to_str)
         && (ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
@@ -89,6 +103,7 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
             pricing,
             cfg.outliers,
             cfg.prior.as_deref(),
+            cfg.reconcile.as_deref(),
         )?;
         render_via_opus_markdown(&context, &prompt, cfg)
     }
@@ -106,6 +121,7 @@ fn generate_html(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Resu
         pricing,
         cfg.outliers,
         cfg.prior.as_deref(),
+        cfg.reconcile.as_deref(),
     )?;
     render_via_opus_html(&context, &prompt, cfg)
 }
@@ -223,12 +239,6 @@ pub(crate) fn default_output_path(report: &Report, format: Format) -> std::path:
         _ => "md",
     };
     std::path::PathBuf::from(format!("./{}-claude-report.{}", prefix, ext))
-}
-
-#[derive(Debug, Clone)]
-pub enum Template {
-    BuiltIn,
-    Custom(String),
 }
 
 /// Resolve the configured transport selection against this host: is `claude` on PATH, and is a key
@@ -514,6 +524,15 @@ struct ContextBlock<'a> {
     /// the prompt so the narrative can state the gap in prose and correctly fall back to `title`
     /// for the sessions it does not cover, rather than silently treating every session as enriched.
     enrichment_coverage: String,
+    /// Present only when `--reconcile` matched this report's window (design Phase 12, finding 6
+    /// closure): billed spend from the authoritative Analytics export against the modeled total.
+    /// See [`Self::reconciliation_status`] (ALWAYS present) for the never-silent absence case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reconciliation: Option<Reconciliation>,
+    /// Always present (design Phase 12, "Absence is never silent"): quoted verbatim, states
+    /// whether [`Self::reconciliation`] is this render's authoritative figure or absent because no
+    /// export was supplied -- see [`reconciliation::NO_RECONCILE_NOTE`] / [`reconciliation::RECONCILED_NOTE`].
+    reconciliation_status: String,
     /// The period's spend set against its own output and calendar (design Phase 7, finding 9):
     /// `per-commit`, `per-pr`, `per-active-day`, `per-session`, and the session-spend percentiles,
     /// each a display string the binary divided. Top-level for the same reason as `attribution`: it
@@ -788,18 +807,22 @@ pub(crate) fn build_context_block(
     pricing: &Pricing,
     outliers_n: usize,
     prior_path: Option<&Path>,
+    reconcile_path: Option<&Path>,
 ) -> Result<RenderContext> {
     debug!(
-        "render::build_context_block: sessions={} include_tradeoffs={} outliers-n={} prior={:?}",
+        "render::build_context_block: sessions={} include_tradeoffs={} outliers-n={} prior={:?} \
+         reconcile={:?}",
         report.sessions.len(),
         include_tradeoffs,
         outliers_n,
-        prior_path
+        prior_path,
+        reconcile_path
     );
     let default_persona = PersonaBlock::default();
     let aggregates = aggregate::compute(report, outliers_n, pricing);
     let period = build_period_view(report, &aggregates);
     let prior = build_prior_view(prior_path, period.days, pricing)?;
+    let (reconciliation, reconciliation_status) = build_reconciliation_view(reconcile_path, report)?;
     let block = ContextBlock {
         persona: persona.unwrap_or(&default_persona),
         options: ContextOptions { include_tradeoffs },
@@ -808,6 +831,8 @@ pub(crate) fn build_context_block(
         totals: build_totals_view(report),
         attribution: aggregate::compute_attribution(report),
         enrichment_coverage: build_enrichment_coverage(report),
+        reconciliation,
+        reconciliation_status,
         unit_costs: aggregate::compute_unit_costs(report, &aggregates.by_day),
         aggregates: &aggregates,
         efficiency: build_efficiency_view(report),
@@ -1178,139 +1203,6 @@ fn workload_rows(map: BTreeMap<String, WorkloadCost>) -> Vec<WorkloadRow> {
             spend: format_usd(wc.cost_usd),
         })
         .collect()
-}
-
-fn load_template(custom: Option<&Path>) -> Result<Template> {
-    match custom {
-        Some(path) => {
-            let body =
-                fs::read_to_string(path).with_context(|| format!("failed to read template at {}", path.display()))?;
-            Ok(Template::Custom(body))
-        }
-        None => Ok(Template::BuiltIn),
-    }
-}
-
-pub fn to_markdown(report: &Report, template: &Template, pricing: &Pricing) -> String {
-    match template {
-        Template::BuiltIn => render_built_in(report, pricing),
-        Template::Custom(body) => render_custom(report, body, pricing),
-    }
-}
-
-fn render_built_in(report: &Report, pricing: &Pricing) -> String {
-    let mut out = String::new();
-    out.push_str("# Claude Code session report\n\n");
-    out.push_str(&format!("- **host:** {}\n", report.host));
-    out.push_str(&format!(
-        "- **period:** {} -> {}\n",
-        report.since.format("%Y-%m-%d"),
-        report.until.format("%Y-%m-%d")
-    ));
-    out.push_str(&format!("- **sessions:** {}\n", report.totals.sessions));
-
-    let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
-    out.push_str(&format!("- **total tokens:** {}\n", format_int(total_tokens)));
-    out.push_str(&format!("- **total spend:** {}\n", format_usd(report.totals.spend_usd)));
-    out.push_str(&format!("- **pricing basis:** {}\n", build_basis(pricing).note));
-    if !report.totals.untracked_models.is_empty() {
-        out.push_str(&format!(
-            "- **untracked models:** {}\n",
-            report.totals.untracked_models.join(", ")
-        ));
-    }
-    out.push('\n');
-
-    out.push_str("## Totals by model\n\n");
-    if report.totals.models.is_empty() {
-        out.push_str("_no model usage_\n\n");
-    } else {
-        out.push_str("| model | input | output | cache 5m write | cache 1h write | cache read | total | spend |\n");
-        out.push_str("|-------|------:|-------:|---------------:|---------------:|-----------:|------:|------:|\n");
-        for (model, m) in &report.totals.models {
-            out.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                model,
-                format_int(m.input),
-                format_int(m.output),
-                format_int(m.cache_5m_write),
-                format_int(m.cache_1h_write),
-                format_int(m.cache_read),
-                format_int(m.total),
-                format_optional_usd(m.spend_usd),
-            ));
-        }
-        out.push('\n');
-    }
-
-    // Sourced from `aggregate::compute` (design: "aggregate.rs subsumes and replaces
-    // render::group_by_repo"). Outliers are unused by this table, so 0 is passed rather than
-    // computing a table this renderer never shows.
-    let by_repo = aggregate::compute(report, 0, pricing).by_repo;
-    out.push_str("## By repo\n\n");
-    if by_repo.is_empty() {
-        out.push_str("_no sessions with a detected repo_\n\n");
-    } else {
-        out.push_str("| repo | sessions | total tokens | spend | models |\n");
-        out.push_str("|------|---------:|-------------:|------:|--------|\n");
-        for row in &by_repo {
-            out.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
-                row.repo,
-                row.sessions,
-                row.tokens_human,
-                row.spend,
-                row.models.join(", "),
-            ));
-        }
-        out.push('\n');
-    }
-
-    out.push_str("## Sessions\n\n");
-    let mut by_repo_with_none: BTreeMap<String, Vec<(String, &SessionEntry)>> = BTreeMap::new();
-    for (sid, entry) in &report.sessions {
-        let key = entry.repo.clone().unwrap_or_else(|| "(no repo)".into());
-        by_repo_with_none.entry(key).or_default().push((sid.clone(), entry));
-    }
-    for (key, mut entries) in by_repo_with_none {
-        entries.sort_by_key(|a| a.1.begin);
-        out.push_str(&format!("### {}\n\n", key));
-        for (sid, entry) in entries {
-            let title = entry.title.as_deref().unwrap_or("<untitled>");
-            let short = short_id(&sid);
-            let models_str: Vec<&str> = entry.models.keys().map(|s| s.as_str()).collect();
-            let untracked_suffix = if entry.untracked_models.is_empty() {
-                String::new()
-            } else {
-                format!(" | untracked: {}", entry.untracked_models.join(", "))
-            };
-            out.push_str(&format!(
-                "- **{}** ({}) {} -> {} | {} | {} tokens | {}{}\n",
-                title,
-                short,
-                entry.begin.format("%Y-%m-%d %H:%M"),
-                entry.end.format("%Y-%m-%d %H:%M"),
-                models_str.join(", "),
-                format_int(entry.total_tokens()),
-                format_optional_usd(entry.spend_usd),
-                untracked_suffix,
-            ));
-        }
-        out.push('\n');
-    }
-
-    out
-}
-
-fn render_custom(report: &Report, body: &str, pricing: &Pricing) -> String {
-    let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
-    body.replace("{{host}}", &report.host)
-        .replace("{{since}}", &report.since.format("%Y-%m-%d").to_string())
-        .replace("{{until}}", &report.until.format("%Y-%m-%d").to_string())
-        .replace("{{session-count}}", &report.totals.sessions.to_string())
-        .replace("{{total-tokens}}", &format_int(total_tokens))
-        .replace("{{total-spend}}", &format_usd(report.totals.spend_usd))
-        .replace("{{basis-note}}", &build_basis(pricing).note)
 }
 
 fn write_pdf(markdown: &str, output: &Path, pdf_engine: &str) -> Result<()> {

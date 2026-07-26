@@ -14,6 +14,7 @@ pub mod outcome;
 pub mod persona;
 pub mod proc;
 pub(crate) mod quotable;
+pub(crate) mod reconcile;
 pub mod render;
 pub mod report;
 pub mod summarize;

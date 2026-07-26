@@ -167,6 +167,25 @@ The JSON context block contains:
   the report (or wherever you first lean on session narrative) so the reader knows most of the
   narrative below rests on titles, not summaries; quote the sentence verbatim rather than
   paraphrasing its numbers.
+- `reconciliation-status`: ALWAYS present, one factual sentence. Quote it verbatim in the
+  Reconciliation section every time, regardless of whether `reconciliation` below is present or
+  absent -- the artifact must never be silent about whether this render's total was checked against
+  the authoritative source.
+- `reconciliation`: OPTIONAL, present only when `--reconcile <analytics.json>` was supplied AND its
+  window matched this report's exactly. `source` ("anthropic enterprise analytics"), `window`
+  (display string), `billed` and `modeled` (display dollars -- `modeled` always equals
+  `totals.spend`), `unseen-account-spend` (display, signed), `scope-note` (one sentence, quote it
+  verbatim beside the figure every time it appears), and `by-model`, a list of `{model, billed,
+  modeled, unseen-account-spend}` rows pre-sorted by `billed` descending. Absent entirely when
+  `--reconcile` was not supplied -- see `reconciliation-status` above, which is present either way.
+  `unseen-account-spend` is a PART-TO-WHOLE difference, never a variance: an Analytics export covers
+  everything the account billed (claude.ai web, other clients, other hosts) while this report covers
+  only Claude Code sessions in one catalog, so `billed` meeting or exceeding `modeled` is the
+  EXPECTED relationship. Never call this figure an error, a discrepancy, or a sign clyde
+  undercounted; `scope-note` states exactly this and must accompany the figure, never appear alone
+  as a footnote elsewhere. A `by-model` row's `modeled` may read `(untracked)` (the model was seen
+  but has no price in this binary, distinct from a model this report never saw at all, which reads
+  `$0.00`) -- copy it verbatim, do not convert it to a number.
 - `prior`: OPTIONAL, present only when `--prior <report.json>` was supplied. The prior period,
   aggregated the SAME way as this one: `since`, `until`, `days`, `totals` (same shape as the
   top-level `totals`), `by-repo`, `by-org`, and, when recorded, `outcomes` (same shape as the
@@ -267,6 +286,25 @@ sentence:
 > pricing data to include them.**
 
 If `totals.untracked-models` is empty or absent, do not emit this line.
+
+## Reconciliation
+ALWAYS emit this section; it is never omitted, unlike Month over Month. Start with
+`reconciliation-status`, quoted verbatim as one sentence.
+
+If `reconciliation` is present: a two-row table (`Figure` | `Amount`) with `Billed` /
+`reconciliation.billed` and `Modeled` / `reconciliation.modeled`, followed by one sentence stating
+`reconciliation.unseen-account-spend` and citing `reconciliation.source` and
+`reconciliation.window`. Immediately after, quote `reconciliation.scope-note` verbatim -- it must
+sit next to the figure every time the figure appears, never as a footnote elsewhere and never
+paraphrased. If `reconciliation.by-model` is non-empty, a second table (`Model` | `Billed` |
+`Modeled` | `Unseen Account Spend`), rows in the order given (pre-sorted by billed descending), all
+four values copied verbatim including a literal `(untracked)` where present. Never call
+`unseen-account-spend` an error, a discrepancy, a shortfall, or evidence clyde undercounted; the
+scope note you just quoted is what explains it, and this section must not contradict it.
+
+If `reconciliation` is absent: nothing more to write here. Do not fabricate a billed figure, do not
+guess at what an export would show, and do not apologize for the absence beyond the one sentence
+already quoted.
 
 ## Agent-Type Cost Attribution
 Emit only if `efficiency.agent-type-costs` is non-empty. A markdown table (`Agent Type` | `Tokens`
@@ -397,6 +435,10 @@ justified" claim, no trajectory verdicts, no ROI language.
   If `outcomes` is absent, make no outcome claims and omit the Quantified Output section.
 - `unit-costs` figures are ratios of two stated figures, never prices. "A ratio of $X per commit"
   is permitted; "each commit cost $X" is not, in any section, in any wording.
+- The Reconciliation section is ALWAYS present, present or absent flag alike; `reconciliation-status`
+  is quoted verbatim every render. `unseen-account-spend` is never framed as an error, a shortfall,
+  or evidence clyde undercounted, in this section or any other -- `reconciliation.scope-note`,
+  quoted beside it, is the reason why, every time the figure appears.
 - No em dashes (the long dash). Use regular hyphens, commas, or semicolons. No exceptions.
 - Voice: factual, restrained, specific. The data carries the argument; the prose stays out of
   the way.

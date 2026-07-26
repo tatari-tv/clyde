@@ -32,6 +32,14 @@ fn format_optional_usd_renders_untracked_for_none() {
 }
 
 #[test]
+fn format_usd_signed_prefixes_plus_on_nonnegative_and_reuses_format_usd_for_negative() {
+    assert_eq!(format_usd_signed(12.5), "+$12.50");
+    assert_eq!(format_usd_signed(0.0), "+$0.00");
+    assert_eq!(format_usd_signed(-12.5), "-$12.50");
+    assert_eq!(format_usd_signed(-1_234.5), "-$1,234.50");
+}
+
+#[test]
 fn format_tokens_human_matches_exact_design_examples() {
     // Design doc definitions: "9.53B" / "287.8M" / "35,373" style.
     assert_eq!(format_tokens_human(9_530_000_000), "9.53B");

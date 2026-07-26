@@ -261,6 +261,25 @@ The JSON context block contains:
   rest are cited by title only." When coverage is low, this is worth a visible caption near the
   narrative sections so the reader knows most of it rests on titles, not summaries; quote the
   sentence verbatim rather than paraphrasing its numbers.
+- `reconciliation-status`: ALWAYS present, one factual sentence. Show it verbatim in the
+  Reconciliation card every time, regardless of whether `reconciliation` below is present or
+  absent -- the artifact must never be silent about whether this render's total was checked against
+  the authoritative source.
+- `reconciliation`: OPTIONAL, present only when `--reconcile <analytics.json>` was supplied AND its
+  window matched this report's exactly. `source` ("anthropic enterprise analytics"), `window`
+  (display string), `billed` and `modeled` (display dollars -- `modeled` always equals
+  `totals.spend`), `unseen-account-spend` (display, signed), `scope-note` (one sentence, show it
+  verbatim beside the figure every time it appears), and `by-model`, a list of `{model, billed,
+  modeled, unseen-account-spend}` rows pre-sorted by `billed` descending. Absent entirely when
+  `--reconcile` was not supplied -- see `reconciliation-status` above, present either way.
+  `unseen-account-spend` is a PART-TO-WHOLE difference, never a variance: an Analytics export covers
+  everything the account billed (claude.ai web, other clients, other hosts) while this report covers
+  only Claude Code sessions in one catalog, so `billed` meeting or exceeding `modeled` is the
+  EXPECTED relationship. Never label this figure an error, a discrepancy, or a sign clyde
+  undercounted; `scope-note` states exactly this and must accompany the figure, never appear alone
+  as a footnote elsewhere. A `by-model` row's `modeled` may read `(untracked)` (the model was seen
+  but has no price in this binary, distinct from a model this report never saw at all, which reads
+  `$0.00`) -- show it verbatim, do not convert it to a number or a bar.
 - `prior`: OPTIONAL, present only when `--prior <report.json>` was supplied. The prior period,
   aggregated the SAME way as this one: `since`, `until`, `days`, `totals` (same shape as the
   top-level `totals`), `by-repo`, `by-org`, and, when recorded, `outcomes` (same shape as the
@@ -300,6 +319,16 @@ Produce ONE complete, self-contained HTML document.
   card), a visible line of text carrying `basis.note` verbatim -- never omitted, never paraphrased.
   This is the same disclosure the markdown report carries as `**Pricing Basis:**`; every render
   states the basis next to the headline figure it qualifies.
+- REQUIRED Reconciliation card, ALWAYS present (unlike the month-over-month card, which is omitted
+  without `--prior`): show `reconciliation-status` verbatim as its lead line every render, flag or
+  no flag. When `reconciliation` is present, add two KPI values (`billed`, `modeled`) plus
+  `unseen-account-spend`, `scope-note` shown verbatim directly beside it (never as a separate
+  footnote), `source`, and `window`; when `reconciliation.by-model` is non-empty, a small table
+  (`Model` | `Billed` | `Modeled` | `Unseen Account Spend`), rows in the order given, values
+  verbatim including a literal `(untracked)` where present. When `reconciliation` is absent, the
+  card shows only the `reconciliation-status` sentence -- do not fabricate a billed figure or a
+  chart in its place. Never label `unseen-account-spend` an error, a discrepancy, or evidence clyde
+  undercounted, in this card or anywhere else in the document; `scope-note` is what explains it.
 - CSS-proportion bar/column charts, using ONLY `*-percent-of-max` (Hard prohibition 3), for the
   chartable series. Prefer charts for spend-by-repo and spend-by-model.
 - The by-day temporal shape (spend and sessions) is drawn from `aggregates.charts` as a line chart
@@ -326,7 +355,8 @@ Produce ONE complete, self-contained HTML document.
   by-mcp).
 - Every section has an HTML counterpart: an executive summary, quantified output (the outcome
   counts, the spend-against-output chart, and the `unit-costs` ratios in their exact framing when
-  present), a cost summary, an agent-type cost attribution table (the HEADLINE breakdown from
+  present), a cost summary, the Reconciliation card described above (ALWAYS present, flag or no
+  flag), an agent-type cost attribution table (the HEADLINE breakdown from
   `efficiency.agent-type-costs`, rows in the order given, with a lead-in naming the top row and
   stating that the rows account for the whole period spend), the
   efficiency story (cache-read-share plus the `efficiency` signals -- tool-error-rate,
@@ -350,6 +380,10 @@ Produce ONE complete, self-contained HTML document.
   comparing this period against `prior` (both figures copied, never subtracted): spend and session
   totals side by side, repos that newly appeared or wound down, model-mix shifts. State facts, not
   verdicts; no "trend is improving" language.
+- The Reconciliation card is ALWAYS present, flag or no flag; `reconciliation-status` is shown
+  verbatim every render. `unseen-account-spend` is never framed as an error, a shortfall, or
+  evidence clyde undercounted, in this card or anywhere else in the document -- `scope-note`, shown
+  beside it, is the reason why, every time the figure appears.
 - HTML-escape every interpolated string (titles, summaries, repo slugs) so a stray character
   cannot break the markup.
 - Never use an em-dash (the Unicode character U+2014) anywhere in the document: not in the title,
