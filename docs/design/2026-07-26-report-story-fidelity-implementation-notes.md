@@ -298,3 +298,75 @@ Same window as the doc's baseline table: 1,523 sessions, `$9,450.31`.
 - Attribution rows sum to `totals.spend-usd`: the per-session spends summed to `$9,450.37` against a
   headline of `$9,450.31`, and the `-$0.06` pricing residual is carried in `(unattributed)`.
 - The enrich-coverage warning fired live: 550 of 1,523 sessions (36.1%) below the 50% floor.
+
+## Phase 4: by-day correctness
+
+### Design decisions
+- `compute_by_day` returns `(Vec<DayRow>, CarriedIn)` instead of `Vec<DayRow>` alone -- `aggregate.rs:compute_by_day`.
+  The zero-fill and the carried-in split are one pass over `report.sessions`, so there is exactly one
+  place that decides "does this session's date belong to a `by-day` row, or to `carried-in`."
+- Zero-fill walks `since_date..=until_date` inclusive with a plain `while` loop over `NaiveDate`
+  (`chrono::Duration::days(1)` step) before folding sessions in, so every calendar date gets a
+  `DayAcc::default()` row even when no session ever touches it -- `aggregate.rs:compute_by_day`.
+- `DayRow.active: bool` is `sessions > 0`, computed once per row after the fold, not tracked
+  incrementally -- keeps the "was this ever touched" question answerable from the row alone, with no
+  separate bookkeeping to drift from it.
+- `period.days` becomes `(until_date - since_date).num_days() + 1` (inclusive) in
+  `render.rs:build_period_view`, and `period.active_days` becomes
+  `aggregates.by_day.iter().filter(|r| r.active).count()` -- replacing the old `aggregates.by_day.len()`
+  (which, pre-Phase-4, WAS the active-day count only because inactive days had no row at all; now every
+  day has a row, so the row count and the active count are different questions and must be computed
+  differently).
+- The pre-`since` boundary case keeps its OWN defensive clamp direction: a `begin` before `since`
+  now goes to `carried_in` (the fix), while a `begin` after `until` still clamps DOWN to `until_date`
+  (the pre-existing defensive guard, unchanged) -- `begin <= modified <= until` should make the latter
+  unreachable, but the guard was already there and Phase 4's scope is the lower bound only.
+- Both prompt templates gained a `carried-in` schema bullet plus a rewritten `by-day` bullet
+  (`report.pmt`, `report-html.pmt`) stating the by-day series no longer accounts for `totals.spend`,
+  instructing the model to cite `aggregates.carried-in` as its own fact rather than folding it into a
+  day or inferring it as a gap. The Executive Summary and Usage Profile / Temporal distribution
+  sections in `report.pmt` were also touched, since the doc calls out that both prompts make the
+  temporal-shape claim the first sentence of the Executive Summary -- the sentence that used to rest on
+  the most distorted bar in the series.
+
+### Deviations
+None. Implemented at the spec's own seam (`aggregate.rs:compute_by_day`, `render.rs:build_period_view`)
+with no signature surprises against the design doc's `DayRow`/`CarriedIn` structs.
+
+### Tradeoffs
+- `compute_by_day` returning a tuple `(Vec<DayRow>, CarriedIn)` vs. a struct wrapping both: chose the
+  tuple because it is a private function's return, used in exactly one call site (`compute`), and a
+  wrapper struct would exist only to be destructured immediately. `Aggregates` (the public, serialized
+  type) is where `carried_in` gets a named field.
+- Kept the upper-bound defensive clamp (`begin > until` clamps down) rather than also carrying those
+  sessions somewhere: the design doc's Phase 4 bullets and `CarriedIn` doc comment both describe only
+  the pre-`since` case. Since `begin <= modified <= until` should make the upper case unreachable in
+  practice, preserving the pre-existing silent clamp (rather than inventing a new bucket the doc never
+  asked for) keeps the change scoped to what was specified.
+
+### Open questions
+None -- both live-data success criteria (the since-row session count and the carried-in figures) were
+verified against the real window rather than asked about; see below.
+
+### Measured on the live 30-day window (`--since 2026-06-26 --until 2026-07-25`, after Phase 3's reindex)
+
+Re-collected fresh (`clyde report collect --since 2026-06-26 --until 2026-07-25`) and probed
+`aggregate::compute` directly against the resulting JSON (1,523 sessions, matching the doc's baseline
+window):
+
+| metric | value |
+|---|---|
+| `period.days` | 30 |
+| `period.active-days` | 29 |
+| `aggregates.by-day.len()` | 30 |
+| `since` row (`2026-06-26`) sessions | 14 |
+| `since` row spend | `$104.94` |
+| `carried-in.sessions` | 16 |
+| `carried-in.spend` | `$354.22` |
+| `carried-in.tokens-human` | 391.0M |
+
+Every figure matches the design doc's stated success criteria exactly: the since-day session count is
+14 (not the old clamped 30), and carried-in is 16 sessions / `$354.22` -- the same figure the doc
+states, so Phase 3's repo-attribution rework did not move this date-windowing number, as expected
+(attribution and by-day partition the same session set on different axes; changing one should never
+move the other, and it didn't).

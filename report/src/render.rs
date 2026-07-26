@@ -594,9 +594,14 @@ struct ContextOptions {
 struct PeriodView {
     since: String,
     until: String,
-    /// Calendar days, `until` treated as the EXCLUSIVE next boundary (June 1 -> July 1 = 30),
-    /// distinct from the inclusive-both-ends record-matching bound (Definitions section).
+    /// INCLUSIVE calendar date-span count (design "by-day, corrected"): `num_days() + 1` between
+    /// `since` and `until`'s dates, e.g. June 26 -> July 25 = 30. This is the same count `by-day`
+    /// zero-fills, so `by-day.len() == period.days` always holds by construction. Previously
+    /// exclusive (`num_days()` alone), which could make `active-days` exceed `days` and print the
+    /// nonsense "Active Days: 30 of 29".
     days: i64,
+    /// Count of `aggregates.by-day` rows with `active: true`, NOT the row count -- every calendar
+    /// date in the window now has a row, active or not.
     active_days: usize,
     generated: String,
 }
@@ -702,12 +707,19 @@ pub(crate) fn build_context_block(
 }
 
 fn build_period_view(report: &Report, aggregates: &Aggregates) -> PeriodView {
-    let days = (report.until.date_naive() - report.since.date_naive()).num_days();
+    let days = (report.until.date_naive() - report.since.date_naive()).num_days() + 1;
+    let active_days = aggregates.by_day.iter().filter(|r| r.active).count();
+    debug!(
+        "render::build_period_view: days={} active-days={} by-day-rows={}",
+        days,
+        active_days,
+        aggregates.by_day.len()
+    );
     PeriodView {
         since: report.since.format("%Y-%m-%d").to_string(),
         until: report.until.format("%Y-%m-%d").to_string(),
         days,
-        active_days: aggregates.by_day.len(),
+        active_days,
         generated: report.generated.format("%Y-%m-%d").to_string(),
     }
 }

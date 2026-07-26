@@ -233,10 +233,13 @@ fn by_repo_excludes_none_repo_and_sorts_by_spend_descending() {
     assert_eq!(aggregates.by_repo[0].models, vec!["claude-opus-4-7".to_string()]);
 }
 
+/// Inverts the pre-Phase-4 pin (`by_day_clamps_boundary_session_into_period_and_preserves_spend_sum`):
+/// a session begun BEFORE `since` used to clamp onto the `since` date, inflating day 1 (design
+/// finding 2, measured 4.4x on the real window). It must now get its own [`CarriedIn`] row instead,
+/// appear on NO `by-day` date row (not even `since`'s), and `by-day`'s spend sum must fall short of
+/// `totals.spend` by exactly the carried-in amount.
 #[test]
-fn by_day_clamps_boundary_session_into_period_and_preserves_spend_sum() {
-    // Session begun BEFORE `since` (May 31) but whose kept entries made it an in-period session:
-    // must attribute to `since`'s date (2026-06-01), never to the out-of-period 2026-05-31.
+fn by_day_excludes_pre_since_session_into_carried_in_row() {
     let report = report_with(
         "2026-06-01T00:00:00Z",
         "2026-07-01T00:00:00Z",
@@ -281,17 +284,94 @@ fn by_day_clamps_boundary_session_into_period_and_preserves_spend_sum() {
         );
     }
     assert!(
-        aggregates.by_day.iter().any(|r| r.date == "2026-06-01"),
-        "boundary session must clamp to the period start date, not 2026-05-31"
+        !aggregates.by_day.iter().any(|r| r.date == "2026-05-31"),
+        "the out-of-period date must never appear as a by-day row"
     );
-    assert!(!aggregates.by_day.iter().any(|r| r.date == "2026-05-31"));
+    let since_row = aggregates
+        .by_day
+        .iter()
+        .find(|r| r.date == "2026-06-01")
+        .expect("since's own date must have a zero-fill row");
+    assert_eq!(
+        since_row.sessions, 0,
+        "the pre-since session must NOT be clamped onto the since row"
+    );
+    assert!(!since_row.active, "an unvisited since row is inactive");
+
+    assert_eq!(aggregates.carried_in.sessions, 1);
+    assert_eq!(aggregates.carried_in.spend, "$3.00");
+    assert_eq!(aggregates.carried_in.tokens_human, "1,000");
 
     let sum: f64 = aggregates.by_day.iter().map(|r| r.spend_raw).sum();
     assert!(
-        (sum - report.totals.spend_usd).abs() < 1e-9,
-        "sum(by-day spend) must equal totals.spend: {} vs {}",
-        sum,
-        report.totals.spend_usd
+        (sum - 1.5).abs() < 1e-9,
+        "by-day must sum to only the in-window session's spend, not the carried-in one: got {sum}"
+    );
+    assert!(
+        (sum - report.totals.spend_usd).abs() > 1.0,
+        "by-day no longer accounts for totals.spend once carried-in is excluded (design finding 2)"
+    );
+}
+
+/// Success criterion (design Phase 4): the `since` row's session count equals only the sessions
+/// that actually BEGAN that day, never the sessions carried in from before the window (the real
+/// window measured 14 real day-1 sessions against 16 carried-in ones, previously merged into a
+/// reported 30).
+#[test]
+fn since_row_counts_only_sessions_that_began_on_since_date() {
+    let carried = |sid: &'static str| {
+        (
+            sid,
+            entry(
+                Some("began before since"),
+                Some("tatari-tv/clyde"),
+                ts("2026-05-20T10:00:00Z"),
+                "claude-opus-4-7",
+                50,
+                Some(0.5),
+            ),
+        )
+    };
+    let sessions = vec![
+        (
+            "since-1",
+            entry(
+                Some("began on since"),
+                Some("tatari-tv/clyde"),
+                ts("2026-06-01T01:00:00Z"),
+                "claude-opus-4-7",
+                100,
+                Some(1.0),
+            ),
+        ),
+        (
+            "since-2",
+            entry(
+                Some("also began on since"),
+                Some("tatari-tv/clyde"),
+                ts("2026-06-01T20:00:00Z"),
+                "claude-opus-4-7",
+                100,
+                Some(1.0),
+            ),
+        ),
+        carried("carried-1"),
+        carried("carried-2"),
+        carried("carried-3"),
+    ];
+
+    let report = report_with("2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z", sessions);
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+
+    let since_row = aggregates
+        .by_day
+        .iter()
+        .find(|r| r.date == "2026-06-01")
+        .expect("since row must exist");
+    assert_eq!(since_row.sessions, 2, "only sessions that began ON since count here");
+    assert_eq!(
+        aggregates.carried_in.sessions, 3,
+        "the pre-since sessions land in carried-in"
     );
 }
 
@@ -351,14 +431,26 @@ fn outliers_are_sorted_by_spend_and_truncated_to_n() {
     assert_eq!(capped.outliers[0].short_id, "bbbbbbbb");
 }
 
+/// Inverts the pre-Phase-4 pin: `by-day` used to hold only ACTIVE days, so an empty report gave
+/// zero rows. It now zero-fills one row per calendar date in the window regardless of activity
+/// (design finding 3, gaps visible), so an empty report still gets a full, all-inactive series.
 #[test]
-fn compute_on_empty_report_yields_empty_aggregates() {
+fn compute_on_empty_report_zero_fills_by_day_and_yields_empty_carried_in() {
     let report = report_with("2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z", vec![]);
     let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
     assert!(aggregates.by_org.is_empty());
     assert!(aggregates.by_repo.is_empty());
-    assert!(aggregates.by_day.is_empty());
     assert!(aggregates.outliers.is_empty());
+
+    // June 1 through July 1 inclusive: 31 calendar dates, every one a zero-fill row.
+    assert_eq!(aggregates.by_day.len(), 31);
+    assert!(aggregates.by_day.iter().all(|r| !r.active && r.sessions == 0));
+    assert!(aggregates.by_day.iter().any(|r| r.date == "2026-06-01"));
+    assert!(aggregates.by_day.iter().any(|r| r.date == "2026-07-01"));
+
+    assert_eq!(aggregates.carried_in.sessions, 0);
+    assert_eq!(aggregates.carried_in.spend, "$0.00");
+
     // No models -> zero-denominator share is "0.0%", and with no cache-bearing unpriced model the
     // counterfactual is still defined (a $0.00 baseline), not absent.
     assert_eq!(aggregates.cache.cache_read_share, "0.0%");

@@ -74,7 +74,18 @@ The JSON context block contains:
   org, third-party), each with `org`, `repos`, `sessions`, `tokens-human`, `spend`.
 - `aggregates.by-repo`: one row per repo, pre-sorted by spend descending, each with `repo`,
   `org`, `sessions`, `tokens-human`, `spend`, `models`.
-- `aggregates.by-day`: one row per active day with `date`, `sessions`, `spend`.
+- `aggregates.by-day`: one row per CALENDAR DAY in the window (every date from `since` through
+  `until`, including days with no session), each with `date`, `sessions`, `spend`, and `active`
+  (`false` on a day with zero sessions -- cite these to name a gap, never infer a gap from a
+  missing date; there is no missing date anymore). Sessions that began before `since` and were
+  pulled into the window whole are NOT in any `by-day` row; they are in `aggregates.carried-in`
+  instead. Because of that, `by-day` spend does not sum to `totals.spend` and never did (rows are
+  never summed, Hard prohibition 1) -- if you cite the gap between them, use `carried-in`'s own
+  figures, never a computed difference.
+- `aggregates.carried-in`: `sessions`, `tokens-human`, `spend` -- sessions that began before the
+  window but are still counted in `totals` and `by-repo`. State it as its own fact next to the
+  by-day trend when you cite one; never fold it silently into a `by-day` row or imply it happened
+  on `since`'s date.
 - `aggregates.outliers`: the top individual sessions by spend, pre-sorted, each with
   `short-id`, `title`, `repo`, `tokens-human`, `spend`, and outcome fields when available.
 - `aggregates.cache`: `cache-read-share` (display string), `input-tokens-human`,
@@ -136,9 +147,13 @@ based on what is most notable in this month's data.
 3 to 5 sentences. The first sentence states the temporal shape of the spend: how many active days,
 whether the work was spread across the period or clustered, drawn from `period` and
 `aggregates.by-day`. This answers the standing question every reader of a spend report has:
-was this sustained daily work or a few expensive spikes? Then: which repos saw the most work,
-what concrete artifacts came out (grounded in `outcomes.totals` when present), and whether the
-trajectory is steady or shifting. No effort estimates, no productivity claims. Just what happened.
+was this sustained daily work or a few expensive spikes? `aggregates.by-day` now covers the WHOLE
+window, active and inactive days alike, so this claim is no longer a distorted first bar -- if
+`aggregates.carried-in` is nonzero, say so in one clause (e.g. "plus $X carried in from N sessions
+that began before the window") rather than silently folding it into day one. Then: which repos saw
+the most work, what concrete artifacts came out (grounded in `outcomes.totals` when present), and
+whether the trajectory is steady or shifting. No effort estimates, no productivity claims. Just
+what happened.
 
 ## Quantified Output
 Emit only if `outcomes.totals` is present and non-empty. A two-column markdown table
@@ -232,7 +247,10 @@ exists.
 Describe the shape of the month, factually:
 
 - **Temporal distribution**: one or two sentences from `aggregates.by-day`: even or clustered,
-  which date ranges carried the most work, any multi-day gaps. Name dates as given.
+  which date ranges carried the most work, any multi-day gaps. Name dates as given. A gap is now a
+  literal run of `active: false` rows in `aggregates.by-day`, not an absence of a row -- cite the
+  date range of the run. If `aggregates.carried-in` is nonzero, name it here as spend the by-day
+  series does not cover, rather than a gap or a day-one figure.
 - **Model mix**: one factual line per model on what it was used for, drawn from the titles and
   repos in which each model appears (e.g. "Opus sessions clustered on design documents and
   architecture reviews"). No per-model numbers here; the Cost Summary already has them.

@@ -40,6 +40,10 @@ pub struct Aggregates {
     pub by_org: Vec<OrgRow>,
     pub by_repo: Vec<RepoRow>,
     pub by_day: Vec<DayRow>,
+    /// Sessions pulled in whole by the M2 session-level window but whose `begin` predates `since`
+    /// (design "by-day, corrected"). Excluded from every `by_day` row; still counted in `totals`
+    /// and `by_repo`, so this is the stated gap between `by_day`'s sum and `totals.spend-usd`.
+    pub carried_in: CarriedIn,
     pub outliers: Vec<OutlierRow>,
     pub cache: CacheStats,
 }
@@ -117,16 +121,33 @@ pub struct RepoRow {
 #[serde(rename_all = "kebab-case")]
 pub struct DayRow {
     pub date: String,
+    /// `0` on an inactive (zero-fill) day.
     pub sessions: usize,
     #[serde(skip)]
     pub spend_raw: f64,
     pub spend: String,
+    /// `false` on a zero-fill row: this calendar date fell inside `[since, until]` but no session
+    /// began on it. The prompt may cite these to name a multi-day gap (design finding 3) instead of
+    /// inferring one from a missing date -- there is no longer a missing date to infer from.
+    pub active: bool,
     /// See [`OrgRow::spend_percent_of_max`], scaled against the max daily spend.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend_percent_of_max: Option<f64>,
     /// Same formula as `spend-percent-of-max`, scaled against the max daily session count instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions_percent_of_max: Option<f64>,
+}
+
+/// Sessions whose `begin` predates `since`, pulled in whole by the M2 session-level window (design
+/// "by-day, corrected"). They get their OWN row instead of being clamped onto the `since` date:
+/// they stay in `totals` and `by-repo` (real spend in the window) and are excluded from every
+/// `by-day` date row, so a reader can see exactly what the by-day series does not account for.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CarriedIn {
+    pub sessions: usize,
+    pub tokens_human: String,
+    pub spend: String,
 }
 
 /// Bar-chart geometry shared by every chartable aggregate row (design "Chart truthfulness"):
@@ -172,14 +193,16 @@ pub fn compute(report: &Report, outliers_n: usize, pricing: &Pricing) -> Aggrega
     );
     let by_org = compute_by_org(report);
     let by_repo = compute_by_repo(report);
-    let by_day = compute_by_day(report);
+    let (by_day, carried_in) = compute_by_day(report);
     let outliers = compute_outliers(report, outliers_n);
     let cache = compute_cache_stats(report, pricing);
     debug!(
-        "aggregate::compute: by-org={} by-repo={} by-day={} outliers={} cache-read-share={} counterfactual={}",
+        "aggregate::compute: by-org={} by-repo={} by-day={} carried-in-sessions={} outliers={} \
+         cache-read-share={} counterfactual={}",
         by_org.len(),
         by_repo.len(),
         by_day.len(),
+        carried_in.sessions,
         outliers.len(),
         cache.cache_read_share,
         cache.list_price_equivalent.is_some(),
@@ -188,6 +211,7 @@ pub fn compute(report: &Report, outliers_n: usize, pricing: &Pricing) -> Aggrega
         by_org,
         by_repo,
         by_day,
+        carried_in,
         outliers,
         cache,
     }
@@ -408,22 +432,44 @@ struct DayAcc {
     spend: f64,
 }
 
-/// By-day attribution per the Definitions section: a session's counts and spend attribute to its
-/// `begin` UTC date, CLAMPED into `[since, until]` (as dates). This is defensive: it never trusts
-/// that a `SessionEntry.begin` already lies in period (a boundary fixture pins this), because
-/// otherwise a session begun before `since` with in-period tokens would leak an out-of-period
-/// date into a citation-bearing table. Only active days (>= 1 session) appear.
-fn compute_by_day(report: &Report) -> Vec<DayRow> {
+/// By-day attribution, corrected (design "by-day, corrected"): one zero-filled row per calendar
+/// date in `[since, until]` inclusive -- a skipped week now leaves visible `active: false` rows
+/// instead of no row at all (finding 3). A session whose `begin` date predates `since` is pulled
+/// in whole by the M2 session-level window; rather than clamping it onto the `since` date (which
+/// used to inflate day 1 up to 4.4x, finding 2), it is folded into the returned [`CarriedIn`] and
+/// excluded from every date row. A `begin` date after `until` still clamps DOWN defensively (it
+/// should never happen: `begin <= modified <= until`), matching the pre-existing defensive
+/// boundary guard for the upper bound.
+fn compute_by_day(report: &Report) -> (Vec<DayRow>, CarriedIn) {
     debug!("aggregate::compute_by_day: sessions={}", report.sessions.len());
     let since_date = report.since.date_naive();
     let until_date = report.until.date_naive();
+
     let mut days: BTreeMap<NaiveDate, DayAcc> = BTreeMap::new();
+    let mut date = since_date;
+    while date <= until_date {
+        days.insert(date, DayAcc::default());
+        date += chrono::Duration::days(1);
+    }
+
+    let mut carried_sessions = 0usize;
+    let mut carried_tokens = 0u64;
+    let mut carried_spend = 0.0_f64;
+
     for entry in report.sessions.values() {
-        let date = entry.begin.date_naive().clamp(since_date, until_date);
+        let raw_date = entry.begin.date_naive();
+        if raw_date < since_date {
+            carried_sessions += 1;
+            carried_tokens += entry.total_tokens();
+            carried_spend += entry.spend_usd.unwrap_or(0.0);
+            continue;
+        }
+        let date = raw_date.min(until_date);
         let acc = days.entry(date).or_default();
         acc.sessions += 1;
         acc.spend += entry.spend_usd.unwrap_or(0.0);
     }
+
     let mut rows: Vec<DayRow> = days
         .into_iter()
         .map(|(date, acc)| DayRow {
@@ -431,6 +477,7 @@ fn compute_by_day(report: &Report) -> Vec<DayRow> {
             sessions: acc.sessions,
             spend_raw: acc.spend,
             spend: format_usd(acc.spend),
+            active: acc.sessions > 0,
             spend_percent_of_max: None,
             sessions_percent_of_max: None,
         })
@@ -441,13 +488,23 @@ fn compute_by_day(report: &Report) -> Vec<DayRow> {
         row.spend_percent_of_max = percent_of_max(row.spend_raw, max_spend);
         row.sessions_percent_of_max = percent_of_max(row.sessions as f64, max_sessions as f64);
     }
+    let active_days = rows.iter().filter(|r| r.active).count();
     debug!(
-        "aggregate::compute_by_day: rows={} max-spend={} max-sessions={}",
+        "aggregate::compute_by_day: rows={} active={} carried-in-sessions={} carried-in-spend={:.2} \
+         max-spend={} max-sessions={}",
         rows.len(),
+        active_days,
+        carried_sessions,
+        carried_spend,
         max_spend,
         max_sessions
     );
-    rows
+    let carried_in = CarriedIn {
+        sessions: carried_sessions,
+        tokens_human: format_tokens_human(carried_tokens),
+        spend: format_usd(carried_spend),
+    };
+    (rows, carried_in)
 }
 
 /// How much of the window's money carries a repo, and on what evidence.

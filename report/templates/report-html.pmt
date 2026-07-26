@@ -125,7 +125,18 @@ The JSON context block contains:
   org, third-party), each with `org`, `repos`, `sessions`, `tokens-human`, `spend`.
 - `aggregates.by-repo`: one row per repo, pre-sorted by spend descending, each with `repo`,
   `org`, `sessions`, `tokens-human`, `spend`, `models`.
-- `aggregates.by-day`: one row per active day with `date`, `sessions`, `spend`.
+- `aggregates.by-day`: one row per CALENDAR DAY in the window (every date from `since` through
+  `until`, including days with no session), each with `date`, `sessions`, `spend`, and `active`
+  (`false` on a zero-session day -- render its bar/column at zero width/height so the gap is
+  visible, never omit the day). Sessions that began before `since` and were pulled into the
+  window whole are NOT in any `by-day` row; they are in `aggregates.carried-in` instead, so a
+  `by-day` column chart's visual total is smaller than `totals.spend` by that amount. Because a
+  column chart implies a total even though no row is ever summed (Hard prohibition 1), state the
+  carried-in figure in a caption or adjacent sentence next to the chart whenever it is nonzero --
+  naming the gap is cheaper than letting the chart imply there is none.
+- `aggregates.carried-in`: `sessions`, `tokens-human`, `spend` -- sessions that began before the
+  window but are still counted in `totals` and `by-repo`. Never fold it silently into a `by-day`
+  bar or imply it happened on `since`'s date.
 - `aggregates.outliers`: the top individual sessions by spend, pre-sorted, each with
   `short-id`, `title`, `repo`, `tokens-human`, `spend`, and outcome fields when available.
 - `aggregates.cache`: `cache-read-share` (display string), `input-tokens-human`,

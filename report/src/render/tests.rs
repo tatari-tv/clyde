@@ -294,6 +294,62 @@ fn build_context_block_includes_slim_shape() {
     );
 }
 
+/// Success criterion (design Phase 4): `by-day` length equals `period.days` regardless of whether
+/// `--until` was given as a bare date (parses to local midnight, e.g. `2026-04-30T00:00:00Z`) or as
+/// full RFC 3339 with a nonzero time-of-day. Both `period.days` (`render::build_period_view`) and
+/// the `by-day` zero-fill (`aggregate::compute_by_day`) derive their date bounds from `.date_naive()`
+/// independently, so this asserts they never drift apart even though the two `until` timestamps
+/// differ down to the second.
+#[test]
+fn by_day_length_equals_period_days_for_bare_date_and_rfc3339_until() {
+    for until in ["2026-04-30T00:00:00Z", "2026-04-30T21:47:03Z"] {
+        let mut report = sample_report();
+        report.until = ts(until);
+        let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+        let days = parsed
+            .get("period")
+            .and_then(|p| p.get("days"))
+            .and_then(|v| v.as_i64())
+            .expect("period.days");
+        let by_day_len = parsed
+            .get("aggregates")
+            .and_then(|a| a.get("by-day"))
+            .and_then(|v| v.as_array())
+            .expect("aggregates.by-day")
+            .len();
+        assert_eq!(
+            by_day_len as i64, days,
+            "by-day length must equal period.days for until={until}"
+        );
+    }
+}
+
+/// Success criterion (design Phase 4): `active-days <= days` on every fixture -- the zero-fill can
+/// never manufacture more active rows than the window has calendar dates.
+#[test]
+fn active_days_never_exceeds_days() {
+    for report in [sample_report(), {
+        let mut r = sample_report();
+        r.sessions.clear();
+        r.totals.sessions = 0;
+        r
+    }] {
+        let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+        let period = parsed.get("period").expect("period key");
+        let days = period.get("days").and_then(|v| v.as_i64()).expect("period.days");
+        let active_days = period
+            .get("active-days")
+            .and_then(|v| v.as_u64())
+            .expect("period.active-days");
+        assert!(
+            active_days as i64 <= days,
+            "active-days ({active_days}) must never exceed days ({days})"
+        );
+    }
+}
+
 /// `ModelRow` (render-only view) gets its own `spend-percent-of-max` (design "Chart truthfulness"):
 /// `sample_report`'s opus session spends $0.50 (the series max) and sonnet spends $0.10.
 #[test]
