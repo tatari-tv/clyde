@@ -140,8 +140,16 @@ The JSON context block contains:
   optional `outcomes` object (`commits`: list of shas; `prs`: list of
   `{number, url, repository}`; `confluence-writes`, `jira-writes`, `slack-messages`,
   `files-edited` counts). Use these for THEMES and CITATIONS, never for counting or summing.
-- `prior`: OPTIONAL. Last period's `totals` and `aggregates.by-repo`. Absent until prior data
-  is supplied; when absent, omit the Month over Month section entirely.
+- `prior`: OPTIONAL, present only when `--prior <report.json>` was supplied. The prior period,
+  aggregated the SAME way as this one: `since`, `until`, `days`, `totals` (same shape as the
+  top-level `totals`), `by-repo`, `by-org`, and, when recorded, `outcomes` (same shape as the
+  top-level `outcomes.totals`). `comparable` is `false` when `prior.days` differs from
+  `period.days`; say the two periods are different lengths rather than comparing them as if they
+  covered equal ground. When `prior.predates-fields` is present, it is a caveat sentence: quote it
+  verbatim and say nothing that would require `prior.outcomes` (it is absent for exactly this
+  reason -- a build that never measured a field renders a different `0` than one that measured it
+  and found nothing, and the two must never read the same). Absent entirely when `--prior` was not
+  supplied; when absent, omit the Month over Month section, including its header.
 
 # Required structure
 
@@ -322,10 +330,14 @@ Describe the shape of the month, factually:
 
 ## Month over Month
 Emit only if `prior` is present in the context block; otherwise omit the section entirely,
-including the header. Two to four factual bullets comparing this period against `prior`: spend
-and session figures side by side (both copied, never subtracted), repos that newly appeared,
-repos that wound down, model-mix shifts. State facts, not verdicts; no "trend is improving"
-language.
+including the header. If `prior.predates-fields` is present, lead with that sentence verbatim and
+stop there -- do not cite `prior.outcomes` (it is absent for exactly this reason). If
+`prior.comparable` is `false`, say the two periods are different lengths (`prior.days` against
+`period.days`) before any other comparison; a 30-day period against a 14-day one is not an
+apples-to-apples read. Otherwise, two to four factual bullets comparing this period against
+`prior`: spend and session figures side by side (both copied, never subtracted), repos that newly
+appeared, repos that wound down, model-mix shifts. State facts, not verdicts; no "trend is
+improving" language.
 
 ## Tradeoffs
 ONLY emit this section if `options.include-tradeoffs` is `true`. A frank, specific assessment of

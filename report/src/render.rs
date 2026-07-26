@@ -1,7 +1,8 @@
-use crate::aggregate::{self, Aggregates, Attribution, UnitCosts};
+use crate::aggregate::{self, Aggregates, Attribution, OrgRow, RepoRow, UnitCosts};
 use crate::cli::Format;
 use crate::config::{RenderConfig, TransportKind};
 use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
+use crate::outcome::OutcomeTotals;
 use crate::persona::{self, PersonaBlock};
 use crate::proc::run_bounded;
 use crate::report::{Report, SCHEMA_VERSION, SessionEntry};
@@ -87,6 +88,7 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
             persona_block.as_ref(),
             pricing,
             cfg.outliers,
+            cfg.prior.as_deref(),
         )?;
         render_via_opus_markdown(&context, &prompt, cfg)
     }
@@ -103,6 +105,7 @@ fn generate_html(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Resu
         persona_block.as_ref(),
         pricing,
         cfg.outliers,
+        cfg.prior.as_deref(),
     )?;
     render_via_opus_html(&context, &prompt, cfg)
 }
@@ -528,6 +531,12 @@ struct ContextBlock<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     outcomes: Option<OutcomesView>,
     sessions: Vec<SessionView<'a>>,
+    /// The prior period's aggregates (design Phase 8, gap 7): lights up the Month over Month
+    /// section both templates already document but had no backing field for. Absent entirely
+    /// (never an empty object) when `--prior` was not supplied, so the prompt's "omit the section"
+    /// rule needs no empty-vs-absent special case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prior: Option<PriorView>,
 }
 
 /// The report-wide efficiency headline, string-only (design Phase 5). `agent-type-costs` is the
@@ -762,20 +771,24 @@ pub(crate) fn build_context_block(
     persona: Option<&PersonaBlock>,
     pricing: &Pricing,
     outliers_n: usize,
+    prior_path: Option<&Path>,
 ) -> Result<String> {
     debug!(
-        "render::build_context_block: sessions={} include_tradeoffs={} outliers-n={}",
+        "render::build_context_block: sessions={} include_tradeoffs={} outliers-n={} prior={:?}",
         report.sessions.len(),
         include_tradeoffs,
-        outliers_n
+        outliers_n,
+        prior_path
     );
     let default_persona = PersonaBlock::default();
     let aggregates = aggregate::compute(report, outliers_n, pricing);
+    let period = build_period_view(report, &aggregates);
+    let prior = build_prior_view(prior_path, period.days, pricing)?;
     let block = ContextBlock {
         persona: persona.unwrap_or(&default_persona),
         options: ContextOptions { include_tradeoffs },
         basis: build_basis(pricing),
-        period: build_period_view(report, &aggregates),
+        period,
         totals: build_totals_view(report),
         attribution: aggregate::compute_attribution(report),
         unit_costs: aggregate::compute_unit_costs(report, &aggregates.by_day),
@@ -787,6 +800,7 @@ pub(crate) fn build_context_block(
             .iter()
             .map(|(sid, entry)| build_session_view(sid, entry))
             .collect(),
+        prior,
     };
     serde_json::to_string(&block).context("failed to serialize context block to JSON")
 }
@@ -872,20 +886,124 @@ fn build_totals_view(report: &Report) -> TotalsView {
 /// keeps the `outcomes` key out of the context entirely.
 fn build_outcomes_view(report: &Report) -> Option<OutcomesView> {
     let totals = report.totals.outcomes.as_ref()?;
-    let nonzero = |v: u64| if v == 0 { None } else { Some(v) };
     Some(OutcomesView {
-        totals: OutcomeTotalsView {
-            sessions_with_commits: nonzero(totals.sessions_with_commits),
-            commits: nonzero(totals.commits),
-            prs_opened: nonzero(totals.prs_opened),
-            confluence_writes: nonzero(totals.confluence_writes),
-            jira_writes: nonzero(totals.jira_writes),
-            slack_messages: nonzero(totals.slack_messages),
-            files_edited: nonzero(totals.files_edited),
-            lines_written: nonzero(totals.lines_written),
-            lines_replaced: nonzero(totals.lines_replaced),
-        },
+        totals: outcome_totals_view(totals),
     })
+}
+
+/// Shared by [`build_outcomes_view`] (the current period) and [`build_prior_view`] (Phase 8): the
+/// same present-if-nonzero conversion, so the two periods' outcome figures are built by one code
+/// path rather than two that could drift.
+fn outcome_totals_view(totals: &OutcomeTotals) -> OutcomeTotalsView {
+    let nonzero = |v: u64| if v == 0 { None } else { Some(v) };
+    OutcomeTotalsView {
+        sessions_with_commits: nonzero(totals.sessions_with_commits),
+        commits: nonzero(totals.commits),
+        prs_opened: nonzero(totals.prs_opened),
+        confluence_writes: nonzero(totals.confluence_writes),
+        jira_writes: nonzero(totals.jira_writes),
+        slack_messages: nonzero(totals.slack_messages),
+        files_edited: nonzero(totals.files_edited),
+        lines_written: nonzero(totals.lines_written),
+        lines_replaced: nonzero(totals.lines_replaced),
+    }
+}
+
+/// The prior period's aggregates (design Phase 8, `--prior`): lights up the Month over Month
+/// section both templates already document but had no backing field for. Aggregated through the
+/// SAME [`aggregate::compute`] as the current period, from a schema-gated report file, so the two
+/// sides of the comparison are computed identically rather than by two code paths that could
+/// drift. Absent entirely (never emitted with empty/zeroed fields) when `--prior` was not supplied.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct PriorView {
+    since: String,
+    until: String,
+    days: i64,
+    /// `false` when `days` differs from the current period's `period.days`, so the prompt states
+    /// the length mismatch rather than comparing e.g. a 30-day window against a 14-day one as if
+    /// they covered equal ground.
+    comparable: bool,
+    /// Present only when this prior artifact predates repo-source provenance and the outcome
+    /// counters added by this design (see [`predates_fidelity_fields`]). When present, `outcomes`
+    /// below is deliberately omitted: a `0` from a build that never measured the field is not the
+    /// same fact as an observed zero, and both templates must quote this sentence instead of citing
+    /// `outcomes` as if it were a real measurement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    predates_fields: Option<String>,
+    totals: TotalsView,
+    by_repo: Vec<RepoRow>,
+    by_org: Vec<OrgRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcomes: Option<OutcomeTotalsView>,
+}
+
+/// Verbatim caveat both templates quote in place of `prior.outcomes` when [`predates_fidelity_fields`]
+/// fires. Stated once here so the two templates and any future caller never restate it differently.
+const PRIOR_PREDATES_NOTE: &str = "the prior period was collected before this clyde build tracked \
+     repo-source provenance and several outcome counters (lines written, lines replaced); its \
+     per-session outcome figures are not comparable and are omitted here.";
+
+/// `true` when `report` predates repo-source provenance (design Phase 1-3 of this doc): at least
+/// one session carries a `repo` but none carries a `repo_source`. Phase 3 is the first phase that
+/// persists `repo_source` alongside `repo`, so this is a reliable signal already present in the
+/// artifact that `report` was collected before every fidelity fix in this design landed --
+/// including the Phase 7 `lines-written`/`lines-replaced` counters, which default to `0` under
+/// `#[serde(default)]` and would otherwise read as a real zero measurement rather than "not
+/// measured yet" for a session this old.
+fn predates_fidelity_fields(report: &Report) -> bool {
+    let has_repo = report.sessions.values().any(|s| s.repo.is_some());
+    let has_repo_source = report.sessions.values().any(|s| s.repo_source.is_some());
+    has_repo && !has_repo_source
+}
+
+/// Load, schema-gate, and aggregate a `--prior <report.json>` file into a [`PriorView`]. `None`
+/// when `--prior` was not supplied. `current_days` is the CURRENT period's already-computed
+/// `period.days`, used only to set [`PriorView::comparable`].
+fn build_prior_view(prior_path: Option<&Path>, current_days: i64, pricing: &Pricing) -> Result<Option<PriorView>> {
+    let Some(path) = prior_path else {
+        debug!("render::build_prior_view: no --prior supplied");
+        return Ok(None);
+    };
+    debug!("render::build_prior_view: path={}", path.display());
+    let body =
+        fs::read_to_string(path).with_context(|| format!("failed to read --prior report at {}", path.display()))?;
+    check_schema_version(&body, path)?;
+    let report: Report =
+        serde_json::from_str(&body).with_context(|| format!("failed to parse --prior report at {}", path.display()))?;
+
+    let days = (report.until.date_naive() - report.since.date_naive()).num_days() + 1;
+    let comparable = days == current_days;
+    let predates_fields = predates_fidelity_fields(&report).then(|| PRIOR_PREDATES_NOTE.to_string());
+    // Aggregated through the SAME `aggregate::compute` as the current period (design Phase 8), so
+    // both sides of the comparison are computed identically rather than by two drifting code paths.
+    // `outliers_n` is 0: the prior period's outlier table is not part of this design's scope.
+    let aggregates = aggregate::compute(&report, 0, pricing);
+    let outcomes = if predates_fields.is_none() {
+        report.totals.outcomes.as_ref().map(outcome_totals_view)
+    } else {
+        None
+    };
+    debug!(
+        "render::build_prior_view: sessions={} days={} comparable={} predates-fields={} by-repo={} by-org={}",
+        report.sessions.len(),
+        days,
+        comparable,
+        predates_fields.is_some(),
+        aggregates.by_repo.len(),
+        aggregates.by_org.len()
+    );
+    Ok(Some(PriorView {
+        since: report.since.format("%Y-%m-%d").to_string(),
+        until: report.until.format("%Y-%m-%d").to_string(),
+        days,
+        comparable,
+        predates_fields,
+        totals: build_totals_view(&report),
+        by_repo: aggregates.by_repo,
+        by_org: aggregates.by_org,
+        outcomes,
+    }))
 }
 
 fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a> {

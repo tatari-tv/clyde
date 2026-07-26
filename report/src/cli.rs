@@ -216,6 +216,14 @@ pub struct RenderArgs {
     /// Number of top-spend sessions to include in the outlier table.
     #[arg(long, default_value_t = DEFAULT_OUTLIERS)]
     pub outliers: usize,
+
+    /// Prior-period report JSON (schema-gated, same requirement as `-i`), lighting up the Month
+    /// over Month section in both templates. Aggregated through the SAME `aggregate::compute` as
+    /// the current period, so the two sides of the comparison are computed identically rather than
+    /// by two code paths that could drift. Omitted -> the Month over Month section is entirely
+    /// absent from the rendered artifact, not an empty header.
+    #[arg(long)]
+    pub prior: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug)]

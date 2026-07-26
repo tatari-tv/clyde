@@ -18,6 +18,20 @@ fn pricing() -> Pricing {
     Pricing::embedded()
 }
 
+/// `build_context_block` with every optional knob at its default (no persona, embedded pricing,
+/// the default outlier count, no `--prior`) -- the shape nearly every test in this file needs.
+fn ctx(report: &Report, include_tradeoffs: bool) -> String {
+    build_context_block(
+        report,
+        include_tradeoffs,
+        None,
+        &pricing(),
+        crate::aggregate::DEFAULT_OUTLIERS,
+        None,
+    )
+    .unwrap()
+}
+
 /// An empty v2 efficiency passthrough for render fixtures (render reads tokens/spend/outcomes; the
 /// efficiency object is passthrough the built-in/template paths don't yet surface).
 fn empty_efficiency() -> SessionEfficiency {
@@ -216,7 +230,7 @@ fn custom_template_substitutes_placeholders() {
 #[test]
 fn build_context_block_includes_slim_shape() {
     let report = sample_report();
-    let block = build_context_block(&report, true, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, true);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     assert_eq!(parsed.get("persona"), Some(&serde_json::json!({})));
     let opts = parsed.get("options").expect("options key");
@@ -303,7 +317,7 @@ fn build_context_block_includes_slim_shape() {
 #[test]
 fn build_context_block_always_carries_the_pricing_basis() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
     let basis = parsed.get("basis").expect("basis key must always be present");
     assert_eq!(
@@ -362,7 +376,7 @@ fn by_day_length_equals_period_days_for_bare_date_and_rfc3339_until() {
     for until in ["2026-04-30T00:00:00Z", "2026-04-30T21:47:03Z"] {
         let mut report = sample_report();
         report.until = ts(until);
-        let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+        let block = ctx(&report, false);
         let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
         let days = parsed
             .get("period")
@@ -392,7 +406,7 @@ fn active_days_never_exceeds_days() {
         r.totals.sessions = 0;
         r
     }] {
-        let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+        let block = ctx(&report, false);
         let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
         let period = parsed.get("period").expect("period key");
         let days = period.get("days").and_then(|v| v.as_i64()).expect("period.days");
@@ -412,7 +426,7 @@ fn active_days_never_exceeds_days() {
 #[test]
 fn totals_models_carry_spend_percent_of_max_scaled_to_series_max() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
     let models = parsed
         .get("totals")
@@ -441,7 +455,7 @@ fn totals_models_omit_spend_percent_of_max_when_all_unpriced() {
     for mt in report.totals.models.values_mut() {
         mt.spend_usd = None;
     }
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
     let models = parsed
         .get("totals")
@@ -459,7 +473,7 @@ fn totals_models_omit_spend_percent_of_max_when_all_unpriced() {
 #[test]
 fn build_context_block_omits_tradeoffs_when_false() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     let opts = parsed.get("options").expect("options key");
     assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(false));
@@ -480,6 +494,7 @@ fn build_context_block_embeds_persona_when_present() {
         Some(&persona),
         &pricing(),
         crate::aggregate::DEFAULT_OUTLIERS,
+        None,
     )
     .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
@@ -492,7 +507,7 @@ fn build_context_block_embeds_persona_when_present() {
 #[test]
 fn build_context_block_uses_compact_json_not_pretty() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     assert!(
         !block.contains('\n'),
         "context block must be compact (no newlines) to minimize Opus token cost: {}",
@@ -548,7 +563,7 @@ fn report_with_n_sessions(n: usize) -> Report {
 #[test]
 fn build_context_block_outliers_n_caps_outlier_table_to_exactly_n() {
     let report = report_with_n_sessions(5);
-    let block = build_context_block(&report, false, None, &pricing(), 3).unwrap();
+    let block = build_context_block(&report, false, None, &pricing(), 3, None).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let outliers = parsed
         .get("aggregates")
@@ -567,7 +582,7 @@ fn build_context_block_outliers_n_caps_outlier_table_to_exactly_n() {
 fn build_context_block_default_outliers_n_matches_default_outliers_const() {
     // Defaults unchanged when `--outliers` is absent: DEFAULT_OUTLIERS caps the table.
     let report = report_with_n_sessions(crate::aggregate::DEFAULT_OUTLIERS + 5);
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let outliers = parsed
         .get("aggregates")
@@ -604,6 +619,7 @@ fn render_run_writes_markdown_file_with_custom_template() {
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
             outliers: crate::aggregate::DEFAULT_OUTLIERS,
+            prior: None,
         }),
     };
     let result = crate::run_with_config(&cfg).unwrap();
@@ -635,6 +651,7 @@ fn render_run_rejects_yaml_input_extension() {
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
             outliers: crate::aggregate::DEFAULT_OUTLIERS,
+            prior: None,
         }),
     };
     let err = crate::run_with_config(&cfg).unwrap_err();
@@ -743,6 +760,7 @@ fn route_html_artifact_writes_local_file() {
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
+        prior: None,
     };
     let html = "<!doctype html><html><body>injected</body></html>";
     let dest = route_html_artifact(html, &report, &cfg).unwrap();
@@ -772,6 +790,7 @@ fn route_html_artifact_honors_stdout_sigil() {
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
+        prior: None,
     };
     let dest = route_html_artifact("<!doctype html><html></html>", &report, &cfg).unwrap();
     assert!(matches!(dest, OutputDest::Stdout), "expected Stdout dest, got {dest:?}");
@@ -834,7 +853,7 @@ fn report_with_outcomes() -> Report {
 #[test]
 fn build_context_block_carries_outcomes_totals_present_if_nonzero() {
     let report = report_with_outcomes();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
 
     let totals = parsed
@@ -890,7 +909,7 @@ fn build_context_block_carries_outcomes_totals_present_if_nonzero() {
 #[test]
 fn build_context_block_omits_outcomes_key_when_rollup_absent() {
     let report = sample_report(); // totals.outcomes: None
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     assert!(
         parsed.get("outcomes").is_none(),
@@ -918,7 +937,7 @@ use crate::ENV_LOCK;
 #[test]
 fn context_block_carries_no_raw_numeric_operands() {
     let report = sample_report();
-    let block = build_context_block(&report, true, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, true);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
 
     let totals = parsed.get("totals").expect("totals key");
@@ -997,7 +1016,7 @@ fn report_with_efficiency() -> Report {
 #[test]
 fn build_context_block_surfaces_efficiency_signals_as_strings() {
     let report = report_with_efficiency();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
 
     let eff = parsed.get("efficiency").expect("efficiency key");
@@ -1031,7 +1050,7 @@ fn build_context_block_surfaces_efficiency_signals_as_strings() {
 #[test]
 fn build_context_block_carries_tag_set_coverage_strings() {
     let report = report_with_efficiency();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let eff = parsed.get("efficiency").expect("efficiency key");
 
@@ -1223,6 +1242,7 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
+        prior: None,
     };
 
     let err = run(&cfg, &pricing()).unwrap_err();
@@ -1328,6 +1348,7 @@ fn offline_template_path_requires_no_anthropic_key() {
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
             outliers: crate::aggregate::DEFAULT_OUTLIERS,
+            prior: None,
         }),
     };
     let result = crate::run_with_config(&cfg).expect("offline template render must not need a key");
@@ -1347,7 +1368,7 @@ fn offline_template_path_requires_no_anthropic_key() {
 #[test]
 fn build_context_block_carries_unit_costs_and_by_repo_outcomes() {
     let report = report_with_outcomes();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
 
     let unit = parsed.get("unit-costs").expect("top-level unit-costs key");
@@ -1388,7 +1409,7 @@ fn build_context_block_carries_unit_costs_and_by_repo_outcomes() {
 #[test]
 fn build_context_block_carries_line_counters_present_if_nonzero() {
     let mut report = report_with_outcomes();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let totals = parsed
         .get("outcomes")
@@ -1400,7 +1421,7 @@ fn build_context_block_carries_line_counters_present_if_nonzero() {
     let outcomes = report.totals.outcomes.as_mut().unwrap();
     outcomes.lines_written = 0;
     outcomes.lines_replaced = 0;
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let totals = parsed.get("outcomes").and_then(|o| o.get("totals")).unwrap();
     assert!(
@@ -1408,3 +1429,6 @@ fn build_context_block_carries_line_counters_present_if_nonzero() {
         "an unreindexed catalog records no lines, so the field is absent: {totals}"
     );
 }
+
+#[cfg(test)]
+mod prior;

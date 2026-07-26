@@ -687,3 +687,89 @@ live fetch from a cache hit is a `claude-pricing` change this phase's scope excl
   `~/.claude/projects/-home-saidler-repos-tatari-tv-clyde` yields **36,057 lines written / 7,833 lines
   replaced** (e.g. one session: 8 files edited, 947 written, 33 replaced). The release's v10 reindex is
   what makes those figures reach a report.
+
+## Phase 8: `--prior` and Month over Month
+
+### Design decisions
+- `build_prior_view` reads, schema-gates (the same `check_schema_version` the primary `-i` input
+  uses), and aggregates the `--prior` file through the SAME `aggregate::compute` as the current
+  period, then reuses the existing `build_totals_view` for `prior.totals` and the existing
+  `aggregate::RepoRow` / `OrgRow` types verbatim for `prior.by-repo` / `prior.by-org` -- one code
+  path computes both sides of the comparison, so they cannot drift apart the way two independent
+  builders could.
+- `predates_fidelity_fields` (`report/src/render.rs`) detects a pre-Phase-3 prior artifact by a
+  single, already-in-the-artifact signal: at least one session carries `repo` but none carries
+  `repo_source`. Phase 3 is the first phase that ever persists `repo_source` alongside `repo`, so
+  this predicate is reliable without a schema bump: an artifact from before Phase 3 has `repo` (the
+  old cwd-resolved value) but the field for provenance simply never existed in that JSON.
+- When `predates_fidelity_fields` fires, `prior.outcomes` is omitted ENTIRELY (not zeroed, not
+  partially redacted) and `prior.predates-fields` carries the caveat sentence instead. `prior.totals`
+  / `prior.by-repo` / `prior.by-org` still render with real figures on a pre-change artifact: spend
+  and session counts are v1-era fields, unaffected by anything this design added, so gating them too
+  would suppress real data for no honesty gain.
+- `comparable` is `prior.days == period.days`, both computed by the SAME inclusive
+  `(until.date_naive() - since.date_naive()).num_days() + 1` formula Phase 4 already established for
+  `period.days` -- one formula, not two that could silently diverge on an edge date.
+- Extracted the shared `outcome_totals_view` helper out of `build_outcomes_view` so the current
+  period and `prior` build their `outcomes` fields through one present-if-nonzero conversion rather
+  than two copies that could drift.
+
+### Deviations
+- The doc says "define behavior on a PRE-CHANGE prior artifact" without naming the exact detection
+  mechanism (schema-version does not change, so it cannot be the signal). Implemented the
+  `repo`-present-but-no-`repo_source` heuristic described above; documented here since it is a
+  judgment call the doc left open, not a literal spec.
+- The doc's field list for `prior` says "totals, by-repo, by-org, outcomes"; implemented `by-repo`
+  and `by-org` as the SAME `aggregate::RepoRow`/`OrgRow` types the current period's `aggregates` uses
+  (chart-scale fields and all) rather than a stripped-down prior-only shape. Same effect, correct
+  seam: it is exactly the reuse the design's "aggregated through the same `aggregate::compute`"
+  language calls for, and it avoids a second row shape the prompts would have to learn.
+
+### Tradeoffs
+- Gating only `prior.outcomes` (not `prior.totals`/`by-repo`/`by-org`) on `predates-fields` is a
+  judgment call about scope: the Phase 7 fields at risk of a "zero read as measured" fabrication
+  (`lines-written`/`lines-replaced`) live only inside `outcomes` (report-wide) and `RepoOutcomes`
+  (per-repo); a narrower per-field redaction was considered and rejected as more code for the same
+  reader-facing outcome (the caveat sentence already tells the reader not to trust any of the
+  period's outcome figures).
+- `prior_path` is threaded into `build_context_block` as `Option<&Path>` rather than a
+  pre-loaded `Option<Report>`, so the file read/parse/schema-gate stays inside `render.rs` next to
+  the primary input's identical gate, and every call site (`generate_markdown`/`generate_html`)
+  stays a one-line pass-through of `cfg.prior.as_deref()`.
+
+### Open questions
+- **`--llm cli` failed non-interactively against the real 1,523-session / 131-session windows**
+  during manual verification (`claude -p failed (exit 1)`, empty stderr, both with and without
+  `--prior`), while `claude -p "say hi"` succeeded directly in the same session. `--llm api` (with
+  `ESCOTE_ANTHROPIC_API_KEY` remapped to `ANTHROPIC_API_KEY`) rendered both windows successfully with
+  no retry. This reads as an environment/session issue with the `claude` CLI transport under this
+  agent's sandboxed/non-interactive process rather than anything Phase 8 touches (the transport
+  predates this design), but it is worth a look before relying on `--llm cli` for a real monthly
+  render: confirm `claude` behaves the same from a genuinely interactive shell on the same host.
+
+### Verification
+- `otto ci`: green (fmt, clippy, check, test, whitespace, file-size bloat check).
+- 9 new tests in `report/src/render/tests/prior.rs` (split out of `render/tests.rs` to stay under the
+  1500-line file limit, `#[cfg(test)] mod prior;` declared at the bottom of `render/tests.rs`):
+  `predates_fidelity_fields` true/false/no-repo-at-all, `--prior` present vs. absent context key,
+  `comparable` true vs. false on a length mismatch, the pre-change caveat replacing zeros, a
+  wrong-schema `--prior` bail, and a missing-path `--prior` bail.
+- Mutation-checked the sharpest test: removed the `predates_fields.is_none()` gate around
+  `prior.outcomes` and reran `build_context_block_prior_states_predates_fields_instead_of_zeros` --
+  it failed, showing the pre-change artifact's `commits: 3` alongside the real fixture's
+  `lines-written`/`lines-replaced` defaults, exactly the fabricated-zero shape the design calls out.
+  Restored and reconfirmed green.
+- **Live figures**, two real adjacent 30-day windows collected off today's catalog:
+  `--since 2026-05-27 --until 2026-06-25` (prior: 131 sessions, `$2,144.58`, 27 repos, 21 commits, 60
+  PRs opened) and `--since 2026-06-26 --until 2026-07-25` (current: 1,523 sessions, `$9,450.31`, 57
+  repos, 490 commits, 166 PRs opened). Rendered end-to-end via `report render --prior` (`--llm api`,
+  since `--llm cli` hit the open question above): the Month over Month section states "both cover 30
+  days ... directly comparable", then quotes `$2,144.58` / `131` against `$9,450.31` / `1523`, `21`
+  commits / `60` PRs against `490` / `166`, and `27` against `57` repos -- every figure matches the
+  two collected artifacts byte-for-byte (checked via `jq` against both `report.json`s), confirming
+  the render-invents-nothing guard's implicit proof: nothing was computed, only copied. The model
+  also correctly named `tatari-tv/klod` as present in the prior period and absent from the current
+  one (confirmed by grepping both artifacts' session repos) and named four repos that newly carried
+  work this period, none of them fabricated.
+- Reran `report render` on the prior-only artifact WITHOUT `--prior`: the rendered markdown carries
+  no "Month over Month" section at all, live-confirming the absence case alongside the unit test.
