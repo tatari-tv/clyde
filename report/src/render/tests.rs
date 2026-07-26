@@ -1443,6 +1443,8 @@ fn build_context_block_carries_line_counters_present_if_nonzero() {
 }
 
 #[cfg(test)]
+mod geometry;
+#[cfg(test)]
 mod narrative;
 #[cfg(test)]
 mod prior;

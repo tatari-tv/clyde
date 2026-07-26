@@ -962,3 +962,77 @@ live fetch from a cache hit is a `claude-pricing` change this phase's scope excl
   prompt licenses them only for citations, never for aggregate claims. Splitting them out needs
   path-aware classification (parent key plus leaf key), which is a mechanism change the doc did not
   ask for.
+
+## Phase 11: Chart geometry
+
+### Design decisions
+- **Two new modules, not more `render.rs`.** `report/src/chart.rs` computes the geometry
+  (`LineChart`, `Charts`, `compute_charts`); `report/src/geometry.rs` proves the artifact copied it
+  (`reject_foreign_geometry`). `render.rs` was already 1,470 of the 1,500-line ceiling, and
+  computing a polyline and validating model-authored markup are different jobs.
+- **The mapping** (`chart::points`): x spreads the series evenly across the full 1000-unit width;
+  y maps the series max to `PLOT_MARGIN` (10) and zero to `PLOT_HEIGHT - PLOT_MARGIN` (290), so a
+  stroke drawn on the maximum is not clipped in half by the viewBox edge. Coordinates round to whole
+  user units, which keeps a 210-row polyline at ~1.7KB.
+- **A chart is ABSENT rather than flat** (`Charts` fields are `Option`, `skip_serializing_if`) when
+  the series has fewer than two rows or no positive maximum -- `chart::line_chart`. That mirrors
+  `percent_of_max`'s `None`, so the prompt's existing "no geometry field -> render it as a table"
+  rule covers the case with no new special-casing.
+- **Points are never subsampled; labels are.** One point per `by-day` row is what makes the line
+  honest about a gap; `x_labels` subsamples to `MAX_X_LABELS` (6), first and last always included.
+  A 210-day window (`--since 2026-01-01`) therefore keeps 210 points and 6 labels.
+- **The validator's scope is every `<svg>` in the artifact** -- `geometry::CHART_ELEMENT`. The
+  prompt authorizes no other SVG, so an `<svg>` that is not a chart is itself the violation. A
+  class-scoped rule would be bypassed by omitting the class.
+- `<script>` / `<style>` contents are stripped before the scan, for the same reason the prose guard
+  strips them; `render::strip_blocks` became `pub(crate)` rather than being reimplemented.
+- **`report.pmt` gained an explicit "IGNORE `aggregates.charts`" bullet.** The markdown path now
+  receives the field too, it cannot draw SVG, and a copied coordinate would hard-fail its prose
+  guard. Documenting the field as not-for-you is cheaper than letting the model discover that.
+
+### Deviations
+- **`QuotableFacts.geometry` now holds WHOLE values, where Phase 10 tokenized them.** Same seam,
+  corrected granularity: the Phase 11 rule is "this attribute value is one the binary computed, byte
+  for byte", and a token-level set licenses a fabricated `cx="120"` the moment `120` is any point's
+  y coordinate. Phase 10's `geometry_is_kept_out_of_the_prose_whitelist` was UPDATED, not deleted,
+  and gained the negative it was missing (one coordinate out of a points list is not a licensed
+  attribute value).
+- **`Charts` carries `Option<LineChart>`** where the doc's Data Model shows a bare `LineChart`; see
+  the absent-rather-than-flat decision above.
+- The doc's illustrative `points` example (`"0,287 34,120 68,44 ..."`) is not reproduced coordinate
+  for coordinate. The margin and rounding are named consts here and the tests pin the exact output.
+- **No live `--format html` render was run.** There is no `ANTHROPIC_API_KEY` in the implementing
+  environment and no schema-v2 collected artifact on this disk (the only local report,
+  `~/2026-july.json`, is schema v1, which `check_schema_version` rejects by design). Every success
+  criterion is proven mechanically; the model-facing risk is in Open questions, not papered over.
+  An ignored measurement test (`measure_chart_geometry_on_a_real_window`, `CLYDE_REAL_REPORT=...`)
+  is committed so the real-window numbers can be taken without new code.
+
+### Tradeoffs
+- **Whole-value geometry vs token-level:** strictly stronger, at the cost that a model which reflows
+  the copied `points` string across lines hard-fails the render. Byte-for-byte is the criterion, and
+  the prompt states it twice.
+- **A hand-rolled tolerant tag scanner vs an HTML-parser dependency:** ~150 lines and no new crate,
+  and it fails closed on malformed markup (an unclosed `<svg>` leaves the rest of the document
+  inside the chart subtree, where the first ordinary element is rejected). A real parser would
+  normalize the input, which is the opposite of what a byte-for-byte check wants.
+- **Axis labels live in HTML around the `<svg>`, not in `<text>`:** `text` stays on the doc's
+  element allowlist, but `x`/`y` are unlicensed digits, so a `<text>` inside the chart can only sit
+  at the origin. Labeling in HTML costs some CSS and keeps the coordinate ban intact.
+- **Every digit-bearing attribute is checked, including on permitted presentation attributes.** That
+  is the doc's rule and it is what makes an unanticipated attribute fail closed, but it means
+  `stroke-width="2"` is rejected and the stroke width has to come from the stylesheet.
+
+### Open questions
+- **`stroke-width="2"` is the most likely live-render failure, and it is a design rule, not a bug.**
+  The doc is explicit that any attribute value containing a digit is checked against the geometry
+  set, so it was built exactly that way and the prompt tells the model to set stroke width from a
+  class in the `<style>` block. If a live render trips on it, the options are (a) keep it and
+  tighten the prompt, or (b) add binary-owned presentation values (a stroke width const) to the
+  geometry set. That is Scott's call, so nothing was loosened here.
+- The first place the new prompt text meets an actual model is a live `--llm api --format html`
+  render or Phase 13's eval. Worth doing before this ships, since a rejected render costs a paid
+  model call.
+- `text` and `title` are on the doc's permitted-element list; with coordinates unlicensed, `<text>`
+  has no real use inside the subtree. Keep it (harmless, and a future labeled chart may want it) or
+  drop it to shrink the surface?

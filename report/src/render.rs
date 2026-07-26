@@ -2,6 +2,7 @@ use crate::aggregate::{self, Aggregates, Attribution, OrgRow, RepoRow, UnitCosts
 use crate::cli::Format;
 use crate::config::{RenderConfig, TransportKind};
 use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
+use crate::geometry;
 use crate::outcome::OutcomeTotals;
 use crate::persona::{self, PersonaBlock};
 use crate::proc::run_bounded;
@@ -307,6 +308,11 @@ fn render_via_opus_html(context: &RenderContext, prompt: &str, cfg: &RenderConfi
     // (style/script blocks and tag markup stripped). Every data figure a reader sees must be
     // licensed by a quotable fact; a fabricated figure is rejected.
     reject_foreign_numbers("html", &visible_text(&html), &context.facts)?;
+    // ...and the numbers `visible_text` throws away are exactly the ones Phase 11 unlocked. The
+    // prose guard has never seen an ATTRIBUTE, so the chart unlock gets its own allowlist over the
+    // SVG subtree: permitted elements, permitted attributes, and every digit-bearing value matched
+    // verbatim against the geometry the binary computed.
+    geometry::reject_foreign_geometry("html", &html, &context.facts)?;
     Ok(html)
 }
 
@@ -413,7 +419,10 @@ fn visible_text(html: &str) -> String {
 /// name (`style` / `script`). A missing closing tag drops the rest of the document from that opener
 /// (fail closed: unmatched markup never leaks unchecked into the visible-text scan). Char-based, no
 /// byte slicing.
-fn strip_blocks(html: &str, tag: &str) -> String {
+///
+/// `pub(crate)` for the geometry allowlist, which strips the same two blocks for the same reason
+/// before scanning tags: their numbers are authored CSS/JS, not data.
+pub(crate) fn strip_blocks(html: &str, tag: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let open = format!("<{tag}");
     let close = format!("</{tag}>");

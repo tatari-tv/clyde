@@ -4,9 +4,11 @@
 #![deny(unused_variables)]
 
 pub mod aggregate;
+pub mod chart;
 pub mod cli;
 pub mod config;
 pub mod fmt;
+pub(crate) mod geometry;
 pub mod merge;
 pub mod outcome;
 pub mod persona;

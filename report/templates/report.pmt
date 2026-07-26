@@ -102,6 +102,10 @@ The JSON context block contains:
   instead. Because of that, `by-day` spend does not sum to `totals.spend` and never did (rows are
   never summed, Hard prohibition 1) -- if you cite the gap between them, use `carried-in`'s own
   figures, never a computed difference.
+- `aggregates.charts`: SVG line-chart geometry for the HTML report. IGNORE IT ENTIRELY. Its
+  `viewbox` / `points` strings are pixel coordinates, not facts about the period: they are not
+  spend, not sessions, and not quotable. Never print them, never cite a number from them, and never
+  describe the chart's shape from them (the shape claim comes from `aggregates.by-day`, as always).
 - `aggregates.carried-in`: `sessions`, `tokens-human`, `spend` -- sessions that began before the
   window but are still counted in `totals` and `by-repo`. State it as its own fact next to the
   by-day trend when you cite one; never fold it silently into a `by-day` row or imply it happened

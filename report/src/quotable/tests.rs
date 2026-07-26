@@ -160,6 +160,10 @@ fn every_computed_display_figure_passes() {
 /// The three sets stay separate. A `-percent-of-max` bar width is both a figure and geometry, but a
 /// Phase 11 `points` string is geometry ONLY -- its dozens of small integers never reach the prose
 /// whitelist.
+///
+/// Geometry is held as WHOLE values (Phase 11): the guard over it asks "is this attribute value one
+/// the binary computed", so a token-level set would license a fabricated `cx="17"` off one point's
+/// y coordinate. Phase 10 shipped the tokenized form because nothing consumed it yet.
 #[test]
 fn geometry_is_kept_out_of_the_prose_whitelist() {
     let facts = QuotableFacts::from_context_json(
@@ -167,14 +171,19 @@ fn geometry_is_kept_out_of_the_prose_whitelist() {
     )
     .unwrap();
 
-    assert!(facts.geometry.contains("17") && facts.geometry.contains("640"));
+    assert!(facts.licenses_geometry("0,17 1,42 2,88") && facts.licenses_geometry("0 0 640 240"));
+    assert!(
+        !facts.licenses_geometry("17") && !facts.licenses_geometry("640"),
+        "one coordinate out of a points list is not a licensed attribute value: {:?}",
+        facts.geometry
+    );
     assert!(
         !facts.figures.contains("17") && !facts.figures.contains("640"),
         "a points/viewBox integer is not a quotable prose figure: {:?}",
         facts.figures
     );
     assert!(
-        facts.figures.contains("63.5") && facts.geometry.contains("63.5"),
+        facts.figures.contains("63.5") && facts.licenses_geometry("63.5"),
         "a bar proportion is BOTH a quotable percent and legitimate geometry"
     );
     assert_eq!(facts.foreign_figures("The chart peaked at 88."), vec!["88".to_string()]);

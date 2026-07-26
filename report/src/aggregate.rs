@@ -7,6 +7,7 @@
 //! `compute` takes one and [`Aggregates`] carries a `cache` field ([`CacheStats`]). `compute` is
 //! the single aggregate entry point; the counterfactual is the sole sanctioned computation.
 
+use crate::chart::{self, Charts};
 use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::outcome::{self, Outcomes};
 use crate::report::Report;
@@ -44,6 +45,10 @@ pub struct Aggregates {
     /// (design "by-day, corrected"). Excluded from every `by_day` row; still counted in `totals`
     /// and `by_repo`, so this is the stated gap between `by_day`'s sum and `totals.spend-usd`.
     pub carried_in: CarriedIn,
+    /// Precomputed line-chart geometry over [`Self::by_day`] (design Phase 11): the `viewBox` and
+    /// `points` strings the model copies verbatim into one `<svg>`/`<polyline>`, plus their axis
+    /// labels. A chart is ABSENT when its series cannot honestly be drawn (see [`chart::Charts`]).
+    pub charts: Charts,
     pub outliers: Vec<OutlierRow>,
     pub cache: CacheStats,
 }
@@ -251,11 +256,12 @@ pub fn compute(report: &Report, outliers_n: usize, pricing: &Pricing) -> Aggrega
     let by_org = compute_by_org(report);
     let by_repo = compute_by_repo(report);
     let (by_day, carried_in) = compute_by_day(report);
+    let charts = chart::compute_charts(&by_day);
     let outliers = compute_outliers(report, outliers_n);
     let cache = compute_cache_stats(report, pricing);
     debug!(
         "aggregate::compute: by-org={} by-repo={} by-day={} carried-in-sessions={} outliers={} \
-         cache-read-share={} counterfactual={}",
+         cache-read-share={} counterfactual={} spend-chart={} sessions-chart={}",
         by_org.len(),
         by_repo.len(),
         by_day.len(),
@@ -263,12 +269,15 @@ pub fn compute(report: &Report, outliers_n: usize, pricing: &Pricing) -> Aggrega
         outliers.len(),
         cache.cache_read_share,
         cache.list_price_equivalent.is_some(),
+        charts.by_day_spend.is_some(),
+        charts.by_day_sessions.is_some(),
     );
     Aggregates {
         by_org,
         by_repo,
         by_day,
         carried_in,
+        charts,
         outliers,
         cache,
     }

@@ -87,6 +87,37 @@ require computing coordinates from values, which violates Hard prohibition 1. A 
 value gives you a one-dimensional proportion and nothing else; anything that needs a second
 computed dimension is forbidden.
 
+## The one exception: the precomputed by-day line charts
+
+The binary now computes two line charts for you. This is an exception to who WRITES the
+coordinates; it is not an exception to the prohibition on computing them. You still compute nothing.
+
+When `aggregates.charts.by-day-spend` or `aggregates.charts.by-day-sessions` is present, you may
+draw ONE line chart per present field, in exactly this shape:
+
+    <svg viewBox="COPY OF chart.viewbox" class="trend"><title>...</title>
+      <polyline points="COPY OF chart.points" fill="none" stroke="currentColor"/></svg>
+
+Both attribute values are copied BYTE FOR BYTE: no reflowing onto several lines, no re-spacing, no
+rounding, no dropping or adding a point, no reordering. The render validates every one of them
+against the context block and REFUSES to emit the artifact on any difference.
+
+Inside that `<svg>`, this is the COMPLETE list of what is allowed. The render fails on anything else:
+
+- Elements: `svg`, `polyline`, `g`, `text`, `title`. NOT `path`, `circle`, `rect`, `line`, `image`,
+  `defs`, `desc`, or anything else.
+- Attributes: `viewBox`, `points`, `class`, `fill`, `stroke`, `stroke-width`. NOT `d`, `x`, `y`,
+  `x1`, `y1`, `cx`, `cy`, `r`, `width`, `height`, `transform`, `stroke-dasharray`, or anything else.
+- NO attribute inside the `<svg>` may contain a digit unless its value is one of the two copied
+  strings. That covers `class` names (use digit-free ones) and `stroke-width`, which is a number you
+  chose: set the stroke width in the `<style>` block from a class instead of as an attribute.
+- Axis labels would need `x`/`y` coordinates, so they do NOT go inside the `<svg>`. Put `y-labels`
+  and `x-labels` in ordinary HTML around the chart (an axis strip laid out with CSS), each string
+  copied verbatim.
+- When a chart field is ABSENT its series has no scale to draw against (fewer than two rows, or an
+  all-zero series). Render that series as `*-percent-of-max` columns or a table; never author a line
+  for it.
+
 Rules for charts:
 - Only a series whose rows carry a `*-percent-of-max` field may be drawn as a bar/column chart.
   Chartable series in this context: `totals.models` (`spend-percent-of-max`),
@@ -161,6 +192,13 @@ The JSON context block contains:
   column chart implies a total even though no row is ever summed (Hard prohibition 1), state the
   carried-in figure in a caption or adjacent sentence next to the chart whenever it is nonzero --
   naming the gap is cheaper than letting the chart imply there is none.
+- `aggregates.charts`: precomputed LINE-chart geometry over `aggregates.by-day`, as `by-day-spend`
+  and `by-day-sessions`. Each carries `viewbox` and `points` (opaque strings, copied byte for byte
+  -- see the exception in Hard prohibition 3), `y-labels` (three display strings: the series max,
+  its midpoint, and zero, top to bottom) and `x-labels` (the series' dates, subsampled for
+  legibility -- the LINE still has one point per day). Either field is ABSENT when its series cannot
+  be drawn. These two are the ONLY SVG geometry permitted in the document; every other chart is CSS
+  proportions.
 - `aggregates.carried-in`: `sessions`, `tokens-human`, `spend` -- sessions that began before the
   window but are still counted in `totals` and `by-repo`. Never fold it silently into a `by-day`
   bar or imply it happened on `since`'s date.
@@ -263,8 +301,11 @@ Produce ONE complete, self-contained HTML document.
   This is the same disclosure the markdown report carries as `**Pricing Basis:**`; every render
   states the basis next to the headline figure it qualifies.
 - CSS-proportion bar/column charts, using ONLY `*-percent-of-max` (Hard prohibition 3), for the
-  chartable series. Prefer charts for spend-by-repo, spend-by-model, and the by-day temporal
-  shape (spend and sessions).
+  chartable series. Prefer charts for spend-by-repo and spend-by-model.
+- The by-day temporal shape (spend and sessions) is drawn from `aggregates.charts` as a line chart
+  when the field is present, with its `y-labels` / `x-labels` as an HTML axis strip around the
+  `<svg>`; when the field is absent, as `*-percent-of-max` columns. Either way the carried-in
+  caption rule above still applies.
 - REQUIRED when at least one `aggregates.by-repo` row carries an `outcomes` object: a
   spend-against-output chart. One row per by-repo row that has outcomes, in the order given, each
   row showing the repo's spend bar (`spend-percent-of-max`) and, in a second track, its

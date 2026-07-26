@@ -17,9 +17,12 @@
 //!   quotes. Their digits are exempt only inside a verbatim occurrence (see [`QuotableFacts::mask`]),
 //!   so citing session `a1b2c3d4` never adds `1`, `2`, `3` and `4` to the prose whitelist.
 //! - [`QuotableFacts::geometry`] -- chart coordinates (Phase 11's `viewBox`/`points`, plus the
-//!   `-percent-of-max` bar widths). Kept SEPARATE from the prose whitelist on purpose: a single
-//!   `points` string would otherwise inject dozens of small integers into it and quietly undo the
-//!   narrowing.
+//!   `-percent-of-max` bar widths), each stored as its WHOLE value rather than tokenized. Kept
+//!   SEPARATE from the prose whitelist on purpose: a single `points` string would otherwise inject
+//!   dozens of small integers into it and quietly undo the narrowing. Whole values, because the
+//!   geometry rule (`geometry::reject_foreign_geometry`) is "this attribute value is one the binary
+//!   computed, byte for byte" -- a token-level set would accept a fabricated `cx="120"` the moment
+//!   `120` happened to be one point's y coordinate.
 //!
 //! Deliberately NOT seeded with a blanket `0..=100` small-integer exemption: that would whitelist
 //! `14` and let the planted "14 hours" through, which is the exact case this module exists to catch.
@@ -68,9 +71,9 @@ const IDENTIFIER_KEYS: &[&str] = &[
     "tags",
 ];
 
-/// Leaf keys whose value is chart GEOMETRY only, never prose. Phase 11 fills these in; the seam is
-/// wired now so the chart fields it adds land in the geometry set instead of widening the prose
-/// whitelist the day they appear.
+/// Leaf keys whose value is chart GEOMETRY only, never prose: the `viewbox` and `points` strings
+/// `chart::LineChart` precomputes (Phase 11). Their digits never reach the prose whitelist, and the
+/// whole value is what the HTML geometry allowlist matches attributes against.
 const GEOMETRY_KEYS: &[&str] = &["viewbox", "points"];
 
 /// Suffix of the bar-chart proportion keys (`spend-percent-of-max`, `commits-percent-of-max`,
@@ -185,6 +188,20 @@ impl QuotableFacts {
         self.figures.len()
     }
 
+    /// `true` when `value` is a geometry string the binary computed: a `viewBox`, a `points` list,
+    /// or a bar proportion, matched WHOLE. This is the licence the HTML geometry allowlist checks
+    /// every digit-bearing attribute inside a chart subtree against, so a fabricated coordinate,
+    /// a reflowed `points` string, or an unanticipated attribute all fail it.
+    pub(crate) fn licenses_geometry(&self, value: &str) -> bool {
+        self.geometry.contains(value.trim())
+    }
+
+    /// How many distinct geometry values the context licenses. Operator-facing only (the geometry
+    /// guard's DEBUG line), the way [`Self::figure_count`] is for the prose guard.
+    pub(crate) fn geometry_count(&self) -> usize {
+        self.geometry.len()
+    }
+
     /// A byte mask over `prose`, true wherever a verbatim identifier occurrence covers the byte.
     /// One `match_indices` pass per identifier (linear in the prose per identifier, never quadratic
     /// in the prose).
@@ -249,10 +266,10 @@ impl QuotableFacts {
     fn absorb(&mut self, key: &str, raw: &str) {
         match classify(key) {
             Class::Figure => self.add_figure_tokens(raw),
-            Class::Geometry => self.add_geometry_tokens(raw),
+            Class::Geometry => self.add_geometry_value(raw),
             Class::FigureAndGeometry => {
                 self.add_figure_tokens(raw);
-                self.add_geometry_tokens(raw);
+                self.add_geometry_value(raw);
             }
             Class::Identifier => self.add_identifier(key, raw),
         }
@@ -272,10 +289,17 @@ impl QuotableFacts {
         }
     }
 
-    fn add_geometry_tokens(&mut self, raw: &str) {
-        for m in numeric_pattern().find_iter(raw) {
-            self.geometry.insert(normalize(m.as_str()));
+    /// Add a geometry value WHOLE: an attribute is licensed only when its value is one of these
+    /// strings byte for byte, so the value is stored exactly as the binary emitted it (trimmed of
+    /// surrounding whitespace, which HTML attribute quoting can add and which changes no geometry).
+    /// Never tokenized: see the module docs for why a token-level set would not fail closed.
+    fn add_geometry_value(&mut self, raw: &str) {
+        let value = raw.trim();
+        if value.is_empty() {
+            return;
         }
+        trace!("quotable::add_geometry_value: bytes={}", value.len());
+        self.geometry.insert(value.to_string());
     }
 
     /// Add an identifier plus the abbreviated forms a citation actually uses: a commit sha's short
