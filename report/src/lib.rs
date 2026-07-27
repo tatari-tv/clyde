@@ -5,6 +5,7 @@
 
 pub mod aggregate;
 pub mod chart;
+pub(crate) mod claim;
 pub mod cli;
 pub mod config;
 pub mod eval;

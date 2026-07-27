@@ -1,4 +1,5 @@
 use crate::aggregate::{self, Aggregates, Attribution, OrgRow, RepoRow, UnitCosts};
+use crate::claim;
 use crate::cli::Format;
 use crate::config::{RenderConfig, TransportKind};
 use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
@@ -310,6 +311,10 @@ pub(crate) fn markdown_from_context(context: &RenderContext, prompt: &str, pins:
     // anywhere in the serialized block", which pre-approved every small integer that happened to
     // fall inside a session id or a sha (design "Guard weakness (10)").
     reject_foreign_numbers("markdown", &prose, &context.facts)?;
+    // ...and the class the VALUE guard structurally cannot reach: a fabricated unit on a licensed
+    // number ("14 hours of engineering time", where 14 is a real session count somewhere in the
+    // window). Claim-shaped, not value-shaped.
+    claim::reject_fabricated_claims("markdown", &prose)?;
     Ok(prose)
 }
 
@@ -349,7 +354,11 @@ pub(crate) fn html_from_context(context: &RenderContext, prompt: &str, pins: Pin
     // that are NOT data (px, breakpoints, colors), so the guard runs over the VISIBLE TEXT only
     // (style/script blocks and tag markup stripped). Every data figure a reader sees must be
     // licensed by a quotable fact; a fabricated figure is rejected.
-    reject_foreign_numbers("html", &visible_text(&html), &context.facts)?;
+    let visible = visible_text(&html);
+    reject_foreign_numbers("html", &visible, &context.facts)?;
+    // The claim-shaped half, over the same visible text: a fabricated unit rides on a licensed
+    // number, so the value guard passes it and only the claim guard sees it.
+    claim::reject_fabricated_claims("html", &visible)?;
     // ...and the numbers `visible_text` throws away are exactly the ones Phase 11 unlocked. The
     // prose guard has never seen an ATTRIBUTE, so the chart unlock gets its own allowlist over the
     // SVG subtree: permitted elements, permitted attributes, and every digit-bearing value matched
@@ -457,7 +466,10 @@ const EXCERPT_RADIUS: usize = 60;
 /// The prose around `needle`'s first occurrence, char-based (crate lint) and whitespace-collapsed so
 /// a wrapped markdown paragraph reads as one line in the error. Empty when the token cannot be
 /// located verbatim (a comma-grouped figure is normalized before comparison, so this can happen).
-fn excerpt(prose: &str, needle: &str) -> String {
+///
+/// `pub(crate)` for the claim guard, whose rejection is the same kind of hard render failure and so
+/// owes the operator the same "here is the sentence" excerpt.
+pub(crate) fn excerpt(prose: &str, needle: &str) -> String {
     let chars: Vec<char> = prose.chars().collect();
     let needle_chars: Vec<char> = needle.chars().collect();
     let at = (0..chars.len().saturating_sub(needle_chars.len().saturating_sub(1)))

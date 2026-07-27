@@ -134,6 +134,32 @@ fn phase_ten_criterion_three_holds_against_the_committed_goldens() {
     );
 }
 
+/// The claim-shaped guard's false-positive proof, over the same corpus. Its rejection is a HARD
+/// render failure, and the units it polices (`days`, and `hour` inside the cache-tier names) appear
+/// in legitimate prose in these very artifacts, so "does not fire on a correct render" has to be
+/// asserted against every committed golden rather than argued from the pattern.
+#[test]
+fn no_committed_golden_trips_the_claim_guard() {
+    for fixture in fixtures() {
+        for (kind, artifact) in [
+            (Kind::Markdown, fixture.golden_markdown.as_ref().unwrap()),
+            (Kind::Html, fixture.golden_html.as_ref().unwrap()),
+        ] {
+            let prose = match kind {
+                Kind::Markdown => artifact.clone(),
+                Kind::Html => crate::render::visible_text(artifact),
+            };
+            let claims = crate::claim::fabricated_claims(&prose);
+            assert!(
+                claims.is_empty(),
+                "{} {} golden trips the duration/multiplier guard: {claims:?}",
+                fixture.name,
+                kind.as_str()
+            );
+        }
+    }
+}
+
 /// Every fixture must actually contain the two cases the criterion above rests on, in the DATA and
 /// not merely in the golden: a fixture with no untitled session and no PR could never exercise them
 /// however the model renders it.
