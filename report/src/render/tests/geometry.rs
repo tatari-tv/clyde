@@ -59,6 +59,7 @@ fn context(report: &Report) -> RenderContext {
         crate::aggregate::DEFAULT_OUTLIERS,
         None,
         None,
+        None,
     )
     .unwrap()
 }

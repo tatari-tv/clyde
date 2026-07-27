@@ -15,9 +15,9 @@ use std::path::Path;
 /// render. The artifact's own half of this rule is [`NO_RECONCILE_NOTE`], carried verbatim into
 /// the context block so BOTH the terminal and the artifact state the gap.
 pub(super) const NO_RECONCILE_WARNING: &str = "warning: no --reconcile <analytics.json> was supplied; this \
-     render's total spend is a modeled figure only, not checked against the Claude Enterprise \
-     Analytics cost report. Pull an export with the anthropic-usage-report skill and pass \
-     --reconcile to close the gap.";
+     render's total spend is a modeled figure only, not checked against your own billed spend in \
+     the Claude Enterprise Analytics cost report. Pull a per-user export with the \
+     anthropic-usage-report skill (--report user-cost) and pass --reconcile to close the gap.";
 
 /// The stderr warning for a render with no `--reconcile` supplied, or `None` when one was (design
 /// Phase 12, "Absence is never silent"). Returns the message rather than printing it (house rule:
@@ -37,13 +37,19 @@ pub(super) fn no_reconcile_warning(reconcile: Option<&Path>) -> Option<&'static 
 /// the gap.
 pub(super) const NO_RECONCILE_NOTE: &str = "No Claude Enterprise Analytics cost export was supplied for this \
      render (--reconcile <file>); the total spend above is a modeled figure only and has not been \
-     reconciled against the account's authoritative billed spend.";
+     reconciled against this operator's authoritative billed spend.";
 
 /// Quoted verbatim by both templates when reconciliation succeeded -- the counterpart to
-/// [`NO_RECONCILE_NOTE`]; the artifact states exactly one of the two, never neither.
-pub(super) const RECONCILED_NOTE: &str = "This render's modeled total was reconciled against the Claude \
-     Enterprise Analytics cost export for this exact window; see the Reconciliation section for \
-     the billed figure and the scope note.";
+/// [`NO_RECONCILE_NOTE`]; the artifact states exactly one of the two, never neither. Names the
+/// operator, because the whole point of the per-user scoping is that the billed figure beside a
+/// per-user modeled total belongs to that same person and to nobody else.
+pub(super) fn reconciled_note(operator: &str) -> String {
+    format!(
+        "This render's modeled total was reconciled against the Claude Enterprise Analytics cost \
+         export for {operator} over this exact window; see the Reconciliation section for the \
+         billed figure and the scope note."
+    )
+}
 
 /// Fold `--reconcile <analytics.json>` into the context block, or state the gap when it was not
 /// supplied (design Phase 12). The SECOND return value is ALWAYS present in the context block
@@ -53,6 +59,7 @@ pub(super) const RECONCILED_NOTE: &str = "This render's modeled total was reconc
 /// see `render::run`'s stderr warning for the other half of "never silent".
 pub(super) fn build_reconciliation_view(
     reconcile_path: Option<&Path>,
+    operator: Option<&str>,
     report: &Report,
 ) -> Result<(Option<Reconciliation>, String)> {
     let Some(path) = reconcile_path else {
@@ -60,13 +67,16 @@ pub(super) fn build_reconciliation_view(
         return Ok((None, NO_RECONCILE_NOTE.to_string()));
     };
     debug!(
-        "render::reconciliation::build_reconciliation_view: path={}",
-        path.display()
+        "render::reconciliation::build_reconciliation_view: path={} operator={:?}",
+        path.display(),
+        operator
     );
-    let reconciliation = reconcile::fold(path, report)?;
+    let reconciliation = reconcile::fold(path, operator, report)?;
     debug!(
-        "render::reconciliation::build_reconciliation_view: billed={} modeled={} unseen-account-spend={}",
-        reconciliation.billed, reconciliation.modeled, reconciliation.delta
+        "render::reconciliation::build_reconciliation_view: operator={} billed={} modeled={} \
+         unseen-account-spend={}",
+        reconciliation.operator, reconciliation.billed, reconciliation.modeled, reconciliation.delta
     );
-    Ok((Some(reconciliation), RECONCILED_NOTE.to_string()))
+    let note = reconciled_note(&reconciliation.operator);
+    Ok((Some(reconciliation), note))
 }

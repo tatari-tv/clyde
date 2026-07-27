@@ -101,6 +101,7 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
             cfg.outliers,
             cfg.prior.as_deref(),
             cfg.reconcile.as_deref(),
+            cfg.reconcile_user.as_deref(),
         )?;
         render_via_opus_markdown(&context, &prompt, cfg)
     }
@@ -119,6 +120,7 @@ fn generate_html(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Resu
         cfg.outliers,
         cfg.prior.as_deref(),
         cfg.reconcile.as_deref(),
+        cfg.reconcile_user.as_deref(),
     )?;
     render_via_opus_html(&context, &prompt, cfg)
 }
@@ -621,7 +623,7 @@ struct ContextBlock<'a> {
     reconciliation: Option<Reconciliation>,
     /// Always present (design Phase 12, "Absence is never silent"): quoted verbatim, states
     /// whether [`Self::reconciliation`] is this render's authoritative figure or absent because no
-    /// export was supplied -- see [`reconciliation::NO_RECONCILE_NOTE`] / [`reconciliation::RECONCILED_NOTE`].
+    /// export was supplied -- see [`reconciliation::NO_RECONCILE_NOTE`] / [`reconciliation::reconciled_note`].
     reconciliation_status: String,
     /// The period's spend set against its own output and calendar (design Phase 7, finding 9):
     /// `per-commit`, `per-pr`, `per-active-day`, `per-session`, and the session-spend percentiles,
@@ -898,21 +900,28 @@ pub(crate) fn build_context_block(
     outliers_n: usize,
     prior_path: Option<&Path>,
     reconcile_path: Option<&Path>,
+    reconcile_user: Option<&str>,
 ) -> Result<RenderContext> {
     debug!(
         "render::build_context_block: sessions={} include_tradeoffs={} outliers-n={} prior={:?} \
-         reconcile={:?}",
+         reconcile={:?} reconcile-user={:?}",
         report.sessions.len(),
         include_tradeoffs,
         outliers_n,
         prior_path,
-        reconcile_path
+        reconcile_path,
+        reconcile_user
     );
     let default_persona = PersonaBlock::default();
     let aggregates = aggregate::compute(report, outliers_n, pricing);
     let period = build_period_view(report, &aggregates);
     let prior = build_prior_view(prior_path, period.days, pricing)?;
-    let (reconciliation, reconciliation_status) = build_reconciliation_view(reconcile_path, report)?;
+    // Who the reconciliation is scoped to: `--reconcile-user` when the operator named one,
+    // otherwise the SAME identity the report's persona block already resolved
+    // (`persona whoami`'s work email) -- one mechanism for "who is this report about", never two
+    // that can disagree.
+    let operator = reconcile_user.or_else(|| persona.and_then(|p| p.email.as_deref()));
+    let (reconciliation, reconciliation_status) = build_reconciliation_view(reconcile_path, operator, report)?;
     let block = ContextBlock {
         persona: persona.unwrap_or(&default_persona),
         options: ContextOptions { include_tradeoffs },

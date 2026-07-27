@@ -375,6 +375,10 @@ pub(crate) fn build_context(fixture: &Fixture, report: &Report, pricing: &Pricin
         DEFAULT_OUTLIERS,
         fixture.prior.as_deref(),
         fixture.analytics.as_deref(),
+        // No `--reconcile-user` override: the fixture's own invented persona carries the email its
+        // synthesized export is scoped to, so the eval exercises the SAME operator-resolution path
+        // a real render takes (persona -> reconcile), not a bypass of it.
+        None,
     )
 }
 

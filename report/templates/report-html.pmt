@@ -273,20 +273,24 @@ The JSON context block contains:
   absent -- the artifact must never be silent about whether this render's total was checked against
   the authoritative source.
 - `reconciliation`: OPTIONAL, present only when `--reconcile <analytics.json>` was supplied AND its
-  window matched this report's exactly. `source` ("anthropic enterprise analytics"), `window`
-  (display string), `billed` and `modeled` (display dollars -- `modeled` always equals
-  `totals.spend`), `unseen-account-spend` (display, signed), `scope-note` (one sentence, show it
-  verbatim beside the figure every time it appears), and `by-model`, a list of `{model, billed,
-  modeled, unseen-account-spend}` rows pre-sorted by `billed` descending. Absent entirely when
-  `--reconcile` was not supplied -- see `reconciliation-status` above, present either way.
-  `unseen-account-spend` is a PART-TO-WHOLE difference, never a variance: an Analytics export covers
-  everything the account billed (claude.ai web, other clients, other hosts) while this report covers
-  only Claude Code sessions in one catalog, so `billed` meeting or exceeding `modeled` is the
-  EXPECTED relationship. Never label this figure an error, a discrepancy, or a sign clyde
-  undercounted; `scope-note` states exactly this and must accompany the figure, never appear alone
-  as a footnote elsewhere. A `by-model` row's `modeled` may read `(untracked)` (the model was seen
-  but has no price in this binary, distinct from a model this report never saw at all, which reads
-  `$0.00`) -- show it verbatim, do not convert it to a number or a bar.
+  window matched this report's. `source` ("anthropic enterprise analytics"), `operator` (the one
+  person both figures are scoped to), `window` (display string), `billed` and `modeled` (display
+  dollars -- `modeled` always equals `totals.spend`), `unseen-account-spend` (display, signed),
+  `scope-note` (one sentence, show it verbatim beside the figure every time it appears), and
+  `by-model`, a list of `{model, billed, modeled, unseen-account-spend}` rows pre-sorted by `billed`
+  descending. Absent entirely when `--reconcile` was not supplied -- see `reconciliation-status`
+  above, present either way. BOTH figures are ONE PERSON'S: `billed` is the Analytics cost report
+  for `operator` alone, never the organization's total, and this report covers that same person's
+  Claude Code sessions. Never label `billed` as company, org, team, or account-wide spend, and never
+  imply it covers other users. `unseen-account-spend` is a PART-TO-WHOLE difference, never a
+  variance: the export covers everything that ONE account was billed across every Claude product
+  (claude.ai web, Cowork, other clients, other hosts) while this report covers only that person's
+  Claude Code sessions in one catalog, so `billed` meeting or exceeding `modeled` is the EXPECTED
+  relationship. Never label this figure an error, a discrepancy, or a sign clyde undercounted;
+  `scope-note` states exactly this and must accompany the figure, never appear alone as a footnote
+  elsewhere. A `by-model` row's `modeled` may read `(untracked)` (the model was seen but has no
+  price in this binary, distinct from a model this report never saw at all, which reads `$0.00`) --
+  show it verbatim, do not convert it to a number or a bar.
 - `prior`: OPTIONAL, present only when `--prior <report.json>` was supplied. The prior period,
   aggregated the SAME way as this one: `since`, `until`, `days`, `totals` (same shape as the
   top-level `totals`), `by-repo`, `by-org`, and, when recorded, `outcomes` (same shape as the
@@ -330,7 +334,9 @@ Produce ONE complete, self-contained HTML document.
   without `--prior`): show `reconciliation-status` verbatim as its lead line every render, flag or
   no flag. When `reconciliation` is present, add two KPI values (`billed`, `modeled`) plus
   `unseen-account-spend`, `scope-note` shown verbatim directly beside it (never as a separate
-  footnote), `source`, and `window`; when `reconciliation.by-model` is non-empty, a small table
+  footnote), `source`, `operator`, and `window`. Label the `billed` KPI with `operator` (for example
+  "Billed (jordan.rivera@example.com)"), so a reader cannot mistake one person's bill for the
+  organization's. When `reconciliation.by-model` is non-empty, a small table
   (`Model` | `Billed` | `Modeled` | `Unseen Account Spend`), rows in the order given, values
   verbatim including a literal `(untracked)` where present. When `reconciliation` is absent, the
   card shows only the `reconciliation-status` sentence -- do not fabricate a billed figure or a
@@ -388,9 +394,11 @@ Produce ONE complete, self-contained HTML document.
   totals side by side, repos that newly appeared or wound down, model-mix shifts. State facts, not
   verdicts; no "trend is improving" language.
 - The Reconciliation card is ALWAYS present, flag or no flag; `reconciliation-status` is shown
-  verbatim every render. `unseen-account-spend` is never framed as an error, a shortfall, or
-  evidence clyde undercounted, in this card or anywhere else in the document -- `scope-note`, shown
-  beside it, is the reason why, every time the figure appears.
+  verbatim every render. `reconciliation.billed` is ONE PERSON'S billed spend
+  (`reconciliation.operator`), never the organization's, never the team's; do not label it as
+  either. `unseen-account-spend` is never framed as an error, a shortfall, or evidence clyde
+  undercounted, in this card or anywhere else in the document -- `scope-note`, shown beside it, is
+  the reason why, every time the figure appears.
 - HTML-escape every interpolated string (titles, summaries, repo slugs) so a stray character
   cannot break the markup.
 - Never use an em-dash (the Unicode character U+2014) anywhere in the document: not in the title,

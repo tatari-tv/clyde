@@ -31,6 +31,7 @@ fn ctx(report: &Report, include_tradeoffs: bool) -> String {
         crate::aggregate::DEFAULT_OUTLIERS,
         None,
         None,
+        None,
     )
     .unwrap()
     .json
@@ -502,6 +503,7 @@ fn build_context_block_embeds_persona_when_present() {
         crate::aggregate::DEFAULT_OUTLIERS,
         None,
         None,
+        None,
     )
     .unwrap()
     .json;
@@ -571,7 +573,7 @@ fn report_with_n_sessions(n: usize) -> Report {
 #[test]
 fn build_context_block_outliers_n_caps_outlier_table_to_exactly_n() {
     let report = report_with_n_sessions(5);
-    let block = build_context_block(&report, false, None, &pricing(), 3, None, None)
+    let block = build_context_block(&report, false, None, &pricing(), 3, None, None, None)
         .unwrap()
         .json;
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
@@ -631,6 +633,7 @@ fn render_run_writes_markdown_file_with_custom_template() {
             outliers: crate::aggregate::DEFAULT_OUTLIERS,
             prior: None,
             reconcile: None,
+            reconcile_user: None,
         }),
     };
     let result = crate::run_with_config(&cfg).unwrap();
@@ -664,6 +667,7 @@ fn render_run_rejects_yaml_input_extension() {
             outliers: crate::aggregate::DEFAULT_OUTLIERS,
             prior: None,
             reconcile: None,
+            reconcile_user: None,
         }),
     };
     let err = crate::run_with_config(&cfg).unwrap_err();
@@ -774,6 +778,7 @@ fn route_html_artifact_writes_local_file() {
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
         reconcile: None,
+        reconcile_user: None,
     };
     let html = "<!doctype html><html><body>injected</body></html>";
     let dest = route_html_artifact(html, &report, &cfg).unwrap();
@@ -805,6 +810,7 @@ fn route_html_artifact_honors_stdout_sigil() {
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
         reconcile: None,
+        reconcile_user: None,
     };
     let dest = route_html_artifact("<!doctype html><html></html>", &report, &cfg).unwrap();
     assert!(matches!(dest, OutputDest::Stdout), "expected Stdout dest, got {dest:?}");
@@ -1258,6 +1264,7 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
         reconcile: None,
+        reconcile_user: None,
     };
 
     let err = run(&cfg, &pricing()).unwrap_err();
@@ -1371,6 +1378,7 @@ fn offline_template_path_requires_no_anthropic_key() {
             outliers: crate::aggregate::DEFAULT_OUTLIERS,
             prior: None,
             reconcile: None,
+            reconcile_user: None,
         }),
     };
     let result = crate::run_with_config(&cfg).expect("offline template render must not need a key");

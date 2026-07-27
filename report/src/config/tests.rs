@@ -52,6 +52,7 @@ fn render_args(format: Option<crate::cli::Format>, output: Option<PathBuf>) -> c
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
         reconcile: None,
+        reconcile_user: None,
     }
 }
 
@@ -246,6 +247,7 @@ fn resolve_command_render_threads_outliers_into_config() {
         outliers: 3,
         prior: None,
         reconcile: None,
+        reconcile_user: None,
     };
     let resolved = with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(args)).unwrap());
     match resolved {
@@ -270,6 +272,7 @@ fn resolve_command_render_threads_format_and_space_into_config() {
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
         reconcile: None,
+        reconcile_user: None,
     };
     let resolved = with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(args)).unwrap());
     match resolved {
@@ -298,6 +301,7 @@ fn resolve_command_render_rejects_output_with_marquee_format() {
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
         reconcile: None,
+        reconcile_user: None,
     };
     let err = with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(args)).unwrap_err());
     let msg = format!("{err}");
@@ -323,6 +327,7 @@ fn resolve_command_render_allows_output_with_local_format() {
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
         prior: None,
         reconcile: None,
+        reconcile_user: None,
     };
     assert!(with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(
         args

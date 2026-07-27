@@ -82,10 +82,14 @@ pub struct RenderConfig {
     /// Prior-period report JSON (`--prior`), lighting up the Month over Month section. `None`
     /// omits the section entirely from the render.
     pub prior: Option<PathBuf>,
-    /// Analytics cost export (`--reconcile`), lighting up the Reconciliation section. `None` omits
-    /// the reconciliation block but never the fact of its absence -- see `render::run`'s stderr
-    /// warning and the artifact's `reconciliation-status` field.
+    /// Per-user Analytics cost export (`--reconcile`), lighting up the Reconciliation section.
+    /// `None` omits the reconciliation block but never the fact of its absence -- see
+    /// `render::run`'s stderr warning and the artifact's `reconciliation-status` field.
     pub reconcile: Option<PathBuf>,
+    /// The operator `--reconcile` is scoped to (`--reconcile-user`). `None` falls back to the
+    /// persona block's work email; when neither is available the reconciliation fails loudly rather
+    /// than comparing against an unscoped total.
+    pub reconcile_user: Option<String>,
 }
 
 /// The RESOLVED transport: which backend actually performs the call.
@@ -211,6 +215,12 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                     format
                 );
             }
+            // `--reconcile-user` scopes a reconciliation that is not happening; a flag that
+            // silently does nothing is how a reader ends up believing a figure was checked when it
+            // never was. Fail loudly instead of accepting the inert combination.
+            if args.reconcile_user.is_some() && args.reconcile.is_none() {
+                bail!("--reconcile-user has no meaning without --reconcile <analytics.json>; pass both or neither");
+            }
             let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_INPUT));
             ResolvedCommand::Render(RenderConfig {
                 input,
@@ -229,6 +239,7 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 html_max_output_tokens: file.render_html_max_output_tokens(),
                 prior: args.prior,
                 reconcile: args.reconcile,
+                reconcile_user: args.reconcile_user,
             })
         }
         crate::cli::Command::Eval(args) => {

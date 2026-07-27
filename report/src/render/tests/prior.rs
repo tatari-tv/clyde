@@ -67,6 +67,7 @@ fn build_context_block_includes_prior_when_supplied() {
         crate::aggregate::DEFAULT_OUTLIERS,
         Some(&prior_path),
         None,
+        None,
     )
     .unwrap()
     .json;
@@ -117,6 +118,7 @@ fn build_context_block_omits_prior_key_without_the_flag() {
         crate::aggregate::DEFAULT_OUTLIERS,
         None,
         None,
+        None,
     )
     .unwrap()
     .json;
@@ -143,6 +145,7 @@ fn build_context_block_prior_comparable_is_false_on_a_length_mismatch() {
         &pricing(),
         crate::aggregate::DEFAULT_OUTLIERS,
         Some(&prior_path),
+        None,
         None,
     )
     .unwrap()
@@ -186,6 +189,7 @@ fn build_context_block_prior_states_predates_fields_instead_of_zeros() {
         &pricing(),
         crate::aggregate::DEFAULT_OUTLIERS,
         Some(&prior_path),
+        None,
         None,
     )
     .unwrap()
@@ -233,6 +237,7 @@ fn build_context_block_bails_on_a_wrong_schema_prior() {
         crate::aggregate::DEFAULT_OUTLIERS,
         Some(&prior_path),
         None,
+        None,
     )
     .unwrap_err();
     let msg = format!("{err:#}");
@@ -255,6 +260,7 @@ fn build_context_block_bails_when_prior_path_does_not_exist() {
         &pricing(),
         crate::aggregate::DEFAULT_OUTLIERS,
         Some(&missing),
+        None,
         None,
     )
     .unwrap_err();

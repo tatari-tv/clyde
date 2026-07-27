@@ -196,11 +196,35 @@ fn the_analytics_export_matches_the_medium_window() {
     let path = dir.path().join("analytics.json");
     std::fs::write(&path, export).unwrap();
 
-    let recon = crate::reconcile::fold(&path, &report).expect("the synthesized export must match the window");
+    let recon = crate::reconcile::fold(&path, Some(OPERATOR_EMAIL), &report)
+        .expect("the synthesized export must match the window");
     let strip = |s: &str| s.replace(['$', ',', '+'], "");
     let billed: f64 = strip(&recon.billed).parse().unwrap();
     let modeled: f64 = strip(&recon.modeled).parse().unwrap();
     assert!(billed > modeled, "billed ({billed}) must exceed modeled ({modeled})");
+    // The other seat's $9,702.65 is in the file and in none of these figures. If the operator
+    // filter regressed, `billed` would clear ten thousand dollars against a modeled total in the
+    // low hundreds -- the org-wide defect, reproduced in miniature.
+    assert!(
+        billed < 10_000.0,
+        "billed ({billed}) must exclude the second actor's rows"
+    );
+}
+
+/// The synthesized export is scoped to [`OPERATOR_EMAIL`], and a render resolves its operator from
+/// the fixture's persona -- so the medium fixture's `eval.yml` persona email MUST be that same
+/// address. Drift makes the fixture's reconciliation fail closed ("no row for the operator") on
+/// every eval run, which is a confusing way to learn about a one-line typo.
+#[test]
+fn the_medium_fixture_persona_is_the_export_operator() {
+    let spec = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/report/medium/eval.yml"),
+    )
+    .expect("the medium fixture's eval.yml must exist");
+    assert!(
+        spec.contains(OPERATOR_EMAIL),
+        "fixtures/report/medium/eval.yml must carry persona email {OPERATOR_EMAIL}"
+    );
 }
 
 /// Nothing in the generator's vocabulary may look like real Tatari data. This is the public-repo

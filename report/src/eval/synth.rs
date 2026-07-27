@@ -47,6 +47,16 @@ const ORG_WORK: &str = "northwind-media";
 /// The invented personal org.
 const ORG_PERSONAL: &str = "jrivera";
 
+/// The invented operator every synthesized Analytics export is scoped to. MUST equal the medium
+/// fixture's `eval.yml` persona email, because `--reconcile` matches export rows against the
+/// persona's work email and a mismatch would make the fixture's reconciliation fail closed instead
+/// of rendering. `tests::the_medium_fixture_persona_is_the_export_operator` pins the pair.
+pub const OPERATOR_EMAIL: &str = "jordan.rivera@northwind-media.example";
+
+/// A second invented seat in the same org, present in the synthesized export so the operator filter
+/// has something to filter OUT. Never the persona, never cited by any fixture.
+const OTHER_OPERATOR_EMAIL: &str = "sam.okafor@northwind-media.example";
+
 /// Priced models, real ids so the embedded pricing table can price them. Which ids appear is a
 /// property of the fixture, not of any real window.
 const MODEL_OPUS: &str = "claude-opus-4-7";
@@ -346,30 +356,46 @@ pub fn build(kind: Kind, pricing: &Pricing) -> Result<Report> {
     Ok(report)
 }
 
-/// The Analytics cost export that lights up the medium fixture's Reconciliation section
-/// (`render --reconcile`). Synthesized in the shape `reconcile::fold` parses, with a window that
-/// matches the medium report EXACTLY (a mismatch is a loud error by design) and a billed figure
-/// deliberately ABOVE the modeled total, since `billed >= modeled` is the expected relationship.
+/// The PER-USER Analytics cost export that lights up the medium fixture's Reconciliation section
+/// (`render --reconcile`). Synthesized in the shape `reconcile::fold` parses -- every row carries
+/// an `actor` (a row without one is an org-wide export, which `fold` rejects by name) -- with a
+/// window that matches the medium report EXACTLY (a mismatch is a loud error by design) and a
+/// billed figure deliberately ABOVE the modeled total, since `billed >= modeled` is the expected
+/// relationship.
+///
+/// A SECOND actor's rows are included on purpose: a per-user export carries every seat in the org,
+/// so a fixture with one actor would never exercise the filter that keeps another person's spend
+/// out of a per-user report. Their amounts must not appear in any figure the render prints.
 pub fn analytics_export(report: &Report) -> Result<String> {
     let modeled = report.totals.spend_usd;
-    // The billed figure covers account activity clyde never sees (web, other clients, other hosts),
-    // so it is the modeled total plus an invented unseen slice, split across the fixture's models
-    // plus one model the catalog never used.
+    // The billed figure covers this operator's activity clyde never sees (claude.ai web, Cowork,
+    // other clients, other hosts), so it is the modeled total plus an invented unseen slice, split
+    // across the fixture's models plus one model the catalog never used.
     let rows = [
-        (MODEL_OPUS, modeled * 0.62 + 118.40),
-        (MODEL_SONNET, modeled * 0.28 + 41.15),
-        (MODEL_HAIKU, modeled * 0.10 + 6.05),
-        ("claude-opus-4-8", 73.90),
+        (OPERATOR_EMAIL, MODEL_OPUS, modeled * 0.62 + 118.40),
+        (OPERATOR_EMAIL, MODEL_SONNET, modeled * 0.28 + 41.15),
+        (OPERATOR_EMAIL, MODEL_HAIKU, modeled * 0.10 + 6.05),
+        (OPERATOR_EMAIL, "claude-opus-4-8", 73.90),
+        // Another seat in the same org, at a deliberately large amount: if the operator filter ever
+        // breaks, the billed figure moves by thousands and the fixture's own goldens stop matching.
+        (OTHER_OPERATOR_EMAIL, MODEL_OPUS, 8_412.55),
+        (OTHER_OPERATOR_EMAIL, MODEL_SONNET, 1_290.10),
     ];
     let records: Vec<serde_json::Value> = rows
         .iter()
-        .map(|(model, amount)| {
+        .map(|(email, model, amount)| {
             serde_json::json!({
                 "model": model,
                 // The real Analytics cost endpoints report MINOR UNITS, so a synthesized export
                 // must too or the fixture stops being the shape production parses. `amount` here is
                 // dollars; emit it as cents. See `reconcile::CostRecord::amount`.
                 "amount": format!("{:.6}", (amount * 100.0).round()),
+                "actor": {
+                    "type": "user_actor",
+                    "user_id": format!("user_{}", email.replace(['@', '.'], "_")),
+                    "email": email,
+                    "deleted": false,
+                },
                 "starting_at": report.since.to_rfc3339(),
                 "ending_at": report.until.to_rfc3339(),
             })

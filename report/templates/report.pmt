@@ -172,16 +172,20 @@ The JSON context block contains:
   absent -- the artifact must never be silent about whether this render's total was checked against
   the authoritative source.
 - `reconciliation`: OPTIONAL, present only when `--reconcile <analytics.json>` was supplied AND its
-  window matched this report's exactly. `source` ("anthropic enterprise analytics"), `window`
-  (display string), `billed` and `modeled` (display dollars -- `modeled` always equals
-  `totals.spend`), `unseen-account-spend` (display, signed), `scope-note` (one sentence, quote it
-  verbatim beside the figure every time it appears), and `by-model`, a list of `{model, billed,
-  modeled, unseen-account-spend}` rows pre-sorted by `billed` descending. Absent entirely when
-  `--reconcile` was not supplied -- see `reconciliation-status` above, which is present either way.
-  `unseen-account-spend` is a PART-TO-WHOLE difference, never a variance: an Analytics export covers
-  everything the account billed (claude.ai web, other clients, other hosts) while this report covers
-  only Claude Code sessions in one catalog, so `billed` meeting or exceeding `modeled` is the
-  EXPECTED relationship. Never call this figure an error, a discrepancy, or a sign clyde
+  window matched this report's. `source` ("anthropic enterprise analytics"), `operator` (the one
+  person both figures are scoped to), `window` (display string), `billed` and `modeled` (display
+  dollars -- `modeled` always equals `totals.spend`), `unseen-account-spend` (display, signed),
+  `scope-note` (one sentence, quote it verbatim beside the figure every time it appears), and
+  `by-model`, a list of `{model, billed, modeled, unseen-account-spend}` rows pre-sorted by `billed`
+  descending. Absent entirely when `--reconcile` was not supplied -- see `reconciliation-status`
+  above, which is present either way. BOTH figures are ONE PERSON'S: `billed` is the Analytics cost
+  report for `operator` alone, never the organization's total, and this report covers that same
+  person's Claude Code sessions. Never describe `billed` as company, org, team, or account-wide
+  spend, and never imply it covers other users. `unseen-account-spend` is a PART-TO-WHOLE
+  difference, never a variance: the export covers everything that ONE account was billed across
+  every Claude product (claude.ai web, Cowork, other clients, other hosts) while this report covers
+  only that person's Claude Code sessions in one catalog, so `billed` meeting or exceeding `modeled`
+  is the EXPECTED relationship. Never call this figure an error, a discrepancy, or a sign clyde
   undercounted; `scope-note` states exactly this and must accompany the figure, never appear alone
   as a footnote elsewhere. A `by-model` row's `modeled` may read `(untracked)` (the model was seen
   but has no price in this binary, distinct from a model this report never saw at all, which reads
@@ -293,8 +297,10 @@ ALWAYS emit this section; it is never omitted, unlike Month over Month. Start wi
 
 If `reconciliation` is present: a two-row table (`Figure` | `Amount`) with `Billed` /
 `reconciliation.billed` and `Modeled` / `reconciliation.modeled`, followed by one sentence stating
-`reconciliation.unseen-account-spend` and citing `reconciliation.source` and
-`reconciliation.window`. Immediately after, quote `reconciliation.scope-note` verbatim -- it must
+`reconciliation.unseen-account-spend` and citing `reconciliation.source`, `reconciliation.operator`
+and `reconciliation.window`. Name `operator` in that sentence: both figures are one person's, and a
+reader who assumes `billed` is the organization's bill reads the whole section backwards.
+Immediately after, quote `reconciliation.scope-note` verbatim -- it must
 sit next to the figure every time the figure appears, never as a footnote elsewhere and never
 paraphrased. If `reconciliation.by-model` is non-empty, a second table (`Model` | `Billed` |
 `Modeled` | `Unseen Account Spend`), rows in the order given (pre-sorted by billed descending), all
@@ -436,9 +442,11 @@ justified" claim, no trajectory verdicts, no ROI language.
 - `unit-costs` figures are ratios of two stated figures, never prices. "A ratio of $X per commit"
   is permitted; "each commit cost $X" is not, in any section, in any wording.
 - The Reconciliation section is ALWAYS present, present or absent flag alike; `reconciliation-status`
-  is quoted verbatim every render. `unseen-account-spend` is never framed as an error, a shortfall,
-  or evidence clyde undercounted, in this section or any other -- `reconciliation.scope-note`,
-  quoted beside it, is the reason why, every time the figure appears.
+  is quoted verbatim every render. `reconciliation.billed` is ONE PERSON'S billed spend
+  (`reconciliation.operator`), never the organization's, never the team's; do not describe it as
+  either. `unseen-account-spend` is never framed as an error, a shortfall, or evidence clyde
+  undercounted, in this section or any other -- `reconciliation.scope-note`, quoted beside it, is
+  the reason why, every time the figure appears.
 - No em dashes (the long dash). Use regular hyphens, commas, or semicolons. No exceptions.
 - Voice: factual, restrained, specific. The data carries the argument; the prose stays out of
   the way.

@@ -237,16 +237,26 @@ pub struct RenderArgs {
     #[arg(long)]
     pub prior: Option<PathBuf>,
 
-    /// Anthropic Enterprise Analytics cost export (produced OUTSIDE clyde by the
-    /// `anthropic-usage-report` skill's `pull-usage-report.py --report cost`; clyde never holds the
-    /// Analytics key). Lights up the Reconciliation section in both templates: billed spend from
-    /// the export against clyde's own modeled total, plus the reader-facing `unseen-account-spend`
-    /// figure. The export's window must match this report's `since`/`until` EXACTLY, or the render
-    /// fails naming both windows. Omitted -> the render still succeeds, but warns on stderr and the
-    /// artifact states that no authoritative export was supplied -- this figure is never silently
-    /// missing.
+    /// Anthropic Enterprise Analytics PER-USER cost export (produced OUTSIDE clyde by the
+    /// `anthropic-usage-report` skill's `pull-usage-report.py --report user-cost`; clyde never
+    /// holds the Analytics key). Lights up the Reconciliation section in both templates: the
+    /// operator's billed spend from the export against clyde's own modeled total, plus the
+    /// reader-facing `unseen-account-spend` figure. An ORG-WIDE `--report cost` export is rejected
+    /// by name: `clyde report` covers one user, so comparing it against the whole organization's
+    /// bill would publish other people's spend as spend clyde failed to account for. The export's
+    /// window must match this report's `since`/`until`, or the render fails naming both windows.
+    /// Omitted -> the render still succeeds, but warns on stderr and the artifact states that no
+    /// authoritative export was supplied -- this figure is never silently missing.
     #[arg(long)]
     pub reconcile: Option<PathBuf>,
+
+    /// The operator `--reconcile` is scoped to, matched against each export row's `actor.email`.
+    /// Defaults to the work email `persona whoami` resolves for this machine (the same identity the
+    /// report's persona block carries), so this flag is only needed when persona knows no email or
+    /// the report covers someone else's sessions. An export with no row for the resolved operator
+    /// is a hard error, never a silent `$0.00` billed figure. Requires `--reconcile`.
+    #[arg(long)]
+    pub reconcile_user: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]

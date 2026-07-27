@@ -23,22 +23,51 @@ Rates and the cache multipliers it applies (1.25x for a 5m cache write, 2x for 1
 come from <https://platform.claude.com/docs/en/about-claude/pricing.md>.
 
 **Tatari is on Claude Enterprise, and the authoritative spend figure is the Claude Enterprise
-Analytics cost report**, not this crate. Pull it with the `anthropic-usage-report` skill
-(`pull-usage-report.py --report cost`, or `--report user-cost` for per-user); it needs an
+Analytics cost report**, not this crate. Pull the PER-USER one with the `anthropic-usage-report`
+skill (`pull-usage-report.py --report user-cost --start <since> --end <until>`); it needs an
 owner-created Analytics key with `read:analytics` scope, which clyde itself never holds.
 
 So when a report says `$9,450.31`, read it as "this much token consumption, priced at list." Two
 figures can legitimately differ from it:
 
-- **The Analytics cost report** is the real number. It covers everything the account billed, including
-  claude.ai web and other clients and hosts, so `billed >= modeled` is the expected relationship and a
-  positive delta means usage clyde cannot see, not a miscount.
+- **The Analytics cost report for the same person** is the real number. It covers everything that
+  account was billed across every Claude product, including claude.ai web, Cowork and other clients
+  and hosts, so `billed >= modeled` is the expected relationship and a positive difference means
+  usage clyde cannot see, not a miscount.
 - **Per-model spend inside a report** is re-priced from the fetched feed, while the catalog's
   `efficiency_json` stores costs at the **embedded** baseline on purpose, so a persisted value stays
   reproducible on a later reindex regardless of network state (`efficiency/src/metrics.rs`).
 
-Reconciling the two automatically (`report render --reconcile <analytics-export.json>`) is designed in
-`docs/design/2026-07-26-report-story-fidelity.md` and not yet shipped.
+`report render --reconcile <analytics-export.json>` does the comparison for you and prints billed,
+modeled and `unseen-account-spend` in the artifact:
+
+```bash
+python3 ~/.claude/skills/anthropic-usage-report/pull-usage-report.py \
+  --report user-cost --start 2026-06-26T00:00:00Z --end 2026-07-25T00:00:00Z
+clyde report render --reconcile enterprise-user-cost-2026-06-26-2026-07-25.json
+```
+
+Three things that surprise people:
+
+- **The export must be `--report user-cost`, not `--report cost`.** `clyde report` reads one user's
+  sessions on one machine, so the only billed figure it can honestly set beside its own total is
+  that same user's. The org-wide export is rejected by name: over 2026-06-26..2026-07-25 it bills
+  `<withheld>` across the whole organization against a modeled `$9,450.31`, which would publish `<withheld>` of
+  other people's Claude usage as spend clyde failed to account for. The per-user figures for that
+  same window are `<withheld>` billed against `$9,450.31` modeled -- partial coverage, remainder
+  explainable.
+- **The operator is the persona's work email** (`persona whoami`), the same identity the report's
+  persona block carries. Override it with `--reconcile-user <email>`. An export with no row for that
+  person is a hard error: never a silent `$0.00` billed, never a fallback to the org total.
+- **The window is checked, and a `user-cost` export does not state its own.** The per-user endpoints
+  return `starting_at`/`ending_at` as null, so the period is read from the filename
+  `pull-usage-report.py` writes (`enterprise-user-cost-<start>-<end>.json`) and compared against the
+  report's `--since`/`--until`. Rename the file and the render fails rather than compare two
+  possibly different periods.
+
+Amounts on the Analytics cost endpoints are decimal-string **cents** (`"41280.000000"` is `$412.80`);
+`reconcile` divides by 100 exactly once. `billed` reads the export's `amount` (what the account was
+actually billed), not `list_amount`.
 
 ## Render output formats
 

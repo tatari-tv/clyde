@@ -6,176 +6,201 @@
 <title>Claude Enterprise Usage Report: 2026-03-02 to 2026-03-08</title>
 <style>
   :root {
-    --bg: #f5f6f8;
+    --bg: #f6f7f9;
     --card: #ffffff;
-    --ink: #1a1d24;
-    --muted: #5b6472;
-    --line: #dde1e8;
-    --accent: #3355cc;
-    --accent2: #7c4dcc;
-    --track: #eceff4;
+    --ink: #1a1d21;
+    --muted: #5a6472;
+    --line: #e2e6eb;
+    --accent: #3057d5;
+    --accent2: #128a6e;
+    --bar-bg: #eef1f5;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #14161b;
-      --card: #1e2128;
-      --ink: #e7eaf0;
-      --muted: #9aa4b4;
-      --line: #333844;
-      --accent: #7d97ff;
-      --accent2: #b48cff;
-      --track: #262b34;
+      --bg: #14171c;
+      --card: #1d2129;
+      --ink: #e8ebef;
+      --muted: #9aa5b4;
+      --line: #2c323c;
+      --accent: #7d9bff;
+      --accent2: #4fd0ac;
+      --bar-bg: #262c36;
     }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: var(--bg);
     color: var(--ink);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     line-height: 1.5;
   }
   .wrap { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
-  header.top { margin-bottom: 1.5rem; }
-  header.top h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  header.rpt { margin-bottom: 1.5rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.25rem; margin: 2.4rem 0 .8rem; padding-bottom: .3rem; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 1.05rem; margin: 1.4rem 0 .5rem; }
   .sub { color: var(--muted); font-size: .95rem; }
   .persona { color: var(--muted); font-size: .9rem; margin-top: .4rem; }
-  section { margin: 2.2rem 0; }
-  h2 { font-size: 1.2rem; border-bottom: 2px solid var(--line); padding-bottom: .3rem; }
-  h3 { font-size: 1rem; margin-bottom: .4rem; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: .9rem 1rem; }
-  .card .k { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-  .card .v { font-size: 1.4rem; font-weight: 650; margin-top: .2rem; }
-  .banner { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: .7rem 1rem; margin-top: 1rem; font-size: .9rem; color: var(--muted); }
-  .recon { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; }
-  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-  .tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 10px; }
-  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem; margin: 1.2rem 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; }
+  .card .label { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .card .value { font-size: 1.5rem; font-weight: 650; margin-top: .3rem; }
+  .card .foot { font-size: .78rem; color: var(--muted); margin-top: .3rem; }
+  .basis { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: .8rem 1rem; font-size: .9rem; color: var(--muted); margin: 1rem 0; }
+  .recon { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem; margin: 1rem 0; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem 1.2rem; margin: 1.2rem 0; }
+  section h2 { margin-top: .2rem; }
+  p { margin: .6rem 0; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; min-width: 460px; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
-  tr:last-child td { border-bottom: none; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .chart { display: grid; grid-template-columns: minmax(120px, 190px) 1fr minmax(70px, auto); gap: .35rem .8rem; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; }
-  .chart .lbl { font-size: .85rem; overflow: hidden; text-overflow: ellipsis; }
-  .chart .track { background: var(--track); border-radius: 5px; height: 15px; overflow: hidden; }
-  .chart .fill { height: 100%; background: var(--accent); border-radius: 5px; }
-  .chart .fill.alt { background: var(--accent2); }
-  .chart .val { font-size: .82rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
-  .dual .lbl { grid-column: 1; }
-  .dual .stack { grid-column: 2 / 4; display: grid; gap: .3rem; }
-  .dual .rowline { display: grid; grid-template-columns: 1fr minmax(120px, auto); gap: .6rem; align-items: center; }
-  .dual .rowline .track { }
-  .tag { font-size: .7rem; color: var(--muted); }
-  .trendbox { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; }
-  .trendgrid { display: grid; grid-template-columns: auto 1fr; gap: .4rem; }
-  .ylabels { display: flex; flex-direction: column; justify-content: space-between; font-size: .72rem; color: var(--muted); text-align: right; padding-right: .4rem; }
-  .xlabels { display: flex; justify-content: space-between; font-size: .68rem; color: var(--muted); margin-top: .3rem; grid-column: 2; flex-wrap: wrap; gap: .2rem; }
-  svg.trend { width: 100%; height: 160px; color: var(--accent); display: block; }
-  svg.trend polyline { stroke-width: 2.5; vector-effect: non-scaling-stroke; }
-  .caption { font-size: .8rem; color: var(--muted); margin-top: .5rem; }
-  ul.notes { padding-left: 1.1rem; }
-  ul.notes li { margin: .35rem 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
   a { color: var(--accent); }
-  .kpi-mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: .7rem; margin: .8rem 0; }
-  .lead { font-size: .95rem; }
-  .foot { color: var(--muted); font-size: .82rem; margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+
+  /* bar charts */
+  .chart { display: grid; grid-template-columns: minmax(120px, 1.3fr) minmax(120px, 4fr) minmax(72px, auto); gap: .35rem .7rem; align-items: center; margin: .8rem 0; }
+  .chart .row { display: contents; }
+  .chart .clabel { font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chart .ctrack { background: var(--bar-bg); border-radius: 4px; height: 16px; overflow: hidden; }
+  .chart .cbar { height: 100%; background: var(--accent); border-radius: 4px; }
+  .chart .cbar.alt { background: var(--accent2); }
+  .chart .cval { font-size: .85rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+  .dual .clabel { grid-row: span 2; }
+  .track-note { font-size: .72rem; color: var(--muted); }
+
+  /* line chart */
+  .linechart { margin: 1rem 0; }
+  .linewrap { display: flex; gap: .5rem; }
+  .ylabels { display: flex; flex-direction: column; justify-content: space-between; font-size: .72rem; color: var(--muted); text-align: right; min-width: 3.2rem; padding: .2rem 0; }
+  .plot { flex: 1; }
+  svg.trend { width: 100%; height: auto; display: block; color: var(--accent); background: var(--bar-bg); border-radius: 6px; }
+  svg.trend polyline { stroke-width: 3; }
+  .xlabels { display: flex; justify-content: space-between; font-size: .68rem; color: var(--muted); margin-top: .3rem; flex-wrap: wrap; gap: .2rem; }
+  .xlabels.pad { margin-left: 3.7rem; }
+  .caption { font-size: .8rem; color: var(--muted); margin-top: .4rem; }
+  ul.facts { margin: .5rem 0; padding-left: 1.2rem; }
+  ul.facts li { margin: .3rem 0; }
+  .tag { display: inline-block; background: var(--bar-bg); border-radius: 20px; padding: .1rem .55rem; font-size: .72rem; color: var(--muted); margin: 0 .2rem .2rem 0; }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-<header class="top">
+<header class="rpt">
   <h1>Claude Enterprise Usage Report</h1>
-  <div class="sub">Period: 2026-03-02 through 2026-03-08 (7 days, 6 active days). Generated 2026-06-01.</div>
+  <div class="sub">Period: 2026-03-02 through 2026-03-08 (7 days, 6 active days) &middot; Generated 2026-06-01</div>
   <div class="persona">
-    Jordan Rivera &middot; Staff Software Engineer &middot; Platform Tooling &middot; Northwind Media &middot; jordan.rivera@northwind-media.example &middot; github: jrivera
+    Jordan Rivera &middot; Staff Software Engineer &middot; Platform Tooling, Northwind Media &middot;
+    <a href="mailto:jordan.rivera@northwind-media.example">jordan.rivera@northwind-media.example</a> &middot; @jrivera
   </div>
 </header>
 
-<section aria-label="Headline totals">
-  <div class="cards">
-    <div class="card"><div class="k">Total Spend (modeled)</div><div class="v">$64.85</div></div>
-    <div class="card"><div class="k">Sessions</div><div class="v">9</div></div>
-    <div class="card"><div class="k">Repositories</div><div class="v">1</div></div>
-    <div class="card"><div class="k">Active Days</div><div class="v">6</div></div>
-    <div class="card"><div class="k">Total Tokens</div><div class="v">85.4M</div></div>
+<div class="cards">
+  <div class="card">
+    <div class="label">Total Spend</div>
+    <div class="value">$64.85</div>
+    <div class="foot">modeled, list rates</div>
   </div>
-  <div class="banner">Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.</div>
-</section>
+  <div class="card">
+    <div class="label">Sessions</div>
+    <div class="value">9</div>
+  </div>
+  <div class="card">
+    <div class="label">Repositories</div>
+    <div class="value">1</div>
+  </div>
+  <div class="card">
+    <div class="label">Active Days</div>
+    <div class="value">6</div>
+    <div class="foot">of 7 in window</div>
+  </div>
+  <div class="card">
+    <div class="label">Total Tokens</div>
+    <div class="value">85.4M</div>
+  </div>
+</div>
+
+<div class="basis">
+  <strong>Pricing basis:</strong> Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.
+</div>
+
+<div class="recon">
+  <h3 style="margin-top:0">Reconciliation</h3>
+  <p>No Claude Enterprise Analytics cost export was supplied for this render (--reconcile &lt;file&gt;); the total spend above is a modeled figure only and has not been reconciled against this operator's authoritative billed spend.</p>
+</div>
 
 <section>
   <h2>Executive Summary</h2>
-  <p class="lead">
-    Over the seven-day window, all recorded work landed in a single repository, <a href="https://github.com/northwind-media/beacon">northwind-media/beacon</a>,
-    across 9 sessions at a modeled total of $64.85 and 85.4M tokens. Every session in the window carries an enrich summary, so the themes below rest on session digests rather than titles alone.
-  </p>
-  <p>
-    The work was consistently about the ingest path and its reliability: bounded exponential backoff with jitter on retries (session 511c0e88),
-    a dead-letter queue so rejected records are parked rather than retried forever (session f85d5c07), a cold-start hostname lookup moved behind a warmed cache
-    (sessions 7fa460c4 and b6a2340c), a startup-probe timeout tuned to the slowest healthy boot (session 3e0cfd4a), and a retention-policy audit that found two buckets the sweeper never visited (session 47cff873).
-    Spend concentrated at the front of the window: 2026-03-02 carried the heaviest by-day row at $18.70.
-  </p>
-  <p class="caption">Enrichment coverage: 9 of 9 sessions in the window (100.0%) carry an enrich summary; the rest are cited by title only.</p>
+  <p>Over the window of 2026-03-02 through 2026-03-08, all 9 sessions ran against a single repository, <code>northwind-media/beacon</code>, at a modeled cost of $64.85 across 85.4M tokens. Every session in the window carries an enrich summary: <em>9 of 9 sessions in the window (100.0%) carry an enrich summary; the rest are cited by title only</em>.</p>
+  <p>The work concentrated entirely on the ingest path of the beacon service. Session summaries describe a dead-letter queue for records the parser rejects (<code>f85d5c07</code>), a bounded exponential backoff with jitter replacing a fixed retry delay (<code>511c0e88</code>), a cold-start hostname lookup moved behind a warmed cache (<code>7fa460c4</code>, <code>b6a2340c</code>), a retention-policy audit that found two buckets the sweeper never visited (<code>47cff873</code>), a startup-probe timeout cut to the slowest healthy boot (<code>3e0cfd4a</code>), and backfilled per-tenant metric labels (<code>cedee722</code>). All 9 sessions carry the tags <span class="tag">ingest</span> <span class="tag">reliability</span>.</p>
 </section>
 
 <section>
   <h2>Quantified Output</h2>
-  <p>Observed, verifiable counts extracted from session transcripts over the period, globally deduped:</p>
-  <div class="tscroll">
+  <p>The observed, verifiable counts extracted from session transcripts over this period:</p>
+  <div class="scroll">
     <table>
-      <thead><tr>
-        <th>Sessions w/ commits</th><th class="num">Commits</th><th class="num">PRs opened</th>
-        <th class="num">Confluence writes</th><th class="num">Jira writes</th><th class="num">Slack messages</th>
-        <th class="num">Files edited</th><th class="num">Lines written</th><th class="num">Lines replaced</th>
-      </tr></thead>
+      <thead><tr><th>Metric</th><th class="num">Observed</th></tr></thead>
       <tbody>
-        <tr>
-          <td>9</td><td class="num">26</td><td class="num">12</td>
-          <td class="num">3</td><td class="num">3</td><td class="num">8</td>
-          <td class="num">108</td><td class="num">8455</td><td class="num">1717</td>
-        </tr>
+        <tr><td>Sessions with commits</td><td class="num">9</td></tr>
+        <tr><td>Commits</td><td class="num">26</td></tr>
+        <tr><td>PRs opened</td><td class="num">12</td></tr>
+        <tr><td>Confluence writes</td><td class="num">3</td></tr>
+        <tr><td>Jira writes</td><td class="num">3</td></tr>
+        <tr><td>Slack messages</td><td class="num">8</td></tr>
+        <tr><td>Files edited</td><td class="num">108</td></tr>
+        <tr><td>Lines written (edit payload volume)</td><td class="num">8455</td></tr>
+        <tr><td>Lines replaced (edit payload volume)</td><td class="num">1717</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="caption">Lines written is the volume of file content the period's edits produced; lines replaced is the volume they replaced. These are edit-payload counts, not a git diff stat.</p>
+  <p class="caption">Lines written and lines replaced are counted off the edit payloads themselves; they are not a git diff stat and are not net line changes.</p>
 
-  <h3 style="margin-top:1.4rem">Spend against output, by repository</h3>
+  <h3>Spend against output, by repository</h3>
   <div class="chart dual">
-    <div class="lbl">northwind-media/beacon</div>
-    <div class="stack">
-      <div class="rowline"><div class="track"><div class="fill" style="width: 100.0%"></div></div><div class="val">$64.86 spend</div></div>
-      <div class="rowline"><div class="track"><div class="fill alt" style="width: 100.0%"></div></div><div class="val">26 commits</div></div>
+    <div class="row">
+      <div class="clabel">northwind-media/beacon<br><span class="track-note">spend / commits</span></div>
+      <div>
+        <div class="ctrack"><div class="cbar" style="width: 100.0%"></div></div>
+        <div class="ctrack" style="margin-top:.3rem"><div class="cbar alt" style="width: 100.0%"></div></div>
+      </div>
+      <div class="cval">$64.86<br>26 commits</div>
     </div>
   </div>
-  <p class="caption">Two tracks shown side by side, each scaled within its own series: spend (spend-percent-of-max) above, commits (commits-percent-of-max) below. They are not combined into a third figure.</p>
+  <p class="caption">The spend bar (blue) is scaled within the spend series; the commits bar (green) is scaled within the commits series. The two are shown side by side and are never combined into a third figure. With one repo, each bar is that series' only, and therefore largest, row.</p>
 
-  <h3 style="margin-top:1.4rem">Unit-cost ratios</h3>
-  <div class="kpi-mini">
-    <div class="card"><div class="k">Spend per commit (ratio)</div><div class="v">$2.49</div></div>
-    <div class="card"><div class="k">Spend per PR (ratio)</div><div class="v">$5.40</div></div>
-    <div class="card"><div class="k">Spend per active day (ratio)</div><div class="v">$10.81</div></div>
-    <div class="card"><div class="k">Spend per session (ratio)</div><div class="v">$7.21</div></div>
-    <div class="card"><div class="k">Session spend p50</div><div class="v">$6.39</div></div>
-    <div class="card"><div class="k">Session spend p90</div><div class="v">$11.59</div></div>
+  <h3>Spend against output and calendar (ratios)</h3>
+  <div class="cards">
+    <div class="card"><div class="label">Spend per commit (ratio)</div><div class="value">$2.49</div></div>
+    <div class="card"><div class="label">Spend per PR (ratio)</div><div class="value">$5.40</div></div>
+    <div class="card"><div class="label">Spend per active day (ratio)</div><div class="value">$10.81</div></div>
+    <div class="card"><div class="label">Spend per session (ratio)</div><div class="value">$7.21</div></div>
+    <div class="card"><div class="label">Session spend p50</div><div class="value">$6.39</div></div>
+    <div class="card"><div class="label">Session spend p90</div><div class="value">$11.59</div></div>
   </div>
-  <p class="caption">
-    The period spent $64.85 and produced 26 commits, a ratio of $2.49 per commit. It spent $64.85 and produced 12 PRs opened, a ratio of $5.40 per PR.
-    These are ratios of two stated figures over the whole window, including sessions that produced no commit or PR; they are not the cost of producing any single one.
-  </p>
+  <p class="caption">These are ratios, not prices. The period spent $64.85 and produced 26 commits, a ratio of $2.49 per commit; the same period produced 12 PRs opened, a ratio of $5.40 per PR. The numerators include every session in the window, including any that produced no commit or PR.</p>
 </section>
 
 <section>
   <h2>Cost Summary</h2>
   <h3>Spend by model</h3>
   <div class="chart">
-    <div class="lbl">claude-sonnet-4-6</div>
-    <div class="track"><div class="fill" style="width: 100.0%"></div></div>
-    <div class="val">$34.56</div>
-    <div class="lbl">claude-opus-4-7</div>
-    <div class="track"><div class="fill" style="width: 87.6%"></div></div>
-    <div class="val">$30.29</div>
+    <div class="row">
+      <div class="clabel">claude-sonnet-4-6</div>
+      <div class="ctrack"><div class="cbar" style="width: 100.0%"></div></div>
+      <div class="cval">$34.56</div>
+    </div>
+    <div class="row">
+      <div class="clabel">claude-opus-4-7</div>
+      <div class="ctrack"><div class="cbar" style="width: 87.6%"></div></div>
+      <div class="cval">$30.29</div>
+    </div>
   </div>
-  <div class="tscroll" style="margin-top:1rem">
+  <div class="scroll">
     <table>
       <thead><tr><th>Model</th><th class="num">Sessions using</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
       <tbody>
@@ -188,16 +213,9 @@
 </section>
 
 <section>
-  <h2>Reconciliation</h2>
-  <div class="recon">
-    <p style="margin-top:0">No Claude Enterprise Analytics cost export was supplied for this render (--reconcile &lt;file&gt;); the total spend above is a modeled figure only and has not been reconciled against the account's authoritative billed spend.</p>
-  </div>
-</section>
-
-<section>
   <h2>Agent-Type Cost Attribution</h2>
-  <p>The rows below partition the whole period spend of $64.85. The top row, <strong>(main-session)</strong>, is the work sessions did themselves rather than delegating to a subagent, and here it accounts for the entire period.</p>
-  <div class="tscroll">
+  <p>The headline breakdown partitions the period's whole modeled spend of $64.85 by subagent type. Every dollar lands in exactly one row. In this period the entire spend falls in the <code>(main-session)</code> row, the work sessions did themselves rather than delegating to a subagent.</p>
+  <div class="scroll">
     <table>
       <thead><tr><th>Agent type</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
       <tbody>
@@ -209,20 +227,17 @@
 
 <section>
   <h2>The Efficiency Story</h2>
-  <div class="kpi-mini">
-    <div class="card"><div class="k">Cache read share</div><div class="v">92.3%</div></div>
-    <div class="card"><div class="k">Tool error rate</div><div class="v">6.0%</div></div>
-    <div class="card"><div class="k">Cache 1h write fraction</div><div class="v">6.7%</div></div>
-    <div class="card"><div class="k">Interrupts</div><div class="v">4</div></div>
-    <div class="card"><div class="k">Compactions</div><div class="v">1</div></div>
-  </div>
-  <p>
-    Of the 85.4M tokens the period read, 92.3% came from cache; input tokens totaled 1.0M against 78.5M cache-read tokens.
-    At published per-token rates, the binary computes a list-price equivalent of $320.69 for the same token volume without caching, a modeled cache saving of $255.84.
-  </p>
+  <p>Cache reads accounted for a cache-read share of <strong>92.3%</strong>. Against 1.0M input tokens, 78.5M tokens were served from cache. At published per-token rates the binary computes a list-price equivalent of <strong>$320.69</strong> and a cache savings of <strong>$255.84</strong> versus paying list rate for those reads.</p>
+  <ul class="facts">
+    <li>Tool-error rate: <strong>6.0%</strong></li>
+    <li>Cache 1h-write fraction: <strong>6.7%</strong></li>
+    <li>Interrupts observed: <strong>4</strong></li>
+    <li>Compactions observed: <strong>1</strong></li>
+  </ul>
 
-  <h3 style="margin-top:1.4rem">Skill attribution</h3>
-  <div class="tscroll">
+  <h3>Skill attribution</h3>
+  <p class="caption">Attribution tags, not a partition. Coverage: $4.06 of $64.85 (6.3%), embedded-price basis.</p>
+  <div class="scroll">
     <table>
       <thead><tr><th>Skill</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
       <tbody>
@@ -231,10 +246,10 @@
       </tbody>
     </table>
   </div>
-  <p class="caption">Coverage: $4.06 of $64.85 (6.3%), embedded-price basis. These are attribution tags, not a partition, and do not reconcile against the total.</p>
 
-  <h3 style="margin-top:1.4rem">MCP tool attribution</h3>
-  <div class="tscroll">
+  <h3>MCP-tool attribution</h3>
+  <p class="caption">Attribution tags, not a partition. Coverage: $7.24 of $64.85 (11.2%), embedded-price basis.</p>
+  <div class="scroll">
     <table>
       <thead><tr><th>MCP tool</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
       <tbody>
@@ -242,18 +257,20 @@
       </tbody>
     </table>
   </div>
-  <p class="caption">Coverage: $7.24 of $64.85 (11.2%), embedded-price basis. Attribution only; does not sum to the total.</p>
 </section>
 
 <section>
   <h2>What This Funded</h2>
   <h3>Employer org: northwind-media</h3>
+  <p>All spend and all sessions fell within the employer org <code>northwind-media</code>, in the single repository <code>northwind-media/beacon</code>.</p>
   <div class="chart">
-    <div class="lbl">northwind-media</div>
-    <div class="track"><div class="fill" style="width: 100.0%"></div></div>
-    <div class="val">$64.86</div>
+    <div class="row">
+      <div class="clabel">northwind-media/beacon</div>
+      <div class="ctrack"><div class="cbar" style="width: 100.0%"></div></div>
+      <div class="cval">$64.86</div>
+    </div>
   </div>
-  <div class="tscroll" style="margin-top:1rem">
+  <div class="scroll">
     <table>
       <thead><tr><th>Org</th><th class="num">Repos</th><th class="num">Sessions</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
       <tbody>
@@ -261,86 +278,74 @@
       </tbody>
     </table>
   </div>
-  <p style="margin-top:1rem">
-    All spend was directed at the single employer repository <a href="https://github.com/northwind-media/beacon">northwind-media/beacon</a> (9 sessions, 85.4M tokens, $64.86).
-    Every enriched summary describes ingest-path reliability work: retry backoff and jitter, a dead-letter queue, a warmed hostname-lookup cache with a regression test,
-    a startup-probe timeout tuned to boot behaviour, a retention-policy audit, and a metric-label backfill so the per-tenant dashboard stops collapsing tenants into one series.
-    No sessions were recorded against a personal, open-source, or third-party org this period.
-  </p>
+  <p>The beacon work read as a single reliability sweep of the ingest pipeline. Summaries describe a dead-letter queue for parser-rejected records, bounded backoff with jitter to break synchronized retry storms, a cold-start hostname lookup moved behind a warmed cache with a regression test, a retention-policy audit that wired two orphaned buckets into the scheduled sweeper, a startup-probe timeout aligned to the slowest healthy boot, and backfilled per-tenant metric labels. No personal-org, open-source, or third-party spend was observed this period.</p>
 </section>
 
 <section>
   <h2>Usage Profile</h2>
 
   <h3>Temporal shape: spend by day</h3>
-  <div class="trendbox">
-    <div class="trendgrid">
+  <div class="linechart">
+    <div class="linewrap">
       <div class="ylabels"><span>$18.70</span><span>$9.35</span><span>$0.00</span></div>
-      <svg viewBox="0 0 1000 300" class="trend"><title>Spend per day</title>
-        <polyline points="0,10 167,100 333,144 500,116 667,173 833,226 1000,290" fill="none" stroke="currentColor"/></svg>
+      <div class="plot">
+        <svg viewBox="0 0 1000 300" class="trend"><title>Spend per day, 2026-03-02 to 2026-03-08</title>
+          <polyline points="0,10 167,100 333,144 500,116 667,173 833,226 1000,290" fill="none" stroke="currentColor"/></svg>
+      </div>
     </div>
-    <div class="xlabels">
+    <div class="xlabels pad">
       <span>2026-03-02</span><span>2026-03-03</span><span>2026-03-04</span><span>2026-03-06</span><span>2026-03-07</span><span>2026-03-08</span>
     </div>
-    <p class="caption">Spend leaned toward the front of the window: 2026-03-02 carried the heaviest by-day row at $18.70, tapering to $4.30 on 2026-03-07 and $0.00 on the inactive 2026-03-08. Carried-in spend is $0.00, so the daily line and the period total cover the same sessions.</p>
   </div>
+  <p class="caption">Spend was heaviest at the window's open: 2026-03-02 carried the tallest by-day row ($18.70) and the line falls steadily through 2026-03-07 ($4.30), with 2026-03-08 a zero-session day ($0.00). Carried-in spend is $0.00, so the daily line is not missing any pre-window sessions.</p>
 
-  <h3 style="margin-top:1.4rem">Temporal shape: sessions by day</h3>
-  <div class="trendbox">
-    <div class="trendgrid">
+  <h3>Temporal shape: sessions by day</h3>
+  <div class="linechart">
+    <div class="linewrap">
       <div class="ylabels"><span>2</span><span>1</span><span>0</span></div>
-      <svg viewBox="0 0 1000 300" class="trend"><title>Sessions per day</title>
-        <polyline points="0,10 167,10 333,10 500,150 667,150 833,150 1000,290" fill="none" stroke="currentColor"/></svg>
+      <div class="plot">
+        <svg viewBox="0 0 1000 300" class="trend"><title>Sessions per day, 2026-03-02 to 2026-03-08</title>
+          <polyline points="0,10 167,10 333,10 500,150 667,150 833,150 1000,290" fill="none" stroke="currentColor"/></svg>
+      </div>
     </div>
-    <div class="xlabels">
+    <div class="xlabels pad">
       <span>2026-03-02</span><span>2026-03-03</span><span>2026-03-04</span><span>2026-03-06</span><span>2026-03-07</span><span>2026-03-08</span>
     </div>
-    <p class="caption">Two sessions per day held through 2026-03-02, 2026-03-03, and 2026-03-04, then a single session per day from 2026-03-05 through 2026-03-07, and none on 2026-03-08.</p>
   </div>
+  <p class="caption">Two sessions each on 2026-03-02, 2026-03-03, and 2026-03-04; one each on 2026-03-05, 2026-03-06, and 2026-03-07; none on 2026-03-08.</p>
 
-  <h3 style="margin-top:1.4rem">Model mix</h3>
-  <p>Both catalog models appeared in the sole repository. claude-sonnet-4-6 carried the larger share at $34.56 across 6 sessions; claude-opus-4-7 was used on the three highest-cost individual sessions (511c0e88, f85d5c07, ce6093cc) at $30.29 across 3 sessions.</p>
+  <h3>Model mix</h3>
+  <p>Both models appeared in the single beacon repo. claude-sonnet-4-6 carried the larger share at $34.56 across 6 sessions using it and 55.4M tokens; claude-opus-4-7 followed at $30.29 across 3 sessions using it and 30.0M tokens. Opus sessions align with the retry-backoff and dead-letter-queue work (<code>511c0e88</code>, <code>ce6093cc</code>, <code>f85d5c07</code>).</p>
 
-  <h3 style="margin-top:1.4rem">Top sessions by spend</h3>
-  <div class="tscroll">
+  <h3>Outlier sessions by spend</h3>
+  <div class="scroll">
     <table>
-      <thead><tr><th>Session</th><th>Title</th><th class="num">Tokens</th><th class="num">Spend</th><th>PRs</th></tr></thead>
+      <thead><tr><th>Session</th><th>Title</th><th>Repo</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
       <tbody>
-        <tr><td>f85d5c07</td><td>Add a dead-letter queue to the ingest path</td><td class="num">11.1M</td><td class="num">$11.59</td><td><a href="https://github.com/northwind-media/beacon/pull/109">#109</a> <a href="https://github.com/northwind-media/beacon/pull/110">#110</a></td></tr>
-        <tr><td>511c0e88</td><td>Wire the ingest retry backoff</td><td class="num">11.0M</td><td class="num">$11.41</td><td><a href="https://github.com/northwind-media/beacon/pull/118">#118</a></td></tr>
-        <tr><td>3e0cfd4a</td><td>(untitled)</td><td class="num">11.2M</td><td class="num">$7.83</td><td></td></tr>
-        <tr><td>ce6093cc</td><td>(untitled)</td><td class="num">7.9M</td><td class="num">$7.29</td><td><a href="https://github.com/northwind-media/beacon/pull/100">#100</a></td></tr>
-        <tr><td>b6a2340c</td><td>Trace a cold start in the ingest worker</td><td class="num">9.6M</td><td class="num">$6.39</td><td><a href="https://github.com/northwind-media/beacon/pull/103">#103</a> <a href="https://github.com/northwind-media/beacon/pull/104">#104</a></td></tr>
-        <tr><td>7fa460c4</td><td>Trace a cold start in the ingest worker</td><td class="num">10.3M</td><td class="num">$6.28</td><td><a href="https://github.com/northwind-media/beacon/pull/121">#121</a> <a href="https://github.com/northwind-media/beacon/pull/122">#122</a></td></tr>
-        <tr><td>f33eb686</td><td>(untitled)</td><td class="num">9.2M</td><td class="num">$5.39</td><td><a href="https://github.com/northwind-media/beacon/pull/124">#124</a></td></tr>
-        <tr><td>47cff873</td><td>Audit the beacon retention policy</td><td class="num">7.9M</td><td class="num">$4.38</td><td><a href="https://github.com/northwind-media/beacon/pull/106">#106</a> <a href="https://github.com/northwind-media/beacon/pull/107">#107</a></td></tr>
-        <tr><td>cedee722</td><td>Backfill the missing ingest metric labels</td><td class="num">7.3M</td><td class="num">$4.30</td><td><a href="https://github.com/northwind-media/beacon/pull/115">#115</a></td></tr>
+        <tr><td><code>f85d5c07</code></td><td>Add a dead-letter queue to the ingest path</td><td>beacon</td><td class="num">11.1M</td><td class="num">$11.59</td></tr>
+        <tr><td><code>511c0e88</code></td><td>Wire the ingest retry backoff</td><td>beacon</td><td class="num">11.0M</td><td class="num">$11.41</td></tr>
+        <tr><td><code>3e0cfd4a</code></td><td><em>(untitled)</em></td><td>beacon</td><td class="num">11.2M</td><td class="num">$7.83</td></tr>
+        <tr><td><code>ce6093cc</code></td><td><em>(untitled)</em></td><td>beacon</td><td class="num">7.9M</td><td class="num">$7.29</td></tr>
+        <tr><td><code>b6a2340c</code></td><td>Trace a cold start in the ingest worker</td><td>beacon</td><td class="num">9.6M</td><td class="num">$6.39</td></tr>
+        <tr><td><code>7fa460c4</code></td><td>Trace a cold start in the ingest worker</td><td>beacon</td><td class="num">10.3M</td><td class="num">$6.28</td></tr>
+        <tr><td><code>f33eb686</code></td><td><em>(untitled)</em></td><td>beacon</td><td class="num">9.2M</td><td class="num">$5.39</td></tr>
+        <tr><td><code>47cff873</code></td><td>Audit the beacon retention policy</td><td>beacon</td><td class="num">7.9M</td><td class="num">$4.38</td></tr>
+        <tr><td><code>cedee722</code></td><td>Backfill the missing ingest metric labels</td><td>beacon</td><td class="num">7.3M</td><td class="num">$4.30</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="caption">Titles are Claude Code's opening-exchange labels; sessions 3e0cfd4a, ce6093cc, and f33eb686 have no title and are listed as untitled. Session spend spanned $11.59 (session-spend-p90) down through the median $6.39.</p>
+  <p class="caption">The top spender <code>f85d5c07</code> ($11.59) added a dead-letter queue so a rejected record is parked with its failure reason instead of retried forever, opening PRs <a href="https://github.com/northwind-media/beacon/pull/109">#109</a> and <a href="https://github.com/northwind-media/beacon/pull/110">#110</a>. The next, <code>511c0e88</code> ($11.41), replaced the fixed retry delay with bounded exponential backoff and jitter, PR <a href="https://github.com/northwind-media/beacon/pull/118">#118</a>. Untitled sessions are labeled from their enrich summaries in the narrative above.</p>
 </section>
 
 <section>
   <h2>Forward-Looking Note</h2>
-  <p>
-    This period was narrow in scope: one repository, one theme (ingest-path reliability), and a spend profile weighted toward its first three days.
-    Because no reconciliation export was supplied, the $64.85 here remains a modeled figure; the billed figure lives in Claude Enterprise Analytics and would be the point of comparison in a future render supplied with <code>--reconcile</code>.
-    A prior-period file (<code>--prior</code>) was not supplied, so no month-over-month comparison is shown this time.
-  </p>
+  <p>This is a recurring monthly report; a similar one follows next period. This window was a short, single-repo reliability sweep of the beacon ingest path, and the cache-read share of 92.3% indicates most token volume was served from cache rather than fresh input. If a reconciliation export (--reconcile) is supplied next period, the Reconciliation card will carry this operator's billed figure alongside the modeled figure shown here; without it, the total remains a modeled list-rate figure only.</p>
 </section>
 
 <section>
   <h2>Conclusion</h2>
-  <p>
-    Across 6 active days, 9 sessions in northwind-media/beacon produced 26 commits, 12 PRs opened, and 108 files edited at a modeled $64.85 and 85.4M tokens,
-    with 92.3% of tokens served from cache. The figures above are presented as recorded; the reader is left to weigh them.
-  </p>
+  <p>Across 2026-03-02 through 2026-03-08, 9 sessions in <code>northwind-media/beacon</code> produced a modeled $64.85 of Claude Code spend over 85.4M tokens, alongside 26 commits, 12 PRs opened, and 108 files edited. All work carried the tags ingest and reliability and every session was enriched. The figures above are modeled at published list rates and have not been reconciled against billed spend for this render. The data is presented for the reader's own judgment.</p>
 </section>
-
-<div class="foot">
-  Figures are modeled at published list rates from the embedded feed (feed version 2026-07-25T01:56:53Z), not billed. This document is self-contained and loads no external resources.
-</div>
 
 </div>
 </body>

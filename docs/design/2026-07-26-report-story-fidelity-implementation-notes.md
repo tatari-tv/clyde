@@ -1426,3 +1426,95 @@ Per-model, largest gap first: `claude-sonnet-4-6` `$167.81`, `claude-opus-4-8` `
 reconciliation block claims to show; `list_amount` is what the same usage would have cost at
 published rates, which is the same basis clyde already models. Reading `amount` is correct, and the
 cents fix at `1f2f62b` stands.
+
+## Defect fix (2026-07-26, after the fixups): reconciliation is scoped to the OPERATOR
+
+Phase 12 shipped `--reconcile` against the Analytics `--report cost` export, which is ORG-WIDE. In a
+per-user tool that published a meaningless headline. Measured on the real 2026-06-26..2026-07-25
+window, through the shipped code path:
+
+| figure | org-wide (shipped) | operator-scoped (this fix) |
+|---|---|---|
+| billed | `<withheld>` across the whole organization | `<withheld>` (the operator's rows) |
+| modeled | `$9,450.31` | `$9,450.31` |
+| unseen-account-spend | `<withheld>` | `<withheld>` |
+
+The old figure was everyone else in the organization's Claude usage presented, in a report titled with one person's
+name, as spend clyde failed to account for. The new one is partial coverage with a remainder the scope
+note can actually explain.
+
+### Design decisions
+- **The org-wide export is REJECTED by name, not silently tolerated** -- `reconcile::
+  require_per_user_shape`. Every `user-cost` row carries an `actor`; no `cost` row does, so the
+  missing field is a mechanical discriminator rather than a heuristic. The error says what the file
+  is and prints the exact `pull-usage-report.py --report user-cost` command. A mixed file (actor on
+  some rows only) gets its own error: it is neither shape and cannot be scoped.
+- **The operator comes from the SAME identity the report already resolves** --
+  `render::build_context_block` reads `persona.email` (the persona block's `work_email`), with
+  `--reconcile-user <email>` as the explicit override. No second mechanism for "who is this report
+  about", so the two can never disagree. Highest-spending-row heuristics were never on the table.
+- **No row for the operator is a hard error** -- `reconcile::operator_rows`. It names the operator,
+  the export, and the count of other accounts in the file, and states what it refuses to do: no
+  `$0.00` billed, no fallback to the org total. That is the fail-closed rule the design's own
+  "Absence is never silent" section asks for, applied to a wrong-file case Phase 12 never had.
+- **`scope_note` became a function of the operator, and both templates carry the per-user framing.**
+  The old sentence explained the remainder as "web and other clients and hosts", which never covered
+  the dominant term (other users) of the figure it sat beside. The new one names the person, names
+  claude.ai web / Cowork / other clients / other hosts as the remaining gap, and keeps the design's
+  core guarantee that `billed >= modeled` is expected. `reconciliation.operator` is a new context
+  field so the artifact can state the scope as a fact; both templates now forbid describing `billed`
+  as company, org, team, or account-wide spend, and the markdown/html prompt-edit ledger is honored.
+- **`--reconcile-user` without `--reconcile` is a hard config error** (`config.rs`). A scoping flag
+  for a comparison that is not happening is how a reader ends up believing a figure was checked.
+
+### Deviations
+- **The window check gained a second, filename-based path, because a `user-cost` export does not
+  state its own window.** Verified against a live pull: every row's `starting_at`/`ending_at` is
+  `null` on the per-user endpoints (they return one row per member for the whole window; only the
+  bucketed org-wide reports carry timestamps). Phase 12's exact-instant check would therefore have
+  failed to deserialize, then had nothing to compare. `reconcile::window` now tries the rows first
+  (unchanged, exact-instant, still the strongest check) and falls back to the last two `YYYY-MM-DD`
+  dates in the FILENAME, which `pull-usage-report.py` writes from the very window it requested
+  (`enterprise-user-cost-<start>-<end>.json`), compared at date granularity. An export that states no
+  window either way is a hard error naming both remedies -- never an unchecked comparison. Same
+  effect as the doc's rule ("window mismatch is a loud error, never a silent comparison of different
+  periods"), at the only seam the real export leaves available.
+- **The medium fixture's synthesized export keeps its timestamps**, so it exercises the exact-instant
+  path while the filename path is covered by unit tests. A fixture with null timestamps would need
+  its filename to carry the window, coupling the fixture layout to the puller's naming for no gain.
+  Recorded because that fixture is otherwise "exactly what production parses".
+- **All three fixtures' goldens were regenerated, not just the medium one.** The
+  no-export-supplied sentence (`NO_RECONCILE_NOTE`) is quoted verbatim by every artifact and its
+  wording changed, so the small and pathological goldens were quoting a sentence the binary no
+  longer emits. Regenerated via `clyde report eval --write-goldens --llm api`; all three pass
+  (medium and pathological 3/3/3/3, small citation-accuracy 2 against a floor of 2).
+
+### Tradeoffs
+- **Filename-derived window vs a new `--reconcile-window` flag.** The filename is provenance from the
+  same tool that pulled the data, needs no new surface, and fails closed on a renamed file; a flag
+  would be a user-typed assertion that cannot be verified either and adds a knob. The cost is real:
+  rename the export and the render refuses. The error names the fix.
+- **`email` compared case-insensitively, trimmed.** The export's own casing is authoritative but
+  humans type their address either way into `--reconcile-user`; a case mismatch would present as the
+  "no row for the operator" hard error, which is a confusing way to learn about a capital letter.
+- **A second actor was added to the synthesized export** so the fixture can tell a working filter
+  from no filter: their rows are an order of magnitude larger than the operator's, so a regression
+  moves the fixture's billed figure by thousands and its goldens stop matching.
+
+### Verified live (2026-07-26, real export + real 30-day window, through the CLI)
+- `reconcile::fold` on the real `user-cost` export: `operator=<the operator> matched=7 of
+  the full export across every actor`, `billed-total=<withheld> modeled-total=9450.31
+  unseen-account-spend=<withheld>`. Filename window path exercised (`stamped=0`).
+- The same export with every `actor` stripped (the org-wide shape, the full export) is rejected with the
+  ORG-WIDE error and the `--report user-cost` remedy.
+- No operator anywhere fails with the `--reconcile-user` remedy.
+
+### Open questions
+- **The persona fallback could not be exercised live in this session**: `persona whoami` needs an
+  Okta token this headless session does not have, so every live run above passed `--reconcile-user`
+  explicitly. The persona path is covered by unit tests (`render::tests::reconcile::
+  build_context_block_reconciliation_present_when_window_matches` resolves the operator from a
+  persona block); worth one interactive run before this is relied on.
+- The design doc's Phase 12 text still says `--report cost` and its `scope_note` paragraph still
+  describes the org-wide framing. The doc is point-in-time and these notes record the correction;
+  flagging it in case Scott wants the doc amended rather than superseded here.

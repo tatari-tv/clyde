@@ -1,26 +1,74 @@
 [
   {
+    "actor": {
+      "deleted": false,
+      "email": "jordan.rivera@northwind-media.example",
+      "type": "user_actor",
+      "user_id": "user_jordan_rivera_northwind-media_example"
+    },
     "amount": "53459.000000",
     "ending_at": "2026-04-30T00:00:00+00:00",
     "model": "claude-opus-4-7",
     "starting_at": "2026-04-01T00:00:00+00:00"
   },
   {
+    "actor": {
+      "deleted": false,
+      "email": "jordan.rivera@northwind-media.example",
+      "type": "user_actor",
+      "user_id": "user_jordan_rivera_northwind-media_example"
+    },
     "amount": "22911.000000",
     "ending_at": "2026-04-30T00:00:00+00:00",
     "model": "claude-sonnet-4-6",
     "starting_at": "2026-04-01T00:00:00+00:00"
   },
   {
+    "actor": {
+      "deleted": false,
+      "email": "jordan.rivera@northwind-media.example",
+      "type": "user_actor",
+      "user_id": "user_jordan_rivera_northwind-media_example"
+    },
     "amount": "7318.000000",
     "ending_at": "2026-04-30T00:00:00+00:00",
     "model": "claude-haiku-4-5",
     "starting_at": "2026-04-01T00:00:00+00:00"
   },
   {
+    "actor": {
+      "deleted": false,
+      "email": "jordan.rivera@northwind-media.example",
+      "type": "user_actor",
+      "user_id": "user_jordan_rivera_northwind-media_example"
+    },
     "amount": "7390.000000",
     "ending_at": "2026-04-30T00:00:00+00:00",
     "model": "claude-opus-4-8",
+    "starting_at": "2026-04-01T00:00:00+00:00"
+  },
+  {
+    "actor": {
+      "deleted": false,
+      "email": "sam.okafor@northwind-media.example",
+      "type": "user_actor",
+      "user_id": "user_sam_okafor_northwind-media_example"
+    },
+    "amount": "841255.000000",
+    "ending_at": "2026-04-30T00:00:00+00:00",
+    "model": "claude-opus-4-7",
+    "starting_at": "2026-04-01T00:00:00+00:00"
+  },
+  {
+    "actor": {
+      "deleted": false,
+      "email": "sam.okafor@northwind-media.example",
+      "type": "user_actor",
+      "user_id": "user_sam_okafor_northwind-media_example"
+    },
+    "amount": "129010.000000",
+    "ending_at": "2026-04-30T00:00:00+00:00",
+    "model": "claude-sonnet-4-6",
     "starting_at": "2026-04-01T00:00:00+00:00"
   }
 ]
