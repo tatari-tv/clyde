@@ -445,6 +445,72 @@ fn fold_rejects_unparseable_amount_naming_the_model() {
 }
 
 #[test]
+fn fold_rejects_a_non_finite_amount_naming_the_model() {
+    // `f64::from_str` ACCEPTS these, so they sail past the parse and poison every figure downstream:
+    // `billed_total` becomes NaN, `format_usd` renders garbage, and the row sort's `partial_cmp`
+    // fallback silently degrades to `Ordering::Equal`. Each must be a loud refusal instead.
+    for amount in ["NaN", "nan", "inf", "-inf", "infinity"] {
+        let report = report_with("2026-06-26T00:00:00Z", "2026-07-25T00:00:00Z", 10.0, vec![]);
+        let dir = TempDir::new().unwrap();
+        let export = write_export(
+            &dir,
+            "nonfinite.json",
+            vec![record(
+                ME,
+                "claude-opus-5",
+                amount,
+                "2026-06-26T00:00:00Z",
+                "2026-07-25T00:00:00Z",
+            )],
+        );
+
+        let err = fold(&export, Some(ME), &report)
+            .expect_err("a non-finite amount must be rejected, not folded into a billed figure");
+        let full = format!("{err:#}");
+        assert!(
+            full.contains("non-finite"),
+            "{amount:?} must be refused as non-finite: {full}"
+        );
+        assert!(full.contains("claude-opus-5"), "must name the offending model: {full}");
+    }
+}
+
+#[test]
+fn fold_accepts_a_finite_amount_at_the_edges() {
+    // The guard rejects only NON-finite values: a plain zero and a large finite amount still fold.
+    let report = report_with("2026-06-26T00:00:00Z", "2026-06-27T00:00:00Z", 0.0, vec![]);
+    let dir = TempDir::new().unwrap();
+    let export = write_export(
+        &dir,
+        "finite.json",
+        vec![
+            record(
+                ME,
+                "claude-opus-5",
+                "0.00",
+                "2026-06-26T00:00:00Z",
+                "2026-06-27T00:00:00Z",
+            ),
+            record(
+                ME,
+                "claude-sonnet-5",
+                "123456789.99",
+                "2026-06-26T00:00:00Z",
+                "2026-06-27T00:00:00Z",
+            ),
+        ],
+    );
+
+    let out = fold(&export, Some(ME), &report).unwrap();
+    assert!(
+        !out.billed.contains("NaN") && !out.billed.contains("inf"),
+        "a finite export folds to a real dollar figure: {}",
+        out.billed
+    );
+    assert_eq!(out.billed, "$1,234,567.90", "0.00c + 123456789.99c in dollars");
+}
+
+#[test]
 fn fold_marks_a_modeled_untracked_model_as_untracked_not_zero() {
     // `claude-opus-5` was priced by clyde ($60); `claude-fable-5` was seen but never priced
     // (Phase 6 untracked gate) -- its `modeled` figure must read "(untracked)", never a

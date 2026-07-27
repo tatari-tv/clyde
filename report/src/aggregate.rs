@@ -723,7 +723,22 @@ pub fn compute_attribution(report: &Report) -> Attribution {
             report.totals.spend_usd
         );
     }
-    if residual != 0.0 {
+    // Only a POSITIVE residual is money the rows have not accounted for. A negative one says the
+    // per-session spends EXCEED the headline, which the doc comment's long-context story cannot
+    // produce -- it is a merged artifact, or `round_cents` on the headline against unrounded
+    // per-session spends. Folding it would create (or shrink) the `(unattributed)` bucket by a
+    // NEGATIVE amount, `format_usd` would render `-$X.XX` in the artifact, and the prose is licensed
+    // to quote it. The rows falling a hair short of the headline is the better failure: the residual
+    // is declared a pricing artifact, not attribution, so an impossible one is dropped and logged,
+    // never published.
+    if residual < 0.0 {
+        warn!(
+            "aggregate::compute_attribution: per-session spends EXCEED totals.spend-usd by {:.2}; \
+             refusing to fold a negative residual into ({UNATTRIBUTED_ORG}) -- the rows will fall \
+             short of the headline by that amount",
+            -residual
+        );
+    } else if residual != 0.0 {
         let bucket = buckets.entry(UNATTRIBUTED_ORG.to_string()).or_insert((0, 0.0));
         bucket.1 += residual;
     }

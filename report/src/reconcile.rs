@@ -239,6 +239,19 @@ pub fn fold(export_path: &Path, operator: Option<&str>, report: &Report) -> Resu
                 export_path.display()
             )
         })?;
+        // `f64::from_str` ACCEPTS "NaN", "inf" and "-inf", so a malformed export slips past the
+        // parse above and poisons every figure downstream: `billed_total` becomes NaN,
+        // `format_usd` renders garbage, and the `partial_cmp` fallback in the row sort silently
+        // degrades to `Ordering::Equal`. This module is fail-closed everywhere else; a
+        // non-finite amount is a loud refusal, named by model and export path like its siblings.
+        if !cents.is_finite() {
+            bail!(
+                "non-finite cost amount {:?} for model {model} in --reconcile export at {}; \
+                 refusing to publish a billed figure derived from it",
+                record.amount,
+                export_path.display()
+            );
+        }
         // The export reports minor units; see `CostRecord::amount`. Convert once, here, so every
         // figure downstream of this loop is already dollars.
         let dollars = cents / CENTS_PER_DOLLAR;

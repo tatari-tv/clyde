@@ -877,6 +877,81 @@ fn attribution_carries_the_pricing_residual_in_the_unattributed_bucket() {
     assert_eq!(unattributed.sessions, 0, "no session is invented to carry it");
 }
 
+/// The residual's sign is NOT constrained by the pricing story that justifies it. A merged artifact
+/// (or `round_cents` on the headline against unrounded per-session spends) can put the per-session
+/// sum ABOVE `totals.spend-usd`, and folding that in creates an `(unattributed)` row holding a
+/// NEGATIVE amount: `format_usd` renders `-$X.XX` in the artifact, the sort drops it below every
+/// real bucket, and the prose is licensed to quote it. Drop it instead; the rows falling short of
+/// the headline is the honest failure.
+#[test]
+fn attribution_refuses_to_publish_a_negative_residual() {
+    let mut report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T00:00:00Z",
+        vec![(
+            "a",
+            entry_sourced(Some("tatari-tv/clyde"), Some(RepoSource::GitOrigin), 100.0),
+        )],
+    );
+    // The sessions priced $10 HIGHER than the headline.
+    report.totals.spend_usd = 90.0;
+
+    let attribution = compute_attribution(&report);
+    assert!(
+        attribution.rows.iter().all(|r| r.spend_raw >= 0.0),
+        "no row may carry a negative amount: {:?}",
+        attribution
+            .rows
+            .iter()
+            .map(|r| (&r.source, r.spend_raw))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !attribution.rows.iter().any(|r| r.spend.starts_with('-')),
+        "and none may RENDER as a negative dollar figure the prose could quote"
+    );
+    assert!(
+        !attribution.rows.iter().any(|r| r.source == UNATTRIBUTED_ORG),
+        "the negative residual creates no bucket at all"
+    );
+    // The single real row is untouched -- the drop costs the partition its exactness, not its rows.
+    let summed: f64 = attribution.rows.iter().map(|r| r.spend_raw).sum();
+    assert!(
+        (summed - 100.0).abs() < 0.005,
+        "rows keep their measured spend: {summed}"
+    );
+}
+
+/// The other side of the same guard: an EXISTING `(unattributed)` bucket must not be silently
+/// reduced by a negative residual either.
+#[test]
+fn a_negative_residual_does_not_shrink_an_existing_unattributed_bucket() {
+    let mut report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T00:00:00Z",
+        vec![
+            (
+                "a",
+                entry_sourced(Some("tatari-tv/clyde"), Some(RepoSource::GitOrigin), 60.0),
+            ),
+            ("b", entry_sourced(None, None, 40.0)),
+        ],
+    );
+    report.totals.spend_usd = 90.0;
+
+    let attribution = compute_attribution(&report);
+    let unattributed = attribution
+        .rows
+        .iter()
+        .find(|r| r.source == UNATTRIBUTED_ORG)
+        .expect("session b has no repo, so the bucket exists on its own merits");
+    assert_eq!(
+        unattributed.spend, "$40.00",
+        "the bucket keeps the spend its own sessions measured"
+    );
+    assert_eq!(unattributed.sessions, 1);
+}
+
 /// A pre-v10 artifact folded in by `report merge` has repos with no provenance. Those are bucketed
 /// as `(unknown-source)`, never silently counted as observed.
 #[test]

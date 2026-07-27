@@ -59,6 +59,15 @@ const YEAR_CHARS: usize = 4;
 /// license the same number in a headline. `notes` is free text for the same reason: the M2 window
 /// sentence carries `M2`, `v2` and `v1`, and classifying it as a figure would hand the prose a bare
 /// `1` and `2` -- quotable verbatim, never decomposed.
+///
+/// `repo` AND `repository` are both here, and both must stay. They are the same concept reached by
+/// two keys -- `RepoRow.repo` / `SessionEntry.repo` for the attribution slug, `prs[].repository` for
+/// the PR's own -- and `eval::mechanical`'s `Ground::walk` already treats them as one
+/// (`matches!(key, "repo" | "repository")`). Listing only `repository` fell through to
+/// `Class::Figure` for every `repo`, and `add_figure_tokens` decomposes a slug into its digit runs:
+/// a repo named `org/service14` licensed a bare `14` as an unconditional prose figure ANYWHERE in
+/// the artifact. That is this module's own motivating bug ("14 hours of engineering time")
+/// reproduced through a repo name.
 const IDENTIFIER_KEYS: &[&str] = &[
     "short-id",
     "begin",
@@ -67,6 +76,7 @@ const IDENTIFIER_KEYS: &[&str] = &[
     "commits",
     "number",
     "url",
+    "repo",
     "repository",
     "title",
     "summary",
@@ -88,6 +98,25 @@ const PERCENT_OF_MAX_SUFFIX: &str = "-percent-of-max";
 /// Keys whose identifier value is an RFC3339 timestamp, whose calendar-date prefix is separately
 /// citable ("the session on 2026-07-01").
 const TIMESTAMP_KEYS: &[&str] = &["begin", "end", "feed-version"];
+
+/// The one key whose class depends on the value's JSON shape, not on the key alone.
+///
+/// `commits` is overloaded across the context block: `sessions[].outcomes.commits` is an ARRAY OF
+/// SHA STRINGS (identifiers, cited verbatim and abbreviated to a short prefix), while
+/// `outcomes.totals.commits` and `by-repo[].outcomes.commits` are bare NUMBER counts (figures the
+/// prose states outright). Classifying on the key alone routed the count through `add_identifier`,
+/// which licensed its digits by verbatim substring instead of as the figure it is -- and put a
+/// two-digit count through the short-sha branch on the way.
+const SHAPE_DEPENDENT_KEY: &str = "commits";
+
+/// The JSON shape a leaf value arrived as. Only [`SHAPE_DEPENDENT_KEY`] consults it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// A JSON string.
+    Text,
+    /// A JSON number, stringified for tokenizing.
+    Number,
+}
 
 /// What a leaf value licenses the prose to say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,8 +273,8 @@ impl QuotableFacts {
                     self.walk(key, v);
                 }
             }
-            Value::String(s) => self.absorb(key, s),
-            Value::Number(n) => self.absorb(key, &n.to_string()),
+            Value::String(s) => self.absorb(key, s, Shape::Text),
+            Value::Number(n) => self.absorb(key, &n.to_string(), Shape::Number),
             Value::Bool(_) | Value::Null => {}
         }
     }
@@ -269,8 +298,8 @@ impl QuotableFacts {
     }
 
     /// Route one leaf value into its set(s).
-    fn absorb(&mut self, key: &str, raw: &str) {
-        match classify(key) {
+    fn absorb(&mut self, key: &str, raw: &str, shape: Shape) {
+        match classify(key, shape) {
             Class::Figure => self.add_figure_tokens(raw),
             Class::Geometry => self.add_geometry_value(raw),
             Class::FigureAndGeometry => {
@@ -346,12 +375,20 @@ impl QuotableFacts {
 /// construction (design Phase 5 -- every raw operand is `#[serde(skip)]`), so an unnamed key is a
 /// figure the binary already formatted. An allowlist would instead hard-fail the render every time a
 /// later phase adds a field, which is the wrong failure for a guard whose false positive is fatal.
-fn classify(key: &str) -> Class {
+fn classify(key: &str, shape: Shape) -> Class {
     if key.ends_with(PERCENT_OF_MAX_SUFFIX) {
         return Class::FigureAndGeometry;
     }
     if GEOMETRY_KEYS.contains(&key) {
         return Class::Geometry;
+    }
+    // See `SHAPE_DEPENDENT_KEY`: a sha string is an identifier, a count is a figure, and they share
+    // a key.
+    if key == SHAPE_DEPENDENT_KEY {
+        return match shape {
+            Shape::Text => Class::Identifier,
+            Shape::Number => Class::Figure,
+        };
     }
     if IDENTIFIER_KEYS.contains(&key) {
         return Class::Identifier;

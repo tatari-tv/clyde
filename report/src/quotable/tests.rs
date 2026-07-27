@@ -300,3 +300,95 @@ fn the_percentile_ordinal_uses_the_english_suffix() {
     assert_eq!(percentile_ordinal("1h").as_deref(), None);
     assert_eq!(percentile_ordinal("cache").as_deref(), None);
 }
+
+/// A context block whose repo slug carries a digit -- the shape that reproduced the module's own
+/// motivating bug through a repo name.
+fn context_with_digit_bearing_repo() -> &'static str {
+    r#"{
+      "totals": {"sessions": 118, "spend": "$9,450.31"},
+      "aggregates": {
+        "by-repo": [{"repo": "tatari-tv/service14", "sessions": 41, "spend": "$3,120.08",
+                     "outcomes": {"commits": 88}}]
+      },
+      "sessions": [
+        {"short-id": "7b2290ff", "repo": "tatari-tv/service14", "spend-display": "$61.40"}
+      ]
+    }"#
+}
+
+/// `repo` was missing from `IDENTIFIER_KEYS` while `repository` was present, so a repo slug fell
+/// through to `Class::Figure` and `add_figure_tokens` decomposed it: `tatari-tv/service14` licensed
+/// a bare `14` as an unconditional prose figure anywhere in the artifact.
+#[test]
+fn a_digit_in_a_repo_slug_is_not_a_licensed_figure() {
+    let facts = QuotableFacts::from_context_json(context_with_digit_bearing_repo()).unwrap();
+
+    let foreign = facts.foreign_figures("The window saved roughly 14 hours of engineering time.");
+    assert_eq!(
+        foreign,
+        vec!["14".to_string()],
+        "a digit run inside a repo slug must not license a bare figure elsewhere in the prose"
+    );
+    assert!(
+        !facts.figures.contains("14"),
+        "the slug's digits belong to the position-masked identifier set, never the free figures set"
+    );
+
+    // The slug itself is still citable verbatim -- that is what makes it an identifier.
+    assert!(
+        facts
+            .foreign_figures("Most of it landed in tatari-tv/service14.")
+            .is_empty(),
+        "citing the repo by name must pass"
+    );
+}
+
+/// `commits` is overloaded: an array of SHA strings under `sessions[]`, a bare count under
+/// `outcomes.totals` / `by-repo[]`. Classifying on the key alone routed the count through
+/// `add_identifier`, licensing its digits by verbatim substring rather than as the figure it is.
+#[test]
+fn a_commit_count_is_a_figure_and_a_commit_sha_is_an_identifier() {
+    let facts = facts();
+
+    // `by-repo[].outcomes.commits` is the number 88: a real, quotable display figure.
+    assert!(
+        facts.figures.contains("88"),
+        "a numeric commit COUNT belongs in the figures set: {:?}",
+        facts.figures
+    );
+    assert!(
+        facts.foreign_figures("That repo landed 88 commits.").is_empty(),
+        "the prose may state the commit count outright"
+    );
+
+    // `sessions[].outcomes.commits` is a sha STRING: identifier, cited verbatim and abbreviated.
+    assert!(
+        facts.identifiers.contains("8f14e45fceea167a5a36dedd4bea2543"),
+        "a sha string stays an identifier"
+    );
+    assert!(
+        facts.identifiers.contains("8f14e45"),
+        "and keeps its short-prefix citation form"
+    );
+    assert!(
+        !facts.figures.contains("8f14e45fceea167a5a36dedd4bea2543"),
+        "a sha is never decomposed into figures"
+    );
+}
+
+#[test]
+fn classify_reads_the_shape_only_for_the_overloaded_key() {
+    // The overloaded key swings on shape ...
+    assert_eq!(classify("commits", Shape::Text), Class::Identifier);
+    assert_eq!(classify("commits", Shape::Number), Class::Figure);
+    // ... and nothing else does.
+    assert_eq!(classify("repo", Shape::Text), Class::Identifier);
+    assert_eq!(classify("repo", Shape::Number), Class::Identifier);
+    assert_eq!(classify("spend", Shape::Text), Class::Figure);
+    assert_eq!(classify("spend", Shape::Number), Class::Figure);
+    assert_eq!(classify("points", Shape::Text), Class::Geometry);
+    assert_eq!(
+        classify("spend-percent-of-max", Shape::Number),
+        Class::FigureAndGeometry
+    );
+}
