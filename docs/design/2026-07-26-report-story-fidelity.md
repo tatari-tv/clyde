@@ -221,7 +221,10 @@ report::aggregate           ->  by-day zero-fill + carried-in row; by-repo outco
                                  unit costs; pricing basis; chart geometry strings
 report::render              ->  prior block; summary/tags passthrough; quotable-facts whitelist;
                                  geometry validation
-report::reconcile (new)     ->  folds an Analytics cost export into a reconciliation block
+report::reconcile (new)     ->  folds a PER-USER Analytics cost export into a reconciliation block,
+                                 scoped to one operator
+report::claim (new, post-plan) -> claim-shaped prose guard: fabricated durations and bare `Nx`
+                                 multipliers, which no value whitelist can catch
 report/templates/*.pmt      ->  disclosure line, reconciliation section, MoM, geometry rules,
                                  summary-over-title citation rule
 ```
@@ -500,32 +503,56 @@ rows with `active: true`, not the row count. Carried-in sessions stay in `totals
 pub struct Basis {
     pub pricing: String,        // "published list rates"
     pub is_invoice: bool,       // false
-    pub feed_source: String,    // embedded | cached | fetched
+    pub feed_source: String,    // embedded | fetched | override
     pub feed_version: String,   // the pricing feed's data-version
     pub note: String,           // one sentence, verbatim into the header
 }
 ```
 
-**Reconciliation (required to close finding 6):**
+**`feed_source` is a three-value vocabulary, not the four this doc first named.** `cached` is not
+distinguishable here: `claude_pricing::Source` is `Embedded | Fetched | UserOverride`, so a cache hit
+and a live fetch both surface as `fetched` through the public API, and `override` (a user-supplied
+feed) is a real fourth case the original list omitted. Widening `Source` to separate a cache hit from
+a fetch is a `claude-pricing` change, out of scope here (Phase 6 Deviations).
+
+**Reconciliation (required to close finding 6). SHIPPED SCOPE: one operator, not the org.** The
+struct below is what `report/src/reconcile.rs` emits; the org-wide form this section originally
+specified is superseded (see Resolved Decisions, "reconciliation is scoped to the OPERATOR"):
 
 ```rust
 pub struct Reconciliation {
     pub source: String,          // "anthropic enterprise analytics"
+    pub operator: String,        // the ONE person both figures are scoped to
     pub window: String,
-    pub billed: String,          // display
+    pub billed: String,          // display, that operator's bill alone
     pub modeled: String,         // display, == totals.spend
-    pub delta: String,           // display, signed
-    pub by_model: Vec<ReconRow>, // model, billed, modeled, delta
+    pub delta: String,           // display, signed; serialized as `unseen-account-spend`
+    pub by_model: Vec<ReconRow>, // model, billed, modeled, unseen-account-spend
     pub scope_note: String,      // the interpretation guard, verbatim into the section
 }
 ```
 
-**The delta is not an error term, and the report must say so.** An Analytics export covers everything
-the account billed: claude.ai web, other clients, other hosts. `clyde report` covers Claude Code
-sessions in one catalog. So `billed >= modeled` is the expected relationship, and a positive delta
-means "usage clyde does not see", not "clyde miscounted". `scope_note` carries that sentence and both
-templates reproduce it verbatim next to the delta. Without it, publishing a delta invites exactly the
-wrong conclusion, which is worse than publishing no delta at all.
+**The export must be per-user (`--report user-cost`), and an org-wide export is rejected by name.**
+`clyde report` reads one user's session logs on one machine, so the only billed figure it can
+honestly set beside its own total is that same user's bill. `fold` keeps only the rows whose
+`actor.email` matches the operator, and an export with no `actor` field anywhere (the org-wide
+`--report cost` shape) fails loudly, naming the `--report user-cost` remedy. `amount` is decimal-string
+CENTS on the Analytics cost endpoints, so it is divided by 100 exactly once in `fold`; reading it as
+dollars overstates the authoritative figure by 100x.
+
+**Who the operator is:** `--reconcile-user <email>` when given, otherwise the same identity the
+report's persona block already resolved (`persona whoami`'s work email) -- one mechanism for "who is
+this report about", never two that can disagree. When neither yields an email, `--reconcile` is a
+loud error naming the flag, never an unscoped comparison against the whole organization's bill.
+
+**The delta is not an error term, and the report must say so.** The export covers everything that ONE
+account was billed across every Claude product: claude.ai web, Cowork, other clients, other hosts.
+`clyde report` covers that same person's Claude Code sessions in one catalog. So `billed >= modeled`
+is the expected relationship, and a positive `unseen-account-spend` means "the same person's usage
+clyde does not see", not "clyde miscounted" and never other people's usage. `scope_note` carries that
+sentence, names the operator in it, and both templates reproduce it verbatim next to the figure.
+Without it, publishing the figure invites exactly the wrong conclusion, which is worse than
+publishing no figure at all.
 
 Absent when no export was supplied, and that absence is NEVER silent: see Phase 12, which warns on
 stderr and states in the artifact that no authoritative export was supplied. The old absence
@@ -575,7 +602,9 @@ clyde report collect [--since] [--until] [-o] [--db] [--no-rollup] [--no-outcome
 
 clyde report render [...existing...]
     --prior <report.json>        prior-period report; lights up Month over Month
-    --reconcile <analytics.json> Analytics cost export; lights up the reconciliation section
+    --reconcile <analytics.json> Analytics PER-USER cost export (`--report user-cost`); lights up
+                                 the reconciliation section, scoped to one operator
+    --reconcile-user <email>     who that operator is, overriding the persona block's work email
 
 clyde report eval [--fixture <dir>] [--judge <model>] [--out <path>]
     NOTE: reconciliation is a FLAG ON `render` (`--reconcile <file>`), never a `report reconcile`
@@ -619,7 +648,13 @@ So the validator is an allowlist, not a spot check:
 - **Permitted elements** inside a chart subtree: `svg`, `polyline`, `g`, `text`, `title`. Any other
   element in the subtree fails the render.
 - **Permitted attributes**: `viewBox`, `points`, `class`, plus presentation attributes carrying no
-  geometry (`fill`, `stroke`, `stroke-width`).
+  geometry (`fill`, `stroke`, `stroke-width`, `preserveAspectRatio`). `preserveAspectRatio` is on the
+  list by MEASUREMENT, not by principle: Phase 13 rendered 24 fresh HTML artifacts and rejected 9 of
+  them (37.5%), every one for this attribute and never for anything else -- the model adds it
+  reflexively to an `<svg>` and clyde never emits it. Its value (`xMidYMid meet`) is digit-free, so
+  permitting it cannot smuggle geometry, and the digit-bearing-value rule below still governs it
+  unchanged. Being permitted is not a licence to carry a number: `stroke-width="2"` is still rejected
+  and belongs in the stylesheet.
 - **Every numeric attribute value must appear verbatim in the geometry set.** Not "the two we thought
   of" -- any attribute whose value contains a digit is checked, so an attribute nobody anticipated
   fails closed rather than passing unexamined.
@@ -645,7 +680,7 @@ green, fresh context.
 | 9 | `summary`/`tags` passthrough, delete `title.rs` | sonnet | none | yes |
 | 10 | Quotable-facts whitelist | opus | 4, 5, 6, 7, 8, 9 | no |
 | 11 | Chart geometry plus validator | opus | 4, 10 | yes |
-| 12 | `report reconcile` | sonnet | 6 | yes |
+| 12 | `render --reconcile` | sonnet | 6 | yes |
 | 13 | Render eval | opus | all | no |
 
 Phases 4 through 9 are independent of each other and of the catalog work, so they can land in any
@@ -853,9 +888,21 @@ both files or explain why one is exempt.
 
 #### Phase 12: `render --reconcile`
 **Model:** sonnet
-- `--reconcile <analytics.json>`: parse the `anthropic-usage-report` cost export, fold into
-  `Reconciliation`. Window mismatch is a loud error, never a silent comparison of different periods.
-- Both templates: a reconciliation section, omitted when the block is absent.
+
+*Amended after implementation: this phase shipped OPERATOR-SCOPED, against a per-user export. The
+org-wide wording it originally carried is superseded (Resolved Decisions, "reconciliation is scoped
+to the OPERATOR"); the bullets below are what shipped.*
+
+- `--reconcile <analytics.json>`: parse the `anthropic-usage-report --report user-cost` export,
+  filter to the operator's rows, fold into `Reconciliation`. Window mismatch is a loud error, never a
+  silent comparison of different periods. So is an org-wide (`--report cost`) export, an export with
+  no row for the operator, an unparseable amount, and an unresolvable operator -- each names its own
+  remedy, and none degrades to `$0.00 billed` or falls back to the org total.
+- `--reconcile-user <email>` overrides the persona block's work email as the operator.
+- Both templates: a reconciliation section that is ALWAYS present (it leads with the
+  `reconciliation-status` sentence, flag or no flag) and carries the figures only when the block is,
+  stating in every render that both figures are ONE PERSON'S -- never company, org, team, or
+  account-wide spend.
 - **Absence is never silent, which is what makes "required" real.** Promoting reconciliation in prose
   while the default render quietly omits it would leave the artifact in exactly the state this doc
   calls the weakest possible answer: a modeled total plus a note citing an authoritative source, with
@@ -863,11 +910,12 @@ both files or explain why one is exempt.
   `--min-enrichment` warning) AND the artifact states that no authoritative export was supplied.
 - Rename the reader-facing figure: **`unseen-account-spend`**, not "delta". It is a part-to-whole
   difference, not a variance, and "delta" invites reading it as clyde's error.
-- **Success criteria:** with a REAL Analytics export whose window matches, the artifact shows billed,
-  modeled, `unseen-account-spend`, and `scope_note`; an export with a mismatched window fails naming
-  both windows; **without the flag, the render warns on stderr and the artifact says the authoritative
-  export was not supplied** (asserted, not assumed); the rendered prose nowhere frames the figure as a
-  clyde miscount.
+- **Success criteria:** with a REAL per-user Analytics export whose window matches, the artifact shows
+  the operator, billed, modeled, `unseen-account-spend`, and `scope_note`; an org-wide export is
+  rejected naming `--report user-cost`; an export with a mismatched window fails naming both windows;
+  **without the flag, the render warns on stderr and the artifact says the authoritative export was
+  not supplied** (asserted, not assumed); the rendered prose nowhere frames the figure as a clyde
+  miscount, and nowhere describes the billed figure as company, org, or account-wide spend.
 
 #### Phase 13: Render eval
 **Model:** opus
@@ -923,8 +971,9 @@ carry the rest; every phase has its own.
       day; carried-in sessions appear only in `aggregates.carried-in`.
 - [ ] Every rendered artifact carries the pricing-basis note naming the Analytics cost report as
       authoritative, a zero-token unpriceable model produces no untracked-models warning, and a render
-      with `--reconcile` against a real matching-window export shows billed, modeled, delta, and
-      `scope_note`.
+      with `--reconcile` against a real matching-window export shows billed, modeled,
+      `unseen-account-spend`, and `scope_note`. (The reader-facing name is `unseen-account-spend`
+      everywhere; "delta" was this criterion's stale spelling of the same figure.)
 - [ ] The quotable-facts whitelist is under 20% the size of the pre-change whitelist on the same
       fixture, a planted speculative figure is rejected, and `otto eval` passes all three fixtures.
 
@@ -1049,6 +1098,52 @@ carry the rest; every phase has its own.
   - Phase 3's coverage target rests on the **73-session / $1,207.92** figure, not the weaker
     80-session touched-at-least-one-file count: a tied session is evidence of ambiguity, not of a
     resolvable repo, and rule 3 must not guess a slug-ordered winner.
+
+- **2026-07-26, SUPERSEDING every org-wide framing of reconciliation in this doc: Phase 12 is scoped
+  to the OPERATOR, and the export must be per-user.** Phase 12 shipped against the org-wide
+  `--report cost` export this doc specified, and the first real run showed why that is wrong: the
+  export bills every seat in the organization, so the artifact published an `unseen-account-spend`
+  far larger than the operator's entire modeled total -- the rest of the company's Claude usage,
+  presented in a one-person report as spend clyde failed to account for. That is the exact
+  misreading `scope_note` exists to prevent, manufactured by the comparison itself. The fix
+  (`report/src/reconcile.rs`): require `--report user-cost`, keep only the rows whose `actor.email`
+  is the operator, carry `operator` on `Reconciliation` and name it in `scope_note`, and REJECT an
+  org-wide export by name with the `--report user-cost` remedy. The operator is
+  `--reconcile-user <email>` when given, else the persona block's work email; when neither resolves,
+  `--reconcile` fails loudly rather than comparing against the org. Both templates state in every
+  render that both figures are one person's. Scoped this way the same window reconciles to a
+  remainder `scope_note` can actually explain (the operator's claude.ai web, Cowork, other clients
+  and hosts). Real billed figures stay out of this repo, which is public.
+- **2026-07-26, Analytics cost amounts are decimal-string CENTS.** The Analytics cost endpoints
+  report minor units and `pull-usage-report.py` writes them through as-is, so `fold` divides
+  `amount` by 100 exactly once. Reading it as dollars overstated the authoritative billed figure by
+  100x. Not a design change -- a fact about the export this doc consumes, recorded so nobody
+  re-derives it.
+- **2026-07-26, `preserveAspectRatio` joins the SVG attribute allowlist, on measurement.** Phase 13
+  measured a 37.5% HTML render rejection rate (9 of 24 fresh renders), every one of them this
+  attribute and never anything else. Its value is digit-free, so permitting it cannot smuggle
+  geometry and the digit-bearing-value rule still governs it. The alternative -- a ~38% retry rate
+  on a paid model call for a presentational attribute -- was not defensible. Phase 11's predicted
+  first failure, `stroke-width="2"`, never fired across those same 24 renders and stays rejected.
+- **2026-07-26, the claim guard closes Phase 10's known limit, and it is a NEW module this plan
+  never specified.** Phase 10's success criterion "a planted speculative figure is rejected" holds
+  at fixture scale and FAILS on a real window: on a 1,523-session block `14` is a genuinely licensed
+  count (a day with 14 sessions, a repo with 14 sessions, a PR numbered 14), so "14 hours of
+  engineering time" passed the value guard. The fabrication is the UNIT, not the number, and no
+  whitelist of VALUES can ever catch it. `report/src/claim.rs` (post-plan) adds the claim-shaped
+  check Phase 10's notes recommended: duration units the context is never denominated in, day counts
+  framed as LABOR, and bare `Nx` multipliers. It enforces a rule both prompts already state (Hard
+  prohibition 2), rather than inventing policy.
+- **2026-07-27, `notes` shipped as an audit fix.** The API-Design context-additions list names
+  `notes` and gives the reason, and the Implementation Plan never assigned it to a phase, so no
+  phase built it and Phase 9 recorded the gap as an open question. `ContextBlock.notes` now carries
+  `Report.notes` verbatim (absent when empty), classified as an identifier in `quotable` so the M2
+  sentence's `M2`/`v2`/`v1` digits cannot widen the prose whitelist; both templates place the notes
+  in a Methodology block at the end of the artifact.
+- **2026-07-27, `Basis.feed_source` is `embedded | fetched | override`.** The `cached` value this doc
+  named does not exist: `claude_pricing::Source` cannot distinguish a cache hit from a live fetch
+  through its public API, and `override` (a user-supplied feed) is a real case the original list
+  omitted.
 
 ### Review record (2026-07-26)
 
@@ -1204,7 +1299,7 @@ Single flat `v*` tag for the workspace. One release. No cross-repo blast radius:
 | Authorizing verbatim SVG lets the model smuggle computed geometry | Med | High | Geometry validator rejects any `viewBox`/`points` value absent from quotable facts; planted-fabrication test in Phase 11 |
 | Narrowing the whitelist creates false rejections on legitimate prose | Med | Med | Phase 10 success criterion requires a known-good artifact to still pass; dates and all display strings stay in the set |
 | Enrich coverage stays low, so `summary` citation helps less than expected | High | Med | `enrichment-coverage` is in the context and `collect` warns below the floor, so the gap is stated rather than hidden; the prompt falls back to titles for unenriched sessions |
-| Reconciliation delta is read as "clyde miscounted" when it is really out-of-scope usage | High | High | `scope_note` ships verbatim beside the delta in both templates, stating that billed covers web and other clients and hosts while clyde covers one catalog; Phase 12 success criteria require its presence |
+| `unseen-account-spend` is read as "clyde miscounted" when it is really out-of-scope usage | High | High | Both figures are scoped to ONE operator, so the gap can only be that person's own usage; `scope_note` ships verbatim beside the figure in both templates, naming the operator and stating that billed covers web, Cowork and other clients and hosts while clyde covers one catalog; Phase 12 success criteria require its presence |
 | A real-data fixture reaches the public repo | Low | High | Committed fixtures are synthesized by a seeded generator, never derived; real-data eval reads a gitignored local dir; Phase 13 owns the rule and Security restates it |
 | A `path-guess` written once outlives a better answer | Med | High | Upgrade-only writes ranked by source precedence, not `COALESCE`; `repo_rank` persisted; Phase 2 test asserts a `known-path` hit overwrites a stored `path-guess` and never the reverse |
 | Fourteen phases drift out of order or a later phase silently depends on an earlier one | Med | Med | Phases 4 through 11 are report-side and independently green against a stale catalog; each carries its own success criteria that the implementation audit walks |

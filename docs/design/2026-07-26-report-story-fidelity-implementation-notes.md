@@ -1648,3 +1648,48 @@ recorded the gap as an open question. This closes it.
   `quotable::IDENTIFIER_KEYS` makes the lifted `8675309` a licensed figure and
   `a_notes_digits_are_quotable_only_inside_the_verbatim_sentence` fails on exactly that assertion;
   restored and reconfirmed green.
+
+## Audit fix (2026-07-27): the design doc describes what shipped
+
+Docs only, no code. The audit found the doc still describing superseded designs. Each correction was
+verified against the code first, and each is recorded as a SUPERSEDING Resolved Decisions entry
+rather than a silent rewrite of what the doc believed at the time -- the doc's own convention.
+
+### Design decisions
+- **Phase 12 and the `Reconciliation` Data Model now describe the operator-scoped design**
+  (`report/src/reconcile.rs`): per-user export required, org-wide rejected by name, `operator` on the
+  struct and in `scope_note`, `--reconcile-user` as the override, `amount` read as cents. The phase
+  table's `report reconcile` heading is renamed `render --reconcile`, matching the API Design
+  section that always said it was a flag and the code that shipped one.
+- **`Basis.feed_source` corrected to `embedded | fetched | override`** with the reason the fourth
+  value cannot exist through `claude_pricing`'s public API.
+- **`preserveAspectRatio` added to the documented SVG attribute allowlist** with Phase 13's 37.5%
+  measurement and the digit-free argument, plus the note that `stroke-width="2"` is still rejected.
+- **AC8's stale `delta` spelling renamed to `unseen-account-spend`**, which is what AC6, both
+  templates and the serialized key already say.
+- **`report::claim` is now in the Architecture list and has its own Resolved Decisions entry.** It is
+  a post-plan module no phase specified, and it is what actually closes Phase 10's known limit, so
+  leaving it out of the doc would have left the doc claiming a guard that fails on a real window.
+
+### Deviations
+- None. Every edit records a divergence that already shipped.
+
+### Tradeoffs
+- **Amend-in-place plus a superseding entry, rather than either alone.** A reader who lands on the
+  Phase 12 section must not have to find a Resolved Decision to learn the phase is scoped
+  differently, so the section carries an explicit amendment banner and the entry carries the
+  history and the reasoning. Duplication is the cost; a stale section read as current is worse.
+
+### Open questions
+- None.
+
+### Verification
+- Divergences verified against the code, not against the notes: `reconcile.rs` (`fold`,
+  `require_per_user_shape`, `operator_rows`, `CENTS_PER_DOLLAR`, `scope_note`), `cli.rs`
+  (`reconcile_user`), `render.rs` (`build_basis` over `claude_pricing::Source`), `geometry.rs`
+  (`PERMITTED_ATTRIBUTES`), `claim.rs` and its two `render.rs` call sites.
+- Also checked and found ACCURATE, so left alone: `title.rs` is deleted, `--reresolve-repo` exists,
+  `repo-root` and `min-enrichment` are real config keys with CLI overrides, `otto eval` exists and
+  is not in `ci`, the three synthesized fixtures exist under `fixtures/report/`, and the Phase 0
+  PR-merged correction is already a superseding entry.
+- `otto ci`: green.
