@@ -1003,6 +1003,30 @@ carry the rest; every phase has its own.
   line-delta counter (`Edit`'s `old_string`/`new_string` pair, plus `Write`'s `content` length for
   new files). Phase 7 may build both from fields that already exist; neither needs a transcript
   schema clyde does not already parse.
+- **2026-07-26, SUPERSEDING the entry above on one point: there is NO PR-merged counter, and the
+  Phase 0 finding that said otherwise is factually wrong.** Phase 0 proved the FIELD occurs; it did
+  not check what the field MEANS. Phase 7 read all four live `pr.action == "merged"` records in full,
+  and not one of them is a merge:
+  - `pr#23` and `pr#67`: `"! Pull request tatari-tv/marquee#23 was already merged"` -- an idempotent
+    no-op against a PR that was ALREADY merged, before the command ran.
+  - `pr#92` and `pr#1963`: `"X Pull request tatari-tv/platform-infra#1786 is not mergeable: the base
+    branch policy prohibits the merge"` -- a FAILED merge.
+
+  The field classifies the `gh pr merge` ATTEMPT, not its outcome, so a counter built on it would
+  have published "4 PRs merged" for a period in which these sessions merged zero, in a document
+  whose whole premise is that its numbers are observed and verifiable. Two further defects Phase 7
+  recorded: 3 of the 4 records carry no `url`, so the counter had no dedupe key; and on `pr#92` the
+  recorded url (`private-helm-charts/pull/92`) belongs to a different PR than the one the command
+  acted on (`platform-infra#1786`). Phase 7 therefore shipped no merged counter, which was correct.
+  Full analysis in the implementation notes, Phase 7 Deviations and Open Questions.
+
+  Related, and also not built: `branch.action == "merged"` (18 live occurrences) IS a confirmed
+  completed merge ("Fast-forward", "Merge made by the 'ort' strategy"), but its `ref` conflates two
+  opposite events -- `ref: reject-dotted-names` is a feature branch LANDING, `ref: origin/main` is
+  main being merged INTO a feature branch (a sync). Separating them needs a default-branch heuristic
+  Phase 0 never measured and this doc never authorized, so no counter was built there either.
+  PRs-opened remains the only PR outcome. What Phase 0 measured (the field vocabulary and its
+  occurrence counts) stands; only its yes/no on derivability is corrected.
 - **2026-07-26, Phase 0: rule-3 ceiling, measured against the exact 279-session / $1,900.07 subset**
   (cwd is `$HOME`, a temp dir, or otherwise outside the `<repo-root>/<org>/<repo>` shape rule 4
   pattern-matches). Reproduced live: `clyde report collect --since 2026-06-26 --until 2026-07-25`

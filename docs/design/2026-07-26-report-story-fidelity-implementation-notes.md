@@ -1344,3 +1344,85 @@ Judge scores on the `otto eval` run that closed the phase (floors 2 / 2 / 3 / 2)
 | `small` | 3 | 3 | 3 | 3 |
 | `medium` | 3 | 3 | 3 | 3 |
 | `pathological` | 2 | 3 | 3 | 3 |
+
+## Post-implementation fixups (2026-07-26, after Phase 13)
+
+Four fixups Scott approved after reading the phase notes, one commit each. Not a phase: they close
+findings the phases surfaced and correctly did not act on unasked.
+
+### Design decisions
+- **`preserveAspectRatio` is permitted on a chart `<svg>`** -- `report/src/geometry.rs`,
+  `PERMITTED_ATTRIBUTES` -- because Phase 13 measured the rejection rate at 37.5% (9 of 24 fresh
+  renders) and every single rejection was this one attribute. clyde never emits it; the model adds it
+  as a reflexive SVG idiom. Its value carries no digit, so the widening is to the NAME list only and
+  the digit-bearing-value rule governs it unchanged. `report-html.pmt` was tightened in the same
+  commit: it now states the whole attribute list, says an off-list attribute fails on its name before
+  its value is read, and names the ones a model reaches for out of habit.
+- **The fabricated-claim guard is a NEW module, `report/src/claim.rs`, not a widening of
+  `quotable`** -- the existing guard is VALUE-shaped (is this figure in the fact set?) and this one is
+  CLAIM-shaped (is this sentence a shape the context cannot support?). Merging them would have put a
+  phrase matcher inside a set-membership test.
+- **The claim guard's day rule is narrower than its hour rule, and that asymmetry is the design.**
+  Nothing in the context block is denominated in hours, minutes, weeks, months or years, so a figure
+  carrying one of those units is fabricated by construction and is rejected on the unit alone. `days`
+  IS in the context (`period.days`, `period.active-days`), so only the LABOR framing is rejected
+  there.
+- **Zero-token dropping now covers agent-type buckets** -- `report/src/report.rs::agent_type_costs`,
+  reusing `has_tokens` -- and the design doc carries a superseding Resolved Decisions entry saying so.
+
+### Deviations
+- **The claim guard rejects on a figure that does not open on `-`, `.`, or `,`, not on a plain
+  `\b`.** The corpus test caught `claude-sonnet-4-6 second` in the medium markdown golden on the very
+  first run -- a model name followed by an ordinal, in correct shipped prose. Same effect, correct
+  seam: a digit inside an identifier or a comma-grouped magnitude never starts a claim.
+- **No template edit accompanies the claim guard.** The prompt-edit ledger applies to phases that
+  change what the model is told; both templates already ban these sentences verbatim (Hard prohibition
+  2, and "Numbers not in the context (hours, days of work, headcount equivalents) are NEVER
+  fabricated"), so the guard enforces a stated rule rather than a new one. Each rejection message
+  names the rule it enforces.
+- **`report.pmt` is exempt from the `preserveAspectRatio` prompt edit** -- the markdown prompt emits
+  no SVG and is told to ignore `aggregates.charts` entirely.
+
+### Tradeoffs
+- **Seconds stayed in the claim guard's unit list even though the ordinal collision lived there.**
+  Dropping the unit would have been the cheaper fix; the identifier-boundary narrowing is the correct
+  one, because the same collision class covers `4-6 months` and `4-5 minutes` too, and only the
+  boundary rule kills all of them at once.
+- **Bucket-level zero-token dropping, not model-level-only.** A bucket whose models are individually
+  nonzero keeps every one of them; only a bucket left with nothing goes. The alternative (drop
+  zero-token models but keep the emptied bucket) preserves the `$0.00` row this fixup exists to
+  remove.
+
+### Measured: Analytics `amount` vs `list_amount` (2026-06-26 through 2026-07-25)
+
+Phase 12 observed the two fields differing and Scott stated Tatari receives no discount. Both are
+true; they do not conflict, because the gap is not a discount. Pulled live with
+`pull-usage-report.py --report cost`, org-wide, grouped by `model`, and again by
+`model`/`cost_type`/`context_window`:
+
+| figure | value |
+|---|---|
+| `amount` (billed) | `<withheld>` |
+| `list_amount` | `<withheld>` |
+| gap | `<withheld>`, 0.25% of list |
+
+Three independent reasons the gap cannot be a discount:
+
+1. **It goes both ways.** `claude-opus-4-7` bills `$0.21` ABOVE list over the window, and
+   `claude-opus-4-1` a fraction of a cent above. A discount cannot be negative.
+2. **It switches off on a date.** `claude-sonnet-4-6` runs 5% to 7% below list every day from
+   2026-06-26 through 06-30 and then EXACTLY at list, to the cent, every day from 07-01 through
+   07-25. That is a rate change or an expiring credit at a period boundary, not a standing rate.
+3. **A chunk of it is zero-rated tooling, not a percentage.** Grouped by `cost_type`, `web_search`
+   is listed at `$14.19` and billed at `$0.00` across every model. The rest sits in `tokens`, split
+   `$199.22` in the `200k-1M` context window and `$119.77` in `0-200k` -- 0.28% and 0.20%, irregular
+   day to day, with no rate that reproduces either.
+
+Per-model, largest gap first: `claude-sonnet-4-6` `$167.81`, `claude-opus-4-8` `$139.90`,
+`claude-haiku-4-5` `$17.20`, `claude-opus-4-6` `$8.22`, `claude-sonnet-5` `$0.21`, `claude-fable-5`
+`$0.05`, `claude-opus-4-7` `-$0.21`.
+
+**No change to `reconcile.rs`.** `amount` is what the account was billed, which is what the
+reconciliation block claims to show; `list_amount` is what the same usage would have cost at
+published rates, which is the same basis clyde already models. Reading `amount` is correct, and the
+cents fix at `1f2f62b` stands.
