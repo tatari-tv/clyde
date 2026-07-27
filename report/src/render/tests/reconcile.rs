@@ -330,8 +330,20 @@ fn both_templates_document_reconciliation_as_always_present_and_deny_miscount_fr
             tpl.contains("`reconciliation`"),
             "{name} must document the optional reconciliation block"
         );
+        // Both words must land in ONE sentence ABOUT THIS SECTION. Two independent `contains`
+        // checks passed on any template that said `ALWAYS` about some other field and mentioned
+        // "reconciliation" anywhere -- including one reverted to calling the section optional, which
+        // is precisely the revert the BITES contract above promises to catch.
+        //
+        // Line-scoping alone is still not enough: both templates ALSO carry
+        // "`reconciliation-status`: ALWAYS present", which is about the FIELD. Anchoring on
+        // "Reconciliation section" / "Reconciliation card" pins the sentence that governs whether
+        // the SECTION is emitted (markdown says "section", the dashboard says "card").
         assert!(
-            tpl.contains("ALWAYS") && tpl.to_lowercase().contains("reconciliation"),
+            tpl.lines().any(|line| {
+                line.contains("ALWAYS present")
+                    && (line.contains("Reconciliation section") || line.contains("Reconciliation card"))
+            }),
             "{name} must state the reconciliation section is ALWAYS present, flag or no flag"
         );
         assert!(

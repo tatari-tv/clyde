@@ -205,13 +205,24 @@ fn child_env_forwards_the_proxy_address_and_never_a_proxy_credential() {
         // NOT a proxy address: a credential that a `*PROXY*` glob would happily forward.
         ("CLOUDSDK_PROXY_PASSWORD", "planted-proxy-password-must-not-leak"),
     ];
-    // SAFETY: serialized behind ENV_LOCK; every planted var is removed below.
+    // Capture what was there BEFORE planting, and put it back afterwards -- the sibling test below
+    // already does this and it matters more here. `child_env`'s own docs record that this sandboxed
+    // CI genuinely depends on real `*_PROXY` vars for the child `claude` process's network egress,
+    // so unconditionally removing them left every later test in the binary running without the
+    // proxy the runner had set: a permanent wipe, not a cleanup.
+    let prior: Vec<(&str, Option<String>)> = planted.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
+    // SAFETY: serialized behind ENV_LOCK; every planted var is restored below.
     for (k, v) in planted {
         unsafe { std::env::set_var(k, v) };
     }
     let env = child_env();
-    for (k, _) in planted {
-        unsafe { std::env::remove_var(k) };
+    unsafe {
+        for (name, value) in &prior {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
     }
     drop(guard);
 

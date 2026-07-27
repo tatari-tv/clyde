@@ -16,9 +16,10 @@
 use std::collections::BTreeMap;
 
 use efficiency::{RawCounters, WorkloadCost, finalize};
-use log::{debug, trace, warn};
+use log::debug;
 
-use super::{CENT, CENTS_PER_DOLLAR, EfficiencyView, WorkloadRow};
+use super::{EfficiencyView, WorkloadRow};
+use crate::cents;
 use crate::fmt::{format_tokens_human, format_usd};
 use crate::report::Report;
 
@@ -152,90 +153,23 @@ pub(super) fn sorted_workload(map: BTreeMap<String, WorkloadCost>) -> Vec<(Strin
 /// PARTITION of `totals.spend-usd` -- "every dollar landing in exactly one row" -- and which both
 /// prompt templates therefore tell the model to state a total for.
 ///
-/// Rounding each bucket independently does not preserve that. Every bucket is a real unrounded
-/// dollar figure, `format_usd` rounds each to cents on its own, and the cents do not have to add up:
-/// the medium fixture rendered four rows summing to `$671.27` under a sentence asserting they
-/// totaled `$671.28`. The design's acceptance criterion tolerates `$0.01` of arithmetic slack, but
-/// an ARTIFACT that states an exact total its own visible rows contradict is a rendered falsehood,
-/// which is the class this whole design exists to remove.
-///
-/// So the residual is allocated before rendering, by largest remainder: floor every bucket to a
-/// cent, then hand the leftover cents out one at a time to the buckets with the largest discarded
-/// fraction (display order breaking ties). Deterministic, minimal -- no bucket moves by more than a
-/// cent, and the row that absorbs it is the one whose own arithmetic came closest to earning it.
-/// A shortfall is taken back the same way, from the smallest remainders first.
-///
-/// The allocation is capped at ONE cent per bucket, which is the largest drift flooring can create.
-/// A residual bigger than that is not a rounding artifact -- the buckets genuinely disagree with the
-/// headline -- and smearing it across the rows would hide a real defect behind a table that adds up.
-/// That case renders the measured figures untouched and WARNs, so the discrepancy stays visible.
+/// Rounding each bucket independently does not preserve that, so the residual is allocated before
+/// rendering (see [`crate::cents`] for the algorithm and for when it declines). When it declines,
+/// the measured figures are rendered untouched and the discrepancy stays visible.
 pub(super) fn partition_rows(map: BTreeMap<String, WorkloadCost>, total: f64) -> Vec<WorkloadRow> {
     let rows = sorted_workload(map);
     debug!("render::partition_rows: buckets={} total={total:.4}", rows.len());
-    if rows.is_empty() {
-        if total.abs() >= CENT {
-            warn!("render::partition_rows: no agent-type buckets to carry a {total:.2} total");
-        }
-        return Vec::new();
-    }
-
-    // Work in whole cents: the unit the artifact displays, so "the rows sum to the total" is decided
-    // in the same arithmetic the reader does it in.
-    let target = (total * CENTS_PER_DOLLAR).round() as i64;
-    let mut cents: Vec<i64> = Vec::with_capacity(rows.len());
-    let mut remainders: Vec<(f64, usize)> = Vec::with_capacity(rows.len());
-    for (index, (_, wc)) in rows.iter().enumerate() {
-        let exact = wc.cost_usd * CENTS_PER_DOLLAR;
-        let floor = exact.floor();
-        cents.push(floor as i64);
-        remainders.push((exact - floor, index));
-    }
-    let residual = target - cents.iter().sum::<i64>();
-    let budget = rows.len() as i64;
-    if residual.abs() > budget {
-        warn!(
-            "render::partition_rows: agent-type buckets sum to {:.2} against a totals.spend-usd of \
-             {total:.2}; a {} cent gap across {} bucket(s) is more than rounding, so the measured \
-             figures are rendered as-is and the rows will NOT sum to the headline",
-            cents.iter().sum::<i64>() as f64 / CENTS_PER_DOLLAR,
-            residual.abs(),
-            rows.len()
-        );
-        return rows
-            .into_iter()
-            .map(|(name, wc)| WorkloadRow {
-                name,
-                tokens_human: format_tokens_human(wc.tokens),
-                spend: format_usd(wc.cost_usd),
-            })
-            .collect();
-    }
-
-    // Largest remainder first when handing cents OUT, smallest first when taking them back. Index
-    // ascending breaks a tie, which is display order, which is stable across runs.
-    remainders.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.1.cmp(&b.1))
-    });
-    if residual < 0 {
-        remainders.reverse();
-    }
-    let step = if residual < 0 { -1 } else { 1 };
-    for (_, index) in remainders.iter().take(residual.unsigned_abs() as usize) {
-        cents[*index] += step;
-    }
-    trace!(
-        "render::partition_rows: allocated residual={residual} cent(s) across {} bucket(s)",
-        rows.len()
-    );
-
+    let measured: Vec<f64> = rows.iter().map(|(_, wc)| wc.cost_usd).collect();
+    let allocated = cents::allocate(&measured, total);
     rows.into_iter()
-        .zip(cents)
-        .map(|((name, wc), c)| WorkloadRow {
+        .enumerate()
+        .map(|(index, (name, wc))| WorkloadRow {
             name,
             tokens_human: format_tokens_human(wc.tokens),
-            spend: format_usd(c as f64 / CENTS_PER_DOLLAR),
+            spend: match &allocated {
+                Some(cents) => format_usd(cents::to_dollars(cents[index])),
+                None => format_usd(wc.cost_usd),
+            },
         })
         .collect()
 }

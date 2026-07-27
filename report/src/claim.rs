@@ -29,9 +29,11 @@
 //!   definition, and the binary emits no multiplier for prose to copy.
 
 use eyre::{Result, bail};
-use log::debug;
+use log::{debug, trace};
 use regex::Regex;
 use std::sync::OnceLock;
+
+use crate::quotable::QuotableFacts;
 
 /// One rejected claim: what matched, and which rule it broke. Typed rather than a formatted string,
 /// so the caller composes the operator-facing error instead of re-parsing one.
@@ -50,8 +52,11 @@ const MULTIPLIER_RULE: &str = "a multiplier is arithmetic over two figures and t
 
 /// Reject generated prose that made a duration or multiplier claim. `kind` names the render path
 /// for the operator-facing error and WARN, mirroring `reject_foreign_numbers`. Fail closed.
-pub(crate) fn reject_fabricated_claims(kind: &str, prose: &str) -> Result<()> {
-    let violations = fabricated_claims(prose);
+///
+/// `facts` supplies the same identifier exemption the VALUE guard applies: see
+/// [`fabricated_claims`].
+pub(crate) fn reject_fabricated_claims(kind: &str, prose: &str, facts: &QuotableFacts) -> Result<()> {
+    let violations = fabricated_claims(prose, facts);
     debug!(
         "claim::reject_fabricated_claims: kind={kind} prose_chars={} violations={}",
         prose.chars().count(),
@@ -90,7 +95,17 @@ pub(crate) fn reject_fabricated_claims(kind: &str, prose: &str) -> Result<()> {
 ///
 /// Each pattern carries the claim in capture group 1, because the leading [`OPENS_A_FIGURE`] guard
 /// consumes the character before it.
-pub(crate) fn fabricated_claims(prose: &str) -> Vec<Violation> {
+///
+/// A claim lying entirely INSIDE a verbatim identifier occurrence is exempt, mirroring
+/// `QuotableFacts::foreign_figures`. The two guards run over the same prose and must agree about
+/// what a citation is: `summary`, `title` and `notes` are classified `Identifier` precisely so the
+/// prose may quote them, and both prompts instruct it to. An enrich summary reading "spent 3 hours
+/// chasing the flake", quoted verbatim, is a licensed citation on the value side -- and used to be a
+/// HARD render failure on this side, throwing away a paid call over the model doing as it was told.
+/// The exemption is span-scoped, so a fabricated "3 hours" anywhere OUTSIDE a quoted identifier is
+/// still caught.
+pub(crate) fn fabricated_claims(prose: &str, facts: &QuotableFacts) -> Vec<Violation> {
+    let cited = facts.cited_mask(prose);
     let mut out = Vec::new();
     for (pattern, rule) in [
         (duration_pattern(), DURATION_RULE),
@@ -101,6 +116,16 @@ pub(crate) fn fabricated_claims(prose: &str) -> Vec<Violation> {
             let Some(claim) = caps.get(1) else {
                 continue;
             };
+            if cited
+                .get(claim.start()..claim.end())
+                .is_some_and(|span| !span.is_empty() && span.iter().all(|b| *b))
+            {
+                trace!(
+                    "claim::fabricated_claims: {:?} exempt inside a cited identifier",
+                    claim.as_str()
+                );
+                continue;
+            }
             out.push(Violation {
                 text: claim.as_str().to_string(),
                 rule,
@@ -120,14 +145,30 @@ pub(crate) fn fabricated_claims(prose: &str) -> Vec<Violation> {
 /// `crate::regex` has no lookbehind, so the character is consumed and the claim is capture group 1.
 const OPENS_A_FIGURE: &str = r"(?:^|[^\w.,-])";
 
-/// A figure followed by a duration unit the context block never carries. `\s+` is load bearing: it
-/// requires the unit to be a noun the figure counts, so the hyphenated cache-tier adjectives
-/// (`1-hour cache writes`, `5-minute cache writes`) do not match.
+/// What may separate a figure from the unit it counts: horizontal whitespace, optionally spanning
+/// ONE soft line wrap.
+///
+/// Whitespace is required (that is what makes the unit a noun the figure counts, so the hyphenated
+/// cache-tier adjectives `1-hour cache writes` / `5-minute cache writes` do not match), but a plain
+/// `\s+` also crossed blank lines and swallowed whole document structures. It rejected a correct
+/// HTML render whose last table cell read `$24.98` and whose NEXT SECTION HEADING was `Month over
+/// Month`: seven newlines apart, matched as "24.98 months", and the artifact -- a paid call -- was
+/// refused over it. A figure ending one block and a word opening another are not a claim.
+///
+/// One wrap is still allowed, because prose legitimately breaks a line between the number and its
+/// unit; two means they are in different blocks.
+/// `[^\S\r\n]` is "whitespace that is not a line break". Spelled that way rather than `[ \t]`
+/// because the labor pattern compiles under the `x` (verbose) flag, which strips a literal space
+/// from the pattern -- including inside a character class -- and silently left a tab-only separator
+/// that no real prose matches.
+const SEPARATES_A_FIGURE: &str = r"(?:[^\S\r\n]+|[^\S\r\n]*\r?\n[^\S\r\n]*)";
+
+/// A figure followed by a duration unit the context block never carries.
 fn duration_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"(?i){OPENS_A_FIGURE}(\d[\d,]*(?:\.\d+)?\s+(?:hours?|hrs?|minutes?|mins?|seconds?|secs?|weeks?|months?|years?))\b"
+            r"(?i){OPENS_A_FIGURE}(\d[\d,]*(?:\.\d+)?{SEPARATES_A_FIGURE}(?:hours?|hrs?|minutes?|mins?|seconds?|secs?|weeks?|months?|years?))\b"
         ))
         .expect("duration pattern is a valid regex")
     })
@@ -147,8 +188,8 @@ fn labor_day_pattern() -> &'static Regex {
         Regex::new(&format!(
             r"(?ix) {OPENS_A_FIGURE} (
                   \d[\d,]*(?:\.\d+)? [\s-]+ (?:engineer|engineering|developer|dev|person|human|staff|senior) [\s-]+ days?
-                | \d[\d,]*(?:\.\d+)? \s+ days? \s+ of \s+ (?:senior[\s-]*)? (?:engineer\w*|developer|dev|human|manual|staff)
-                | \d[\d,]*(?:\.\d+)? \s+ days? \s+ saved
+                | \d[\d,]*(?:\.\d+)? {SEPARATES_A_FIGURE} days? \s+ of \s+ (?:senior[\s-]*)? (?:engineer\w*|developer|dev|human|manual|staff)
+                | \d[\d,]*(?:\.\d+)? {SEPARATES_A_FIGURE} days? \s+ saved
                 | save[ds]? \s+ \d[\d,]*(?:\.\d+)? \s+ days?
               ) \b"
         ))

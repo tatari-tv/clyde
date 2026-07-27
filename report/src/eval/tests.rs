@@ -156,6 +156,9 @@ fn phase_ten_criterion_three_holds_against_the_committed_goldens() {
 #[test]
 fn no_committed_golden_trips_the_claim_guard() {
     for fixture in fixtures() {
+        // The fixture's OWN context, because the guard now takes the identifier exemption from it:
+        // a quoted enrich summary is a licensed citation on both the value and the claim side.
+        let (_, context, _) = loaded(&fixture);
         for (kind, artifact) in [
             (Kind::Markdown, fixture.golden_markdown.as_ref().unwrap()),
             (Kind::Html, fixture.golden_html.as_ref().unwrap()),
@@ -164,7 +167,7 @@ fn no_committed_golden_trips_the_claim_guard() {
                 Kind::Markdown => artifact.clone(),
                 Kind::Html => crate::render::visible_text(artifact),
             };
-            let claims = crate::claim::fabricated_claims(&prose);
+            let claims = crate::claim::fabricated_claims(&prose, &context.facts);
             assert!(
                 claims.is_empty(),
                 "{} {} golden trips the duration/multiplier guard: {claims:?}",

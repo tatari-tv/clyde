@@ -31,13 +31,6 @@ use template::{load_template, to_markdown};
 use workload::build_efficiency_view;
 
 const STDOUT_SIGIL: &str = "-";
-
-/// Cents in a dollar. The unit [`partition_rows`] allocates in, because it is the unit the artifact
-/// displays and therefore the one a reader adds the rows up in.
-const CENTS_PER_DOLLAR: f64 = 100.0;
-
-/// One cent, in dollars. The threshold below which a partition total is not worth mentioning.
-const CENT: f64 = 0.01;
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
 const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
 pub const DEFAULT_HTML_PROMPT: &str = include_str!("../templates/report-html.pmt");
@@ -323,7 +316,7 @@ pub(crate) fn markdown_from_context(context: &RenderContext, prompt: &str, pins:
     // ...and the class the VALUE guard structurally cannot reach: a fabricated unit on a licensed
     // number ("14 hours of engineering time", where 14 is a real session count somewhere in the
     // window). Claim-shaped, not value-shaped.
-    claim::reject_fabricated_claims("markdown", &prose)?;
+    claim::reject_fabricated_claims("markdown", &prose, &context.facts)?;
     Ok(prose)
 }
 
@@ -367,7 +360,7 @@ pub(crate) fn html_from_context(context: &RenderContext, prompt: &str, pins: Pin
     reject_foreign_numbers("html", &visible, &context.facts)?;
     // The claim-shaped half, over the same visible text: a fabricated unit rides on a licensed
     // number, so the value guard passes it and only the claim guard sees it.
-    claim::reject_fabricated_claims("html", &visible)?;
+    claim::reject_fabricated_claims("html", &visible, &context.facts)?;
     // ...and the numbers `visible_text` throws away are exactly the ones Phase 11 unlocked. The
     // prose guard has never seen an ATTRIBUTE, so the chart unlock gets its own allowlist over the
     // SVG subtree: permitted elements, permitted attributes, and every digit-bearing value matched

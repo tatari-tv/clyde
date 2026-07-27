@@ -491,12 +491,16 @@ fn failure_detail(envelope: &Envelope) -> Option<String> {
         .error
         .as_ref()
         .and_then(|e| e.message.as_deref())
+        // Trim and reject empty BEFORE the fallback, not after. `.or()` fires only on `None`, so an
+        // `error: {"message": ""}` short-circuited it and the `filter` then threw the empty string
+        // away -- leaving no detail at all while a populated `result` sat right there unread. An
+        // empty message carries the same information as an absent one and must fall back the same.
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         // On this failure shape the diagnosis rides in `result`, the same field a SUCCESSFUL call
         // returns the artifact in. Bounded by `preview`, so a truncated artifact echoed back on a
         // half-failed call cannot become the error report.
-        .or(envelope.result.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .or_else(|| envelope.result.as_deref().map(str::trim).filter(|s| !s.is_empty()))
         .map(|s| preview(s.as_bytes()));
     let reason = envelope
         .terminal_reason

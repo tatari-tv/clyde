@@ -237,6 +237,20 @@ impl QuotableFacts {
     /// A byte mask over `prose`, true wherever a verbatim identifier occurrence covers the byte.
     /// One `match_indices` pass per identifier (linear in the prose per identifier, never quadratic
     /// in the prose).
+    /// [`Self::mask`], for a guard outside this module.
+    ///
+    /// The claim guard needs the SAME exemption the value guard has: `summary`, `title` and `notes`
+    /// are classified `Identifier` precisely so the prose may quote them verbatim, and a quoted
+    /// enrich summary reading "spent 3 hours chasing the flake" is a licensed citation, not a
+    /// fabricated duration. Without this the two guards disagreed about the same sentence and the
+    /// claim guard hard-failed a paid render over it.
+    ///
+    /// Returned as the whole byte mask rather than a per-span predicate so a caller checking many
+    /// spans pays the identifier scan ONCE, not once per span.
+    pub(crate) fn cited_mask(&self, prose: &str) -> Vec<bool> {
+        self.mask(prose)
+    }
+
     fn mask(&self, prose: &str) -> Vec<bool> {
         let mut masked = vec![false; prose.len()];
         let mut occurrences = 0usize;

@@ -265,9 +265,14 @@ pub fn check(kind: Kind, artifact: &str, context: &RenderContext, ground: &Groun
 /// U+2014 anywhere in the artifact, including inside markup and CSS: both templates ban it outright
 /// and no attribute or style legitimately needs one.
 fn em_dash(artifact: &str) -> Vec<Finding> {
-    match artifact.char_indices().find(|(_, c)| *c == EM_DASH) {
+    // `chars().position()`, not `char_indices()`: the latter yields BYTE offsets and the excerpt
+    // below counts CHARS, so on any artifact with non-ASCII before the dash the window slid forward
+    // and could omit the offending character entirely -- defeating this module's "a failure NAMES
+    // the offending value" contract. U+2014 is itself 3 bytes, so a second em-dash was already
+    // enough to skew it.
+    match artifact.chars().position(|c| c == EM_DASH) {
         None => Vec::new(),
-        Some((at, _)) => {
+        Some(at) => {
             let around: String = artifact.chars().skip(at.saturating_sub(48)).take(96).collect();
             vec![finding(
                 "em-dash",

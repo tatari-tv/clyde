@@ -259,6 +259,21 @@ pub fn fold(export_path: &Path, operator: Option<&str>, report: &Report) -> Resu
         *billed_by_model.entry(model).or_insert(0.0) += dollars;
     }
 
+    // Round each model FIRST, then total THOSE. The rows below round each model independently, so
+    // totalling the raw values instead let the table disagree with its own headline by a cent: a
+    // real export carries fractional cents (`amount` is a decimal string with six decimals, e.g.
+    // `"41280.000000"`), and several models' fractions accumulate. This is the one block whose job
+    // is quoting an authoritative BILLED figure to a finance reader, and a table that does not add
+    // up to its own total invites exactly the "clyde miscounted" reading `scope_note` exists to
+    // prevent. Rounding in this order makes the two agree by construction rather than by luck.
+    //
+    // Note this is the OPPOSITE of the report's own `totals.spend-usd`, which prices the union once
+    // (ratio-of-sums) because it is deriving a figure. Here the figures are GIVEN by the export and
+    // the only question is what the table shows, so the displayed rows are the source of truth for
+    // the displayed total.
+    for value in billed_by_model.values_mut() {
+        *value = round_cents(*value);
+    }
     let billed_total = round_cents(billed_by_model.values().sum());
     let modeled_total = round_cents(report.totals.spend_usd);
     let delta_total = round_cents(billed_total - modeled_total);

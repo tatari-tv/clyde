@@ -7,6 +7,7 @@
 //! `compute` takes one and [`Aggregates`] carries a `cache` field ([`CacheStats`]). `compute` is
 //! the single aggregate entry point; the counterfactual is the sole sanctioned computation.
 
+use crate::cents;
 use crate::chart::{self, Charts};
 use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::outcome::{self, Outcomes};
@@ -417,6 +418,18 @@ fn compute_by_org(report: &Report) -> Vec<OrgRow> {
         row.spend_percent_of_max = percent_of_max(row.spend_raw, max_spend);
     }
     sort_by_spend_desc(&mut rows, |r| r.spend_raw);
+    // ALWAYS a complete partition, unlike `by-repo`: a session with no repo lands in this table's
+    // own `(unattributed)` org bucket rather than being dropped, so the rows always account for the
+    // whole headline and must always sum to it.
+    reconcile_displayed_spend(
+        "by-org",
+        &mut rows,
+        report.totals.spend_usd,
+        |r| r.spend_raw,
+        |r, s| {
+            r.spend = s;
+        },
+    );
     debug!("aggregate::compute_by_org: rows={} max-spend={}", rows.len(), max_spend);
     rows
 }
@@ -507,6 +520,27 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
         }
     }
     sort_by_spend_desc(&mut rows, |r| r.spend_raw);
+    // `by-repo` is a COMPLETE partition of the headline exactly when every session carries a repo:
+    // the rows then account for the whole window and the artifact presents them that way, so the
+    // displayed column must sum to the displayed total. With even one unattributed session the
+    // table is a genuine subset and must NOT be forced to sum -- adding a cent to a repo row would
+    // attribute money no session's own price supports, which is what `compute_attribution`'s
+    // `(unattributed)` bucket exists to avoid.
+    //
+    // Every fixture in the corpus is fully attributed, and each one shipped a table that disagreed
+    // with its own headline: `$64.86` against `$64.85`, `$49.47` against `$49.48`, `$671.26` against
+    // `$671.28`.
+    if !report.sessions.values().any(|e| e.repo.is_none()) {
+        reconcile_displayed_spend(
+            "by-repo",
+            &mut rows,
+            report.totals.spend_usd,
+            |r| r.spend_raw,
+            |r, s| {
+                r.spend = s;
+            },
+        );
+    }
     debug!(
         "aggregate::compute_by_repo: rows={} rows-with-outcomes={} max-spend={} max-commits={:?} max-prs={:?}",
         rows.len(),
@@ -516,6 +550,39 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
         max_prs
     );
     rows
+}
+
+/// Rewrite each row's DISPLAYED spend string so the column sums to `total` exactly, for a table
+/// that IS a complete partition of the headline. Callers must establish that first; see
+/// [`crate::cents`] for the algorithm and for when it declines to allocate.
+///
+/// Only the display string moves. `spend_raw` keeps its MEASURED value, deliberately, so the bar
+/// geometry (`spend-percent-of-max`) stays proportional to what was actually spent and the sort
+/// order cannot be perturbed by a presentation cent. The two therefore differ by at most a cent on
+/// at most one row, which is why `spend_raw` is `#[serde(skip)]`: it is the raw operand, never a
+/// figure the model sees, so there is no field the artifact can quote them disagreeing through.
+///
+/// `rows` must already be in DISPLAY order: the allocator breaks remainder ties by index, so the
+/// order it receives is what makes the result reproducible.
+fn reconcile_displayed_spend<T>(
+    table: &str,
+    rows: &mut [T],
+    total: f64,
+    raw: impl Fn(&T) -> f64,
+    set: impl Fn(&mut T, String),
+) {
+    let measured: Vec<f64> = rows.iter().map(&raw).collect();
+    let Some(cents) = cents::allocate(&measured, total) else {
+        debug!("aggregate::reconcile_displayed_spend: {table} left as measured");
+        return;
+    };
+    for (row, c) in rows.iter_mut().zip(cents) {
+        set(row, format_usd(cents::to_dollars(c)));
+    }
+    debug!(
+        "aggregate::reconcile_displayed_spend: {table} reconciled {} row(s) to {total:.2}",
+        rows.len()
+    );
 }
 
 /// Fold one repo's attributed sessions into its [`RepoOutcomes`], or `None` when the repo observed

@@ -1298,3 +1298,137 @@ fn unit_costs_are_all_absent_on_an_empty_window() {
         "a window with no sessions, no active days, and no outcomes emits no unit costs at all"
     );
 }
+
+/// Parse a `$1,234.56` display string back to cents, the way a reader adds a column up.
+fn displayed_cents(spends: impl IntoIterator<Item = String>) -> i64 {
+    spends
+        .into_iter()
+        .map(|s| (s.replace(['$', ','], "").parse::<f64>().unwrap() * 100.0).round() as i64)
+        .sum()
+}
+
+/// A report whose per-session spends sum to a CENT MORE than the headline -- the shape every
+/// committed fixture has, because `totals.spend-usd` prices the unioned token counts once while each
+/// session is priced on its own.
+fn report_a_cent_over(sessions: Vec<(&str, SessionEntry)>, headline: f64) -> Report {
+    let mut report = report_with("2026-06-01T00:00:00Z", "2026-06-30T00:00:00Z", sessions);
+    report.totals.spend_usd = headline;
+    report
+}
+
+/// `by-repo` is a complete partition when every session carries a repo, and the artifact presents it
+/// that way -- so the DISPLAYED column must sum to the DISPLAYED headline. Every fixture shipped a
+/// table that did not: `$64.86` against `$64.85`, `$49.47` against `$49.48`, `$671.26` against
+/// `$671.28`.
+#[test]
+fn by_repo_reconciles_to_the_headline_when_every_session_is_attributed() {
+    let report = report_a_cent_over(
+        vec![
+            (
+                "a",
+                entry_sourced(Some("northwind/beacon"), Some(RepoSource::GitOrigin), 40.44),
+            ),
+            (
+                "b",
+                entry_sourced(Some("northwind/halyard"), Some(RepoSource::KnownPath), 24.42),
+            ),
+        ],
+        64.85,
+    );
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+    assert_eq!(
+        displayed_cents(aggregates.by_repo.iter().map(|r| r.spend.clone())),
+        6485,
+        "rows: {:?}",
+        aggregates.by_repo.iter().map(|r| &r.spend).collect::<Vec<_>>()
+    );
+}
+
+/// The single-repo case, which is where the contradiction is starkest: one row IS the window, so a
+/// reader sees `$49.47` sitting under a `$49.48` headline with nothing to explain the gap.
+#[test]
+fn a_lone_repo_row_equals_the_headline_exactly() {
+    let report = report_a_cent_over(
+        vec![(
+            "a",
+            entry_sourced(Some("jrivera/driftwood"), Some(RepoSource::GitOrigin), 49.47),
+        )],
+        49.48,
+    );
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+    assert_eq!(aggregates.by_repo.len(), 1);
+    assert_eq!(aggregates.by_repo[0].spend, "$49.48");
+}
+
+/// BITES: with even ONE unattributed session the table is a genuine SUBSET, not a partition, and
+/// must NOT be forced to sum. Adding a cent to a repo row would attribute money no session's own
+/// price supports -- which is exactly what `compute_attribution`'s `(unattributed)` bucket exists to
+/// avoid.
+#[test]
+fn by_repo_is_left_alone_when_a_session_is_unattributed() {
+    let report = report_a_cent_over(
+        vec![
+            (
+                "a",
+                entry_sourced(Some("northwind/beacon"), Some(RepoSource::GitOrigin), 40.00),
+            ),
+            ("b", entry_sourced(None, None, 24.86)),
+        ],
+        64.85,
+    );
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+    assert_eq!(aggregates.by_repo.len(), 1, "the unattributed session has no row");
+    assert_eq!(
+        aggregates.by_repo[0].spend, "$40.00",
+        "the attributed repo keeps the spend its own sessions measured"
+    );
+}
+
+/// `by-org` is ALWAYS a partition, unlike `by-repo`: an unattributed session lands in this table's
+/// own `(unattributed)` org bucket rather than being dropped, so the rows always account for the
+/// whole headline and must always sum to it.
+#[test]
+fn by_org_reconciles_to_the_headline_even_with_unattributed_sessions() {
+    let report = report_a_cent_over(
+        vec![
+            (
+                "a",
+                entry_sourced(Some("northwind/beacon"), Some(RepoSource::GitOrigin), 40.00),
+            ),
+            ("b", entry_sourced(None, None, 24.86)),
+        ],
+        64.85,
+    );
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+    assert!(
+        aggregates.by_org.iter().any(|r| r.org == UNATTRIBUTED_ORG),
+        "the unattributed session still gets an org bucket"
+    );
+    assert_eq!(
+        displayed_cents(aggregates.by_org.iter().map(|r| r.spend.clone())),
+        6485,
+        "rows: {:?}",
+        aggregates.by_org.iter().map(|r| &r.spend).collect::<Vec<_>>()
+    );
+}
+
+/// Geometry stays proportional to what was MEASURED: the allocation moves a display string, never
+/// an operand, so a presentation cent cannot perturb a bar width or the sort order.
+#[test]
+fn reconciliation_moves_the_display_string_and_not_the_operand() {
+    let report = report_a_cent_over(
+        vec![(
+            "a",
+            entry_sourced(Some("jrivera/driftwood"), Some(RepoSource::GitOrigin), 49.47),
+        )],
+        49.48,
+    );
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+    let row = &aggregates.by_repo[0];
+    assert_eq!(row.spend, "$49.48", "the DISPLAY reconciles");
+    assert!(
+        (row.spend_raw - 49.47).abs() < 1e-9,
+        "the raw operand stays the measured value: {}",
+        row.spend_raw
+    );
+}
