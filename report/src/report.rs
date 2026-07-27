@@ -517,6 +517,9 @@ fn entry_from_scope(
 /// is dropped entirely rather than kept as a `$0` / `(untracked)` row -- the alternative fires the
 /// "the total above understates actual spend" warning on every single run for a model that never
 /// spent a token (Resolved Decisions, "zero-token models are dropped from `totals.models`").
+///
+/// The same predicate governs [`agent_type_costs`]: a bucket that consumed nothing is a meaningless
+/// `$0.00` row in a finance-facing table, whether it is keyed by model or by agent type.
 fn has_tokens(t: &TokenTotals) -> bool {
     t.total != 0
 }
@@ -570,8 +573,10 @@ fn price_models(
 ///   spawned no subagent still accounts for every dollar it spent.
 ///
 /// Untyped subagents keep their own [`UNKNOWN_AGENT_TYPE`] row rather than being dropped or folded
-/// into the residual. An unpriced model contributes its tokens and no `$` (the scope's
-/// `untracked-models` already names it), exactly as [`price_models`] treats the same model.
+/// into the residual, PROVIDED they consumed something: a zero-token bucket is dropped here the same
+/// way [`price_models`] drops a zero-token model. An unpriced model contributes its tokens and no
+/// `$` (the scope's `untracked-models` already names it), exactly as [`price_models`] treats the
+/// same model.
 fn agent_type_costs(
     session_id: &str,
     raw: &RawCounters,
@@ -605,13 +610,25 @@ fn agent_type_costs(
         buckets.insert(MAIN_SESSION_BUCKET.to_string(), residual);
     }
 
+    // A bucket that consumed nothing is not part of the cost story -- the same rule Phase 6 applied
+    // to `totals.models` via [`has_tokens`], now covering this partition too. The live case is an
+    // `unknown` agent-type row at `$0.00` / 0 tokens on the 1,523-session window: an untyped
+    // subagent whose per-model split is all zeroes. Dropping it cannot move the partition sum,
+    // because a zero-token bucket prices to `$0.00`.
+    let before = buckets.len();
+    for by_model in buckets.values_mut() {
+        by_model.retain(|_, t| has_tokens(t));
+    }
+    buckets.retain(|_, by_model| !by_model.is_empty());
+
     let out: BTreeMap<String, WorkloadCost> = buckets
         .into_iter()
         .map(|(name, by_model)| (name, price_bucket(&by_model, pricing)))
         .collect();
     debug!(
-        "report::agent_type_costs: session-id={session_id} buckets={} main-session={}",
+        "report::agent_type_costs: session-id={session_id} buckets={} zero-token-dropped={} main-session={}",
         out.len(),
+        before - out.len(),
         out.contains_key(MAIN_SESSION_BUCKET)
     );
     Ok(out)

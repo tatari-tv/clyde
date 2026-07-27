@@ -945,6 +945,15 @@ carry the rest; every phase has its own.
 - **2026-07-26, zero-token models are dropped from `totals.models`.** The alternative, keeping a
   `<synthetic>` row with zeroes and suppressing only the warning, leaves a meaningless row in a
   finance-facing table. A model that consumed nothing is not part of the cost story.
+- **2026-07-26, SUPERSEDING the entry above: the zero-token rule covers agent-type buckets too.**
+  Scoping it to `totals.models` was too narrow, and Phase 5 found the gap in the live window: the
+  agent-type partition emits an `unknown` row at `$0.00` / 0 tokens, from an untyped subagent whose
+  per-model split is all zeroes. Phase 5 left it alone because the entry above did not reach it.
+  Scott's call: drop it. The rule is now "a bucket that consumed nothing is not part of the cost
+  story", whether the bucket is keyed by MODEL or by AGENT TYPE, and `report::has_tokens` is the one
+  predicate for both. Phase 5's acceptance criterion is unaffected and asserted under the drop: a
+  zero-token bucket prices to `$0.00`, so the partition still sums to `totals.spend-usd` within
+  `$0.01`.
 - **2026-07-26, reconciliation consumes a file.** clyde does not hold an Analytics key. This keeps
   secrets on their established channel and keeps `clyde report` usable by an engineer with no
   org-owner credential.

@@ -624,6 +624,95 @@ fn agent_type_costs_partition_totals_with_a_positive_main_session_residual() {
     );
 }
 
+/// A bucket that consumed nothing is dropped, and the partition is unmoved by the drop.
+///
+/// The live 1,523-session window emits an `unknown` agent-type row at `$0.00` / 0 tokens, from an
+/// untyped subagent whose per-model split is all zeroes. Phase 5 left it alone because the resolved
+/// decision then scoped zero-token dropping to `totals.models`; the decision now covers this
+/// partition too.
+///
+/// BITES: without the drop, `unknown` is present with `tokens == 0`.
+#[test]
+fn a_zero_token_agent_type_bucket_is_dropped_and_the_partition_is_unmoved() {
+    let mut sessions = partition_fixture();
+    // Session A gains a second untyped subagent that consumed nothing at all. It shares the real
+    // untyped subagent's `unknown` bucket, so the bucket must survive with exactly the 50 tokens the
+    // real one spent...
+    let ghost = subagent("aghost-zero", None, raw_with("claude-opus-4-7", small_usage(0)));
+    // ...and a typed subagent that consumed nothing gets NO row of its own.
+    let idle = subagent(
+        "aidle-1",
+        Some("idle-reviewer"),
+        raw_with("claude-opus-4-7", small_usage(0)),
+    );
+    let parent = raw_with(
+        "claude-opus-4-7",
+        TokenUsage {
+            input_tokens: 400,
+            output_tokens: 0,
+            cache_5m_write_tokens: 0,
+            cache_1h_write_tokens: 0,
+            cache_read_tokens: 700,
+        },
+    );
+    let mut subs = vec![
+        subagent(
+            "aimpl-1",
+            Some("phase-implementer"),
+            raw_with("claude-opus-4-7", small_usage(1000)),
+        ),
+        subagent(
+            "aimpl-2",
+            Some("phase-implementer"),
+            raw_with("claude-sonnet-4-5", small_usage(500)),
+        ),
+        subagent(
+            "arev-1",
+            Some("reviewer"),
+            raw_with("claude-opus-4-7", small_usage(200)),
+        ),
+        subagent("aghost-1", None, raw_with("claude-opus-4-7", small_usage(50))),
+    ];
+    subs.push(ghost);
+    subs.push(idle);
+    sessions[0] = collected(SID_A, None, session_eff(SID_A, parent, subs), None);
+
+    let report = build_report(
+        &sessions,
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let a = &report.sessions[SID_A].agent_type_costs;
+    assert!(
+        !a.contains_key("idle-reviewer"),
+        "a bucket that consumed nothing must not emit a $0.00 row: {:?}",
+        a.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        a.get("unknown").unwrap().tokens,
+        50,
+        "a bucket keeps every token it did spend; only the all-zero bucket goes"
+    );
+    for (name, cost) in a {
+        assert!(cost.tokens > 0, "{name} emitted a zero-token row");
+    }
+
+    // Phase 5's acceptance criterion, re-asserted under the drop: a zero-token bucket contributes
+    // $0.00, so removing it cannot move the sum.
+    let partition = agent_type_spend(&report);
+    assert!(
+        (partition - report.totals.spend_usd).abs() < 0.01,
+        "agent-type rows must still sum to totals.spend-usd: {partition} vs {}",
+        report.totals.spend_usd
+    );
+}
+
 /// The partition holds under `--no-rollup` too: the residual row carries `(main-session)` and each
 /// subagent row carries its own type, so the exploded view still accounts for exactly the total.
 #[test]
