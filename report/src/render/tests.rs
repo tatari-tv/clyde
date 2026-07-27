@@ -1465,6 +1465,8 @@ mod geometry;
 #[cfg(test)]
 mod narrative;
 #[cfg(test)]
+mod notes;
+#[cfg(test)]
 mod prior;
 #[cfg(test)]
 mod quotable;

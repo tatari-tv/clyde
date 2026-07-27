@@ -1596,3 +1596,55 @@ what rules size out.
   search for the normalized token, so `"0.8"` matched inside `$80.81` and quoted a table row that
   had nothing to do with the offending sentence. Not fixed here (out of scope for this brief), but
   it costs a re-run to find the real claim.
+
+## Audit fix (2026-07-27): the `notes` context field ships
+
+The design's API-Design context-additions list names `notes` and states why (`Report.notes` exists
+today and never reaches the prompt, so the M2 window statement and any merge caveat are invisible to
+the reader), but the Implementation Plan never assigned it to a phase, so nothing built it. Phase 9
+recorded the gap as an open question. This closes it.
+
+### Design decisions
+- **The field carries the notes as-is, borrowed** -- `render::build_notes`, `ContextBlock::notes:
+  Vec<&str>`. `Report.notes` is already a list of display sentences (`report::WINDOW_NOTE`, and one
+  line per field a merge omitted), so there is nothing to format; inventing a joined string would
+  have destroyed the one-caveat-per-line shape the merge path writes.
+- **Absent, never empty** -- `#[serde(skip_serializing_if = "Vec::is_empty")]`, matching
+  `reconciliation` / `prior` / `outcomes`, so both prompts' "omit the section" rule needs no
+  empty-vs-absent special case.
+- **`notes` is classified as an IDENTIFIER, not a figure** -- `quotable::IDENTIFIER_KEYS`. The
+  default classification is `Figure`, and the M2 note carries `M2`, `v2` and `v1`, so leaving it to
+  the default would have licensed a bare `1` and `2` as prose figures and quietly widened the
+  Phase 10 narrowing. As an identifier the sentence is quotable verbatim and its digits are exempt
+  only inside that verbatim occurrence, which is exactly the treatment `title` / `summary` / `tags`
+  already get for the same reason.
+- **Both templates changed** (prompt-edit ledger): each documents `notes` as optional, requires each
+  note verbatim (never paraphrased, never with its numbers restated), and places them in a short
+  Methodology block at the END of the artifact -- the end, because a caveat about how the window
+  selects sessions is footnote material, unlike `basis.note`, which is a header line because it
+  qualifies the headline figure itself.
+
+### Deviations
+- The four new tests live in `report/src/render/tests/notes.rs` rather than `render/tests.rs`: the
+  additions pushed that file to 1,567 lines against the house 1,500-line cap, and `otto ci`'s
+  `bloat` task failed on it. Same tests, new submodule beside the existing `geometry` / `narrative` /
+  `prior` / `quotable` / `reconcile` test modules.
+
+### Tradeoffs
+- **Methodology block at the end vs a header caveat.** The end keeps the header to the one sentence
+  that qualifies the money (`basis.note`); the cost is that a reader who stops early never sees the
+  window definition. Acceptable: the notes explain a boundary-session count differing from a v1
+  report, which is a question a reader only asks after reading the numbers.
+
+### Open questions
+- None.
+
+### Verification
+- `otto ci`: green (fmt, clippy, check, test, whitespace, bloat).
+- Four new tests: notes present (verbatim, one entry per note), notes absent (no key at all), the
+  quotable classification (verbatim citation passes, a number lifted out of a note is rejected), and
+  the two-template ledger.
+- Mutation-checked the classification test BITES: removing `"notes"` from
+  `quotable::IDENTIFIER_KEYS` makes the lifted `8675309` a licensed figure and
+  `a_notes_digits_are_quotable_only_inside_the_verbatim_sentence` fails on exactly that assertion;
+  restored and reconfirmed green.

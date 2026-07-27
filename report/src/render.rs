@@ -603,6 +603,13 @@ struct ContextBlock<'a> {
     /// Phase 6): what it is priced against, whether it is an invoice (never), and which feed
     /// resolved it. `basis.note` is the required, verbatim header disclosure both templates carry.
     basis: Basis,
+    /// How this artifact was produced, one pre-formatted sentence per note, straight from
+    /// [`Report::notes`]: always the M2 window statement, plus one line per field a MERGE could not
+    /// carry. Absent entirely (never an empty list) when the report recorded none, so the prompt's
+    /// "omit it" rule needs no empty-vs-absent special case. Without this the reader never learns
+    /// the window is session-level or that a merged field was omitted (design "API Design", `notes`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<&'a str>,
     period: PeriodView,
     totals: TotalsView,
     /// How much of `totals.spend` carries a repo and on what evidence, one row per `repo-source`
@@ -926,6 +933,7 @@ pub(crate) fn build_context_block(
         persona: persona.unwrap_or(&default_persona),
         options: ContextOptions { include_tradeoffs },
         basis: build_basis(pricing),
+        notes: build_notes(report),
         period,
         totals: build_totals_view(report),
         attribution: aggregate::compute_attribution(report),
@@ -951,6 +959,15 @@ pub(crate) fn build_context_block(
         facts.figure_count()
     );
     Ok(RenderContext { json, facts })
+}
+
+/// The artifact's production notes, borrowed as-is: [`Report::notes`] is already a list of
+/// display sentences (the M2 window statement, and one line per field a merge omitted), so there is
+/// nothing to format. An empty list serializes to no key at all.
+fn build_notes(report: &Report) -> Vec<&str> {
+    let notes: Vec<&str> = report.notes.iter().map(String::as_str).collect();
+    debug!("render::build_notes: notes={}", notes.len());
+    notes
 }
 
 fn build_period_view(report: &Report, aggregates: &Aggregates) -> PeriodView {

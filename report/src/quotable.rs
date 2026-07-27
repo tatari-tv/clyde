@@ -56,7 +56,9 @@ const YEAR_CHARS: usize = 4;
 /// Leaf keys whose value is an IDENTIFIER: citable verbatim, never decomposed into free figures.
 /// `number` is `prs[].number` (the only `number` key in the block); `title`/`summary`/`tags` are
 /// free text authored by the enrich pass, so a number inside one is evidence of nothing and must not
-/// license the same number in a headline.
+/// license the same number in a headline. `notes` is free text for the same reason: the M2 window
+/// sentence carries `M2`, `v2` and `v1`, and classifying it as a figure would hand the prose a bare
+/// `1` and `2` -- quotable verbatim, never decomposed.
 const IDENTIFIER_KEYS: &[&str] = &[
     "short-id",
     "begin",
@@ -69,6 +71,7 @@ const IDENTIFIER_KEYS: &[&str] = &[
     "title",
     "summary",
     "tags",
+    "notes",
 ];
 
 /// Leaf keys whose value is chart GEOMETRY only, never prose: the `viewbox` and `points` strings

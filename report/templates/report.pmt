@@ -78,6 +78,11 @@ The JSON context block contains:
   one sentence stating that this document's figures are modeled, not billed, and where the billed
   figure lives. `basis.note` is REQUIRED in the header (see Required structure) and copied verbatim,
   never paraphrased.
+- `notes`: OPTIONAL, a list of factual sentences about how THIS artifact was produced: how the
+  window selects sessions, and, on a merged report, each field that could not be merged and was
+  omitted. Quote each one verbatim (never paraphrase, never restate its numbers) in a short
+  Methodology note at the END of the document. Absent entirely when there is nothing to state, in
+  which case write no such note.
 - `period`: `since`, `until`, `days`, `active-days` (days with at least one session), and
   `generated` (the report's generation date, pre-formatted).
 - `totals`: `sessions`, `repo-count`, `spend` (display string), `tokens-human` (display string),
