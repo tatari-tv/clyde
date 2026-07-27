@@ -1084,43 +1084,6 @@ fn build_context_block_carries_tag_set_coverage_strings() {
     );
 }
 
-/// A zero-spend window renders `0.0%`, never a `NaN` percent -- matching `compute_attribution`'s
-/// precedent for the same divide-by-zero.
-#[test]
-fn coverage_note_on_a_zero_total_is_zero_percent_not_nan() {
-    assert_eq!(coverage_note(0.0, 0.0), "$0.00 of $0.00 (0.0%), embedded-price basis");
-}
-
-/// Phase 5's prompt-edit ledger: BOTH templates flip the agent-type framing from "attribution you
-/// must never reconcile" to "a partition of the total", and keep the non-reconcilable framing for
-/// the by-skill / by-mcp TAG sets only.
-#[test]
-fn both_templates_declare_agent_type_costs_a_partition() {
-    for (name, tpl) in [("report.pmt", DEFAULT_PROMPT), ("report-html.pmt", DEFAULT_HTML_PROMPT)] {
-        assert!(
-            !tpl.contains("never reconcile"),
-            "{name} must no longer forbid reconciling the agent-type rows"
-        );
-        assert!(
-            tpl.contains("TRUE PARTITION of `totals.spend`"),
-            "{name} must state that agent-type-costs partitions the total"
-        );
-        assert!(
-            tpl.contains("(main-session)"),
-            "{name} must name the residual row so the model can explain it"
-        );
-        // The tag sets keep the caveat, and gain the coverage strings that replace reconciliation.
-        assert!(
-            tpl.contains("cannot be reconciled against it"),
-            "{name} must keep the non-reconcilable framing for by-skill / by-mcp"
-        );
-        assert!(
-            tpl.contains("efficiency.by-skill-coverage") && tpl.contains("efficiency.by-mcp-coverage"),
-            "{name} must license both coverage strings"
-        );
-    }
-}
-
 /// Phase 7's prompt-edit ledger: BOTH templates license the `unit-costs` block, both carry the
 /// EXACT ratio wording (the one word between an honest ratio and a fabricated price tag), both ban
 /// the price-tag phrasings by name, and both document the per-repo `outcomes` a spend-against-output
@@ -1462,6 +1425,9 @@ fn build_context_block_carries_line_counters_present_if_nonzero() {
 
 #[cfg(test)]
 mod geometry;
+
+mod templates;
+
 #[cfg(test)]
 mod narrative;
 #[cfg(test)]
@@ -1472,3 +1438,4 @@ mod prior;
 mod quotable;
 #[cfg(test)]
 mod reconcile;
+mod workload;

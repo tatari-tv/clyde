@@ -32,34 +32,45 @@ fn loaded(fixture: &Fixture) -> (Report, RenderContext, Ground) {
     (report, context, ground)
 }
 
-/// **Design Phase 13, success criterion 1:** the mechanical layer runs on all three goldens,
-/// offline and green.
+/// **Design Phase 13, success criterion 1:** the mechanical layer runs on all three goldens, both
+/// formats, offline and green.
+///
+/// Accumulates across EVERY fixture and format before asserting, rather than panicking on the first
+/// failure: a stale golden usually has siblings, and regenerating them one `otto ci` run at a time
+/// costs a paid render per cycle to learn what one run could have said outright.
 #[test]
 fn every_committed_golden_passes_the_mechanical_layer() {
+    let mut failures: Vec<String> = Vec::new();
     for fixture in fixtures() {
         let (_, context, ground) = loaded(&fixture);
-        let markdown = fixture
-            .golden_markdown
-            .as_ref()
-            .unwrap_or_else(|| panic!("fixture {} must commit a markdown golden", fixture.name));
-        let findings = mechanical::check(Kind::Markdown, markdown, &context, &ground, &fixture.spec);
-        assert!(
-            findings.is_empty(),
-            "markdown golden for {} failed the mechanical layer: {findings:#?}",
-            fixture.name
-        );
-
-        let html = fixture
-            .golden_html
-            .as_ref()
-            .unwrap_or_else(|| panic!("fixture {} must commit an html golden", fixture.name));
-        let findings = mechanical::check(Kind::Html, html, &context, &ground, &fixture.spec);
-        assert!(
-            findings.is_empty(),
-            "html golden for {} failed the mechanical layer: {findings:#?}",
-            fixture.name
-        );
+        for (kind, artifact) in [
+            (
+                Kind::Markdown,
+                fixture
+                    .golden_markdown
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("fixture {} must commit a markdown golden", fixture.name)),
+            ),
+            (
+                Kind::Html,
+                fixture
+                    .golden_html
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("fixture {} must commit an html golden", fixture.name)),
+            ),
+        ] {
+            let findings = mechanical::check(kind, artifact, &context, &ground, &fixture.spec);
+            if !findings.is_empty() {
+                failures.push(format!("{} {} golden: {findings:#?}", fixture.name, kind.as_str()));
+            }
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "{} golden(s) failed the mechanical layer:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 /// **Design Phase 13, success criterion 3:** deliberately corrupting a golden's narrative (swap a

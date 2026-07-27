@@ -37,6 +37,8 @@ const PRIOR_FILE: &str = "prior.json";
 const ANALYTICS_FILE: &str = "analytics.json";
 const GOLDEN_MARKDOWN: &str = "golden.md";
 const GOLDEN_HTML: &str = "golden.html";
+const REJECTED_MARKDOWN: &str = "rejected.md";
+const REJECTED_HTML: &str = "rejected.html";
 
 /// A citation shape a fixture's golden must actually exercise. These are the two false positives a
 /// narrowed quotable-facts whitelist causes first (design Phase 10's success criterion 3), so at
@@ -214,6 +216,17 @@ impl Fixture {
     /// and price against the live feed.
     pub fn golden_path(&self, html: bool) -> PathBuf {
         self.dir.join(if html { GOLDEN_HTML } else { GOLDEN_MARKDOWN })
+    }
+
+    /// Where a render that FAILED its mechanical checks is parked under `--write-goldens`.
+    ///
+    /// A golden is a known-good artifact, so a failing render must never become one -- but it was a
+    /// paid model call, and discarding it left the operator with a finding like "6 x-axis labels
+    /// against 7 points" and no artifact to look at. Diagnosing then costs another render of the
+    /// same fixture. Parking it beside the golden makes the next step a `diff` instead of a
+    /// purchase. Gitignored: it is scratch evidence, never committed.
+    pub fn rejected_path(&self, html: bool) -> PathBuf {
+        self.dir.join(if html { REJECTED_HTML } else { REJECTED_MARKDOWN })
     }
 }
 

@@ -93,6 +93,23 @@ struct Work {
     tags: &'static [&'static str],
 }
 
+/// Which [`WORK`] entry each of the ten equiprobable draws selects, and therefore the medium
+/// fixture's repo mix: `openpipe-oss/quill` (index 6) four times in ten, every other repo once.
+///
+/// Spelled out rather than computed, because the computed form lied. It was
+/// `rng.range(0, 9).min(WORK.len() - 1)` under a comment claiming the draw was "weighted toward the
+/// first repos", but the clamp folds the four overflow draws (6..=9) onto the LAST entry -- the
+/// opposite end of the table. The observed mix is `quill` at ~39% of sessions, the top by-repo row
+/// in every medium render, reached by a clamp nobody chose.
+///
+/// The DISTRIBUTION is kept as-is: one dominant repo over a long tail is exactly the shape the
+/// coverage dimension needs to score against, so it earns its place; only the claim about which end
+/// of the table is heavy was false. Changing the mix would rewrite `report.json` and force a paid
+/// re-render of both medium goldens for no gain in what the fixture tests. Explicit also removes the
+/// footgun: an eighth `WORK` entry silently shifted the whole distribution under the clamp, and now
+/// it trips the assertion below instead.
+const WORK_DRAW: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 6, 6, 6];
+
 /// Every invented repo, with its own work. Three orgs: the employer, the personal one, and a
 /// third-party open-source project.
 const WORK: &[Work] = &[
@@ -230,6 +247,27 @@ const WORK: &[Work] = &[
         tags: &["release", "docs"],
     },
 ];
+
+/// Every [`WORK`] entry must be reachable and every draw must be in range: a repo the generator can
+/// never pick is dead fixture data, and an out-of-range draw is a panic on the next `--write-goldens`
+/// run. Enforced at compile time so adding a `WORK` entry cannot silently drop it from the mix (the
+/// exact failure the `.min(WORK.len() - 1)` clamp used to hide).
+const _: () = {
+    assert!(WORK_DRAW.len() == 10, "the draw table backs a 0..=9 range");
+    let mut seen = [false; 7];
+    assert!(seen.len() == WORK.len(), "one reachability flag per WORK entry");
+    let mut i = 0;
+    while i < WORK_DRAW.len() {
+        assert!(WORK_DRAW[i] < WORK.len(), "every draw indexes a real WORK entry");
+        seen[WORK_DRAW[i]] = true;
+        i += 1;
+    }
+    let mut j = 0;
+    while j < seen.len() {
+        assert!(seen[j], "every WORK entry must be reachable by some draw");
+        j += 1;
+    }
+};
 
 /// The work belonging to one repo. Panics on an unknown slug, which can only be a typo in this
 /// module: every caller passes a `WORK` entry's own `repo`.
@@ -686,9 +724,7 @@ fn medium_sessions(since: DateTime<Utc>, count: usize, rng: &mut Rng, pricing: &
     ];
     let mut sessions = Vec::new();
     for index in 0..count {
-        // Weighted toward the first repos so `by-repo` has a clear top three for the coverage
-        // dimension to be scored against, rather than a flat distribution with no story.
-        let pick = (rng.range(0, 9) as usize).min(WORK.len() - 1);
+        let pick = WORK_DRAW[rng.range(0, WORK_DRAW.len() as u64 - 1) as usize];
         let (work, source) = (&WORK[pick], sources[pick]);
         let task = rng.pick(work.tasks);
         let models: Vec<(&str, u64)> = match index % 5 {

@@ -1,12 +1,15 @@
-You are writing a recurring monthly Claude Enterprise usage report. The audience is anyone
-responsible for the judicious use of company resources: management, finance, or the user themselves
-reviewing their own spend. The report presents, accurately, what the AI spend produced over the
-period and how efficiently the tokens were used, and lets the reader judge for themselves. You
-present the data; you never argue that the spend was justified.
+You are writing a Claude Enterprise usage report for the period `period.since` to `period.until`.
+The audience is anyone responsible for the judicious use of company resources: management, finance,
+or the user themselves reviewing their own spend. The report presents, accurately, what the AI spend
+produced over the period and how efficiently the tokens were used, and lets the reader judge for
+themselves. You present the data; you never argue that the spend was justified.
 
-This is a recurring monthly report. The reader will see a similar report every month. Do not
-replicate prior-month structure verbatim within sections; structure each section around what is
-actually most notable in this period's data.
+The window is whatever `period` says it is: a week, a month, a quarter, an arbitrary range. Nothing
+in the context states how often this report is produced, so nothing in the artifact may state or
+imply a cadence. This report may be one of a series or the only one ever run; you do not know which.
+
+The reader may have seen a report like this before, so do not replicate a stock structure verbatim
+within sections; structure each section around what is actually most notable in this period's data.
 
 Output ONLY the markdown document. No preamble, no commentary, no fenced code block wrapping the
 whole output.
@@ -425,11 +428,12 @@ specific to this period's data (cite the repo, or a session's `summary`/`title`)
 complaints.
 
 ## Forward-Looking
-Two or three items. What's changing next month, phrased as factual statements about projects in
-flight: "X is past initial design and entering implementation", "Y is approaching a stable
-release". Use in-flight signals from late-period sessions (handoff docs, mid-execution design
-phases). No predictions about whether next month's spend will be higher or lower. If nothing
-notable is changing, omit this section.
+Two or three items. What is in flight as the period closes, phrased as factual statements about
+projects underway: "X is past initial design and entering implementation", "Y is approaching a
+stable release". Use in-flight signals from late-period sessions (handoff docs, mid-execution design
+phases). No predictions about whether spend will be higher or lower after the window, and no claim
+about when or whether another report follows -- the context carries no cadence. If nothing notable
+is changing, omit this section.
 
 ## Conclusion
 Two sentences. Factual restatement of what shipped and what is in flight. No "the spend is
@@ -438,12 +442,24 @@ justified" claim, no trajectory verdicts, no ROI language.
 # Strict rules
 
 - Output ONLY the markdown document. Nothing before, nothing after.
+- Every section heading is a `## ` line whose text is EXACTLY the section title given above, with no
+  descriptive tail and no colon-and-subtitle. Put framing sentences in the body. The HTML template
+  carries the identical list for its `<h2>` text, so the two formats name a section the same way and
+  a fixture spec can mean one thing for both; a renamed heading reads downstream as an omitted
+  section.
 - `**Pricing Basis:** <basis.note>` is a REQUIRED header line, copied verbatim from `basis.note`.
   Every render carries it; never omit it, never rephrase it.
 - Every number is copied verbatim from the context block (Hard prohibition 1). Numbers not in
   the context (hours, days of work, headcount equivalents) are NEVER fabricated.
 - Outcome claims (commits, PRs, pages, tickets, messages, lines) come only from `outcomes` fields.
-  If `outcomes` is absent, make no outcome claims and omit the Quantified Output section.
+  If `outcomes` is absent, OR `outcomes.totals` is present but carries no fields, make no outcome
+  claims and omit the Quantified Output section entirely, heading included. Fields are
+  present-if-nonzero, so an empty `outcomes.totals` means nothing was observed; it does not mean
+  zero was observed, and a section explaining that nothing was recorded is still that section.
+- The period is exactly `period.since` to `period.until` and NOTHING states or implies a reporting
+  CADENCE. No "this monthly report", no "next month", no "quarterly", no "a similar one follows next
+  period", no "the month's work". Whether this report recurs, and how often, is not in the context
+  block, so it is not yours to say. Describe the window by its dates or as "the period".
 - `unit-costs` figures are ratios of two stated figures, never prices. "A ratio of $X per commit"
   is permitted; "each commit cost $X" is not, in any section, in any wording.
 - The Reconciliation section is ALWAYS present, present or absent flag alike; `reconciliation-status`

@@ -249,8 +249,10 @@ pub fn check(kind: Kind, artifact: &str, context: &RenderContext, ground: &Groun
     findings.extend(cited_repos(&prose, ground));
     findings.extend(cited_dates(&prose, ground));
     findings.extend(cited_titles(&prose, context));
+    // Sections describe the fixture's DATA, so they bind BOTH renders. Citations stay markdown-only:
+    // they are a prose property the markdown artifact is the eval's subject for.
+    findings.extend(sections(kind, artifact, spec));
     if kind == Kind::Markdown {
-        findings.extend(sections(artifact, spec));
         findings.extend(citations(artifact, ground, spec));
     }
     if kind == Kind::Html {
@@ -376,7 +378,7 @@ fn cited_titles(prose: &str, context: &RenderContext) -> Vec<Finding> {
         .filter_map(|c| c.get(1))
         .map(|m| m.as_str().trim())
         .filter(|span| span.chars().count() >= MIN_QUOTED_CHARS && span.split_whitespace().count() >= MIN_QUOTED_WORDS)
-        .filter(|span| !haystack.contains(&span.to_lowercase()) && seen.insert((*span).to_string()))
+        .filter(|span| !cites_the_context(span, &haystack) && seen.insert((*span).to_string()))
         .map(|span| {
             finding(
                 "cited-titles",
@@ -386,19 +388,46 @@ fn cited_titles(prose: &str, context: &RenderContext) -> Vec<Finding> {
         .collect()
 }
 
-/// Required and forbidden markdown sections, matched on the `## <name>` heading line.
-fn sections(markdown: &str, spec: &Spec) -> Vec<Finding> {
-    let headings: BTreeSet<&str> = markdown
-        .lines()
-        .filter_map(|l| l.strip_prefix("## "))
-        .map(str::trim)
-        .collect();
+/// Whether a quoted span is a verbatim citation of the context, allowing for the SENTENCE
+/// punctuation that English puts inside the closing quote mark.
+///
+/// American style carries a comma or period inside the quotes, so a real title cited mid-sentence
+/// arrives as `"Split the driftwood parser module,"` while the context holds `Split the driftwood
+/// parser module`. A bare `contains` calls that a fabricated citation and HARD-FAILS a render that
+/// quoted the data correctly -- observed three times in one live render, at the cost of the whole
+/// paid artifact. This is precisely the false positive the module docs name as the price of the
+/// verbatim rule, so it is paid for punctuation and nothing else: only trailing `,.;:!?` are
+/// trimmed, and the remaining span must still appear verbatim. A fabricated title does not become
+/// real by dropping its comma.
+fn cites_the_context(span: &str, haystack_lowercase: &str) -> bool {
+    let lowered = span.to_lowercase();
+    if haystack_lowercase.contains(&lowered) {
+        return true;
+    }
+    let trimmed = lowered.trim_end_matches([',', '.', ';', ':', '!', '?']).trim_end();
+    trimmed != lowered && !trimmed.is_empty() && haystack_lowercase.contains(trimmed)
+}
+
+/// Required and forbidden sections, in EITHER format.
+///
+/// A fixture's `require-sections` / `forbid-sections` describe its DATA -- "nothing was observed, so
+/// nothing may be claimed" -- so they bind both renders equally. This ran on markdown only, and the
+/// HTML golden drifted in exactly the space that left unwatched: the pathological fixture forbids
+/// `Quantified Output` (its `outcomes.totals` is present with every field absent), `golden.md`
+/// omitted it, and `golden.html` rendered the whole section with nothing checking.
+fn sections(kind: Kind, artifact: &str, spec: &Spec) -> Vec<Finding> {
+    let headings = section_headings(kind, artifact);
+    debug!(
+        "mechanical::sections: kind={} headings={}",
+        kind.as_str(),
+        headings.len()
+    );
     let mut findings = Vec::new();
     for want in &spec.require_sections {
         if !headings.contains(want.as_str()) {
             findings.push(finding(
                 "required-sections",
-                format!("the render omitted the required `## {want}` section"),
+                format!("the {} render omitted the required `{want}` section", kind.as_str()),
             ));
         }
     }
@@ -406,11 +435,40 @@ fn sections(markdown: &str, spec: &Spec) -> Vec<Finding> {
         if headings.contains(banned.as_str()) {
             findings.push(finding(
                 "forbidden-sections",
-                format!("the render emitted `## {banned}`, which this fixture's data cannot support"),
+                format!(
+                    "the {} render emitted `{banned}`, which this fixture's data cannot support",
+                    kind.as_str()
+                ),
             ));
         }
     }
     findings
+}
+
+/// The section names an artifact declares: `## <name>` lines in markdown, `<h2>` text in HTML. Both
+/// templates specify their sections at that one level, so a fixture spec names them once and this
+/// resolves the format difference.
+fn section_headings(kind: Kind, artifact: &str) -> BTreeSet<String> {
+    match kind {
+        Kind::Markdown => artifact
+            .lines()
+            .filter_map(|l| l.strip_prefix("## "))
+            .map(|h| h.trim().to_string())
+            .collect(),
+        Kind::Html => h2_pattern()
+            .captures_iter(artifact)
+            .filter_map(|c| c.get(1))
+            // The heading may carry inline markup (`<code>`, `<span>`); compare the TEXT, which is
+            // what the spec names and what a reader sees.
+            .map(|m| visible_text(m.as_str()).trim().to_string())
+            .filter(|h| !h.is_empty())
+            .collect(),
+    }
+}
+
+fn h2_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?is)<h2\b[^>]*>(.*?)</h2>").expect("h2 pattern is a valid regex"))
 }
 
 /// The citation shapes the fixture requires its golden to exercise (design Phase 10's criterion 3,
@@ -450,7 +508,86 @@ fn chart_geometry(html: &str, context: &RenderContext, ground: &Ground) -> Vec<F
              geometry the binary computed reached the model and was dropped",
         ));
     }
+    findings.extend(chart_labels(html));
     findings
+}
+
+/// Every line chart's x-axis strip must carry exactly one label per data point.
+///
+/// The `points` string is copied byte for byte and validated against the context, but the axis
+/// labels sit OUTSIDE the `<svg>` (they would need `x`/`y` coordinates inside it) and are authored
+/// freely. The strip is flex-distributed, so its labels are positioned by COUNT: drop one and every
+/// label after the gap slides onto the wrong point. The small fixture's golden did exactly that --
+/// seven points, six labels, `2026-03-05` missing from a series whose own caption names that day --
+/// and no check saw it, because the geometry allowlist only ever looked inside the `<svg>`.
+fn chart_labels(html: &str) -> Vec<Finding> {
+    let points: Vec<usize> = points_pattern()
+        .captures_iter(html)
+        .filter_map(|c| c.get(1))
+        .map(|m| m.as_str().split_whitespace().count())
+        .collect();
+    let strips: Vec<usize> = xlabels_pattern()
+        .captures_iter(html)
+        .filter_map(|c| c.get(1))
+        .map(|m| span_pattern().find_iter(m.as_str()).count())
+        .collect();
+    debug!(
+        "mechanical::chart_labels: polylines={} label-strips={}",
+        points.len(),
+        strips.len()
+    );
+    // Nothing to pair. An artifact with no charts is out of scope, and one that renders a chart with
+    // no axis strip AT ALL is a different (visible, judge-scored) defect than the silent
+    // mispositioning this check exists to catch -- and the templates never spell out that a strip is
+    // mandatory, so inventing that requirement here would be the guard overreaching.
+    if points.is_empty() || strips.is_empty() {
+        return Vec::new();
+    }
+    if points.len() != strips.len() {
+        return vec![finding(
+            "chart-labels",
+            format!(
+                "the artifact draws {} line chart(s) but carries {} x-axis label strip(s); each \
+                 chart needs its own strip or its labels belong to another chart",
+                points.len(),
+                strips.len()
+            ),
+        )];
+    }
+    points
+        .iter()
+        .zip(&strips)
+        .enumerate()
+        .filter(|(_, (p, l))| p != l)
+        .map(|(index, (p, l))| {
+            finding(
+                "chart-labels",
+                format!(
+                    "line chart {} plots {p} point(s) against {l} x-axis label(s); the strip is \
+                     flex-distributed, so every label after the gap sits on the wrong point",
+                    index + 1
+                ),
+            )
+        })
+        .collect()
+}
+
+fn points_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?is)<polyline\b[^>]*\bpoints\s*=\s*"([^"]*)""#).expect("points pattern"))
+}
+
+fn xlabels_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?is)<div\b[^>]*\bclass\s*=\s*"[^"]*\bxlabels\b[^"]*"[^>]*>(.*?)</div>"#)
+            .expect("xlabels pattern")
+    })
+}
+
+fn span_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?is)<span\b[^>]*>").expect("span pattern"))
 }
 
 /// The document past its leading `---` YAML frontmatter block, or the whole document when it has

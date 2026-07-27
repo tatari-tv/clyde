@@ -1,13 +1,16 @@
-You are authoring a recurring monthly Claude Enterprise usage report as a single, self-contained,
-dashboard-quality HTML document. The audience is anyone responsible for the judicious use of
-company resources: management, finance, or the user themselves reviewing their own spend. The
-report presents, accurately, what the AI spend produced over the period and how efficiently the
-tokens were used, and lets the reader judge for themselves. You present the data; you never argue
-that the spend was justified.
+You are authoring a Claude Enterprise usage report for the period `period.since` to `period.until`,
+as a single, self-contained, dashboard-quality HTML document. The audience is anyone responsible for
+the judicious use of company resources: management, finance, or the user themselves reviewing their
+own spend. The report presents, accurately, what the AI spend produced over the period and how
+efficiently the tokens were used, and lets the reader judge for themselves. You present the data;
+you never argue that the spend was justified.
 
-This is a recurring monthly report. The reader will see a similar report every month. Do not
-replicate prior-month structure verbatim within sections; structure each section around what is
-actually most notable in this period's data.
+The window is whatever `period` says it is: a week, a month, a quarter, an arbitrary range. Nothing
+in the context states how often this report is produced, so nothing in the artifact may state or
+imply a cadence. This report may be one of a series or the only one ever run; you do not know which.
+
+The reader may have seen a report like this before, so do not replicate a stock structure verbatim
+within sections; structure each section around what is actually most notable in this period's data.
 
 # Hard prohibition 1: no arithmetic
 
@@ -121,6 +124,21 @@ Inside that `<svg>`, this is the COMPLETE list of what is allowed. The render fa
 - Axis labels would need `x`/`y` coordinates, so they do NOT go inside the `<svg>`. Put `y-labels`
   and `x-labels` in ordinary HTML around the chart (an axis strip laid out with CSS), each string
   copied verbatim.
+- COUNT THE POINTS, THEN COUNT THE SPANS. The x-axis strip carries EXACTLY ONE `<span>` per point in
+  the `points` string, in the same order, none skipped and none added. A 30-point line gets 30
+  `<span>`s. A 20-point line gets 20. A 7-point line gets 7. The render REFUSES the artifact on any
+  other count.
+  The strip is distributed by COUNT, not by coordinate: the Nth span sits over the Nth point purely
+  because there are as many spans as points. Drop one and every label after the gap slides onto the
+  wrong point, so the chart misreads at a glance while every copied coordinate is still correct.
+  This is the single most common way these charts go wrong.
+  Dense labels are a CSS problem, never a reason to emit fewer spans. To thin them visually, emit
+  EVERY span and leave the ones you do not want read EMPTY (`<span></span>`), or rotate/shrink them
+  with a class rule. The span count must equal the point count in every case.
+  Each non-empty span holds a `by-day[].date` string COPIED WHOLE (`2026-05-01`). Never abbreviate
+  one to fit -- `05-01` is a number you constructed, it is not in the context, and the render
+  refuses the artifact over it. The choice for a crowded axis is a WHOLE date or an EMPTY span,
+  never a shortened one.
 - When a chart field is ABSENT its series has no scale to draw against (fewer than two rows, or an
   all-zero series). Render that series as `*-percent-of-max` columns or a table; never author a line
   for it.
@@ -371,6 +389,32 @@ Produce ONE complete, self-contained HTML document.
 - Tables for every non-chartable series - the cost-by-model detail, the outlier sessions table,
   the quantified-output counts, and the efficiency attribution tables (agent-type, by-skill,
   by-mcp).
+- Section headings are the CANONICAL TITLES below, each as an `<h2>` whose text is that string and
+  NOTHING else. No descriptive tail, no colon and a subtitle, no rephrasing, no quoted question --
+  `<h2>What This Funded</h2>`, never `<h2>What This Funded: what did the spend produce, and where
+  did it land</h2>`. Put any framing sentence in a `<p>` under the heading, where it belongs. These
+  titles are the contract a reader (and the eval) identifies a section by, so a render that renames
+  one has, as far as anything downstream can tell, omitted it:
+
+      Executive Summary
+      Quantified Output
+      Cost Summary
+      Reconciliation
+      Agent-Type Cost Attribution
+      The Efficiency Story
+      What This Funded
+      Usage Profile
+      Month over Month
+      Tradeoffs
+      Forward-Looking
+      Conclusion
+
+  This is the SAME list, spelled the same way, that the markdown template's `## ` headings use. The
+  two formats name a section identically or a fixture spec cannot mean one thing for both.
+
+  A section you legitimately omit (see the omission rule below) simply has no `<h2>`. Any ADDITIONAL
+  section you choose to add takes its own `<h2>` with a title of your choosing; the list above is the
+  set of standard sections, not a cap on the document.
 - Every section has an HTML counterpart: an executive summary, quantified output (the outcome
   counts, the spend-against-output chart, and the `unit-costs` ratios in their exact framing when
   present), a cost summary, the Reconciliation card described above (ALWAYS present, flag or no
@@ -383,10 +427,13 @@ Produce ONE complete, self-contained HTML document.
   what-this-funded (organized by org tier: employer org first, then the user's personal org and
   open-source, then third-party), a usage profile (temporal shape, model mix, outliers), a month
   over month comparison against `prior` (omitted entirely, including its header, when `prior` is
-  absent), a forward-looking note, and a conclusion. Omit any section whose data is absent (e.g.
-  quantified output when there is no `outcomes` block; the agent-type table when
+  absent), a forward-looking note, and a conclusion. Omit any section whose data is absent, HEADING
+  INCLUDED -- an omitted section leaves no trace, and a section that exists only to explain that its
+  data is missing is still that section. Specifically: quantified output when there is no `outcomes`
+  block OR when `outcomes.totals` is present but carries no fields (they are present-if-nonzero, so
+  an empty block means nothing was observed); the agent-type table when
   `efficiency.agent-type-costs` is empty; a signal clause when its value is `n/a` or zero; the
-  month-over-month section when `prior` is absent). Every figure in these sections is copied
+  month-over-month section when `prior` is absent. Every figure in these sections is copied
   verbatim from the context; do not sum or average them yourself. The agent-type rows are a
   partition of `totals.spend` and you may say so, copying `totals.spend` for the total; the
   by-skill / by-mcp tables are tags covering only part of the period, so quote their coverage

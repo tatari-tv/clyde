@@ -26,3 +26,8 @@ target
 # must never reach this public repo (design 2026-07-26-report-story-fidelity.md, Phase 13).
 /eval-report.json
 fixtures/report/local/
+
+# `report eval --write-goldens` parks a render that FAILED its mechanical checks beside the
+# golden, so a paid call can be diffed instead of re-bought. Scratch evidence, never committed.
+fixtures/report/*/rejected.md
+fixtures/report/*/rejected.html

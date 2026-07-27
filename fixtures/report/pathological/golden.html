@@ -3,89 +3,137 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Enterprise Usage Report: 2026-05-01 to 2026-05-20</title>
+<title>Claude Enterprise Usage Report -- 2026-05-01 to 2026-05-20</title>
 <style>
   :root {
     --bg: #f6f7f9;
     --card: #ffffff;
-    --ink: #1a1d21;
-    --muted: #5b6470;
-    --line: #e2e6ea;
-    --accent: #3b6ea5;
-    --accent2: #7a9cc6;
-    --track: #eef1f4;
-    --warn: #8a5a00;
+    --ink: #1a1d24;
+    --muted: #5a6472;
+    --line: #e2e6ec;
+    --accent: #3b6ef0;
+    --accent-2: #7a8aa8;
+    --bar-bg: #eaeef6;
+    --shadow: 0 1px 3px rgba(20,30,50,0.08);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #14171a;
-      --card: #1d2126;
-      --ink: #e8ebee;
-      --muted: #9aa4б0;
-      --muted: #9aa4b0;
-      --line: #2c323a;
-      --accent: #6fa3d6;
-      --accent2: #4a6a90;
-      --track: #262c33;
-      --warn: #d6a24a;
+      --bg: #12151b;
+      --card: #1b1f27;
+      --ink: #e8ebf0;
+      --muted: #9aa4b4;
+      --line: #2c323d;
+      --accent: #6d94ff;
+      --accent-2: #55617a;
+      --bar-bg: #262c37;
+      --shadow: 0 1px 3px rgba(0,0,0,0.4);
     }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: var(--bg);
     color: var(--ink);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     line-height: 1.55;
+    font-size: 16px;
   }
   .wrap { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.1rem 4rem; }
-  header.top h1 { font-size: 1.5rem; margin: 0 0 .3rem; }
-  header.top .sub { color: var(--muted); font-size: .95rem; }
-  .persona { margin: .6rem 0 0; color: var(--muted); font-size: .9rem; }
-  .persona strong { color: var(--ink); }
-  section { margin-top: 2.4rem; }
-  h2 { font-size: 1.2rem; border-bottom: 2px solid var(--line); padding-bottom: .35rem; margin-bottom: .9rem; }
-  h3 { font-size: 1rem; margin: 1.3rem 0 .5rem; }
-  p { margin: .6rem 0; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem; margin-top: 1.2rem; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: .9rem 1rem; }
-  .card .k { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
-  .card .v { font-size: 1.5rem; font-weight: 650; margin-top: .25rem; }
-  .card .note { color: var(--muted); font-size: .78rem; margin-top: .3rem; }
-  .banner { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: .7rem .9rem; margin-top: 1rem; font-size: .9rem; color: var(--muted); }
-  .recon { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; }
-  .recon .lead { font-size: .95rem; }
-  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-  .tscroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
-  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; }
-  tr:last-child td { border-bottom: none; }
+  header.top { margin-bottom: 1.5rem; }
+  header.top h1 { font-size: 1.6rem; margin: 0 0 0.3rem; }
+  .sub { color: var(--muted); font-size: 0.95rem; }
+  .persona { color: var(--muted); font-size: 0.9rem; margin-top: 0.4rem; }
+  h2 {
+    font-size: 1.25rem;
+    margin: 2.4rem 0 0.6rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 2px solid var(--line);
+  }
+  p { margin: 0.6rem 0; }
+  .lead { color: var(--muted); }
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.8rem;
+    margin: 1rem 0 0.6rem;
+  }
+  .kpi {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+    box-shadow: var(--shadow);
+  }
+  .kpi .label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .kpi .value { font-size: 1.5rem; font-weight: 650; margin-top: 0.25rem; }
+  .kpi .note { font-size: 0.78rem; color: var(--muted); margin-top: 0.2rem; }
+  .banner {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 0.7rem 0.95rem;
+    font-size: 0.9rem;
+    color: var(--muted);
+    margin: 0.6rem 0 0;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+    box-shadow: var(--shadow);
+    margin: 1rem 0;
+  }
+  .recon-status { font-size: 0.95rem; }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; min-width: 420px; }
+  th, td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .chart { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; margin-top: 1rem; }
-  .barchart { display: grid; grid-template-columns: minmax(120px, 200px) 1fr minmax(70px, auto); gap: .35rem .8rem; align-items: center; }
-  .barchart .row { display: contents; }
-  .barchart .label { font-size: .85rem; overflow: hidden; text-overflow: ellipsis; }
-  .barchart .track { background: var(--track); border-radius: 5px; height: 15px; overflow: hidden; }
-  .barchart .fill { background: var(--accent); height: 100%; border-radius: 5px; }
-  .barchart .fill.alt { background: var(--accent2); }
-  .barchart .val { font-size: .82rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
-  .barchart .empty { font-size: .8rem; color: var(--muted); font-style: italic; }
-  .svo { display: grid; grid-template-columns: minmax(120px, 200px) 1fr; gap: .2rem .8rem; align-items: center; margin-top: .3rem; }
-  .svo .rlabel { grid-column: 1 / 2; font-size: .85rem; font-weight: 600; padding-top: .4rem; }
-  .svo .tr { display: grid; grid-template-columns: 70px 1fr minmax(60px,auto); gap: .6rem; align-items: center; }
-  .svo .tag { font-size: .74rem; color: var(--muted); }
-  .trendbox { color: var(--accent); }
-  svg.trend { width: 100%; height: 220px; display: block; }
-  svg.trend polyline { stroke-width: 2.5; }
-  .axis-y { display: flex; flex-direction: column; justify-content: space-between; color: var(--muted); font-size: .75rem; height: 220px; padding-right: .5rem; text-align: right; }
-  .charwrap { display: grid; grid-template-columns: auto 1fr; gap: .3rem; }
-  .axis-x { display: flex; justify-content: space-between; color: var(--muted); font-size: .72rem; margin-top: .3rem; grid-column: 2; }
-  .caption { color: var(--muted); font-size: .82rem; margin-top: .5rem; }
-  .cov { color: var(--muted); font-size: .82rem; margin: .3rem 0 .6rem; }
-  ul.facts { margin: .6rem 0; padding-left: 1.2rem; }
-  ul.facts li { margin: .35rem 0; }
+  .chart {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) minmax(120px, 3fr) minmax(80px, max-content);
+    gap: 0.35rem 0.8rem;
+    align-items: center;
+    margin: 1rem 0;
+  }
+  .chart .row { display: contents; }
+  .chart .clabel { font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; }
+  .chart .ctrack { background: var(--bar-bg); border-radius: 5px; height: 1.1rem; overflow: hidden; }
+  .chart .cfill { height: 100%; background: var(--accent); border-radius: 5px; }
+  .chart .cfill.alt { background: var(--accent-2); }
+  .chart .cval { font-size: 0.85rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .dual { margin: 1rem 0; }
+  .dual .drow {
+    display: grid;
+    grid-template-columns: minmax(130px, 1fr) minmax(140px, 3fr) minmax(90px, max-content);
+    gap: 0.2rem 0.8rem;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .dual .drepo { grid-row: span 2; font-size: 0.9rem; font-weight: 600; }
+  .dual .ttrack { background: var(--bar-bg); border-radius: 5px; height: 0.95rem; overflow: hidden; }
+  .dual .tfill { height: 100%; border-radius: 5px; }
+  .dual .tfill.spend { background: var(--accent); }
+  .dual .tfill.commits { background: var(--accent-2); }
+  .dual .tval { font-size: 0.82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .trendwrap { margin: 1rem 0 0.4rem; }
+  .trendbox { display: flex; gap: 0.6rem; align-items: stretch; }
+  .ylabels { display: flex; flex-direction: column; justify-content: space-between; font-size: 0.72rem; color: var(--muted); text-align: right; min-width: 3rem; }
+  svg.trend { width: 100%; height: 180px; color: var(--accent); display: block; background: var(--bar-bg); border-radius: 8px; }
+  svg.trend polyline { fill: none; stroke: currentColor; }
+  svg.trend .lw { stroke-width: 2.5; }
+  .xlabels { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin: 0.3rem 0 0 3.6rem; font-size: 0.66rem; color: var(--muted); }
+  .xlabels span { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .caption { font-size: 0.82rem; color: var(--muted); margin-top: 0.3rem; }
+  ul.facts { margin: 0.6rem 0; padding-left: 1.1rem; }
+  ul.facts li { margin: 0.35rem 0; }
+  .tag { display: inline-block; font-size: 0.72rem; background: var(--bar-bg); color: var(--muted); border-radius: 4px; padding: 0.05rem 0.4rem; }
+  .cov { font-size: 0.82rem; color: var(--muted); margin: 0.3rem 0 0.8rem; }
+  footer.meth { margin-top: 2.5rem; font-size: 0.82rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 1rem; }
   a { color: var(--accent); }
-  .flag { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -93,284 +141,217 @@
 
 <header class="top">
   <h1>Claude Enterprise Usage Report</h1>
-  <div class="sub">Period 2026-05-01 through 2026-05-20 &middot; 20 days in window, 9 active &middot; generated 2026-06-01</div>
+  <div class="sub">Period 2026-05-01 to 2026-05-20 &middot; 20 days &middot; generated 2026-06-01</div>
   <div class="persona">
-    <strong>Jordan Rivera</strong> &middot; Staff Software Engineer &middot; Platform Tooling &middot; Northwind Media &middot;
-    <a href="mailto:jordan.rivera@northwind-media.example">jordan.rivera@northwind-media.example</a> &middot; github: jrivera
+    Jordan Rivera &middot; Staff Software Engineer &middot; Platform Tooling &middot; Northwind Media &middot;
+    <a href="mailto:jordan.rivera@northwind-media.example">jordan.rivera@northwind-media.example</a> &middot;
+    <a href="https://github.com/jrivera">@jrivera</a>
   </div>
 </header>
 
-<section id="kpis" aria-label="Headline totals">
-  <div class="cards">
-    <div class="card">
-      <div class="k">Total Spend (modeled)</div>
-      <div class="v">$49.48</div>
-      <div class="note">published list rates</div>
-    </div>
-    <div class="card"><div class="k">Sessions</div><div class="v">12</div></div>
-    <div class="card"><div class="k">Repositories</div><div class="v">1</div></div>
-    <div class="card"><div class="k">Active Days</div><div class="v">9</div><div class="note">of 20 in window</div></div>
-    <div class="card"><div class="k">Total Tokens</div><div class="v">97.9M</div></div>
+<h2>Executive Summary</h2>
+<p class="lead">This report presents the modeled Claude Code spend for the window and what it produced, so the reader can judge the use of resources directly.</p>
+
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Total Spend</div>
+    <div class="value">$49.48</div>
+    <div class="note">modeled, list rates</div>
   </div>
-  <div class="banner">Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.</div>
-</section>
-
-<section id="summary">
-  <h2>Executive Summary</h2>
-  <p>
-    Over the 20-day window (2026-05-01 through 2026-05-20, 9 of them active), Jordan Rivera ran
-    12 Claude Code sessions carrying 97.9M tokens, for a modeled total of $49.48 at published
-    list rates. All of that work landed in a single repository, <a href="https://github.com/jrivera/driftwood">jrivera/driftwood</a>,
-    under the personal <code>jrivera</code> org.
-  </p>
-  <p>
-    Spend concentrated in the second half of the window: the heaviest by-day rows are 2026-05-18
-    ($5.83) and 2026-05-19 ($5.27), the two highest columns in the period, with a first cluster on
-    2026-05-01 ($4.30) and 2026-05-02 ($4.83). A long inactive stretch runs from 2026-05-07 through
-    2026-05-14. Session titles cluster on two recurring lines of work in driftwood: teaching it to
-    report a line number, and splitting the parser module.
-  </p>
-  <p class="cov">0 of 12 sessions in the window (0.0%) carry an enrich summary; the rest are cited by title only. Every theme below rests on session titles, not on enrich summaries.</p>
-</section>
-
-<section id="output">
-  <h2>Quantified Output</h2>
-  <p>
-    No verifiable output counts (commits, PRs opened, files edited, lines written or replaced) were
-    recorded for this period; the <code>outcomes</code> totals block is empty. There is accordingly
-    no spend-against-output chart to draw, and none of the output-denominated unit-cost ratios are
-    present. The calendar- and session-denominated ratios that are present appear below.
-  </p>
-  <div class="cards">
-    <div class="card"><div class="k">Spend per active day (ratio)</div><div class="v">$5.50</div></div>
-    <div class="card"><div class="k">Spend per session (ratio)</div><div class="v">$4.12</div></div>
-    <div class="card"><div class="k">Session spend, median</div><div class="v">$4.30</div></div>
-    <div class="card"><div class="k">Session spend, 90th pct</div><div class="v">$5.27</div></div>
+  <div class="kpi">
+    <div class="label">Sessions</div>
+    <div class="value">12</div>
   </div>
-  <p class="caption">
-    The period spent $49.48 across 9 active days, a ratio of $5.50 per active day, and across 12
-    sessions, a ratio of $4.12 per session. Session spend is tightly banded: the median session was
-    $4.30 and the 90th-percentile session $5.27.
-  </p>
-</section>
-
-<section id="cost">
-  <h2>Cost Summary</h2>
-
-  <h3>Spend by model</h3>
-  <div class="chart">
-    <div class="barchart">
-      <div class="row">
-        <div class="label">claude-sonnet-4-6</div>
-        <div class="track"><div class="fill" style="width: 100.0%"></div></div>
-        <div class="val">$49.48</div>
-      </div>
-      <div class="row">
-        <div class="label">claude-nimbus-2</div>
-        <div class="track"><div class="empty">(untracked)</div></div>
-        <div class="val">(untracked)</div>
-      </div>
-    </div>
-    <p class="caption">claude-nimbus-2 is an untracked model (no price in this binary); its bar is left empty rather than drawn as a measured zero. It carried 10.3M of the period's tokens in 1 session.</p>
+  <div class="kpi">
+    <div class="label">Repositories</div>
+    <div class="value">1</div>
   </div>
-
-  <div class="tscroll" style="margin-top:1rem">
-    <table>
-      <thead><tr><th>Model</th><th class="num">Sessions using</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
-      <tbody>
-        <tr><td>claude-sonnet-4-6</td><td class="num">11</td><td class="num">87.6M</td><td class="num">$49.48</td></tr>
-        <tr><td>claude-nimbus-2</td><td class="num">1</td><td class="num">10.3M</td><td class="num">(untracked)</td></tr>
-        <tr><td><strong>Total</strong></td><td class="num">12</td><td class="num">97.9M</td><td class="num">$49.48</td></tr>
-      </tbody>
-    </table>
+  <div class="kpi">
+    <div class="label">Active Days</div>
+    <div class="value">9</div>
+    <div class="note">of 20 days</div>
   </div>
-
-  <h3>Spend by repository</h3>
-  <div class="chart">
-    <div class="barchart">
-      <div class="row">
-        <div class="label">jrivera/driftwood</div>
-        <div class="track"><div class="fill" style="width: 100.0%"></div></div>
-        <div class="val">$49.47</div>
-      </div>
-    </div>
-    <p class="caption">A single repository accounts for the period's tracked spend; its 12 sessions carried 97.9M tokens.</p>
+  <div class="kpi">
+    <div class="label">Total Tokens</div>
+    <div class="value">97.9M</div>
   </div>
-</section>
+</div>
+<div class="banner">Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.</div>
 
-<section id="recon">
-  <h2>Reconciliation</h2>
-  <div class="recon">
-    <p class="lead">No Claude Enterprise Analytics cost export was supplied for this render (--reconcile &lt;file&gt;); the total spend above is a modeled figure only and has not been reconciled against this operator's authoritative billed spend.</p>
+<p>All work in the window landed in a single repository, <a href="https://github.com/jrivera/driftwood">jrivera/driftwood</a>, across 12 sessions. Session titles cluster on two lines of work: "Teach driftwood to report a line number" and "Split the driftwood parser module." Spend was concentrated on active days late in the window: 2026-05-18 ($5.83) and 2026-05-19 ($5.27) carried the heaviest by-day rows, with the earlier active days 2026-05-01 through 2026-05-06 forming a second cluster.</p>
+<p class="cov">0 of 12 sessions in the window (0.0%) carry an enrich summary; the rest are cited by title only.</p>
+
+<h2>Cost Summary</h2>
+<p>Spend by model, copied from the totals. One model, claude-nimbus-2, is untracked in this binary's price catalog and its spend reads as <code>(untracked)</code>.</p>
+
+<div class="chart" role="img" aria-label="Spend by model">
+  <div class="row">
+    <div class="clabel">claude-sonnet-4-6</div>
+    <div class="ctrack"><div class="cfill" style="width: 100.0%"></div></div>
+    <div class="cval">$49.48</div>
   </div>
-</section>
-
-<section id="agent">
-  <h2>Agent-Type Cost Attribution</h2>
-  <p>
-    The single agent-type row, <code>(main-session)</code>, is the top and only entry: all of the
-    period's work stayed in the main session rather than being delegated to a subagent. These rows
-    are a partition of total spend and account for the whole $49.48.
-  </p>
-  <div class="tscroll">
-    <table>
-      <thead><tr><th>Agent type</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
-      <tbody>
-        <tr><td>(main-session)</td><td class="num">97.9M</td><td class="num">$49.48</td></tr>
-      </tbody>
-    </table>
+  <div class="row">
+    <div class="clabel">claude-nimbus-2</div>
+    <div class="ctrack"><div class="cfill" style="width: 0.0%"></div></div>
+    <div class="cval">(untracked)</div>
   </div>
-</section>
+</div>
 
-<section id="efficiency">
-  <h2>The Efficiency Story</h2>
-  <p>
-    Cache reads carried 93.3% of input token volume: 91.1M cache-read tokens against 1.0M plain
-    input tokens. The remaining signals for the period: tool-error rate 5.2%, 1-hour cache-write
-    fraction 3.0%, 5 interrupts, and 2 compactions observed.
-  </p>
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr><th>Model</th><th class="num">Sessions Using</th><th class="num">Tokens</th><th class="num">Spend</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>claude-sonnet-4-6</td><td class="num">11</td><td class="num">87.6M</td><td class="num">$49.48</td></tr>
+    <tr><td>claude-nimbus-2</td><td class="num">1</td><td class="num">10.3M</td><td class="num">(untracked)</td></tr>
+  </tbody>
+  <tfoot>
+    <tr><th>Total</th><th class="num">12</th><th class="num">97.9M</th><th class="num">$49.48</th></tr>
+  </tfoot>
+</table>
+</div>
 
-  <h3>By skill (attribution tags)</h3>
-  <p class="cov">$9.57 of $49.48 (19.3%), embedded-price basis</p>
-  <div class="tscroll">
-    <table>
-      <thead><tr><th>Skill</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
-      <tbody>
-        <tr><td>release-notes</td><td class="num">3.3M</td><td class="num">$6.13</td></tr>
-        <tr><td>schema-review</td><td class="num">1.9M</td><td class="num">$3.44</td></tr>
-      </tbody>
-    </table>
+<div class="kpis">
+  <div class="kpi"><div class="label">Spend per Session (ratio)</div><div class="value">$4.12</div></div>
+  <div class="kpi"><div class="label">Spend per Active Day (ratio)</div><div class="value">$5.50</div></div>
+  <div class="kpi"><div class="label">Session Spend p50</div><div class="value">$4.30</div></div>
+  <div class="kpi"><div class="label">Session Spend p90</div><div class="value">$5.27</div></div>
+</div>
+<p class="caption">Spend-per-session and spend-per-active-day are ratios of the period's whole spend to its sessions and active days respectively, not the price of a single session or day.</p>
+
+<h2>Reconciliation</h2>
+<div class="card">
+  <p class="recon-status">No Claude Enterprise Analytics cost export was supplied for this render (--reconcile &lt;file&gt;); the total spend above is a modeled figure only and has not been reconciled against this operator's authoritative billed spend.</p>
+</div>
+
+<h2>Agent-Type Cost Attribution</h2>
+<p>The rows below partition the period's whole spend of $49.48. The top row, <strong>(main-session)</strong>, is the work the sessions did themselves rather than delegating to a subagent, and it accounts for the entire period spend; no subagent types were observed this period.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Agent Type</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+  <tbody>
+    <tr><td>(main-session)</td><td class="num">97.9M</td><td class="num">$49.48</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>The Efficiency Story</h2>
+<p>Cache reads made up 93.3% of token traffic (91.1M cache-read tokens against 1.0M input tokens). The remaining signals below are shown as observed.</p>
+<div class="kpis">
+  <div class="kpi"><div class="label">Cache-Read Share</div><div class="value">93.3%</div></div>
+  <div class="kpi"><div class="label">Tool-Error Rate</div><div class="value">5.2%</div></div>
+  <div class="kpi"><div class="label">1h Cache-Write Fraction</div><div class="value">3.0%</div></div>
+  <div class="kpi"><div class="label">Interrupts</div><div class="value">5</div></div>
+  <div class="kpi"><div class="label">Compactions</div><div class="value">2</div></div>
+</div>
+
+<h3>Skill Attribution</h3>
+<p class="cov">Coverage: $9.57 of $49.48 (19.3%), embedded-price basis. These are attribution tags, not a partition, and do not reconcile against the period total.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Skill</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+  <tbody>
+    <tr><td>release-notes</td><td class="num">3.3M</td><td class="num">$6.13</td></tr>
+    <tr><td>schema-review</td><td class="num">1.9M</td><td class="num">$3.44</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>MCP-Tool Attribution</h3>
+<p class="cov">Coverage: $18.22 of $49.48 (36.8%), embedded-price basis. These are attribution tags, not a partition, and do not reconcile against the period total.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>MCP Tool</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+  <tbody>
+    <tr><td>wiki-write</td><td class="num">6.5M</td><td class="num">$11.99</td></tr>
+    <tr><td>tracker-search</td><td class="num">3.4M</td><td class="num">$6.23</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>What This Funded</h2>
+<p>All observed activity sits in the operator's personal org, <strong>jrivera</strong>, in the single repository <a href="https://github.com/jrivera/driftwood">jrivera/driftwood</a>. No employer-org or third-party activity was recorded in the window.</p>
+
+<div class="chart" role="img" aria-label="Spend by repository">
+  <div class="row">
+    <div class="clabel">jrivera/driftwood</div>
+    <div class="ctrack"><div class="cfill" style="width: 100.0%"></div></div>
+    <div class="cval">$49.47</div>
   </div>
+</div>
 
-  <h3>By MCP tool (attribution tags)</h3>
-  <p class="cov">$18.22 of $49.48 (36.8%), embedded-price basis</p>
-  <div class="tscroll">
-    <table>
-      <thead><tr><th>MCP tool</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
-      <tbody>
-        <tr><td>wiki-write</td><td class="num">6.5M</td><td class="num">$11.99</td></tr>
-        <tr><td>tracker-search</td><td class="num">3.4M</td><td class="num">$6.23</td></tr>
-      </tbody>
-    </table>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Org</th><th class="num">Repos</th><th class="num">Sessions</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+  <tbody>
+    <tr><td>jrivera</td><td class="num">1</td><td class="num">12</td><td class="num">97.9M</td><td class="num">$49.47</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The session titles in this repository name two threads of work: teaching driftwood to report a line number (sessions such as 2b3bd835, 3cecc43a, 455f349d) and splitting the driftwood parser module (sessions 1a45219a, 0e6ec74b). No enrich summaries are available this period, so these themes rest on session titles rather than transcript digests, and several sessions carry no title at all (9587c1f7, eec33f5b, ef35bcda).</p>
+
+<h2>Usage Profile</h2>
+<p>Spend clustered on nine active days spread across the window. The two heaviest single days were late: 2026-05-18 ($5.83) and 2026-05-19 ($5.27). An earlier cluster ran 2026-05-01 ($4.30) through 2026-05-06 ($3.70), with 2026-05-03 recording a session at $0.00 (the untracked claude-nimbus-2 run). A long inactive stretch spans 2026-05-07 through 2026-05-14.</p>
+
+<div class="trendwrap">
+  <div class="trendbox">
+    <div class="ylabels"><span>$5.83</span><span>$2.92</span><span>$0.00</span></div>
+    <svg viewBox="0 0 1000 300" class="trend" preserveAspectRatio="none"><title>Daily spend across the window</title>
+      <polyline class="lw" points="0,83 53,58 105,290 158,290 211,71 263,112 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,74 789,91 842,290 895,10 947,37 1000,290" fill="none" stroke="currentColor"/></svg>
   </div>
-  <p class="caption">By-skill and by-mcp figures are attribution tags on the embedded-price basis, not a partition of the total; a dollar can carry no tag or several, so these do not reconcile against $49.48. The coverage strings above state exactly how much of the total each tag set covers.</p>
-</section>
-
-<section id="funded">
-  <h2>What This Funded</h2>
-  <p>
-    There is no employer-org (Northwind Media) or third-party activity in this window. All spend
-    sits in the user's personal org, <code>jrivera</code>.
-  </p>
-
-  <h3>Personal org: jrivera</h3>
-  <div class="tscroll">
-    <table>
-      <thead><tr><th>Org</th><th class="num">Repos</th><th class="num">Sessions</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
-      <tbody>
-        <tr><td>jrivera</td><td class="num">1</td><td class="num">12</td><td class="num">97.9M</td><td class="num">$49.47</td></tr>
-      </tbody>
-    </table>
+  <div class="xlabels">
+    <span>2026-05-01</span><span></span><span></span><span></span><span>2026-05-05</span><span></span><span></span><span></span><span>2026-05-09</span><span></span><span></span><span>2026-05-12</span><span></span><span></span><span></span><span>2026-05-16</span><span></span><span></span><span></span><span>2026-05-20</span>
   </div>
-  <p>
-    Within that org, all work is in <a href="https://github.com/jrivera/driftwood">jrivera/driftwood</a>.
-    Judged from session titles, the period revolved around two threads: teaching driftwood to report a
-    line number (sessions 2b3bd835, 3cecc43a, 455f349d, f9a7f9d2, a1d0adc8, 2439cf48) and splitting the
-    driftwood parser module (sessions 1a45219a, 0e6ec74b, 422fdead). Three sessions (9587c1f7, eec33f5b,
-    ef35bcda) carry no title. No enrich summaries were available for any session, so these theme labels
-    rest on titles alone.
-  </p>
-</section>
+  <div class="caption">Daily modeled spend. 3 sessions ($12.34, 22.7M tokens) were carried into the window from before 2026-05-01 and are counted in the totals but do not appear on any day of this chart.</div>
+</div>
 
-<section id="profile">
-  <h2>Usage Profile</h2>
-
-  <h3>Temporal shape</h3>
-  <p>
-    Activity falls into two clusters separated by a long quiet stretch. The window opens active on
-    2026-05-01 through 2026-05-03, and 2026-05-05 through 2026-05-06; it then goes dark from
-    2026-05-07 through 2026-05-14 (no sessions). A second cluster runs 2026-05-15 through 2026-05-16
-    and 2026-05-18 through 2026-05-19, which carries the two heaviest spend columns, 2026-05-18
-    ($5.83) and 2026-05-19 ($5.27). Note 2026-05-03 was active (1 session) but shows $0.00 spend:
-    that day's single session used the untracked claude-nimbus-2 model.
-  </p>
-
-  <div class="chart">
-    <h3 style="margin-top:0">Spend by day</h3>
-    <div class="charwrap">
-      <div class="axis-y"><span>$5.83</span><span>$2.92</span><span>$0.00</span></div>
-      <div class="trendbox">
-        <svg viewBox="0 0 1000 300" class="trend" preserveAspectRatio="none"><title>Spend by day, 2026-05-01 to 2026-05-20</title>
-          <polyline points="0,83 53,58 105,290 158,290 211,71 263,112 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,74 789,91 842,290 895,10 947,37 1000,290" fill="none" stroke="currentColor"/></svg>
-      </div>
-    </div>
-    <div class="axis-x"><span>2026-05-01</span><span>2026-05-05</span><span>2026-05-09</span><span>2026-05-12</span><span>2026-05-16</span><span>2026-05-20</span></div>
-    <p class="caption">3 sessions that began before 2026-05-01 were carried into the window whole (22.7M tokens, $12.34); they are counted in the totals but are not in any by-day column, so this line's visual total is smaller than $49.48 by that amount.</p>
+<div class="trendwrap">
+  <div class="trendbox">
+    <div class="ylabels"><span>1</span><span>1</span><span>0</span></div>
+    <svg viewBox="0 0 1000 300" class="trend" preserveAspectRatio="none"><title>Daily session count across the window</title>
+      <polyline class="lw" points="0,10 53,10 105,10 158,290 211,10 263,10 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,10 789,10 842,290 895,10 947,10 1000,290" fill="none" stroke="currentColor"/></svg>
   </div>
-
-  <div class="chart">
-    <h3 style="margin-top:0">Sessions by day</h3>
-    <div class="charwrap">
-      <div class="axis-y"><span>1</span><span>1</span><span>0</span></div>
-      <div class="trendbox">
-        <svg viewBox="0 0 1000 300" class="trend" preserveAspectRatio="none"><title>Sessions by day, 2026-05-01 to 2026-05-20</title>
-          <polyline points="0,10 53,10 105,10 158,290 211,10 263,10 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,10 789,10 842,290 895,10 947,10 1000,290" fill="none" stroke="currentColor"/></svg>
-      </div>
-    </div>
-    <div class="axis-x"><span>2026-05-01</span><span>2026-05-05</span><span>2026-05-09</span><span>2026-05-12</span><span>2026-05-16</span><span>2026-05-20</span></div>
+  <div class="xlabels">
+    <span>2026-05-01</span><span></span><span></span><span></span><span>2026-05-05</span><span></span><span></span><span></span><span>2026-05-09</span><span></span><span></span><span>2026-05-12</span><span></span><span></span><span></span><span>2026-05-16</span><span></span><span></span><span></span><span>2026-05-20</span>
   </div>
+  <div class="caption">Sessions per day. Active days each carried a single session; the 3 carried-in sessions are not represented here.</div>
+</div>
 
-  <h3>Model mix</h3>
-  <p>
-    claude-sonnet-4-6 is the priced workhorse, used in 11 sessions and carrying 87.6M tokens for the
-    full tracked $49.48. A single session (2026-05-03, 422fdead) used claude-nimbus-2, which is
-    untracked in this binary; it carried 10.3M tokens with no priced figure.
-  </p>
+<h3>Model Mix</h3>
+<p>claude-sonnet-4-6 ran in 11 of 12 sessions and carries all of the tracked spend. claude-nimbus-2 ran in one session (10.3M tokens) and is untracked in this binary's price catalog.</p>
 
-  <h3>Outlier sessions (top by spend)</h3>
-  <div class="tscroll">
-    <table>
-      <thead><tr><th>Session</th><th>Title</th><th>Repo</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
-      <tbody>
-        <tr><td>2b3bd835</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">9.7M</td><td class="num">$5.83</td></tr>
-        <tr><td>1a45219a</td><td>Split the driftwood parser module</td><td>jrivera/driftwood</td><td class="num">9.0M</td><td class="num">$5.27</td></tr>
-        <tr><td>3cecc43a</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">8.5M</td><td class="num">$4.83</td></tr>
-        <tr><td>ef35bcda</td><td>(untitled)</td><td>jrivera/driftwood</td><td class="num">7.6M</td><td class="num">$4.56</td></tr>
-        <tr><td>455f349d</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">8.0M</td><td class="num">$4.49</td></tr>
-        <tr><td>eec33f5b</td><td>(untitled)</td><td>jrivera/driftwood</td><td class="num">7.3M</td><td class="num">$4.30</td></tr>
-        <tr><td>f9a7f9d2</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">7.8M</td><td class="num">$4.26</td></tr>
-        <tr><td>9587c1f7</td><td>(untitled)</td><td>jrivera/driftwood</td><td class="num">7.6M</td><td class="num">$4.15</td></tr>
-        <tr><td>0e6ec74b</td><td>Split the driftwood parser module</td><td>jrivera/driftwood</td><td class="num">7.5M</td><td class="num">$4.04</td></tr>
-        <tr><td>a1d0adc8</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">7.5M</td><td class="num">$4.04</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p class="caption">Titles are Claude Code's own opening-exchange labels and identify a session; they are not summaries of the work done. No enrich summaries were available this period.</p>
-</section>
+<h3>Highest-Spend Sessions</h3>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Session</th><th>Title</th><th>Repo</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+  <tbody>
+    <tr><td>2b3bd835</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">9.7M</td><td class="num">$5.83</td></tr>
+    <tr><td>1a45219a</td><td>Split the driftwood parser module</td><td>jrivera/driftwood</td><td class="num">9.0M</td><td class="num">$5.27</td></tr>
+    <tr><td>3cecc43a</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">8.5M</td><td class="num">$4.83</td></tr>
+    <tr><td>ef35bcda</td><td><span class="tag">no title</span></td><td>jrivera/driftwood</td><td class="num">7.6M</td><td class="num">$4.56</td></tr>
+    <tr><td>455f349d</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">8.0M</td><td class="num">$4.49</td></tr>
+    <tr><td>eec33f5b</td><td><span class="tag">no title</span></td><td>jrivera/driftwood</td><td class="num">7.3M</td><td class="num">$4.30</td></tr>
+    <tr><td>f9a7f9d2</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">7.8M</td><td class="num">$4.26</td></tr>
+    <tr><td>9587c1f7</td><td><span class="tag">no title</span></td><td>jrivera/driftwood</td><td class="num">7.6M</td><td class="num">$4.15</td></tr>
+    <tr><td>0e6ec74b</td><td>Split the driftwood parser module</td><td>jrivera/driftwood</td><td class="num">7.5M</td><td class="num">$4.04</td></tr>
+    <tr><td>a1d0adc8</td><td>Teach driftwood to report a line number</td><td>jrivera/driftwood</td><td class="num">7.5M</td><td class="num">$4.04</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="caption">Session labels are Claude Code's own titles from each session's opening exchange; no enrich summaries were available this period.</p>
 
-<section id="forward">
-  <h2>Forward-Looking Note</h2>
-  <p>
-    Two things are worth watching into next month. First, enrichment coverage was 0.0% this period,
-    so every theme here rests on session titles rather than on transcript summaries; enabling the
-    enrich pass would let a future report cite what sessions actually did. Second, no verifiable
-    output (commits, PRs, files edited) was recorded, and one session's spend was untracked because
-    it ran claude-nimbus-2; if that model stays in rotation, part of the token volume will keep
-    landing outside the priced total.
-  </p>
-</section>
+<h2>Forward-Looking</h2>
+<p>Two points a reader may want to track going forward, stated as facts about this render: enrichment coverage was 0 of 12 sessions (0.0%), so the narrative here rests entirely on session titles, and one model (claude-nimbus-2, one session, 10.3M tokens) is untracked in this binary's price catalog, so its spend is not reflected in the $49.48 modeled figure. No cost export was supplied, so the modeled total has not been reconciled against billed spend.</p>
 
-<section id="conclusion">
-  <h2>Conclusion</h2>
-  <p>
-    This period modeled $49.48 across 12 sessions and 97.9M tokens, entirely within
-    jrivera/driftwood, with 93.3% of input volume served from cache. Spend was tightly banded per
-    session (median $4.30, 90th percentile $5.27) and concentrated late in the window on 2026-05-18
-    and 2026-05-19. No output counts and no enrich summaries accompany the spend, and the total is
-    modeled at published list rates and has not been reconciled against billed spend. The figures
-    above are presented as recorded for the reader to weigh.
-  </p>
-</section>
+<h2>Conclusion</h2>
+<p>Over 2026-05-01 to 2026-05-20, 12 sessions in one repository (jrivera/driftwood) produced $49.48 in modeled spend across 97.9M tokens, on 9 of 20 days. Cache reads accounted for 93.3% of token traffic. The figures above are modeled at published list rates and, absent a supplied cost export, unreconciled; the reader is left to weigh what the spend produced against the record shown.</p>
+
+<footer class="meth">
+  <strong>Methodology</strong>
+  <p>window is session-level (M2): whole sessions whose catalog <code>modified</code> falls in [since, until]; not per-record like pre-v2 reports, so a boundary-straddling session's numbers can differ from a v1 report.</p>
+</footer>
 
 </div>
 </body>

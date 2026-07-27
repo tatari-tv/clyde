@@ -302,8 +302,8 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
     let (markdown_ok, markdown_error, markdown_findings) = match &markdown {
         Ok(prose) => {
             let findings = mechanical::check(Kind::Markdown, prose, &context, &ground, &fixture.spec);
-            if cfg.write_goldens && findings.is_empty() {
-                write_golden(&fixture.golden_path(false), prose)?;
+            if cfg.write_goldens {
+                write_artifact(&fixture, false, prose, findings.is_empty())?;
             }
             (true, None, findings)
         }
@@ -334,8 +334,8 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
     let (html_ok, html_error, html_findings) = match &html {
         Ok(doc) => {
             let findings = mechanical::check(Kind::Html, doc, &context, &ground, &fixture.spec);
-            if cfg.write_goldens && findings.is_empty() {
-                write_golden(&fixture.golden_path(true), doc)?;
+            if cfg.write_goldens {
+                write_artifact(&fixture, true, doc, findings.is_empty())?;
             }
             (true, None, findings)
         }
@@ -469,11 +469,36 @@ fn rate(part: usize, whole: usize) -> String {
     format!("{:.1}%", 100.0 * part as f64 / whole as f64)
 }
 
-/// Overwrite one golden with a fresh, mechanically-clean render.
-fn write_golden(path: &Path, artifact: &str) -> Result<()> {
-    debug!("eval::write_golden: path={} bytes={}", path.display(), artifact.len());
-    std::fs::write(path, artifact).with_context(|| format!("failed to write the golden at {}", path.display()))?;
-    eprintln!("eval: wrote {} ({} bytes)", path.display(), artifact.len());
+/// Land a fresh render under `--write-goldens`: as the GOLDEN when it passed its mechanical checks,
+/// as a gitignored `rejected.*` beside it when it did not.
+///
+/// A golden is a known-good artifact by definition, so a failing render can never become one --
+/// committing it would make `otto ci` green against a broken render. But it was a paid model call,
+/// and the old code simply dropped it, leaving the operator a finding ("6 x-axis labels against 7
+/// points") and nothing to look at: diagnosing cost another render of the same fixture. Parking it
+/// makes the next step a `diff` instead of a purchase.
+fn write_artifact(fixture: &Fixture, html: bool, artifact: &str, passed: bool) -> Result<()> {
+    let path = if passed {
+        fixture.golden_path(html)
+    } else {
+        fixture.rejected_path(html)
+    };
+    debug!(
+        "eval::write_artifact: path={} bytes={} passed={passed}",
+        path.display(),
+        artifact.len()
+    );
+    std::fs::write(&path, artifact).with_context(|| format!("failed to write the render at {}", path.display()))?;
+    if passed {
+        eprintln!("eval: wrote {} ({} bytes)", path.display(), artifact.len());
+    } else {
+        eprintln!(
+            "eval: {} FAILED its checks; the rejected render is at {} ({} bytes)",
+            fixture.name,
+            path.display(),
+            artifact.len()
+        );
+    }
     Ok(())
 }
 
