@@ -647,3 +647,56 @@ fn the_scope_note_describes_the_operators_own_unseen_usage_not_other_users() {
         );
     }
 }
+
+#[test]
+fn the_by_model_rows_sum_to_the_billed_total_across_fractional_cents() {
+    // A real export carries fractional cents (`amount` is a decimal string with six decimals), and
+    // three models each a third of a cent over will round UP individually while their raw sum
+    // rounds DOWN. Totalling the raw values let the displayed table disagree with its own displayed
+    // headline by a cent -- in the one block quoting an authoritative billed figure to a finance
+    // reader, which is exactly the "clyde miscounted" reading `scope_note` works to prevent.
+    let report = report_with("2026-06-26T00:00:00Z", "2026-06-27T00:00:00Z", 0.0, vec![]);
+    let dir = TempDir::new().unwrap();
+    let export = write_export(
+        &dir,
+        "fractional.json",
+        vec![
+            record(
+                ME,
+                "claude-opus-5",
+                "100.400000",
+                "2026-06-26T00:00:00Z",
+                "2026-06-27T00:00:00Z",
+            ),
+            record(
+                ME,
+                "claude-sonnet-5",
+                "200.400000",
+                "2026-06-26T00:00:00Z",
+                "2026-06-27T00:00:00Z",
+            ),
+            record(
+                ME,
+                "claude-haiku-4-5",
+                "300.400000",
+                "2026-06-26T00:00:00Z",
+                "2026-06-27T00:00:00Z",
+            ),
+        ],
+    );
+
+    let out = fold(&export, Some(ME), &report).unwrap();
+    let rows: i64 = out
+        .by_model
+        .iter()
+        .map(|r| (r.billed.replace(['$', ','], "").parse::<f64>().unwrap() * 100.0).round() as i64)
+        .sum();
+    let total = (out.billed.replace(['$', ','], "").parse::<f64>().unwrap() * 100.0).round() as i64;
+    assert_eq!(
+        rows,
+        total,
+        "the by-model rows must add up to the billed total they sit under: rows={:?} total={}",
+        out.by_model.iter().map(|r| &r.billed).collect::<Vec<_>>(),
+        out.billed
+    );
+}
