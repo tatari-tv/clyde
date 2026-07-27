@@ -104,6 +104,18 @@ pub enum Command {
     /// `since`/`until` window to the min/max across inputs, and tags the output
     /// with a multi-host marker.
     Merge(MergeArgs),
+    /// Render every frozen fixture, run the mechanical checks, score with a judge, and write a
+    /// scored report.
+    ///
+    /// Costs model calls: this is `otto eval`, not `otto ci`. The free, deterministic half of the
+    /// same checks runs in `otto ci` against the committed golden artifacts, offline.
+    ///
+    /// With no `--fixture`, evaluates the three synthesized fixtures under `fixtures/report/`
+    /// (run from the workspace root). `--fixture <dir>` replaces that set, which is how a real
+    /// month is evaluated locally without the data entering git -- `fixtures/report/local/` is
+    /// gitignored for exactly that. Exits non-zero when any fixture fails a mechanical check or
+    /// scores below a floor its `eval.yml` commits to.
+    Eval(EvalArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -139,6 +151,14 @@ pub struct CollectArgs {
     /// Default: outcomes on.
     #[arg(long)]
     pub no_outcomes: bool,
+
+    /// Warn when fewer than this FRACTION of the window's sessions carry an enrich summary
+    /// (`0.5` = 50%). The report's themes cite session summaries, so a low-coverage window produces
+    /// a narrative resting on titles instead; the warning states the gap and the artifact is still
+    /// written. When omitted, falls back to `min-enrichment` in `clyde.yml`, and to `0.5` if that
+    /// too is unset.
+    #[arg(long)]
+    pub min_enrichment: Option<f64>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -208,6 +228,68 @@ pub struct RenderArgs {
     /// Number of top-spend sessions to include in the outlier table.
     #[arg(long, default_value_t = DEFAULT_OUTLIERS)]
     pub outliers: usize,
+
+    /// Prior-period report JSON (schema-gated, same requirement as `-i`), lighting up the Month
+    /// over Month section in both templates. Aggregated through the SAME `aggregate::compute` as
+    /// the current period, so the two sides of the comparison are computed identically rather than
+    /// by two code paths that could drift. Omitted -> the Month over Month section is entirely
+    /// absent from the rendered artifact, not an empty header.
+    #[arg(long)]
+    pub prior: Option<PathBuf>,
+
+    /// Anthropic Enterprise Analytics PER-USER cost export (produced OUTSIDE clyde by the
+    /// `anthropic-usage-report` skill's `pull-usage-report.py --report user-cost`; clyde never
+    /// holds the Analytics key). Lights up the Reconciliation section in both templates: the
+    /// operator's billed spend from the export against clyde's own modeled total, plus the
+    /// reader-facing `unseen-account-spend` figure. An ORG-WIDE `--report cost` export is rejected
+    /// by name: `clyde report` covers one user, so comparing it against the whole organization's
+    /// bill would publish other people's spend as spend clyde failed to account for. The export's
+    /// window must match this report's `since`/`until`, or the render fails naming both windows.
+    /// Omitted -> the render still succeeds, but warns on stderr and the artifact states that no
+    /// authoritative export was supplied -- this figure is never silently missing.
+    #[arg(long)]
+    pub reconcile: Option<PathBuf>,
+
+    /// The operator `--reconcile` is scoped to, matched against each export row's `actor.email`.
+    /// Defaults to the work email `persona whoami` resolves for this machine (the same identity the
+    /// report's persona block carries), so this flag is only needed when persona knows no email or
+    /// the report covers someone else's sessions. An export with no row for the resolved operator
+    /// is a hard error, never a silent `$0.00` billed figure. Requires `--reconcile`.
+    #[arg(long)]
+    pub reconcile_user: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct EvalArgs {
+    /// Fixture directories to evaluate, space separated. Each must hold a `report.json`; a
+    /// committed fixture also holds `eval.yml` and its goldens. When omitted, the three committed
+    /// fixtures under `fixtures/report/` are used.
+    #[arg(long, num_args = 1..)]
+    pub fixture: Option<Vec<PathBuf>>,
+
+    /// Model pin for the judge. When omitted, falls back to `render.markdown-model` in `clyde.yml`,
+    /// so the eval needs no config key of its own.
+    #[arg(long)]
+    pub judge: Option<String>,
+
+    /// Write the scored JSON report here (default: `./eval-report.json`).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+
+    /// Overwrite each fixture's committed `golden.md` / `golden.html` with this run's fresh render.
+    /// The goldens are model-authored, so this is how they are regenerated; a hand-run `report
+    /// render` would splice in the machine's real persona and price against the live feed instead
+    /// of the fixture's invented persona and the eval's pinned embedded pricing. A render that
+    /// failed its own mechanical checks is NOT written -- a golden is a known-good artifact by
+    /// definition, and committing a failing one would make `otto ci` green against a broken render.
+    #[arg(long)]
+    pub write_goldens: bool,
+
+    /// Which transport performs the renders and the judge call: `auto`, `cli`, or `api`. Same
+    /// semantics as `render --llm`, and the judge inherits it -- there is no second credential.
+    /// When omitted, falls back to `render.llm` in `clyde.yml`, and to `auto` if that too is unset.
+    #[arg(long, value_enum, ignore_case = true)]
+    pub llm: Option<Llm>,
 }
 
 #[derive(clap::Args, Debug)]

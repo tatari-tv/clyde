@@ -1,0 +1,57 @@
+# The render eval's MEDIUM fixture (design 2026-07-26-report-story-fidelity.md, Phase 13).
+# Synthesized by `cargo run -p report --bin fixtures`; nothing here is derived from real session
+# data, because tatari-tv/clyde is a public repo and session titles are the sensitive payload.
+#
+# This is the widest fixture: three orgs, seven repos, subagents with a POSITIVE (main-session)
+# residual, the full outcome mix, all four repo-source values, partial enrich coverage, a prior
+# period (prior.json) and an Analytics cost export (analytics.json).
+
+summary: multi-org window with subagents, the full outcome mix, a prior period and a reconciliation
+
+require-sections:
+  - Executive Summary
+  - Quantified Output
+  - Cost Summary
+  - Reconciliation
+  - Agent-Type Cost Attribution
+  - The Efficiency Story
+  - What This Funded
+  - Usage Profile
+  - Month over Month
+  - Conclusion
+
+forbid-sections:
+  - Tradeoffs
+
+# Design Phase 10's success criterion 3, re-run here against a real golden: an untitled session
+# cited by short-id and a prose PR reference are the two citations a narrowed quotable-facts
+# whitelist breaks first, so the fixture that carries both must PROVE its render exercises them.
+require-citations:
+  - untitled-short-id
+  - pr-reference
+
+floors:
+  # Calibrated against observed judge scores, not aspiration. `citation-accuracy: 3` demands a
+  # verdict of "nothing overreaches, nothing mis-attributed" from a stochastic writer AND a
+  # stochastic grader; measured across the runs that produced these goldens, a clean artifact scored
+  # 2 about as often as 3, with the judge's own reason text finding no concrete fault. A floor that
+  # is red on a correct render gates nothing. 2 still fails "several unsupported claims" (1) and any
+  # fabrication (0), and the mechanical layer independently proves no fabricated figure, repo, date
+  # or quoted title can reach a golden at all.
+  #
+  # `coverage: 2` is the design's own criterion in floor form: a render that misses one of the top
+  # three by-repo rows entirely scores 1 and exits non-zero.
+  # `prohibition-compliance: 3` stays absolute -- every run cleared it, and it is the hard rule.
+  citation-accuracy: 2
+  coverage: 2
+  prohibition-compliance: 3
+  readability: 2
+
+# INVENTED. See the small fixture's spec for why the eval never reads a real persona.
+persona:
+  name: Jordan Rivera
+  title: Staff Software Engineer
+  team: Platform Tooling
+  organization: Northwind Media
+  email: jordan.rivera@northwind-media.example
+  github: jrivera

@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 use session::ParsedSession;
 use tempfile::TempDir;
 
+use common::repo::{RepoSource, Resolved};
+
 use crate::db::{Db, EnrichSuccess};
 use crate::export::{ExportContext, ExportFilters};
 
@@ -69,13 +71,17 @@ fn export_re_derives_scope_from_cwd_never_the_stored_null_column() {
     assert_eq!(env.sessions.len(), 1);
     let rec = &env.sessions[0];
     assert_eq!(rec.scope, "personal", "NULL stored scope must re-derive to personal");
-    assert_eq!(rec.repo.as_deref(), Some("scottidler/manifest"));
+    assert_eq!(
+        rec.repo, None,
+        "repo is the PERSISTED v10 column, so a session no reindex has attributed exports null - \
+         it is NOT re-derived from the cwd (that derivation is what decayed)"
+    );
     assert!(rec.enrich_status.is_none(), "never-enriched -> enrich-status null");
     assert_eq!(env.schema_version, crate::export::EXPORT_SCHEMA_VERSION);
 }
 
 #[test]
-fn export_work_session_derives_work_scope_and_repo_and_enrichment() {
+fn export_work_session_derives_work_scope_and_reports_the_persisted_repo_and_enrichment() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(
         &parsed_cwd(
@@ -85,6 +91,14 @@ fn export_work_session_derives_work_scope_and_repo_and_enrichment() {
             "2026-06-21T10:00:00Z",
         ),
         "desk",
+    )
+    .unwrap();
+    db.upsert_repo(
+        UUID_A,
+        &Resolved {
+            repo: "tatari-tv/drata-cli".to_string(),
+            source: RepoSource::GitOrigin,
+        },
     )
     .unwrap();
     db.set_enrichment(
@@ -515,26 +529,24 @@ fn export_fails_closed_on_a_non_contract_enrich_status() {
 fn export_repo_filter_treats_like_wildcards_as_literals() {
     let db = Db::open_memory().unwrap();
     // Two repos differing only where a `_` LIKE wildcard would over-match: `a_b` vs `axb`.
-    db.upsert_session(
-        &parsed_cwd(
-            UUID_A,
-            "/tmp/a.jsonl",
-            "/home/saidler/repos/scottidler/a_b",
-            "2026-06-21T10:00:00Z",
-        ),
-        "desk",
-    )
-    .unwrap();
-    db.upsert_session(
-        &parsed_cwd(
-            UUID_B,
-            "/tmp/b.jsonl",
-            "/home/saidler/repos/scottidler/axb",
-            "2026-06-21T10:00:00Z",
-        ),
-        "desk",
-    )
-    .unwrap();
+    for (id, path, repo) in [
+        (UUID_A, "/tmp/a.jsonl", "scottidler/a_b"),
+        (UUID_B, "/tmp/b.jsonl", "scottidler/axb"),
+    ] {
+        db.upsert_session(
+            &parsed_cwd(id, path, &format!("/home/saidler/repos/{repo}"), "2026-06-21T10:00:00Z"),
+            "desk",
+        )
+        .unwrap();
+        db.upsert_repo(
+            id,
+            &Resolved {
+                repo: repo.to_string(),
+                source: RepoSource::KnownPath,
+            },
+        )
+        .unwrap();
+    }
 
     let out = db
         .export(
@@ -551,6 +563,91 @@ fn export_repo_filter_treats_like_wildcards_as_literals() {
         "`_` is a literal, not a wildcard: only a_b matches"
     );
     assert_eq!(out.sessions[0].session_id, UUID_A);
+}
+
+#[test]
+fn export_repo_filter_matches_attribution_the_cwd_does_not_show() {
+    // The defect this pins: `--repo` used to predicate on `s.cwd`/`s.project_dir` while the record
+    // EXPORTS the persisted `s.repo`. A session the chain resolved from files-touched out of a
+    // `$HOME` cwd therefore exported `repo: "tatari-tv/clyde"` and was excluded by
+    // `--repo tatari-tv/clyde` -- one name, two answers.
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(UUID_A, "/tmp/a.jsonl", "/home/saidler", "2026-06-21T10:00:00Z"),
+        "desk",
+    )
+    .unwrap();
+    db.upsert_repo(
+        UUID_A,
+        &Resolved {
+            repo: "tatari-tv/clyde".to_string(),
+            source: RepoSource::FilesTouched,
+        },
+    )
+    .unwrap();
+
+    let out = db
+        .export(
+            &ExportFilters {
+                repo: Some("tatari-tv/clyde".to_string()),
+                ..Default::default()
+            },
+            &export_ctx("2026-07-01T00:00:00Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        out.sessions.len(),
+        1,
+        "a session whose persisted repo IS the filter value must match, whatever its cwd says"
+    );
+    assert_eq!(out.sessions[0].repo.as_deref(), Some("tatari-tv/clyde"));
+
+    // The bare repo name still matches: substring, so the org prefix stays optional.
+    let bare = db
+        .export(
+            &ExportFilters {
+                repo: Some("clyde".to_string()),
+                ..Default::default()
+            },
+            &export_ctx("2026-07-01T00:00:00Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        bare.sessions.len(),
+        1,
+        "`--repo clyde` must still match `tatari-tv/clyde`"
+    );
+}
+
+#[test]
+fn export_repo_filter_excludes_an_unattributed_session_whose_path_matches() {
+    // Fail closed, the other direction: a path that LOOKS like the repo is not attribution. Until a
+    // rule fires, the session has no repo, so it matches no repo filter.
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "/home/saidler/repos/tatari-tv/clyde",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+
+    let out = db
+        .export(
+            &ExportFilters {
+                repo: Some("tatari-tv/clyde".to_string()),
+                ..Default::default()
+            },
+            &export_ctx("2026-07-01T00:00:00Z"),
+        )
+        .unwrap();
+    assert!(
+        out.sessions.is_empty(),
+        "an unattributed session must not be matched on its path alone"
+    );
 }
 
 #[test]
@@ -634,4 +731,41 @@ fn export_excludes_archived_unless_requested() {
         .unwrap();
     assert_eq!(with_archived.sessions.len(), 1);
     assert!(with_archived.sessions[0].archived);
+}
+
+/// `export`'s `repo` is the PERSISTED column, never a re-derivation from `cwd`. The two answers
+/// diverge exactly where it matters: a sibling worktree at `<root>/tatari-tv/clyde-ft` belongs to
+/// `tatari-tv/clyde` (git origin says so), while the path pattern would fabricate
+/// `tatari-tv/clyde-ft`. Break the field back to `session::repo_slug(cwd)` and this fails, because
+/// export and `report collect` would then answer differently about the same session.
+#[test]
+fn export_repo_is_the_persisted_column_not_a_cwd_derivation() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "/home/saidler/repos/tatari-tv/clyde-ft",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+    db.upsert_repo(
+        UUID_A,
+        &Resolved {
+            repo: "tatari-tv/clyde".to_string(),
+            source: RepoSource::GitOrigin,
+        },
+    )
+    .unwrap();
+
+    let env = db
+        .export(&ExportFilters::default(), &export_ctx("2026-07-01T00:00:00Z"))
+        .unwrap();
+    assert_eq!(
+        env.sessions[0].repo.as_deref(),
+        Some("tatari-tv/clyde"),
+        "the resolved slug wins over the cwd's directory name"
+    );
 }

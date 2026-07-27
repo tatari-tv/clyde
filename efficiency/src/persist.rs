@@ -90,8 +90,22 @@ impl OwnedEfficiency {
 /// does not advance `updated_at`, so running it repeatedly annotates newly-indexed (and grown, since
 /// `upsert_session` NULLs efficiency on a content change) sessions without ever re-touching or
 /// re-bumping an already-annotated one.
-pub fn reindex_efficiency(db: &Db, projects_dir: &Path, config: &EfficiencyConfig) -> Result<PersistStats> {
-    debug!("reindex_efficiency: projects_dir={}", projects_dir.display());
+///
+/// `repo_root` reaches `outcome::union`, which buckets each session's edited-file paths into
+/// `Outcomes::repos_touched` (repo attribution's rule 3). That coupling is why the single
+/// `efficiency_json IS NULL` predicate is enough for steady state: a grown transcript NULLs
+/// efficiency, this pass re-picks the row, and `repos_touched` is recomputed with it.
+pub fn reindex_efficiency(
+    db: &Db,
+    projects_dir: &Path,
+    config: &EfficiencyConfig,
+    repo_root: &Path,
+) -> Result<PersistStats> {
+    debug!(
+        "reindex_efficiency: projects_dir={} repo_root={}",
+        projects_dir.display(),
+        repo_root.display()
+    );
     let missing: BTreeSet<String> = db
         .sessions_missing_efficiency()
         .context("reindex_efficiency: failed to query sessions missing efficiency")?
@@ -99,7 +113,7 @@ pub fn reindex_efficiency(db: &Db, projects_dir: &Path, config: &EfficiencyConfi
         .collect();
     debug!("reindex_efficiency: candidates={}", missing.len());
 
-    let sessions: Vec<CollectedSession> = collect_ids(projects_dir, &missing, config)?;
+    let sessions: Vec<CollectedSession> = collect_ids(projects_dir, &missing, config, repo_root)?;
     let owned: Vec<OwnedEfficiency> = sessions
         .iter()
         .map(OwnedEfficiency::from_session)

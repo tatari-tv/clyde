@@ -1,0 +1,1231 @@
+{
+  "schema-version": 2,
+  "generated": "2026-06-01T12:00:00Z",
+  "host": "fixture-host",
+  "since": "2026-03-02T00:00:00Z",
+  "until": "2026-03-08T00:00:00Z",
+  "outcomes-enabled": true,
+  "notes": [
+    "window is session-level (M2): whole sessions whose catalog `modified` falls in [since, until]; not per-record like pre-v2 reports, so a boundary-straddling session's numbers can differ from a v1 report."
+  ],
+  "totals": {
+    "sessions": 9,
+    "spend-usd": 64.85,
+    "untracked-models": [],
+    "models": {
+      "claude-opus-4-7": {
+        "input": 377508,
+        "output": 109188,
+        "cache-5m-write": 1896924,
+        "cache-1h-write": 0,
+        "cache-read": 27641196,
+        "total": 30024816,
+        "spend-usd": 30.29
+      },
+      "claude-sonnet-4-6": {
+        "input": 642084,
+        "output": 185724,
+        "cache-5m-write": 3289452,
+        "cache-1h-write": 373973,
+        "cache-read": 50893308,
+        "total": 55384541,
+        "spend-usd": 34.56
+      }
+    },
+    "outcomes": {
+      "sessions-with-commits": 9,
+      "commits": 26,
+      "prs-opened": 12,
+      "confluence-writes": 3,
+      "jira-writes": 3,
+      "slack-messages": 8,
+      "files-edited": 108,
+      "lines-written": 8455,
+      "lines-replaced": 1717
+    },
+    "cache-read-share": 0.9226930164439185,
+    "tool-error-rate": 0.05967976710334789
+  },
+  "sessions": {
+    "3e0cfd4a-de96-4212-d979-0a304fad97f2": {
+      "title": null,
+      "summary": "Measured what the slowest healthy boot actually needs and cut the startup probe timeout to it, so a restarting pod stops being marked ready before its cache is warm.",
+      "tags": [
+        "ingest",
+        "reliability"
+      ],
+      "repo": "northwind-media/beacon",
+      "repo-source": "git-origin",
+      "begin": "2026-03-06T15:00:00Z",
+      "end": "2026-03-06T18:00:00Z",
+      "spend-usd": 7.83,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/3e0cfd4a-de96-4212-d979-0a304fad97f2.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 147795,
+          "output": 42745,
+          "cache-5m-write": 730385,
+          "cache-1h-write": 164165,
+          "cache-read": 10067165,
+          "total": 11152255,
+          "spend-usd": 7.83
+        }
+      },
+      "outcomes": {
+        "commits": [
+          "24378bd3a6a9dd2a5cf543974e87b2d8fff23e8c",
+          "3eb917caa25982f54e41f56f5d90f9d1fb8a7f20",
+          "ce6a9ce0e53932b38f5711a5b0e3100ffeee3b70"
+        ],
+        "prs": [],
+        "confluence-writes": 0,
+        "jira-writes": 1,
+        "slack-messages": 4,
+        "files-edited": 6,
+        "lines-written": 834,
+        "lines-replaced": 78,
+        "repos-touched": {
+          "northwind-media/beacon": 6
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 11152255,
+          "cost-usd": 7.828643249999999
+        }
+      },
+      "cache-read-share": 0.9061754298794457,
+      "tool-error-rate": 0.0,
+      "cache-1h-write-fraction": 0.183516852048516,
+      "interrupts": 1,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {
+        "wiki-write": {
+          "tokens": 1394031,
+          "cost-usd": 2.58
+        }
+      },
+      "efficiency": {
+        "session-id": "3e0cfd4a-de96-4212-d979-0a304fad97f2",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 147795,
+            "output-tokens": 42745,
+            "cache-read-tokens": 10067165,
+            "cache-5m-write-tokens": 730385,
+            "cache-1h-write-tokens": 164165,
+            "cost-usd": 7.83,
+            "turns": 57,
+            "turn-durations-ms": [
+              163950,
+              118621,
+              130006,
+              156418,
+              129227,
+              32567,
+              136252,
+              165818,
+              200378,
+              17425,
+              44734,
+              45488
+            ],
+            "compactions": [],
+            "tool-calls": 19,
+            "tool-errors": 0,
+            "bash-command-failures": 0,
+            "interrupts-structured": 0,
+            "interrupts-text": 1,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 9
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 147795,
+                "output": 42745,
+                "cache-5m-write": 730385,
+                "cache-1h-write": 164165,
+                "cache-read": 10067165,
+                "total": 11152255
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {
+              "wiki-write": {
+                "tokens": 1394031,
+                "cost-usd": 2.58
+              }
+            }
+          },
+          "cache-read-share": 0.9061754298794457,
+          "cache-1h-write-fraction": 0.183516852048516,
+          "tokens-per-turn": 195653.59649122806,
+          "cost-per-turn-usd": 0.13736842105263158,
+          "tool-error-rate": 0.0,
+          "turn-ms-p50": 129227,
+          "turn-ms-p90": 165818,
+          "turn-ms-max": 200378
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "47cff873-38be-4595-84f8-86b312614bfe": {
+      "title": "Audit the beacon retention policy",
+      "summary": "Audited the retention policy against what the storage layer actually deletes, found two buckets the sweeper never visited, and wired them into the same scheduled job.",
+      "tags": [
+        "ingest",
+        "reliability"
+      ],
+      "repo": "northwind-media/beacon",
+      "repo-source": "git-origin",
+      "begin": "2026-03-04T10:00:00Z",
+      "end": "2026-03-04T12:00:00Z",
+      "spend-usd": 4.38,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/47cff873-38be-4595-84f8-86b312614bfe.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 78781,
+          "output": 22791,
+          "cache-5m-write": 422143,
+          "cache-1h-write": 0,
+          "cache-read": 7384947,
+          "total": 7908662,
+          "spend-usd": 4.38
+        }
+      },
+      "outcomes": {
+        "commits": [
+          "74f9e0cbfa100ed0e04627435fa4de73735ee6c0",
+          "a0ca3fc8c7e053dad3579a2c4f5210d7897e1f50",
+          "6ab605ae4c80fe9e597a7c030ad64ae865e91f5b"
+        ],
+        "prs": [
+          {
+            "number": 106,
+            "url": "https://github.com/northwind-media/beacon/pull/106",
+            "repository": "northwind-media/beacon"
+          },
+          {
+            "number": 107,
+            "url": "https://github.com/northwind-media/beacon/pull/107",
+            "repository": "northwind-media/beacon"
+          }
+        ],
+        "confluence-writes": 1,
+        "jira-writes": 0,
+        "slack-messages": 0,
+        "files-edited": 17,
+        "lines-written": 1853,
+        "lines-replaced": 663,
+        "repos-touched": {
+          "northwind-media/beacon": 17
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7908662,
+          "cost-usd": 4.3767283500000005
+        }
+      },
+      "cache-read-share": 0.9364782913643909,
+      "tool-error-rate": 0.06382978723404255,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 1,
+      "by-skill": {
+        "release-notes": {
+          "tokens": 1129808,
+          "cost-usd": 2.09
+        }
+      },
+      "by-mcp": {},
+      "efficiency": {
+        "session-id": "47cff873-38be-4595-84f8-86b312614bfe",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 78781,
+            "output-tokens": 22791,
+            "cache-read-tokens": 7384947,
+            "cache-5m-write-tokens": 422143,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 4.38,
+            "turns": 42,
+            "turn-durations-ms": [
+              239459,
+              24900,
+              239206,
+              87652
+            ],
+            "compactions": [
+              {
+                "trigger": "auto",
+                "pre-tokens": 145211,
+                "post-tokens": 36302,
+                "duration-ms": 28694
+              }
+            ],
+            "tool-calls": 47,
+            "tool-errors": 3,
+            "bash-command-failures": 1,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 33
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 78781,
+                "output": 22791,
+                "cache-5m-write": 422143,
+                "cache-1h-write": 0,
+                "cache-read": 7384947,
+                "total": 7908662
+              }
+            },
+            "by-skill": {
+              "release-notes": {
+                "tokens": 1129808,
+                "cost-usd": 2.09
+              }
+            },
+            "by-mcp-tool": {}
+          },
+          "cache-read-share": 0.9364782913643909,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 188301.47619047618,
+          "cost-per-turn-usd": 0.10428571428571429,
+          "tool-error-rate": 0.06382978723404255,
+          "turn-ms-p50": 87652,
+          "turn-ms-p90": 239459,
+          "turn-ms-max": 239459
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "511c0e88-3d4c-47e2-dabb-98eaab09efe2": {
+      "title": "Wire the ingest retry backoff",
+      "summary": "Replaced the fixed retry delay with a bounded exponential backoff and a jitter window, so a downstream blip no longer arrives back as a synchronized retry storm.",
+      "tags": [
+        "ingest",
+        "reliability"
+      ],
+      "repo": "northwind-media/beacon",
+      "repo-source": "git-origin",
+      "begin": "2026-03-02T13:00:00Z",
+      "end": "2026-03-02T16:00:00Z",
+      "spend-usd": 11.41,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/511c0e88-3d4c-47e2-dabb-98eaab09efe2.jsonl"
+      ],
+      "models": {
+        "claude-opus-4-7": {
+          "input": 147795,
+          "output": 42745,
+          "cache-5m-write": 730385,
+          "cache-1h-write": 0,
+          "cache-read": 10067165,
+          "total": 10988090,
+          "spend-usd": 11.41
+        }
+      },
+      "outcomes": {
+        "commits": [
+          "c01880ad322f9db559f0545f2f18da0cd69a01af",
+          "219fa7ad16b5a037e0ef751e69666f1341975d8c",
+          "ac2f5e8c668253a30272b33676272b8dd6584cbd",
+          "79e83294d04539167b171180b0b8bf1dd4be37bb"
+        ],
+        "prs": [
+          {
+            "number": 118,
+            "url": "https://github.com/northwind-media/beacon/pull/118",
+            "repository": "northwind-media/beacon"
+          }
+        ],
+        "confluence-writes": 1,
+        "jira-writes": 0,
+        "slack-messages": 0,
+        "files-edited": 15,
+        "lines-written": 915,
+        "lines-replaced": 75,
+        "repos-touched": {
+          "northwind-media/beacon": 15
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 10988090,
+          "cost-usd": 11.406088749999999
+        }
+      },
+      "cache-read-share": 0.919766804975083,
+      "tool-error-rate": 0.08860759493670886,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {},
+      "efficiency": {
+        "session-id": "511c0e88-3d4c-47e2-dabb-98eaab09efe2",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 147795,
+            "output-tokens": 42745,
+            "cache-read-tokens": 10067165,
+            "cache-5m-write-tokens": 730385,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 11.41,
+            "turns": 11,
+            "turn-durations-ms": [
+              129326,
+              88306,
+              126724,
+              214756,
+              48779,
+              138143,
+              64642,
+              233718,
+              153065,
+              141718
+            ],
+            "compactions": [],
+            "tool-calls": 79,
+            "tool-errors": 7,
+            "bash-command-failures": 3,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-opus-4-7": 37
+            },
+            "by-model": {
+              "claude-opus-4-7": {
+                "input": 147795,
+                "output": 42745,
+                "cache-5m-write": 730385,
+                "cache-1h-write": 0,
+                "cache-read": 10067165,
+                "total": 10988090
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {}
+          },
+          "cache-read-share": 0.919766804975083,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 998917.2727272727,
+          "cost-per-turn-usd": 1.0372727272727273,
+          "tool-error-rate": 0.08860759493670886,
+          "turn-ms-p50": 129326,
+          "turn-ms-p90": 214756,
+          "turn-ms-max": 233718
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "7fa460c4-70f5-4a5a-f9ba-aba981bdaede": {
+      "title": "Trace a cold start in the ingest worker",
+      "summary": "Traced a cold start in the ingest worker to a synchronous hostname lookup on the request path, moved it behind a warmed cache, and added a regression test that fails when the lookup happens inside the handler.",
+      "tags": [
+        "ingest",
+        "reliability"
+      ],
+      "repo": "northwind-media/beacon",
+      "repo-source": "git-origin",
+      "begin": "2026-03-03T12:00:00Z",
+      "end": "2026-03-03T13:00:00Z",
+      "spend-usd": 6.28,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/7fa460c4-70f5-4a5a-f9ba-aba981bdaede.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 132110,
+          "output": 38210,
+          "cache-5m-write": 660330,
+          "cache-1h-write": 0,
+          "cache-read": 9457570,
+          "total": 10288220,
+          "spend-usd": 6.28
+        }
+      },
+      "outcomes": {
+        "commits": [
+          "8be28f8efb2f0e2a28cf4e6b6dbbab7f17e54765",
+          "35188403fa86c21f5d2892532c28b056d8cfd206"
+        ],
+        "prs": [
+          {
+            "number": 121,
+            "url": "https://github.com/northwind-media/beacon/pull/121",
+            "repository": "northwind-media/beacon"
+          },
+          {
+            "number": 122,
+            "url": "https://github.com/northwind-media/beacon/pull/122",
+            "repository": "northwind-media/beacon"
+          }
+        ],
+        "confluence-writes": 0,
+        "jira-writes": 0,
+        "slack-messages": 0,
+        "files-edited": 14,
+        "lines-written": 812,
+        "lines-replaced": 56,
+        "repos-touched": {
+          "northwind-media/beacon": 14
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 10288220,
+          "cost-usd": 6.2829885
+        }
+      },
+      "cache-read-share": 0.9226888559133113,
+      "tool-error-rate": 0.08849557522123894,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {},
+      "efficiency": {
+        "session-id": "7fa460c4-70f5-4a5a-f9ba-aba981bdaede",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 132110,
+            "output-tokens": 38210,
+            "cache-read-tokens": 9457570,
+            "cache-5m-write-tokens": 660330,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 6.28,
+            "turns": 17,
+            "turn-durations-ms": [
+              214448,
+              152805,
+              183689,
+              175519,
+              229775,
+              170565,
+              148272,
+              96424,
+              113104,
+              43492,
+              136724,
+              177215
+            ],
+            "compactions": [],
+            "tool-calls": 113,
+            "tool-errors": 10,
+            "bash-command-failures": 5,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 6
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 132110,
+                "output": 38210,
+                "cache-5m-write": 660330,
+                "cache-1h-write": 0,
+                "cache-read": 9457570,
+                "total": 10288220
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {}
+          },
+          "cache-read-share": 0.9226888559133113,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 605189.4117647059,
+          "cost-per-turn-usd": 0.3694117647058824,
+          "tool-error-rate": 0.08849557522123894,
+          "turn-ms-p50": 152805,
+          "turn-ms-p90": 214448,
+          "turn-ms-max": 229775
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "b6a2340c-73ec-4620-0f28-ce6ddebe6be1": {
+      "title": "Trace a cold start in the ingest worker",
+      "summary": "Traced a cold start in the ingest worker to a synchronous hostname lookup on the request path, moved it behind a warmed cache, and added a regression test that fails when the lookup happens inside the handler.",
+      "tags": [
+        "ingest",
+        "reliability"
+      ],
+      "repo": "northwind-media/beacon",
+      "repo-source": "git-origin",
+      "begin": "2026-03-03T13:00:00Z",
+      "end": "2026-03-03T14:00:00Z",
+      "spend-usd": 6.39,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/b6a2340c-73ec-4620-0f28-ce6ddebe6be1.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 113288,
+          "output": 32768,
+          "cache-5m-write": 576264,
+          "cache-1h-write": 129856,
+          "cache-read": 8726056,
+          "total": 9578232,
+          "spend-usd": 6.39
+        }
+      },
+      "outcomes": {
+        "commits": [
+          "41b9a18e36af611c18b664f5f887b41f4413644c",
+          "4a72e8348ea320d91a7272162c1ac2389f4cc55c",
+          "69dffb887e1235c517d121e028c125da279466e5",
+          "1d84e738fb7757505e7439fd96e9222a8c6eb939"
+        ],
+        "prs": [
+          {
+            "number": 103,
+            "url": "https://github.com/northwind-media/beacon/pull/103",
+            "repository": "northwind-media/beacon"
+          },
+          {
+            "number": 104,
+            "url": "https://github.com/northwind-media/beacon/pull/104",
+            "repository": "northwind-media/beacon"
+          }
+        ],
+        "confluence-writes": 0,
+        "jira-writes": 0,
+        "slack-messages": 0,
+        "files-edited": 19,
+        "lines-written": 988,
+        "lines-replaced": 323,
+        "repos-touched": {
+          "northwind-media/beacon": 19
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 9578232,
+          "cost-usd": 6.3893268
+        }
+      },
+      "cache-read-share": 0.9141573421679658,
+      "tool-error-rate": 0.047619047619047616,
+      "cache-1h-write-fraction": 0.18390075341301762,
+      "interrupts": 1,
+      "compactions": 0,
+      "by-skill": {
+        "schema-review": {
+          "tokens": 1064248,
+          "cost-usd": 1.97
+        }
+      },
+      "by-mcp": {},
+      "efficiency": {
+        "session-id": "b6a2340c-73ec-4620-0f28-ce6ddebe6be1",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 113288,
+            "output-tokens": 32768,
+            "cache-read-tokens": 8726056,
+            "cache-5m-write-tokens": 576264,
+            "cache-1h-write-tokens": 129856,
+            "cost-usd": 6.39,
+            "turns": 29,
+            "turn-durations-ms": [
+              95722,
+              35871,
+              190258,
+              235887,
+              3732,
+              77421
+            ],
+            "compactions": [],
+            "tool-calls": 63,
+            "tool-errors": 3,
+            "bash-command-failures": 1,
+            "interrupts-structured": 1,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 20
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 113288,
+                "output": 32768,
+                "cache-5m-write": 576264,
+                "cache-1h-write": 129856,
+                "cache-read": 8726056,
+                "total": 9578232
+              }
+            },
+            "by-skill": {
+              "schema-review": {
+                "tokens": 1064248,
+                "cost-usd": 1.97
+              }
+            },
+            "by-mcp-tool": {}
+          },
+          "cache-read-share": 0.9141573421679658,
+          "cache-1h-write-fraction": 0.18390075341301762,
+          "tokens-per-turn": 330283.8620689655,
+          "cost-per-turn-usd": 0.22034482758620688,
+          "tool-error-rate": 0.047619047619047616,
+          "turn-ms-p50": 77421,
+          "turn-ms-p90": 235887,
+          "turn-ms-max": 235887
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "ce6093cc-5161-4f5c-dc6f-5d5ea94c54f0": {
+      "title": null,
+      "summary": "Replaced the fixed retry delay with a bounded exponential backoff and a jitter window, so a downstream blip no longer arrives back as a synchronized retry storm.",
+      "tags": [
+        "ingest",
+        "reliability"
+      ],
+      "repo": "northwind-media/beacon",
+      "repo-source": "git-origin",
+      "begin": "2026-03-02T10:00:00Z",
+      "end": "2026-03-02T12:00:00Z",
+      "spend-usd": 7.29,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/ce6093cc-5161-4f5c-dc6f-5d5ea94c54f0.jsonl"
+      ],
+      "models": {
+        "claude-opus-4-7": {
+          "input": 78781,
+          "output": 22791,
+          "cache-5m-write": 422143,
+          "cache-1h-write": 0,
+          "cache-read": 7384947,
+          "total": 7908662,
+          "spend-usd": 7.29
+        }
+      },
+      "outcomes": {
+        "commits": [
+          "afcf9f14390b5e2616d30f44dbc1772a579e0402",
+          "8bacf2e1616bf5a5383a3a293fc2957a897b4ead"
+        ],
+        "prs": [
+          {
+            "number": 100,
+            "url": "https://github.com/northwind-media/beacon/pull/100",
+            "repository": "northwind-media/beacon"
+          }
+        ],
+        "confluence-writes": 0,
+        "jira-writes": 0,
+        "slack-messages": 0,
+        "files-edited": 12,
+        "lines-written": 1656,
+        "lines-replaced": 132,
+        "repos-touched": {
+          "northwind-media/beacon": 12
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7908662,
+          "cost-usd": 7.294547250000001
+        }
+      },
+      "cache-read-share": 0.9364782913643909,
+      "tool-error-rate": 0.06140350877192982,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 1,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {
+        "wiki-write": {
+          "tokens": 988582,
+          "cost-usd": 1.83
+        }
+      },
+      "efficiency": {
+        "session-id": "ce6093cc-5161-4f5c-dc6f-5d5ea94c54f0",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 78781,
+            "output-tokens": 22791,
+            "cache-read-tokens": 7384947,
+            "cache-5m-write-tokens": 422143,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 7.29,
+            "turns": 19,
+            "turn-durations-ms": [
+              142784,
+              225557,
+              100903,
+              44117
+            ],
+            "compactions": [],
+            "tool-calls": 114,
+            "tool-errors": 7,
+            "bash-command-failures": 3,
+            "interrupts-structured": 0,
+            "interrupts-text": 1,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-opus-4-7": 33
+            },
+            "by-model": {
+              "claude-opus-4-7": {
+                "input": 78781,
+                "output": 22791,
+                "cache-5m-write": 422143,
+                "cache-1h-write": 0,
+                "cache-read": 7384947,
+                "total": 7908662
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {
+              "wiki-write": {
+                "tokens": 988582,
+                "cost-usd": 1.83
+              }
+            }
+          },
+          "cache-read-share": 0.9364782913643909,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 416245.36842105264,
+          "cost-per-turn-usd": 0.3836842105263158,
+          "tool-error-rate": 0.06140350877192982,
+          "turn-ms-p50": 100903,
+          "turn-ms-p90": 225557,
+          "turn-ms-max": 225557
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "cedee722-6ec0-4d84-d194-04d468fbc2cb": {
+      "title": "Backfill the missing ingest metric labels",
+      "summary": "Backfilled the missing labels on the ingest metrics so the per-tenant dashboard stops collapsing every tenant into one series.",
+      "tags": [
+        "ingest",
+        "reliability"
+      ],
+      "repo": "northwind-media/beacon",
+      "repo-source": "git-origin",
+      "begin": "2026-03-07T10:00:00Z",
+      "end": "2026-03-07T11:00:00Z",
+      "spend-usd": 4.3,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/cedee722-6ec0-4d84-d194-04d468fbc2cb.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 63096,
+          "output": 18256,
+          "cache-5m-write": 352088,
+          "cache-1h-write": 79952,
+          "cache-read": 6775352,
+          "total": 7288744,
+          "spend-usd": 4.3
+        }
+      },
+      "outcomes": {
+        "commits": [
+          "c0a882bfba7db82baf97d298881b0f863e788126"
+        ],
+        "prs": [
+          {
+            "number": 115,
+            "url": "https://github.com/northwind-media/beacon/pull/115",
+            "repository": "northwind-media/beacon"
+          }
+        ],
+        "confluence-writes": 0,
+        "jira-writes": 2,
+        "slack-messages": 0,
+        "files-edited": 16,
+        "lines-written": 992,
+        "lines-replaced": 192,
+        "repos-touched": {
+          "northwind-media/beacon": 16
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 7288744,
+          "cost-usd": 4.2957756
+        }
+      },
+      "cache-read-share": 0.9318978313422703,
+      "tool-error-rate": 0.0,
+      "cache-1h-write-fraction": 0.18505693917229887,
+      "interrupts": 1,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {},
+      "efficiency": {
+        "session-id": "cedee722-6ec0-4d84-d194-04d468fbc2cb",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 63096,
+            "output-tokens": 18256,
+            "cache-read-tokens": 6775352,
+            "cache-5m-write-tokens": 352088,
+            "cache-1h-write-tokens": 79952,
+            "cost-usd": 4.3,
+            "turns": 46,
+            "turn-durations-ms": [
+              14283,
+              32423,
+              54128,
+              155309,
+              13111,
+              26865,
+              144611,
+              93876,
+              176973,
+              94389,
+              207579
+            ],
+            "compactions": [],
+            "tool-calls": 82,
+            "tool-errors": 0,
+            "bash-command-failures": 0,
+            "interrupts-structured": 0,
+            "interrupts-text": 1,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 19
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 63096,
+                "output": 18256,
+                "cache-5m-write": 352088,
+                "cache-1h-write": 79952,
+                "cache-read": 6775352,
+                "total": 7288744
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {}
+          },
+          "cache-read-share": 0.9318978313422703,
+          "cache-1h-write-fraction": 0.18505693917229887,
+          "tokens-per-turn": 158450.95652173914,
+          "cost-per-turn-usd": 0.09347826086956522,
+          "tool-error-rate": 0.0,
+          "turn-ms-p50": 93876,
+          "turn-ms-p90": 176973,
+          "turn-ms-max": 207579
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "f33eb686-59b8-4563-96bb-5c4ffd03f056": {
+      "title": null,
+      "summary": "Audited the retention policy against what the storage layer actually deletes, found two buckets the sweeper never visited, and wired them into the same scheduled job.",
+      "tags": [
+        "ingest",
+        "reliability"
+      ],
+      "repo": "northwind-media/beacon",
+      "repo-source": "git-origin",
+      "begin": "2026-03-04T14:00:00Z",
+      "end": "2026-03-04T18:00:00Z",
+      "spend-usd": 5.39,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/f33eb686-59b8-4563-96bb-5c4ffd03f056.jsonl"
+      ],
+      "models": {
+        "claude-sonnet-4-6": {
+          "input": 107014,
+          "output": 30954,
+          "cache-5m-write": 548242,
+          "cache-1h-write": 0,
+          "cache-read": 8482218,
+          "total": 9168428,
+          "spend-usd": 5.39
+        }
+      },
+      "outcomes": {
+        "commits": [
+          "8c18d7f50af1879982c0bf23d2c7698fc3a0eb11",
+          "b1cfb7178257a28da634a42dbdc728b47c86248f",
+          "b68dcdcf92373d74aa058efbf616f0144f3ec928"
+        ],
+        "prs": [
+          {
+            "number": 124,
+            "url": "https://github.com/northwind-media/beacon/pull/124",
+            "repository": "northwind-media/beacon"
+          }
+        ],
+        "confluence-writes": 1,
+        "jira-writes": 0,
+        "slack-messages": 4,
+        "files-edited": 6,
+        "lines-written": 306,
+        "lines-replaced": 174,
+        "repos-touched": {
+          "northwind-media/beacon": 6
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 9168428,
+          "cost-usd": 5.3859249
+        }
+      },
+      "cache-read-share": 0.9282891529978635,
+      "tool-error-rate": 0.0738255033557047,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {
+        "wiki-write": {
+          "tokens": 1528071,
+          "cost-usd": 2.83
+        }
+      },
+      "efficiency": {
+        "session-id": "f33eb686-59b8-4563-96bb-5c4ffd03f056",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 107014,
+            "output-tokens": 30954,
+            "cache-read-tokens": 8482218,
+            "cache-5m-write-tokens": 548242,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 5.39,
+            "turns": 51,
+            "turn-durations-ms": [
+              58970,
+              84969,
+              115852,
+              90284,
+              97394
+            ],
+            "compactions": [],
+            "tool-calls": 149,
+            "tool-errors": 11,
+            "bash-command-failures": 5,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-sonnet-4-6": 12
+            },
+            "by-model": {
+              "claude-sonnet-4-6": {
+                "input": 107014,
+                "output": 30954,
+                "cache-5m-write": 548242,
+                "cache-1h-write": 0,
+                "cache-read": 8482218,
+                "total": 9168428
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {
+              "wiki-write": {
+                "tokens": 1528071,
+                "cost-usd": 2.83
+              }
+            }
+          },
+          "cache-read-share": 0.9282891529978635,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 179773.0980392157,
+          "cost-per-turn-usd": 0.10568627450980392,
+          "tool-error-rate": 0.0738255033557047,
+          "turn-ms-p50": 90284,
+          "turn-ms-p90": 115852,
+          "turn-ms-max": 115852
+        },
+        "subagents": [],
+        "flags": []
+      }
+    },
+    "f85d5c07-f5af-432b-8f32-cbffd37cc164": {
+      "title": "Add a dead-letter queue to the ingest path",
+      "summary": "Added a dead-letter queue so a record the parser rejects is parked with its failure reason instead of being retried forever behind the live stream.",
+      "tags": [
+        "ingest",
+        "reliability"
+      ],
+      "repo": "northwind-media/beacon",
+      "repo-source": "git-origin",
+      "begin": "2026-03-05T09:00:00Z",
+      "end": "2026-03-05T13:00:00Z",
+      "spend-usd": 11.59,
+      "untracked-models": [],
+      "jsonl-paths": [
+        "/fixture/projects/f85d5c07-f5af-432b-8f32-cbffd37cc164.jsonl"
+      ],
+      "models": {
+        "claude-opus-4-7": {
+          "input": 150932,
+          "output": 43652,
+          "cache-5m-write": 744396,
+          "cache-1h-write": 0,
+          "cache-read": 10189084,
+          "total": 11128064,
+          "spend-usd": 11.59
+        }
+      },
+      "outcomes": {
+        "commits": [
+          "86c23513e44fd278b1731aa790874c8d6ca5e28f",
+          "5a0f67c84fda2506679a0c77cd0e9412fd35ee84",
+          "d3f0a81a3d110c94812c00f7e73b10196c5b17c1",
+          "ffcfc7583b2cc9c13db25284a20d373eed44032b"
+        ],
+        "prs": [
+          {
+            "number": 109,
+            "url": "https://github.com/northwind-media/beacon/pull/109",
+            "repository": "northwind-media/beacon"
+          },
+          {
+            "number": 110,
+            "url": "https://github.com/northwind-media/beacon/pull/110",
+            "repository": "northwind-media/beacon"
+          }
+        ],
+        "confluence-writes": 0,
+        "jira-writes": 0,
+        "slack-messages": 0,
+        "files-edited": 3,
+        "lines-written": 99,
+        "lines-replaced": 24,
+        "repos-touched": {
+          "northwind-media/beacon": 3
+        }
+      },
+      "agent-type-costs": {
+        "(main-session)": {
+          "tokens": 11128064,
+          "cost-usd": 11.592977
+        }
+      },
+      "cache-read-share": 0.9192263874709817,
+      "tool-error-rate": 0.0,
+      "cache-1h-write-fraction": 0.0,
+      "interrupts": 0,
+      "compactions": 0,
+      "by-skill": {},
+      "by-mcp": {},
+      "efficiency": {
+        "session-id": "f85d5c07-f5af-432b-8f32-cbffd37cc164",
+        "aggregate": {
+          "raw": {
+            "input-tokens": 150932,
+            "output-tokens": 43652,
+            "cache-read-tokens": 10189084,
+            "cache-5m-write-tokens": 744396,
+            "cache-1h-write-tokens": 0,
+            "cost-usd": 11.59,
+            "turns": 19,
+            "turn-durations-ms": [
+              196015,
+              171896,
+              6853,
+              23815,
+              123981,
+              72577,
+              89702,
+              122040,
+              64057,
+              52572,
+              228291
+            ],
+            "compactions": [],
+            "tool-calls": 21,
+            "tool-errors": 0,
+            "bash-command-failures": 0,
+            "interrupts-structured": 0,
+            "interrupts-text": 0,
+            "web-search-requests": 0,
+            "web-fetch-requests": 0,
+            "effort-high": 0,
+            "effort-xhigh": 0,
+            "model-mix": {
+              "claude-opus-4-7": 23
+            },
+            "by-model": {
+              "claude-opus-4-7": {
+                "input": 150932,
+                "output": 43652,
+                "cache-5m-write": 744396,
+                "cache-1h-write": 0,
+                "cache-read": 10189084,
+                "total": 11128064
+              }
+            },
+            "by-skill": {},
+            "by-mcp-tool": {}
+          },
+          "cache-read-share": 0.9192263874709817,
+          "cache-1h-write-fraction": 0.0,
+          "tokens-per-turn": 585687.5789473684,
+          "cost-per-turn-usd": 0.61,
+          "tool-error-rate": 0.0,
+          "turn-ms-p50": 89702,
+          "turn-ms-p90": 196015,
+          "turn-ms-max": 228291
+        },
+        "subagents": [],
+        "flags": []
+      }
+    }
+  }
+}

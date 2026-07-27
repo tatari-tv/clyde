@@ -2,7 +2,7 @@ use crate::cli::CollectArgs;
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use common::DateTz;
 use eyre::{Result, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -15,6 +15,7 @@ pub enum ResolvedCommand {
     Collect(CollectConfig),
     Render(RenderConfig),
     Merge(MergeConfig),
+    Eval(crate::eval::EvalConfig),
 }
 
 /// Destination for `report collect`'s JSON. `-o <path>` selects [`Output::File`]; omitting `-o`
@@ -40,6 +41,9 @@ pub struct CollectConfig {
     pub no_rollup: bool,
     /// `true` for `--no-outcomes`: omit catalog outcomes from the report. Default `false`.
     pub no_outcomes: bool,
+    /// Enrichment-coverage floor, as a fraction: below it, collect warns on stderr and still writes
+    /// the artifact. Resolved flag > `clyde.yml`'s `min-enrichment` > `0.5`.
+    pub min_enrichment: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +79,17 @@ pub struct RenderConfig {
     /// Output ceiling for the html job, from `render.html-max-output-tokens` (default
     /// `common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS`).
     pub html_max_output_tokens: u32,
+    /// Prior-period report JSON (`--prior`), lighting up the Month over Month section. `None`
+    /// omits the section entirely from the render.
+    pub prior: Option<PathBuf>,
+    /// Per-user Analytics cost export (`--reconcile`), lighting up the Reconciliation section.
+    /// `None` omits the reconciliation block but never the fact of its absence -- see
+    /// `render::run`'s stderr warning and the artifact's `reconciliation-status` field.
+    pub reconcile: Option<PathBuf>,
+    /// The operator `--reconcile` is scoped to (`--reconcile-user`). `None` falls back to the
+    /// persona block's work email; when neither is available the reconciliation fails loudly rather
+    /// than comparing against an unscoped total.
+    pub reconcile_user: Option<String>,
 }
 
 /// The RESOLVED transport: which backend actually performs the call.
@@ -160,11 +175,11 @@ const DEFAULT_RENDER_INPUT: &str = "./claude-report.json";
 pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> {
     let resolved = match command {
         crate::cli::Command::Collect(args) => {
-            // Collect is the sole consumer of the date-tz convention, so it loads clyde.yml for that.
-            // This load is NOT what protects `merge` — `render` below loads config unconditionally
-            // now (the model pins live there), so only `merge` is still config-independent.
-            let tz = common::config::load()?.date_tz();
-            ResolvedCommand::Collect(collect_config_from_args(args, tz)?)
+            // Collect reads clyde.yml for the date-tz convention and the enrichment floor. This load
+            // is NOT what protects `merge` — `render` below loads config unconditionally now (the
+            // model pins live there), so only `merge` is still config-independent.
+            let file = common::config::load()?;
+            ResolvedCommand::Collect(collect_config_from_args(args, file.date_tz(), file.min_enrichment())?)
         }
         crate::cli::Command::Render(args) => {
             // Config is now loaded UNCONDITIONALLY, which is a deliberate behavior change from the
@@ -200,6 +215,12 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                     format
                 );
             }
+            // `--reconcile-user` scopes a reconciliation that is not happening; a flag that
+            // silently does nothing is how a reader ends up believing a figure was checked when it
+            // never was. Fail loudly instead of accepting the inert combination.
+            if args.reconcile_user.is_some() && args.reconcile.is_none() {
+                bail!("--reconcile-user has no meaning without --reconcile <analytics.json>; pass both or neither");
+            }
             let input = args.input.unwrap_or_else(|| PathBuf::from(DEFAULT_RENDER_INPUT));
             ResolvedCommand::Render(RenderConfig {
                 input,
@@ -212,6 +233,36 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 pdf_engine: args.pdf_engine,
                 outliers: args.outliers,
                 llm,
+                markdown_model: file.render_markdown_model().to_string(),
+                html_model: file.render_html_model().to_string(),
+                markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
+                html_max_output_tokens: file.render_html_max_output_tokens(),
+                prior: args.prior,
+                reconcile: args.reconcile,
+                reconcile_user: args.reconcile_user,
+            })
+        }
+        crate::cli::Command::Eval(args) => {
+            // Same unconditional load as `render`, and for the same reason: the eval IS a render
+            // (twice, per fixture) plus a judge, so it needs the model pins and the ceilings. The
+            // judge pin defaults to the markdown pin rather than introducing a config key whose only
+            // reader would be this subcommand.
+            let file = common::config::load()?;
+            let fixtures = match args.fixture {
+                Some(dirs) if !dirs.is_empty() => dirs,
+                // Resolved against the process CWD, so `otto eval` from the workspace root finds
+                // them and any other CWD fails loudly naming `--fixture` (`fixture::Fixture::load`).
+                _ => crate::eval::fixture::committed_dirs(Path::new(".")),
+            };
+            ResolvedCommand::Eval(crate::eval::EvalConfig {
+                fixtures,
+                judge_model: args.judge.unwrap_or_else(|| file.render_markdown_model().to_string()),
+                out: args.out.unwrap_or_else(|| PathBuf::from(crate::eval::DEFAULT_OUT)),
+                write_goldens: args.write_goldens,
+                llm: match args.llm {
+                    Some(l) => l,
+                    None => file.render_llm().into(),
+                },
                 markdown_model: file.render_markdown_model().to_string(),
                 html_model: file.render_html_model().to_string(),
                 markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
@@ -234,7 +285,7 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
     Ok(resolved)
 }
 
-fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConfig> {
+fn collect_config_from_args(args: CollectArgs, tz: DateTz, config_min_enrichment: f64) -> Result<CollectConfig> {
     // Shared parser (common::parse_since) so `--since 2d` (a relative span) now works for report,
     // not just RFC 3339 / YYYY-MM-DD. The bare-date midnight convention follows the configured tz.
     let since = match args.since {
@@ -256,6 +307,16 @@ fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConf
     };
     // Collect reads the canonical catalog; `--db` overrides the path (tests inject one directly).
     let db_path = args.db.unwrap_or_else(session::paths::sessions_db_path);
+    // Precedence, house convention: flag > config > default. The flag is validated HERE (the config
+    // path validates at deserialize) so `--min-enrichment 50` fails with the same named message
+    // instead of warning on every run.
+    let min_enrichment = match args.min_enrichment {
+        Some(v) if !v.is_finite() || !(0.0..=1.0).contains(&v) => {
+            bail!("--min-enrichment must be a finite fraction in 0.0..=1.0 (0.5 means 50%), got {v}");
+        }
+        Some(v) => v,
+        None => config_min_enrichment,
+    };
     Ok(CollectConfig {
         since,
         until,
@@ -263,6 +324,7 @@ fn collect_config_from_args(args: CollectArgs, tz: DateTz) -> Result<CollectConf
         db_path,
         no_rollup: args.no_rollup,
         no_outcomes: args.no_outcomes,
+        min_enrichment,
     })
 }
 

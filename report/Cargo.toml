@@ -29,6 +29,7 @@ rayon = { workspace = true }
 regex = "1.12.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml.workspace = true
 session = { path = "../session" }
 sessions = { path = "../sessions" }
 tempfile = { workspace = true }
@@ -36,3 +37,10 @@ thiserror.workspace = true
 ureq = { workspace = true, features = ["json"] }
 wait-timeout = "0.2.1"
 which = { workspace = true }
+
+[dev-dependencies]
+# Tests only. The catalog's write API deliberately writes `efficiency_json` and `outcome_json`
+# together in one statement, so the "outcome blob missing" state collect must fail closed on cannot
+# be produced through it. A raw connection is how the test reaches that state; production code in
+# this crate never touches SQLite directly (it goes through `sessions::Db`).
+rusqlite = { workspace = true, features = ["bundled"] }

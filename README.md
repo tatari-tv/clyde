@@ -93,8 +93,32 @@ $XDG_CONFIG_HOME/clyde/pricing.json  # merged pricing override (was ccu/ + cr/)
 
 `clyde.yml` is optional and strict (`deny_unknown_fields`): a missing file is all-defaults, but a
 typo'd key is a hard error. Today it carries `date-tz` (how `report collect --since <date>`
-interprets a bare date), a `render:` section (below), and an `efficiency:` section (below) with the
-thresholds `clyde efficiency` scores sessions against.
+interprets a bare date), `repo-root` (below), `min-enrichment` (below), a `render:` section (below),
+and an `efficiency:` section (below) with the thresholds `clyde efficiency` scores sessions against.
+
+```yaml
+# ~/.config/clyde/clyde.yml
+repo-root: /home/you/repos       # where <org>/<repo> clones live; default <home>/repos
+min-enrichment: 0.5              # enrich-coverage floor report collect warns below; default 0.5
+```
+
+`repo-root` is used twice by repo attribution. It is the last resort: when a session's working
+directory is gone and clyde has never seen it alive, a cwd matching `<repo-root>/<org>/<repo>[/...]`
+is *guessed* to be that repo, and the guess is labeled as one (`repo-source: path-guess`) rather
+than presented as fact. Before that guess, it is also how a session that ran outside any repo (a
+`$HOME` or temp-dir working directory) is attributed to the repo it actually edited files in
+(`repo-source: files-touched`), by matching each edited file's directory against the same shape.
+Matching is confined to this root, so an arbitrary path cannot manufacture an org. An explicitly set
+value must be an absolute path and an existing directory, or the config fails to load; the default
+is not existence-checked, and on a machine with no `~/repos` the only consequence is that neither
+rule fires.
+
+`min-enrichment` is a FRACTION, not a percent: `0.5` means 50%, and `min-enrichment: 50` is rejected
+at load. When fewer than this share of a window's sessions carry an enrich summary, `report collect`
+warns on stderr naming the gap and still writes the artifact. The report's themes are meant to cite
+session summaries; below the floor they fall back to session titles, which are written from the
+opening exchange and say little about what the session produced. Override per run with
+`report collect --min-enrichment <fraction>`; raise coverage with `clyde session enrich`.
 
 The `render:` defaults for `report render` (all optional; a missing section is all-defaults):
 

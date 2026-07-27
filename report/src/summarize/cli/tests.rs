@@ -22,7 +22,8 @@ fn transport() -> CliTransport {
 /// change to either default flows through every Guard 6 case instead of being hand-edited per site.
 fn job(kind: Kind) -> Job<'static> {
     let max_output_tokens = match kind {
-        Kind::Markdown => DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
+        Kind::Markdown | Kind::Judge => DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
         Kind::Html => DEFAULT_HTML_MAX_OUTPUT_TOKENS,
     };
     Job {
@@ -171,10 +172,11 @@ fn child_env_is_an_allowlist_and_leaks_no_secret() {
         !names.iter().any(|n| n.starts_with("CLAUDE")),
         "no CLAUDE* variable may reach the child: {names:?}"
     );
-    // The allowlist is exactly the three documented entries (HOME only when resolvable).
+    // The allowlist is exactly the three documented entries plus the enumerated proxy names (HOME
+    // only when resolvable, each proxy name only when set in the parent).
     for name in &names {
         assert!(
-            matches!(*name, "HOME" | "PATH" | "NO_UPDATE_NOTIFIER"),
+            matches!(*name, "HOME" | "PATH" | "NO_UPDATE_NOTIFIER") || PROXY_VARS.contains(name),
             "unexpected variable in the allowlist: {name}"
         );
     }
@@ -184,6 +186,92 @@ fn child_env_is_an_allowlist_and_leaks_no_secret() {
             .map(|(_, v)| v.as_str()),
         Some("1"),
         "the update-notice guard must be set"
+    );
+}
+
+/// The child must be told how to reach the network, and must NOT be told a credential.
+///
+/// BITES: drop the `PROXY_VARS` loop from `child_env` and the four forwarded names go missing (the
+/// sandbox failure this fixes); widen it to a `*PROXY*` glob and `CLOUDSDK_PROXY_PASSWORD` appears,
+/// which is the secret-leak class the allowlist exists to prevent.
+#[test]
+fn child_env_forwards_the_proxy_address_and_never_a_proxy_credential() {
+    let guard = ENV_LOCK.lock().unwrap();
+    let planted = [
+        ("HTTP_PROXY", "http://127.0.0.1:8080"),
+        ("HTTPS_PROXY", "http://127.0.0.1:8080"),
+        ("ALL_PROXY", "socks5://127.0.0.1:1080"),
+        ("NO_PROXY", "localhost,127.0.0.1"),
+        // NOT a proxy address: a credential that a `*PROXY*` glob would happily forward.
+        ("CLOUDSDK_PROXY_PASSWORD", "planted-proxy-password-must-not-leak"),
+    ];
+    // Capture what was there BEFORE planting, and put it back afterwards -- the sibling test below
+    // already does this and it matters more here. `child_env`'s own docs record that this sandboxed
+    // CI genuinely depends on real `*_PROXY` vars for the child `claude` process's network egress,
+    // so unconditionally removing them left every later test in the binary running without the
+    // proxy the runner had set: a permanent wipe, not a cleanup.
+    let prior: Vec<(&str, Option<String>)> = planted.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
+    // SAFETY: serialized behind ENV_LOCK; every planted var is restored below.
+    for (k, v) in planted {
+        unsafe { std::env::set_var(k, v) };
+    }
+    let env = child_env();
+    unsafe {
+        for (name, value) in &prior {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+    drop(guard);
+
+    for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
+        let value = env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert!(
+            value.is_some(),
+            "{name} must reach the child or a sandboxed render cannot connect: {env:?}"
+        );
+    }
+    assert!(
+        !env.iter().any(|(k, _)| k == "CLOUDSDK_PROXY_PASSWORD"),
+        "a proxy CREDENTIAL must never reach the child: {env:?}"
+    );
+    assert!(
+        !env.iter()
+            .any(|(_, v)| v.contains("planted-proxy-password-must-not-leak")),
+        "the credential's VALUE must not reach the child under any name: {env:?}"
+    );
+}
+
+/// A proxy variable that is unset (or empty) in the parent adds nothing: the child's environment
+/// stays the minimum it can be, and an empty `HTTPS_PROXY=` never masks a real one.
+#[test]
+fn child_env_forwards_no_proxy_variable_that_is_unset_or_empty() {
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior: Vec<(&str, Option<String>)> = PROXY_VARS.iter().map(|n| (*n, std::env::var(n).ok())).collect();
+    // SAFETY: serialized behind ENV_LOCK; every value is restored below.
+    unsafe {
+        for name in PROXY_VARS {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("HTTPS_PROXY", "");
+    }
+    let env = child_env();
+    unsafe {
+        std::env::remove_var("HTTPS_PROXY");
+        for (name, value) in &prior {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+    drop(guard);
+
+    assert!(
+        !env.iter().any(|(k, _)| PROXY_VARS.contains(&k.as_str())),
+        "no proxy variable may be invented or forwarded empty: {env:?}"
     );
 }
 
@@ -481,7 +569,79 @@ fn guard_is_error_still_reports_when_the_envelope_carries_no_message() {
     let err = check(r#"{"is_error":true,"subtype":"error"}"#, Kind::Markdown)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("no error message in the envelope"), "got: {err}");
+    assert!(err.contains(NO_DETAIL_IN_ENVELOPE), "got: {err}");
+}
+
+/// The measured failure envelope (2026-07-26, sandboxed render): `is_error` with NO `error` field,
+/// the diagnosis in `result`, the classification in `terminal_reason`. Mining `error.message` alone
+/// reported an empty stderr and discarded the sentence that answered the question.
+///
+/// BITES: revert `failure_detail` to `error.message` only and both assertions fail.
+#[test]
+fn guard_is_error_falls_back_to_result_and_terminal_reason_when_no_error_field() {
+    let json = r#"{"type":"result","is_error":true,"subtype":"error_during_execution",
+                   "terminal_reason":"api_error",
+                   "result":"API Error: Unable to connect to API (ENOTIMP)"}"#;
+    let err = check(json, Kind::Markdown).unwrap_err().to_string();
+    assert!(err.contains("Unable to connect to API (ENOTIMP)"), "got: {err}");
+    assert!(err.contains("terminal_reason: api_error"), "got: {err}");
+}
+
+/// The same envelope on the OTHER path: a non-zero exit, where `claude` writes nothing to stderr.
+/// This is where the defect was first seen -- `stderr: <empty>` and no message at all.
+#[test]
+fn exit_failure_falls_back_to_result_and_terminal_reason_when_no_error_field() {
+    let output = std::process::Output {
+        status: exit_status(1),
+        stdout: br#"{"type":"result","is_error":true,"terminal_reason":"api_error",
+                    "result":"API Error: Unable to connect to API (ENOTIMP)"}"#
+            .to_vec(),
+        stderr: Vec::new(),
+    };
+    let msg = transport().exit_failure(&output);
+    assert!(msg.contains("Unable to connect to API (ENOTIMP)"), "got: {msg}");
+    assert!(msg.contains("terminal_reason: api_error"), "got: {msg}");
+    assert!(
+        msg.contains("<empty>"),
+        "the empty stderr is still reported as observed: {msg}"
+    );
+}
+
+/// `error.message` still wins when it exists, and the classification rides along with it.
+#[test]
+fn failure_detail_prefers_the_error_message_and_appends_the_terminal_reason() {
+    let envelope: Envelope = serde_json::from_str(
+        r#"{"is_error":true,"terminal_reason":"api_error","result":"ignored when a message exists",
+            "error":{"message":"OAuth token has expired"}}"#,
+    )
+    .unwrap();
+    let detail = failure_detail(&envelope).unwrap();
+    assert_eq!(detail, "OAuth token has expired (terminal_reason: api_error)");
+}
+
+/// A `terminal_reason` on its own is still worth more than nothing.
+#[test]
+fn failure_detail_reports_a_bare_terminal_reason() {
+    let envelope: Envelope = serde_json::from_str(r#"{"is_error":true,"terminal_reason":"api_error"}"#).unwrap();
+    assert_eq!(failure_detail(&envelope).unwrap(), "terminal_reason: api_error");
+}
+
+/// An envelope with nothing to say returns `None`, so Guard 2 prints its named last resort rather
+/// than an empty string.
+#[test]
+fn failure_detail_is_none_when_the_envelope_says_nothing() {
+    let envelope: Envelope = serde_json::from_str(r#"{"is_error":true,"result":"   "}"#).unwrap();
+    assert!(failure_detail(&envelope).is_none());
+}
+
+/// A half-failed call can carry a truncated ARTIFACT in `result`; the error report must not become
+/// the artifact.
+#[test]
+fn failure_detail_bounds_a_long_result() {
+    let long = "x".repeat(STDERR_PREVIEW_BYTES * 3);
+    let envelope: Envelope = serde_json::from_str(&format!(r#"{{"is_error":true,"result":"{long}"}}"#)).unwrap();
+    let detail = failure_detail(&envelope).unwrap();
+    assert_eq!(detail.chars().count(), STDERR_PREVIEW_BYTES);
 }
 
 #[test]

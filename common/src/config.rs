@@ -6,7 +6,7 @@
 //! the resolved [`DateTz`](crate::DateTz) into [`parse_since`](crate::parse_since), keeping the
 //! parser pure.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eyre::{Context, Result};
 use serde::Deserialize;
@@ -355,6 +355,48 @@ pub struct Config {
     /// Thresholds `clyde efficiency` scores a session against. Absent -> all-defaults.
     #[serde(default)]
     efficiency: EfficiencyConfig,
+    /// Where `<org>/<repo>` clones live. Absent -> `<home>/repos`.
+    ///
+    /// Read by [`crate::repo`]'s rule 4, the last-resort `<repo-root>/<org>/<repo>[/...]` guess. It
+    /// is config rather than a wildcard on purpose: rule 4 matches only under this root, so an
+    /// arbitrary path cannot manufacture an org.
+    #[serde(default = "default_repo_root", deserialize_with = "de_repo_root")]
+    repo_root: PathBuf,
+    /// Enrichment-coverage floor for `report collect`, as a fraction in `0.0..=1.0`. Absent -> `0.5`.
+    ///
+    /// The report's themes are supposed to cite each session's enrich `summary`, so a window where
+    /// most sessions were never enriched produces a narrative resting on `ai-title` strings instead.
+    /// Below this floor, collect WARNS on stderr and still writes the artifact: the gap is stated
+    /// rather than hidden, and a low-coverage report is still worth having.
+    #[serde(default = "default_min_enrichment", deserialize_with = "de_min_enrichment")]
+    min_enrichment: f64,
+}
+
+/// The default enrichment-coverage floor when `min-enrichment` is unset: half the window. Exposed
+/// so `report` names this value rather than carrying its own copy of `0.5`.
+pub const DEFAULT_MIN_ENRICHMENT: f64 = 0.5;
+
+fn default_min_enrichment() -> f64 {
+    DEFAULT_MIN_ENRICHMENT
+}
+
+/// Deserialize `min-enrichment`, rejecting anything outside `0.0..=1.0` BY NAME.
+///
+/// It is a FRACTION, not a percent, and that is the confusion worth failing loudly on: a reader who
+/// writes `min-enrichment: 50` meaning "50%" would otherwise configure a floor no window can meet
+/// and get the warning on every single run. The key is hardcoded into the message for the same
+/// reason the render ceilings each carry theirs (see [`nonzero_ceiling`]).
+fn de_min_enrichment<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = f64::deserialize(deserializer)?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom(format!(
+            "min-enrichment must be a finite fraction in 0.0..=1.0 (0.5 means 50%), got {value}"
+        )));
+    }
+    Ok(value)
 }
 
 impl Default for Config {
@@ -365,8 +407,50 @@ impl Default for Config {
             projects_dir: None,
             reindex_on_start: default_reindex_on_start(),
             efficiency: EfficiencyConfig::default(),
+            repo_root: default_repo_root(),
+            min_enrichment: default_min_enrichment(),
         }
     }
+}
+
+/// The default clone root when `repo-root` is unset: `<home>/repos`.
+///
+/// With no `$HOME` at all this yields the relative `repos`, which rule 4 can never match against an
+/// absolute cwd. That is the fail-closed answer: no attribution rather than a fabricated one.
+fn default_repo_root() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join("repos"))
+        .unwrap_or_else(|| PathBuf::from("repos"))
+}
+
+/// Validate an explicitly configured `repo-root`: it must be an absolute path AND an existing
+/// directory.
+///
+/// Both halves are load-time errors because both fail SILENTLY at use time: a relative root never
+/// matches an absolute cwd, and a typo'd root matches nothing, so in either case rule 4 just stops
+/// firing and attribution quietly degrades with no signal. The key is hardcoded into the message
+/// for the same reason the render ceilings each carry theirs (see [`nonzero_ceiling`]).
+///
+/// The DEFAULT is deliberately not existence-checked: a machine with no `~/repos` must still run
+/// every clyde command, and there the only consequence is that rule 4 never fires.
+fn de_repo_root<'de, D>(deserializer: D) -> std::result::Result<PathBuf, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let path = PathBuf::deserialize(deserializer)?;
+    if !path.is_absolute() {
+        return Err(serde::de::Error::custom(format!(
+            "repo-root must be an absolute path, got {}",
+            path.display()
+        )));
+    }
+    if !path.is_dir() {
+        return Err(serde::de::Error::custom(format!(
+            "repo-root must be an existing directory, but {} is not one",
+            path.display()
+        )));
+    }
+    Ok(path)
 }
 
 /// The serde default for `reindex-on-start`: on. A one-shot startup reindex keeps the served
@@ -437,6 +521,16 @@ impl Config {
     /// The `efficiency:` scoring thresholds (all-defaults when the section is absent).
     pub fn efficiency(&self) -> &EfficiencyConfig {
         &self.efficiency
+    }
+
+    /// The clone root repo attribution's rule 4 matches against (`<home>/repos` when unset).
+    pub fn repo_root(&self) -> &Path {
+        &self.repo_root
+    }
+
+    /// The enrichment-coverage floor `report collect` warns below, as a fraction (`0.5` when unset).
+    pub fn min_enrichment(&self) -> f64 {
+        self.min_enrichment
     }
 }
 

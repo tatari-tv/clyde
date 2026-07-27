@@ -78,7 +78,10 @@ fn collected(
     CollectedSession {
         session_id: sid.into(),
         title: title.map(str::to_string),
+        summary: None,
+        tags: Vec::new(),
         repo: Some("tatari-tv/claude-report".into()),
+        repo_source: Some(RepoSource::GitOrigin),
         begin: ts("2026-04-10T10:00:00Z"),
         end: ts("2026-04-10T11:00:00Z"),
         jsonl_paths: vec![PathBuf::from("/path/to/parent.jsonl")],
@@ -142,6 +145,62 @@ fn write_json_round_trips_and_emits_schema_v2() {
     assert!(entry.untracked_models.is_empty());
     assert_eq!(entry.jsonl_paths, vec![PathBuf::from("/path/to/parent.jsonl")]);
     assert!(entry.spend_usd.unwrap() > 0.0);
+}
+
+/// Design Phase 9 (narrative evidence): the enrich `summary`/`tags` travel from the catalog's
+/// `CollectedSession` through to the artifact's `SessionEntry`, independently of `title` -- the two
+/// evidence sources must never collapse into one field.
+#[test]
+fn build_report_carries_enrich_summary_and_tags_through_to_session_entry() {
+    let mut s = opus_session(SID_A, Some("do the thing"));
+    s.summary = Some("investigated the failing build and fixed a race in the retry loop".into());
+    s.tags = vec!["backend".into(), "bugfix".into()];
+
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let entry = &report.sessions[SID_A];
+    assert_eq!(
+        entry.summary.as_deref(),
+        Some("investigated the failing build and fixed a race in the retry loop")
+    );
+    assert_eq!(entry.tags, vec!["backend".to_string(), "bugfix".to_string()]);
+    // `title` travels independently -- setting `summary` never overwrites it.
+    assert_eq!(entry.title.as_deref(), Some("do the thing"));
+}
+
+/// An unenriched session (the `collected()` fixture default) carries neither field, and the
+/// serialized artifact OMITS both keys rather than emitting `"summary": null` / `"tags": []` for
+/// every unenriched row -- the whole point of `skip_serializing_if` on both.
+#[test]
+fn build_report_omits_summary_and_tags_when_unenriched() {
+    let s = opus_session(SID_A, None);
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let entry = &report.sessions[SID_A];
+    assert!(entry.summary.is_none());
+    assert!(entry.tags.is_empty());
+
+    let json = serde_json::to_string(entry).unwrap();
+    assert!(!json.contains("\"summary\""), "got: {json}");
+    assert!(!json.contains("\"tags\""), "got: {json}");
 }
 
 #[test]
@@ -216,7 +275,8 @@ fn all_priced_session_has_some_spend_and_no_untracked() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     let entry = &report.sessions[SID_A];
     assert!(entry.spend_usd.unwrap() > 0.0);
     assert!(entry.untracked_models.is_empty());
@@ -238,10 +298,81 @@ fn all_untracked_session_has_none_spend_and_lists_models() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     let entry = &report.sessions[SID_A];
     assert_eq!(entry.spend_usd, None);
     assert_eq!(entry.untracked_models, vec!["not-a-real-model".to_string()]);
+}
+
+/// A zero-token model (the live `<synthetic>` shape) is dropped entirely rather than kept as an
+/// `(untracked)` $0 row: design `2026-07-26-report-story-fidelity.md`, defect 5 / Phase 6. It must
+/// vanish from BOTH the session's `models` map and its `untracked-models` list, so the false-alarm
+/// "total above understates actual spend" warning never fires for a model that spent nothing.
+///
+/// BITES: drop the `has_tokens` filter from `price_models` and `<synthetic>` reappears in both
+/// `entry.models` and `entry.untracked_models`.
+#[test]
+fn zero_token_model_is_dropped_from_models_and_untracked() {
+    let mut raw = raw_with("claude-opus-4-7", opus_usage());
+    raw.merge(&raw_with("<synthetic>", small_usage(0)));
+    let s = collected(SID_A, None, session_eff(SID_A, raw, vec![]), None);
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let entry = &report.sessions[SID_A];
+    assert!(
+        !entry.models.contains_key("<synthetic>"),
+        "a zero-token model must not appear in the session's models map"
+    );
+    assert!(
+        entry.untracked_models.is_empty(),
+        "a zero-token model must never trigger the untracked-models warning"
+    );
+    assert!(
+        entry.spend_usd.unwrap() > 0.0,
+        "the real, priced model still contributes spend"
+    );
+
+    // Report-wide totals go through the same gate over the unioned `by_model` (`grand`).
+    assert!(!report.totals.models.contains_key("<synthetic>"));
+    assert!(report.totals.untracked_models.is_empty());
+}
+
+/// The negative case the gate must NOT break: a model that is genuinely unpriced but carries real
+/// (nonzero) tokens still fires the understatement warning. Proves the gate is a token-count filter,
+/// not a blanket suppression of `untracked-models` (design Phase 6 success criteria).
+#[test]
+fn nonzero_token_unpriced_model_still_flagged_untracked() {
+    let s = collected(
+        SID_A,
+        None,
+        session_eff(SID_A, raw_with("not-a-real-model", small_usage(1_000_000)), vec![]),
+        None,
+    );
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        report.totals.untracked_models,
+        vec!["not-a-real-model".to_string()],
+        "a nonzero-token unpriced model must still be reported as untracked"
+    );
 }
 
 #[test]
@@ -263,7 +394,8 @@ fn totals_untracked_models_dedupe_across_sessions() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     assert_eq!(
         report.totals.untracked_models,
         vec!["ghost-model".to_string(), "phantom-model".to_string()]
@@ -328,7 +460,8 @@ fn totals_ratios_are_ratio_of_sums_not_average() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     // Ratio-of-sums: 900 / (100 + 900 + 100) = 900/1100 ≈ 0.818, NOT the average of 0.9 and 0.0 (0.45).
     let share = report.totals.cache_read_share.unwrap();
     assert!((share - 900.0 / 1100.0).abs() < 1e-9, "got {share}");
@@ -339,7 +472,7 @@ fn totals_ratios_are_ratio_of_sums_not_average() {
 }
 
 /// HEADLINE: agent-type cost attribution is promoted to a top-level per-session field, keyed by the
-/// subagent's TYPE, summing tokens + (embedded-priced) cost across subagents of that type.
+/// subagent's TYPE, summing tokens + re-priced cost across subagents of that type.
 #[test]
 fn agent_type_costs_attribute_by_subagent_type() {
     let subs = vec![
@@ -368,10 +501,326 @@ fn agent_type_costs_attribute_by_subagent_type() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     let costs = &report.sessions[SID_A].agent_type_costs;
     assert_eq!(costs.get("phase-implementer").unwrap().tokens, 1500);
     assert_eq!(costs.get("reviewer").unwrap().tokens, 200);
+}
+
+/// Sum every agent-type bucket of every session -- the figure the Phase 5 partition criterion is
+/// written against.
+fn agent_type_spend(report: &Report) -> f64 {
+    report
+        .sessions
+        .values()
+        .flat_map(|e| e.agent_type_costs.values())
+        .map(|w| w.cost_usd)
+        .sum()
+}
+
+/// A DELIBERATELY broken `SessionEfficiency`: the aggregate is whatever the caller passes, NOT
+/// `parent ⊎ subs`. `fold` can never produce this (`efficiency/src/fold.rs:95-99` recomputes the
+/// aggregate from the union), which is precisely why report must refuse it rather than clamp it.
+fn broken_eff(sid: &str, aggregate: RawCounters, subs: Vec<SubagentEfficiency>) -> SessionEfficiency {
+    SessionEfficiency {
+        session_id: sid.into(),
+        aggregate: finalize(aggregate),
+        subagents: subs,
+        flags: Vec::new(),
+    }
+}
+
+/// A session that did most of its own work plus delegated some, and a session with no subagents at
+/// all -- the mix a real window carries.
+fn partition_fixture() -> Vec<CollectedSession> {
+    // Session A: 1,100 parent-own tokens (the POSITIVE residual the criterion needs to exercise the
+    // `(main-session)` row), plus four subagents across two models and three type buckets.
+    let parent = raw_with(
+        "claude-opus-4-7",
+        TokenUsage {
+            input_tokens: 400,
+            output_tokens: 0,
+            cache_5m_write_tokens: 0,
+            cache_1h_write_tokens: 0,
+            cache_read_tokens: 700,
+        },
+    );
+    let subs = vec![
+        subagent(
+            "aimpl-1",
+            Some("phase-implementer"),
+            raw_with("claude-opus-4-7", small_usage(1000)),
+        ),
+        subagent(
+            "aimpl-2",
+            Some("phase-implementer"),
+            raw_with("claude-sonnet-4-5", small_usage(500)),
+        ),
+        subagent(
+            "arev-1",
+            Some("reviewer"),
+            raw_with("claude-opus-4-7", small_usage(200)),
+        ),
+        subagent("aghost-1", None, raw_with("claude-opus-4-7", small_usage(50))),
+    ];
+    vec![
+        collected(SID_A, None, session_eff(SID_A, parent, subs), None),
+        // Session B: no subagents whatsoever -- every dollar belongs to `(main-session)`. Pre-Phase-5
+        // this session contributed NOTHING to the agent-type table, which is where the missing 74%
+        // of the money went.
+        opus_session(SID_B, None),
+    ]
+}
+
+/// Phase 5, the headline invariant: `agent-type-costs` is a true PARTITION of `totals.spend-usd`.
+/// Every bucket is re-priced from its own per-model split with the same feed `totals` uses, and the
+/// `(main-session)` residual catches whatever was not delegated, so the rows account for the whole
+/// window instead of the subagent-only slice.
+///
+/// BITES: before Phase 5 a session with no subagents (SID_B) had an EMPTY `agent-type-costs`, so this
+/// sum came to the subagent total alone and missed SID_B's spend entirely.
+#[test]
+fn agent_type_costs_partition_totals_with_a_positive_main_session_residual() {
+    let sessions = partition_fixture();
+    let report = build_report(
+        &sessions,
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let a = &report.sessions[SID_A].agent_type_costs;
+    let residual = a
+        .get(MAIN_SESSION_BUCKET)
+        .expect("the parent's own work must emit a (main-session) row");
+    assert_eq!(residual.tokens, 1100, "residual is aggregate minus every subagent");
+    assert!(
+        residual.cost_usd > 0.0,
+        "the fixture must carry a POSITIVE residual or the row this phase adds is never exercised"
+    );
+    assert_eq!(a.get("phase-implementer").unwrap().tokens, 1500);
+    assert_eq!(a.get("reviewer").unwrap().tokens, 200);
+    assert_eq!(
+        a.get("unknown").unwrap().tokens,
+        50,
+        "an untyped subagent keeps its own row rather than folding into the residual"
+    );
+
+    // A session that spawned nothing is now fully attributed, all of it to `(main-session)`.
+    let b = &report.sessions[SID_B].agent_type_costs;
+    assert_eq!(b.keys().collect::<Vec<_>>(), vec![MAIN_SESSION_BUCKET]);
+    assert_eq!(b[MAIN_SESSION_BUCKET].tokens, report.sessions[SID_B].total_tokens());
+
+    let partition = agent_type_spend(&report);
+    assert!(
+        (partition - report.totals.spend_usd).abs() < 0.01,
+        "agent-type rows must sum to totals.spend-usd: {partition} vs {}",
+        report.totals.spend_usd
+    );
+}
+
+/// A bucket that consumed nothing is dropped, and the partition is unmoved by the drop.
+///
+/// The live 1,523-session window emits an `unknown` agent-type row at `$0.00` / 0 tokens, from an
+/// untyped subagent whose per-model split is all zeroes. Phase 5 left it alone because the resolved
+/// decision then scoped zero-token dropping to `totals.models`; the decision now covers this
+/// partition too.
+///
+/// BITES: without the drop, `unknown` is present with `tokens == 0`.
+#[test]
+fn a_zero_token_agent_type_bucket_is_dropped_and_the_partition_is_unmoved() {
+    let mut sessions = partition_fixture();
+    // Session A gains a second untyped subagent that consumed nothing at all. It shares the real
+    // untyped subagent's `unknown` bucket, so the bucket must survive with exactly the 50 tokens the
+    // real one spent...
+    let ghost = subagent("aghost-zero", None, raw_with("claude-opus-4-7", small_usage(0)));
+    // ...and a typed subagent that consumed nothing gets NO row of its own.
+    let idle = subagent(
+        "aidle-1",
+        Some("idle-reviewer"),
+        raw_with("claude-opus-4-7", small_usage(0)),
+    );
+    let parent = raw_with(
+        "claude-opus-4-7",
+        TokenUsage {
+            input_tokens: 400,
+            output_tokens: 0,
+            cache_5m_write_tokens: 0,
+            cache_1h_write_tokens: 0,
+            cache_read_tokens: 700,
+        },
+    );
+    let mut subs = vec![
+        subagent(
+            "aimpl-1",
+            Some("phase-implementer"),
+            raw_with("claude-opus-4-7", small_usage(1000)),
+        ),
+        subagent(
+            "aimpl-2",
+            Some("phase-implementer"),
+            raw_with("claude-sonnet-4-5", small_usage(500)),
+        ),
+        subagent(
+            "arev-1",
+            Some("reviewer"),
+            raw_with("claude-opus-4-7", small_usage(200)),
+        ),
+        subagent("aghost-1", None, raw_with("claude-opus-4-7", small_usage(50))),
+    ];
+    subs.push(ghost);
+    subs.push(idle);
+    sessions[0] = collected(SID_A, None, session_eff(SID_A, parent, subs), None);
+
+    let report = build_report(
+        &sessions,
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let a = &report.sessions[SID_A].agent_type_costs;
+    assert!(
+        !a.contains_key("idle-reviewer"),
+        "a bucket that consumed nothing must not emit a $0.00 row: {:?}",
+        a.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        a.get("unknown").unwrap().tokens,
+        50,
+        "a bucket keeps every token it did spend; only the all-zero bucket goes"
+    );
+    for (name, cost) in a {
+        assert!(cost.tokens > 0, "{name} emitted a zero-token row");
+    }
+
+    // Phase 5's acceptance criterion, re-asserted under the drop: a zero-token bucket contributes
+    // $0.00, so removing it cannot move the sum.
+    let partition = agent_type_spend(&report);
+    assert!(
+        (partition - report.totals.spend_usd).abs() < 0.01,
+        "agent-type rows must still sum to totals.spend-usd: {partition} vs {}",
+        report.totals.spend_usd
+    );
+}
+
+/// The partition holds under `--no-rollup` too: the residual row carries `(main-session)` and each
+/// subagent row carries its own type, so the exploded view still accounts for exactly the total.
+#[test]
+fn agent_type_costs_partition_survives_no_rollup() {
+    let sessions = partition_fixture();
+    let report = build_report(
+        &sessions,
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        true,
+    )
+    .unwrap();
+    let partition = agent_type_spend(&report);
+    assert!(
+        (partition - report.totals.spend_usd).abs() < 0.01,
+        "exploded rows must still partition totals.spend-usd: {partition} vs {}",
+        report.totals.spend_usd
+    );
+}
+
+/// Buckets are priced from the per-model token split with report's FETCHED feed, never from the
+/// catalog's scalar `cost_usd` (which is embedded-priced by design and left alone).
+///
+/// BITES: the fixture's catalog scalar is deliberately absurd, so the pre-Phase-5 implementation
+/// (`bucket.cost_usd += sub.signals.raw.cost_usd`) would report `$999` for a 1,000-token subagent.
+#[test]
+fn agent_type_costs_reprice_from_tokens_not_the_catalog_scalar() {
+    let mut sub_raw = raw_with("claude-opus-4-7", small_usage(1000));
+    sub_raw.cost_usd = 999.0;
+    let sub = subagent("aimpl-1", Some("phase-implementer"), sub_raw);
+    let s = collected(SID_A, None, session_eff(SID_A, RawCounters::default(), vec![sub]), None);
+    let report = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .unwrap();
+
+    let bucket = &report.sessions[SID_A].agent_type_costs["phase-implementer"];
+    let expected = price("claude-opus-4-7", &small_usage(1000), &pricing()).unwrap();
+    assert!(
+        (bucket.cost_usd - expected).abs() < 1e-9,
+        "bucket must be re-priced from tokens ({expected}), not the catalog scalar: {}",
+        bucket.cost_usd
+    );
+    assert!(bucket.cost_usd < 1.0, "the $999 catalog scalar must not leak through");
+}
+
+/// The impossible state fails LOUDLY. A subagent using a model the session's own split never saw
+/// means the fold invariant broke; `subtract_token_totals` clamps at zero, so absorbing it would
+/// leave the rows summing ABOVE the total with nothing to explain why.
+#[test]
+fn agent_type_costs_error_when_a_subagent_model_is_absent_from_the_aggregate() {
+    let sub = subagent(
+        "aimpl-1",
+        Some("phase-implementer"),
+        raw_with("claude-sonnet-4-5", small_usage(500)),
+    );
+    let eff = broken_eff(SID_A, raw_with("claude-opus-4-7", small_usage(100)), vec![sub]);
+    let s = collected(SID_A, None, eff, None);
+    let err = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .expect_err("a subagent model missing from the aggregate must abort the report");
+    let msg = err.to_string();
+    assert!(msg.contains(SID_A), "error must name the session: {msg}");
+    assert!(msg.contains("claude-sonnet-4-5"), "error must name the model: {msg}");
+    assert!(msg.contains("reindex"), "error must name the remedy: {msg}");
+}
+
+/// Same guard, the other direction: a model PRESENT in the aggregate but whose subagent tokens
+/// exceed it. The clamp would silently shrink the residual to zero and overstate the partition.
+#[test]
+fn agent_type_costs_error_when_a_subagent_overstates_a_shared_model() {
+    let sub = subagent(
+        "aimpl-1",
+        Some("phase-implementer"),
+        raw_with("claude-opus-4-7", small_usage(500)),
+    );
+    let eff = broken_eff(SID_A, raw_with("claude-opus-4-7", small_usage(100)), vec![sub]);
+    let s = collected(SID_A, None, eff, None);
+    let err = build_report(
+        std::slice::from_ref(&s),
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+    )
+    .expect_err("a subagent overstating a shared model must abort the report");
+    let msg = err.to_string();
+    assert!(msg.contains(SID_A), "error must name the session: {msg}");
+    assert!(msg.contains("claude-opus-4-7"), "error must name the model: {msg}");
+    assert!(msg.contains("exceed"), "error must say what was violated: {msg}");
 }
 
 /// `--no-rollup` is a VIEW over subagents: the session explodes into a parent-residual row plus one
@@ -394,7 +843,8 @@ fn no_rollup_explodes_into_residual_plus_subagents() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     assert_eq!(rolled.sessions.len(), 1);
     assert_eq!(rolled.sessions[SID_A].total_tokens(), 1000);
 
@@ -407,7 +857,8 @@ fn no_rollup_explodes_into_residual_plus_subagents() {
         &pricing(),
         true,
         true,
-    );
+    )
+    .unwrap();
     assert_eq!(exploded.sessions.len(), 2);
     assert_eq!(
         exploded.sessions[SID_A].total_tokens(),
@@ -442,6 +893,7 @@ fn no_rollup_keeps_outcomes_for_fully_subagent_session() {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 3,
+        ..Default::default()
     };
     let s = collected(SID_A, None, eff, Some(outcomes));
 
@@ -453,7 +905,8 @@ fn no_rollup_keeps_outcomes_for_fully_subagent_session() {
         &pricing(),
         true, // outcomes_enabled
         true, // no_rollup
-    );
+    )
+    .unwrap();
 
     // The parent-residual row is kept (for its outcomes) and carries them; the subagent row does not.
     let parent = exploded
@@ -491,6 +944,7 @@ fn build_report_rolls_up_outcomes_with_global_dedupe() {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 2,
+        ..Default::default()
     };
     let o2 = Outcomes {
         commits: vec!["sha-a".to_string(), "sha-b".to_string()],
@@ -499,6 +953,7 @@ fn build_report_rolls_up_outcomes_with_global_dedupe() {
         jira_writes: 4,
         slack_messages: 0,
         files_edited: 3,
+        ..Default::default()
     };
     let s1 = collected(
         SID_A,
@@ -520,7 +975,8 @@ fn build_report_rolls_up_outcomes_with_global_dedupe() {
         &pricing(),
         true,
         false,
-    );
+    )
+    .unwrap();
     assert_eq!(report.outcomes_enabled, Some(true));
     let outcomes = report.totals.outcomes.expect("rollup must be present");
     assert_eq!(outcomes.sessions_with_commits, 2);
@@ -541,6 +997,7 @@ fn build_report_with_outcomes_disabled_strips_all_outcomes() {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 1,
+        ..Default::default()
     };
     let s = collected(
         SID_A,

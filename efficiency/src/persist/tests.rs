@@ -130,7 +130,7 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
     );
 
     // Run the backfill pass.
-    let stats = reindex_efficiency(&db, &projects, &config()).unwrap();
+    let stats = reindex_efficiency(&db, &projects, &config(), Path::new("/repos")).unwrap();
     assert_eq!(stats.candidates, 1, "one un-annotated session");
     assert_eq!(stats.computed, 1, "it is found on disk and computed");
     assert_eq!(stats.written, 1, "and written");
@@ -160,7 +160,7 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
     );
 
     // A second pass is a no-op (idempotent): nothing left to annotate, cursor still unchanged.
-    let again = reindex_efficiency(&db, &projects, &config()).unwrap();
+    let again = reindex_efficiency(&db, &projects, &config(), Path::new("/repos")).unwrap();
     assert_eq!(again.candidates, 0, "second pass finds nothing to do");
     assert_eq!(again.written, 0);
     let after2 = db.export(&ExportFilters::default(), &ctx).unwrap();
@@ -223,7 +223,7 @@ fn reindex_persists_per_model_tokens_and_outcomes() {
     };
     db.upsert_session(&parsed, "host-01").unwrap();
 
-    let stats = reindex_efficiency(&db, &projects, &config()).unwrap();
+    let stats = reindex_efficiency(&db, &projects, &config(), Path::new("/repos")).unwrap();
     assert_eq!(stats.written, 1, "the session is annotated");
 
     // Per-model tokens are inside efficiency_json (aggregate.raw.by-model), kebab-case.

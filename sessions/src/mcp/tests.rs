@@ -319,6 +319,15 @@ async fn sessions_ls_filters_by_repo() {
         .unwrap();
     db.upsert_session(&parsed(UUID_B, "/tmp/b.jsonl", "loopr", "y"), "desk")
         .unwrap();
+    // `--repo` predicates on the PERSISTED attribution, not the path, so the row needs one.
+    db.upsert_repo(
+        UUID_B,
+        &common::repo::Resolved {
+            repo: "scottidler/loopr".into(),
+            source: common::repo::RepoSource::KnownPath,
+        },
+    )
+    .unwrap();
     let server = SessionsMcpServer::new(db);
 
     let result = server

@@ -2,9 +2,11 @@
 
 use super::*;
 use crate::config::{Config, RenderConfig, ResolvedCommand};
+use crate::render::template::Template;
 use crate::report::{ModelTokens, Report, SessionEntry, Totals};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
+use common::repo::RepoSource;
 use efficiency::{RawCounters, SessionEfficiency, WorkloadCost, finalize};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
@@ -15,6 +17,24 @@ fn ts(s: &str) -> DateTime<Utc> {
 
 fn pricing() -> Pricing {
     Pricing::embedded()
+}
+
+/// `build_context_block` with every optional knob at its default (no persona, embedded pricing,
+/// the default outlier count, no `--prior`, no `--reconcile`) -- the shape nearly every test in
+/// this file needs.
+fn ctx(report: &Report, include_tradeoffs: bool) -> String {
+    build_context_block(
+        report,
+        include_tradeoffs,
+        None,
+        &pricing(),
+        crate::aggregate::DEFAULT_OUTLIERS,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+    .json
 }
 
 /// An empty v2 efficiency passthrough for render fixtures (render reads tokens/spend/outcomes; the
@@ -42,7 +62,10 @@ fn session_entry(
 ) -> SessionEntry {
     SessionEntry {
         title: title.map(str::to_string),
+        summary: None,
+        tags: Vec::new(),
         repo: repo.map(str::to_string),
+        repo_source: repo.map(|_| RepoSource::GitOrigin.as_str().to_string()),
         begin,
         end,
         spend_usd,
@@ -214,7 +237,7 @@ fn custom_template_substitutes_placeholders() {
 #[test]
 fn build_context_block_includes_slim_shape() {
     let report = sample_report();
-    let block = build_context_block(&report, true, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, true);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     assert_eq!(parsed.get("persona"), Some(&serde_json::json!({})));
     let opts = parsed.get("options").expect("options key");
@@ -292,12 +315,125 @@ fn build_context_block_includes_slim_shape() {
     );
 }
 
+/// Design Phase 6, "Pricing basis, always present": the context block carries a `basis` key on
+/// EVERY render, with the exact disclosure sentence the doc settles on, and it identifies the
+/// resolved feed rather than silently assuming embedded.
+///
+/// BITES: drop `basis` from `ContextBlock` (or from `build_context_block`) and the `expect` fails;
+/// change `BASIS_NOTE`'s wording and the exact-string assertion catches the drift.
+#[test]
+fn build_context_block_always_carries_the_pricing_basis() {
+    let report = sample_report();
+    let block = ctx(&report, false);
+    let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+    let basis = parsed.get("basis").expect("basis key must always be present");
+    assert_eq!(
+        basis.get("pricing").and_then(|v| v.as_str()),
+        Some("published list rates")
+    );
+    assert_eq!(basis.get("is-invoice").and_then(|v| v.as_bool()), Some(false));
+    // The test fixture resolves `Pricing::embedded()`.
+    assert_eq!(basis.get("feed-source").and_then(|v| v.as_str()), Some("embedded"));
+    assert!(basis.get("feed-version").and_then(|v| v.as_str()).is_some());
+    assert_eq!(
+        basis.get("note").and_then(|v| v.as_str()),
+        Some(
+            "Total spend is modeled Claude Code catalog spend at published list rates; account-level \
+             billed spend comes from Claude Enterprise Analytics."
+        ),
+        "the disclosure sentence must carry the scope caveat in the same sentence as the citation \
+         (design Resolved Decisions, 'Tatari pays for Claude Enterprise...')"
+    );
+}
+
+/// The built-in offline renderer (`--template` unset, no LLM) is a "rendered artifact" too (design
+/// Phase 6 success criterion: "every rendered artifact contains the basis note").
+#[test]
+fn render_built_in_includes_the_pricing_basis_note() {
+    let report = sample_report();
+    let md = to_markdown(&report, &Template::BuiltIn, &pricing());
+    assert!(
+        md.contains("Total spend is modeled Claude Code catalog spend at published list rates"),
+        "built-in markdown must carry the pricing basis note: {}",
+        md
+    );
+}
+
+/// A user-authored custom template can opt into the same disclosure via `{{basis-note}}`.
+#[test]
+fn custom_template_substitutes_the_basis_note_placeholder() {
+    let report = sample_report();
+    let custom = Template::Custom("basis={{basis-note}}".into());
+    let md = to_markdown(&report, &custom, &pricing());
+    assert_eq!(
+        md,
+        "basis=Total spend is modeled Claude Code catalog spend at published list rates; \
+         account-level billed spend comes from Claude Enterprise Analytics."
+    );
+}
+
+/// Success criterion (design Phase 4): `by-day` length equals `period.days` regardless of whether
+/// `--until` was given as a bare date (parses to local midnight, e.g. `2026-04-30T00:00:00Z`) or as
+/// full RFC 3339 with a nonzero time-of-day. Both `period.days` (`render::build_period_view`) and
+/// the `by-day` zero-fill (`aggregate::compute_by_day`) derive their date bounds from `.date_naive()`
+/// independently, so this asserts they never drift apart even though the two `until` timestamps
+/// differ down to the second.
+#[test]
+fn by_day_length_equals_period_days_for_bare_date_and_rfc3339_until() {
+    for until in ["2026-04-30T00:00:00Z", "2026-04-30T21:47:03Z"] {
+        let mut report = sample_report();
+        report.until = ts(until);
+        let block = ctx(&report, false);
+        let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+        let days = parsed
+            .get("period")
+            .and_then(|p| p.get("days"))
+            .and_then(|v| v.as_i64())
+            .expect("period.days");
+        let by_day_len = parsed
+            .get("aggregates")
+            .and_then(|a| a.get("by-day"))
+            .and_then(|v| v.as_array())
+            .expect("aggregates.by-day")
+            .len();
+        assert_eq!(
+            by_day_len as i64, days,
+            "by-day length must equal period.days for until={until}"
+        );
+    }
+}
+
+/// Success criterion (design Phase 4): `active-days <= days` on every fixture -- the zero-fill can
+/// never manufacture more active rows than the window has calendar dates.
+#[test]
+fn active_days_never_exceeds_days() {
+    for report in [sample_report(), {
+        let mut r = sample_report();
+        r.sessions.clear();
+        r.totals.sessions = 0;
+        r
+    }] {
+        let block = ctx(&report, false);
+        let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+        let period = parsed.get("period").expect("period key");
+        let days = period.get("days").and_then(|v| v.as_i64()).expect("period.days");
+        let active_days = period
+            .get("active-days")
+            .and_then(|v| v.as_u64())
+            .expect("period.active-days");
+        assert!(
+            active_days as i64 <= days,
+            "active-days ({active_days}) must never exceed days ({days})"
+        );
+    }
+}
+
 /// `ModelRow` (render-only view) gets its own `spend-percent-of-max` (design "Chart truthfulness"):
 /// `sample_report`'s opus session spends $0.50 (the series max) and sonnet spends $0.10.
 #[test]
 fn totals_models_carry_spend_percent_of_max_scaled_to_series_max() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
     let models = parsed
         .get("totals")
@@ -326,7 +462,7 @@ fn totals_models_omit_spend_percent_of_max_when_all_unpriced() {
     for mt in report.totals.models.values_mut() {
         mt.spend_usd = None;
     }
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
     let models = parsed
         .get("totals")
@@ -344,7 +480,7 @@ fn totals_models_omit_spend_percent_of_max_when_all_unpriced() {
 #[test]
 fn build_context_block_omits_tradeoffs_when_false() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("context block must be valid JSON");
     let opts = parsed.get("options").expect("options key");
     assert_eq!(opts.get("include-tradeoffs").and_then(|v| v.as_bool()), Some(false));
@@ -365,8 +501,12 @@ fn build_context_block_embeds_persona_when_present() {
         Some(&persona),
         &pricing(),
         crate::aggregate::DEFAULT_OUTLIERS,
+        None,
+        None,
+        None,
     )
-    .unwrap();
+    .unwrap()
+    .json;
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let p = parsed.get("persona").expect("persona key");
     assert_eq!(p.get("name").and_then(|v| v.as_str()), Some("Scott Idler"));
@@ -377,7 +517,7 @@ fn build_context_block_embeds_persona_when_present() {
 #[test]
 fn build_context_block_uses_compact_json_not_pretty() {
     let report = sample_report();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     assert!(
         !block.contains('\n'),
         "context block must be compact (no newlines) to minimize Opus token cost: {}",
@@ -433,7 +573,9 @@ fn report_with_n_sessions(n: usize) -> Report {
 #[test]
 fn build_context_block_outliers_n_caps_outlier_table_to_exactly_n() {
     let report = report_with_n_sessions(5);
-    let block = build_context_block(&report, false, None, &pricing(), 3).unwrap();
+    let block = build_context_block(&report, false, None, &pricing(), 3, None, None, None)
+        .unwrap()
+        .json;
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let outliers = parsed
         .get("aggregates")
@@ -452,7 +594,7 @@ fn build_context_block_outliers_n_caps_outlier_table_to_exactly_n() {
 fn build_context_block_default_outliers_n_matches_default_outliers_const() {
     // Defaults unchanged when `--outliers` is absent: DEFAULT_OUTLIERS caps the table.
     let report = report_with_n_sessions(crate::aggregate::DEFAULT_OUTLIERS + 5);
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     let outliers = parsed
         .get("aggregates")
@@ -489,6 +631,9 @@ fn render_run_writes_markdown_file_with_custom_template() {
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
             outliers: crate::aggregate::DEFAULT_OUTLIERS,
+            prior: None,
+            reconcile: None,
+            reconcile_user: None,
         }),
     };
     let result = crate::run_with_config(&cfg).unwrap();
@@ -520,6 +665,9 @@ fn render_run_rejects_yaml_input_extension() {
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
             outliers: crate::aggregate::DEFAULT_OUTLIERS,
+            prior: None,
+            reconcile: None,
+            reconcile_user: None,
         }),
     };
     let err = crate::run_with_config(&cfg).unwrap_err();
@@ -628,6 +776,9 @@ fn route_html_artifact_writes_local_file() {
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
+        prior: None,
+        reconcile: None,
+        reconcile_user: None,
     };
     let html = "<!doctype html><html><body>injected</body></html>";
     let dest = route_html_artifact(html, &report, &cfg).unwrap();
@@ -657,6 +808,9 @@ fn route_html_artifact_honors_stdout_sigil() {
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
+        prior: None,
+        reconcile: None,
+        reconcile_user: None,
     };
     let dest = route_html_artifact("<!doctype html><html></html>", &report, &cfg).unwrap();
     assert!(matches!(dest, OutputDest::Stdout), "expected Stdout dest, got {dest:?}");
@@ -696,6 +850,8 @@ fn report_with_outcomes() -> Report {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 7,
+        lines_written: 310,
+        lines_replaced: 96,
     });
     let entry = report.sessions.get_mut("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042").unwrap();
     entry.outcomes = Some(Outcomes {
@@ -709,6 +865,7 @@ fn report_with_outcomes() -> Report {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 7,
+        ..Default::default()
     });
     report
 }
@@ -716,7 +873,7 @@ fn report_with_outcomes() -> Report {
 #[test]
 fn build_context_block_carries_outcomes_totals_present_if_nonzero() {
     let report = report_with_outcomes();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
 
     let totals = parsed
@@ -772,7 +929,7 @@ fn build_context_block_carries_outcomes_totals_present_if_nonzero() {
 #[test]
 fn build_context_block_omits_outcomes_key_when_rollup_absent() {
     let report = sample_report(); // totals.outcomes: None
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
     assert!(
         parsed.get("outcomes").is_none(),
@@ -800,7 +957,7 @@ use crate::ENV_LOCK;
 #[test]
 fn context_block_carries_no_raw_numeric_operands() {
     let report = sample_report();
-    let block = build_context_block(&report, true, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, true);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
 
     let totals = parsed.get("totals").expect("totals key");
@@ -855,18 +1012,20 @@ fn report_with_efficiency() -> Report {
             cost_usd: 9.00,
         },
     );
+    // Tag-set costs stay inside the fixture's $0.60 total so the coverage strings read as a real
+    // share of it (they are tags, so they cover only part of the money by construction).
     entry.by_skill.insert(
         "graphify".into(),
         WorkloadCost {
             tokens: 200_000,
-            cost_usd: 1.25,
+            cost_usd: 0.20,
         },
     );
     entry.by_mcp.insert(
         "slack".into(),
         WorkloadCost {
             tokens: 50_000,
-            cost_usd: 0.30,
+            cost_usd: 0.05,
         },
     );
     report
@@ -877,7 +1036,7 @@ fn report_with_efficiency() -> Report {
 #[test]
 fn build_context_block_surfaces_efficiency_signals_as_strings() {
     let report = report_with_efficiency();
-    let block = build_context_block(&report, false, None, &pricing(), crate::aggregate::DEFAULT_OUTLIERS).unwrap();
+    let block = ctx(&report, false);
     let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
 
     let eff = parsed.get("efficiency").expect("efficiency key");
@@ -903,6 +1062,71 @@ fn build_context_block_surfaces_efficiency_signals_as_strings() {
 
     assert_eq!(eff.get("by-skill").and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
     assert_eq!(eff.get("by-mcp").and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
+}
+
+/// Phase 5: `by-skill` / `by-mcp` are attribution TAGS, not a partition, so each carries a
+/// binary-computed coverage string naming exactly how much of `totals.spend` it accounts for and on
+/// what pricing basis. That is what the prose quotes INSTEAD of reconciling a set that cannot sum.
+#[test]
+fn build_context_block_carries_tag_set_coverage_strings() {
+    let report = report_with_efficiency();
+    let block = ctx(&report, false);
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let eff = parsed.get("efficiency").expect("efficiency key");
+
+    assert_eq!(
+        eff.get("by-skill-coverage").and_then(|v| v.as_str()),
+        Some("$0.20 of $0.60 (33.3%), embedded-price basis")
+    );
+    assert_eq!(
+        eff.get("by-mcp-coverage").and_then(|v| v.as_str()),
+        Some("$0.05 of $0.60 (8.3%), embedded-price basis")
+    );
+}
+
+/// Phase 7's prompt-edit ledger: BOTH templates license the `unit-costs` block, both carry the
+/// EXACT ratio wording (the one word between an honest ratio and a fabricated price tag), both ban
+/// the price-tag phrasings by name, and both document the per-repo `outcomes` a spend-against-output
+/// chart rests on.
+///
+/// BITES: soften either template's "each commit cost" ban, or drop the ratio sentence, and the
+/// matching assertion fails.
+#[test]
+fn both_templates_license_unit_costs_as_ratios_and_by_repo_outcomes() {
+    for (name, tpl) in [("report.pmt", DEFAULT_PROMPT), ("report-html.pmt", DEFAULT_HTML_PROMPT)] {
+        assert!(
+            tpl.contains("`unit-costs`"),
+            "{name} must document the unit-costs block or the model cannot quote it"
+        );
+        assert!(
+            tpl.contains("These are RATIOS, not prices"),
+            "{name} must frame unit costs as ratios"
+        );
+        assert!(
+            tpl.contains("including the ones that produced no commit"),
+            "{name} must state what the numerator actually covers"
+        );
+        assert!(
+            tpl.contains("NEVER write \"each commit cost\""),
+            "{name} must ban the price-tag phrasing by name"
+        );
+        assert!(
+            tpl.contains("summed across repos"),
+            "{name} must state that per-repo outcome counts are not summable"
+        );
+        assert!(
+            tpl.contains("`lines-written`"),
+            "{name} must document the new line counters"
+        );
+        assert!(
+            tpl.contains("NOT a `git diff` stat"),
+            "{name} must stop the line counters being labeled as diff stats"
+        );
+    }
+    assert!(
+        DEFAULT_HTML_PROMPT.contains("commits-percent-of-max"),
+        "the html template must license the output geometry its chart needs"
+    );
 }
 
 /// A stale schema-v1 artifact is rejected by VERSION, naming both versions and the re-collect
@@ -1001,6 +1225,9 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
+        prior: None,
+        reconcile: None,
+        reconcile_user: None,
     };
 
     let err = run(&cfg, &pricing()).unwrap_err();
@@ -1022,10 +1249,13 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
 /// (expects Err) fails -- the test bites.
 #[test]
 fn markdown_guard_rejects_fabricated_number_accepts_verbatim() {
-    let facts = r#"{"totals":{"spend":"$4.12","tokens-human":"5,650"},"period":{"since":"2026-07-01"}}"#;
+    let facts = crate::quotable::QuotableFacts::from_context_json(
+        r#"{"totals":{"spend":"$4.12","tokens-human":"5,650"},"period":{"since":"2026-07-01"}}"#,
+    )
+    .unwrap();
 
     let fabricated = "Spend was $4.12 this period, saving the team $9,999 in engineering time.";
-    let err = reject_foreign_numbers("markdown", fabricated, facts).unwrap_err();
+    let err = reject_foreign_numbers("markdown", fabricated, &facts).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("markdown") && msg.contains("render-invents-nothing"),
@@ -1037,7 +1267,7 @@ fn markdown_guard_rejects_fabricated_number_accepts_verbatim() {
     );
 
     let clean = "Spend was $4.12 across the period beginning 2026-07-01; tokens totaled 5,650.";
-    reject_foreign_numbers("markdown", clean, facts).expect("verbatim prose must pass the guard");
+    reject_foreign_numbers("markdown", clean, &facts).expect("verbatim prose must pass the guard");
 }
 
 /// Break-the-code (html path): the guard runs over VISIBLE TEXT, so CSS/JS geometry (px,
@@ -1046,17 +1276,20 @@ fn markdown_guard_rejects_fabricated_number_accepts_verbatim() {
 /// Err assertion fails if the guard is removed.
 #[test]
 fn html_guard_checks_visible_text_not_css_geometry() {
-    let facts = r#"{"totals":{"spend":"$4.12"},"models":[{"spend-percent-of-max":43.7}]}"#;
+    let facts = crate::quotable::QuotableFacts::from_context_json(
+        r#"{"totals":{"spend":"$4.12"},"models":[{"spend-percent-of-max":43.7}]}"#,
+    )
+    .unwrap();
 
     let good = "<!doctype html><html><head><style>body{padding:24px;color:#1a1a1a}\
         @media(max-width:768px){body{font-size:14px}}</style></head>\
         <body><h1>Total Spend: $4.12</h1><div style=\"width: 43.7%\"></div></body></html>";
-    reject_foreign_numbers("html", &visible_text(good), facts)
+    reject_foreign_numbers("html", &visible_text(good), &facts)
         .expect("css geometry and a verbatim data figure must pass the html guard");
 
     let bad = "<!doctype html><html><head><style>body{padding:24px}</style></head>\
         <body><h1>Saved $9,999 this month</h1></body></html>";
-    let err = reject_foreign_numbers("html", &visible_text(bad), facts).unwrap_err();
+    let err = reject_foreign_numbers("html", &visible_text(bad), &facts).unwrap_err();
     assert!(format!("{err}").contains("html"), "html path error expected: {err}");
 }
 
@@ -1106,6 +1339,9 @@ fn offline_template_path_requires_no_anthropic_key() {
             include_tradeoffs: false,
             pdf_engine: "wkhtmltopdf".into(),
             outliers: crate::aggregate::DEFAULT_OUTLIERS,
+            prior: None,
+            reconcile: None,
+            reconcile_user: None,
         }),
     };
     let result = crate::run_with_config(&cfg).expect("offline template render must not need a key");
@@ -1118,3 +1354,88 @@ fn offline_template_path_requires_no_anthropic_key() {
     }
     drop(guard);
 }
+
+/// Phase 7: the context carries top-level `unit-costs` display strings, and `by-repo` rows carry
+/// the outcome counts plus their output geometry, so a spend-against-output chart is drawable and
+/// a ratio quotable without the model computing either.
+#[test]
+fn build_context_block_carries_unit_costs_and_by_repo_outcomes() {
+    let report = report_with_outcomes();
+    let block = ctx(&report, false);
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+
+    let unit = parsed.get("unit-costs").expect("top-level unit-costs key");
+    for field in ["per-commit", "per-pr", "per-active-day", "per-session"] {
+        let value = unit
+            .get(field)
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("unit-costs.{field} must be a display string: {unit}"));
+        assert!(value.starts_with('$'), "a pre-formatted dollar string, got {value}");
+    }
+    assert!(
+        unit.get("session-spend-p50").is_some() && unit.get("session-spend-p90").is_some(),
+        "session-spend percentiles ride the same block: {unit}"
+    );
+
+    let repo_row = parsed
+        .get("aggregates")
+        .and_then(|a| a.get("by-repo"))
+        .and_then(|v| v.as_array())
+        .expect("by-repo rows")
+        .iter()
+        .find(|r| r.get("outcomes").is_some())
+        .expect("the repo whose session carries outcomes has an outcomes block");
+    let outcomes = repo_row.get("outcomes").unwrap();
+    assert_eq!(outcomes.get("commits").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(outcomes.get("prs-opened").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(outcomes.get("files-edited").and_then(|v| v.as_u64()), Some(7));
+    assert_eq!(
+        repo_row.get("commits-percent-of-max").and_then(|v| v.as_f64()),
+        Some(100.0),
+        "the top row of the commit series is 100%, copied never computed"
+    );
+}
+
+/// The outcome counters Phase 7 adds reach the prompt through `outcomes.totals` under the same
+/// present-if-nonzero rule as their siblings, so a pre-Phase-7 catalog (zero lines recorded)
+/// omits them rather than claiming thousands of edited files produced no lines.
+#[test]
+fn build_context_block_carries_line_counters_present_if_nonzero() {
+    let mut report = report_with_outcomes();
+    let block = ctx(&report, false);
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let totals = parsed
+        .get("outcomes")
+        .and_then(|o| o.get("totals"))
+        .expect("outcomes.totals key");
+    assert_eq!(totals.get("lines-written").and_then(|v| v.as_u64()), Some(310));
+    assert_eq!(totals.get("lines-replaced").and_then(|v| v.as_u64()), Some(96));
+
+    let outcomes = report.totals.outcomes.as_mut().unwrap();
+    outcomes.lines_written = 0;
+    outcomes.lines_replaced = 0;
+    let block = ctx(&report, false);
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let totals = parsed.get("outcomes").and_then(|o| o.get("totals")).unwrap();
+    assert!(
+        totals.get("lines-written").is_none() && totals.get("lines-replaced").is_none(),
+        "an unreindexed catalog records no lines, so the field is absent: {totals}"
+    );
+}
+
+#[cfg(test)]
+mod geometry;
+
+mod templates;
+
+#[cfg(test)]
+mod narrative;
+#[cfg(test)]
+mod notes;
+#[cfg(test)]
+mod prior;
+#[cfg(test)]
+mod quotable;
+#[cfg(test)]
+mod reconcile;
+mod workload;

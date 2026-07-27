@@ -22,6 +22,7 @@ fn outcomes(commits: &[&str], prs: &[PrRef], conf: u64, jira: u64, slack: u64, f
         jira_writes: jira,
         slack_messages: slack,
         files_edited: files,
+        ..Default::default()
     }
 }
 

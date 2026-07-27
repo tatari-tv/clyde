@@ -77,6 +77,19 @@ tasks:
     bash: |
       echo "✅ All CI checks passed!"
 
+  eval:
+    help: "Judged render eval over the committed fixtures (PAID: LLM calls; NOT part of ci)"
+    bash: |
+      # Deliberately NOT a `before:` of ci. The judge costs tokens and needs a network, so it runs
+      # before a release, not on every commit (design 2026-07-26-report-story-fidelity.md,
+      # Non-Goals). The FREE, deterministic half of the same checks already runs in `ci`, offline,
+      # against the committed golden artifacts.
+      #
+      # `--llm api` is pinned: the fixtures are small, the api transport is the one CI-shaped
+      # callers can rely on, and `auto` would silently pick whichever transport this host happens
+      # to have. For the keyless path run `clyde report eval --llm cli` directly.
+      cargo run -q -p clyde -- report eval --llm api --out eval-report.json
+
   build:
     help: "Build release binary"
     bash: |

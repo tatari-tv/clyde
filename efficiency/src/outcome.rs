@@ -23,8 +23,13 @@
 //! - Confluence / Jira / Slack: assistant `tool_use` whose name suffix (after the final `__`) matches
 //!   the outcome vocabulary, counted ONLY when the paired `tool_result` is not an error.
 //! - Files edited: `tool_use` name `Edit` / `Write`, distinct `input.file_path` across successful calls.
+//! - Repos touched (v10): the same edited-file paths, bucketed by the `<repo-root>/<org>/<repo>`
+//!   shape via `common::repo::slug_under_root`. Pure path parsing; see [`union`].
+//! - Lines written / replaced (Phase 7): from the SAME successful Edit/Write calls, the line counts
+//!   of `input.new_string` / `input.old_string` (Edit) and `input.content` (Write). Volume of change,
+//!   the thing `files_edited`'s bare path count cannot say.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
@@ -52,6 +57,35 @@ pub struct Outcomes {
     pub slack_messages: u64,
     /// Distinct file paths across successful Edit/Write calls in the session group.
     pub files_edited: u64,
+    /// Lines of file content WRITTEN across successful Edit/Write calls: an Edit contributes its
+    /// `new_string`'s line count, a Write its whole `content`'s line count. Summed, never deduped
+    /// (two edits to the same file are two real writes).
+    ///
+    /// Deliberately NOT named `lines_added`: this is not a diff stat. An Edit that rewrites a
+    /// 3-line block counts 3 written and 3 replaced, where `git diff` might show fewer changed
+    /// lines. It measures the volume of content the session produced, which is exactly the
+    /// evidence `files_edited`'s bare path count lacks. `#[serde(default)]` so a pre-Phase-7
+    /// `outcome_json` still parses (as zero, until its session is reindexed).
+    #[serde(default)]
+    pub lines_written: u64,
+    /// Lines of file content REPLACED across successful Edit calls: the `old_string`'s line count.
+    ///
+    /// A Write contributes nothing here even when it overwrites an existing file: the record
+    /// carries the new content only, so the replaced count is unobservable and this fails closed
+    /// toward an undercount rather than guessing one. See [`Self::lines_written`] on the naming.
+    #[serde(default)]
+    pub lines_replaced: u64,
+    /// `<org>/<repo>` -> distinct edited-file count, derived from the same Edit/Write paths that
+    /// `files_edited` collapses to a bare count. Backs repo attribution's rule 3
+    /// ([`common::repo::from_files_touched`]): a session whose cwd is `$HOME` or a temp dir can
+    /// still be attributed to the repo it actually edited. Empty when no edited path fell under the
+    /// configured `repo-root`.
+    ///
+    /// The PATHS themselves are deliberately not persisted (4,242 distinct paths in one 30-day
+    /// window is payload nobody asked for); the slug counts carry the whole signal.
+    /// `#[serde(default)]` so a pre-v10 `outcome_json` still parses.
+    #[serde(default)]
+    pub repos_touched: BTreeMap<String, u64>,
 }
 
 /// A single opened pull request. `repository` is derived ONLY from the exact
@@ -76,6 +110,10 @@ pub struct FileOutcomes {
     pub jira_writes: u64,
     pub slack_messages: u64,
     pub files_edited: BTreeSet<String>,
+    /// See [`Outcomes::lines_written`]. Summed across files by [`union`], like the MCP counts.
+    pub lines_written: u64,
+    /// See [`Outcomes::lines_replaced`].
+    pub lines_replaced: u64,
 }
 
 /// The success-confirmed outcome vocabulary, as a typed enum matched over parsed tool names rather
@@ -89,9 +127,15 @@ enum OutcomeKind {
 }
 
 /// A `tool_use` of interest awaiting its confirming `tool_result`.
+///
+/// The line counts are read from the INITIATING `tool_use` (that is where `old_string` /
+/// `new_string` / `content` live) and applied only when the confirming result is not an error, so a
+/// rejected edit contributes no lines - the same success gate `files_edited` already rides.
 struct Pending {
     kind: OutcomeKind,
     file_path: Option<String>,
+    lines_written: u64,
+    lines_replaced: u64,
 }
 
 /// Union a session group's per-file [`FileOutcomes`] into the persisted per-session [`Outcomes`]:
@@ -100,8 +144,18 @@ struct Pending {
 /// always returns a concrete [`Outcomes`] (an all-empty default for a session with no observed
 /// outcome), because the catalog stores a non-NULL `outcome_json` for every reindexed session — a
 /// stored empty object means "reindexed, no outcomes", distinct from a NULL "not yet reindexed".
-pub fn union(files: &[FileOutcomes]) -> Outcomes {
-    debug!("outcome::union: files={}", files.len());
+///
+/// `repo_root` is the configured clone root ([`common::config::Config::repo_root`]), and it is the
+/// ONLY extra input: [`Outcomes::repos_touched`] is built by PURE path parsing of the edited-file
+/// set against the `<root>/<org>/<repo>` shape. No cwd, no catalog lookup, no `repo_paths` — rule 2's
+/// learned map lives in SQLite and dragging it in here would make this function unusable without a
+/// database.
+pub fn union(files: &[FileOutcomes], repo_root: &Path) -> Outcomes {
+    debug!(
+        "outcome::union: files={} repo-root={}",
+        files.len(),
+        repo_root.display()
+    );
     let mut commits: BTreeSet<String> = BTreeSet::new();
     let mut prs: Vec<PrRef> = Vec::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
@@ -109,6 +163,8 @@ pub fn union(files: &[FileOutcomes]) -> Outcomes {
     let mut confluence_writes: u64 = 0;
     let mut jira_writes: u64 = 0;
     let mut slack_messages: u64 = 0;
+    let mut lines_written: u64 = 0;
+    let mut lines_replaced: u64 = 0;
 
     for fo in files {
         commits.extend(fo.commits.iter().cloned());
@@ -121,8 +177,11 @@ pub fn union(files: &[FileOutcomes]) -> Outcomes {
         confluence_writes += fo.confluence_writes;
         jira_writes += fo.jira_writes;
         slack_messages += fo.slack_messages;
+        lines_written += fo.lines_written;
+        lines_replaced += fo.lines_replaced;
     }
 
+    let repos_touched = repos_touched(&files_edited, repo_root);
     let outcomes = Outcomes {
         commits: commits.into_iter().collect(),
         prs,
@@ -130,17 +189,55 @@ pub fn union(files: &[FileOutcomes]) -> Outcomes {
         jira_writes,
         slack_messages,
         files_edited: files_edited.len() as u64,
+        lines_written,
+        lines_replaced,
+        repos_touched,
     };
     debug!(
-        "outcome::union: commits={} prs={} confluence={} jira={} slack={} files={}",
+        "outcome::union: commits={} prs={} confluence={} jira={} slack={} files={} \
+         lines-written={} lines-replaced={} repos-touched={}",
         outcomes.commits.len(),
         outcomes.prs.len(),
         outcomes.confluence_writes,
         outcomes.jira_writes,
         outcomes.slack_messages,
-        outcomes.files_edited
+        outcomes.files_edited,
+        outcomes.lines_written,
+        outcomes.lines_replaced,
+        outcomes.repos_touched.len()
     );
     outcomes
+}
+
+/// Count the distinct edited files per `<org>/<repo>` slug, by pure path parsing against
+/// `repo_root`.
+///
+/// The slug is read from the file's PARENT directory, not from the file path itself. That is what
+/// makes the depth requirement right: `<root>/<org>/<repo>/src/main.rs` and
+/// `<root>/<org>/<repo>/README.md` both yield `<org>/<repo>`, while a loose file sitting directly at
+/// `<root>/<org>/notes.txt` yields nothing (its parent has only one component under the root) rather
+/// than fabricating the slug `<org>/notes.txt`. A path outside `repo_root` contributes nothing at
+/// all, which is the fail-closed answer for scratchpad-only sessions.
+fn repos_touched(files_edited: &BTreeSet<String>, repo_root: &Path) -> BTreeMap<String, u64> {
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    for path in files_edited {
+        let path = Path::new(path);
+        let Some(parent) = path.parent() else {
+            trace!("outcome::repos_touched: {} has no parent; skipped", path.display());
+            continue;
+        };
+        match common::repo::slug_under_root(parent, repo_root) {
+            Some(slug) => {
+                trace!("outcome::repos_touched: {} -> {slug}", path.display());
+                *counts.entry(slug).or_default() += 1;
+            }
+            None => trace!(
+                "outcome::repos_touched: {} is not under the repo root; skipped",
+                path.display()
+            ),
+        }
+    }
+    counts
 }
 
 /// Extract every outcome from one session-transcript JSONL (NO period filter -- the catalog holds
@@ -227,12 +324,24 @@ pub fn extract(path: &Path) -> Result<FileOutcomes> {
                             Some(i) => i,
                             None => continue,
                         };
-                        let file_path = block
-                            .get("input")
+                        let input = block.get("input");
+                        let file_path = input
                             .and_then(|i| i.get("file_path"))
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        pending.insert(id.to_string(), Pending { kind, file_path });
+                        // Edit carries `old_string`/`new_string`, Write carries `content`; an
+                        // absent field counts zero lines rather than dropping the call.
+                        let lines_written = line_count(input, "new_string") + line_count(input, "content");
+                        let lines_replaced = line_count(input, "old_string");
+                        pending.insert(
+                            id.to_string(),
+                            Pending {
+                                kind,
+                                file_path,
+                                lines_written,
+                                lines_replaced,
+                            },
+                        );
                     }
                     Some("tool_result") => {
                         let id = match block.get("tool_use_id").and_then(Value::as_str) {
@@ -257,16 +366,30 @@ pub fn extract(path: &Path) -> Result<FileOutcomes> {
     }
 
     debug!(
-        "outcome::extract: path={} commits={} prs={} confluence={} jira={} slack={} files={}",
+        "outcome::extract: path={} commits={} prs={} confluence={} jira={} slack={} files={} \
+         lines-written={} lines-replaced={}",
         path.display(),
         out.commits.len(),
         out.prs.len(),
         out.confluence_writes,
         out.jira_writes,
         out.slack_messages,
-        out.files_edited.len()
+        out.files_edited.len(),
+        out.lines_written,
+        out.lines_replaced
     );
     Ok(out)
+}
+
+/// Line count of a string-valued `tool_use` input field, or `0` when the field is absent or not a
+/// string. `str::lines` is the counter, so a trailing newline does not invent an extra line and an
+/// empty string counts zero (an Edit that inserts into an empty `old_string` replaced nothing).
+fn line_count(input: Option<&Value>, field: &str) -> u64 {
+    input
+        .and_then(|i| i.get(field))
+        .and_then(Value::as_str)
+        .map(|s| s.lines().count() as u64)
+        .unwrap_or(0)
 }
 
 fn handle_git_operation(git: &Value, out: &mut FileOutcomes, seen_pr_urls: &mut HashSet<String>) {
@@ -304,9 +427,13 @@ fn apply_confirmed(pend: Pending, out: &mut FileOutcomes) {
         OutcomeKind::ConfluenceWrite => out.confluence_writes += 1,
         OutcomeKind::JiraWrite => out.jira_writes += 1,
         OutcomeKind::SlackMessage => out.slack_messages += 1,
+        // A file edit with no `file_path` is not counted at all, lines included: the two counters
+        // must describe the same set of calls or `lines_written` would outrun `files_edited`.
         OutcomeKind::FileEdit => {
             if let Some(p) = pend.file_path {
                 out.files_edited.insert(p);
+                out.lines_written += pend.lines_written;
+                out.lines_replaced += pend.lines_replaced;
             }
         }
     }

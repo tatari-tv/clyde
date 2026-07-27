@@ -1,26 +1,34 @@
-use crate::aggregate::{self, Aggregates};
+use crate::aggregate::{self, Aggregates, Attribution, OrgRow, RepoRow, UnitCosts};
+use crate::claim;
 use crate::cli::Format;
 use crate::config::{RenderConfig, TransportKind};
-use crate::fmt::{format_int, format_optional_usd, format_tokens_human, format_usd, short_id};
+use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
+use crate::geometry;
+use crate::outcome::OutcomeTotals;
 use crate::persona::{self, PersonaBlock};
 use crate::proc::run_bounded;
+use crate::quotable::{QuotableFacts, RenderContext};
+use crate::reconcile::Reconciliation;
 use crate::report::{Report, SCHEMA_VERSION, SessionEntry};
 use crate::summarize;
 use crate::{OutputDest, RunResult};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
-use efficiency::{RawCounters, WorkloadCost, finalize};
 use eyre::{Context, Result, bail};
 use log::debug;
-use regex::Regex;
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::sync::OnceLock;
+
+mod reconciliation;
+use reconciliation::{build_reconciliation_view, no_reconcile_warning};
+mod template;
+mod workload;
+use template::{load_template, to_markdown};
+use workload::build_efficiency_view;
 
 const STDOUT_SIGIL: &str = "-";
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
@@ -30,13 +38,21 @@ const WORKSPACE_HTML_PROMPT_PATH: &str = "templates/report-html.pmt";
 
 pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
-        "render::run: input={} format={:?} space={:?} prompt={:?} outliers={}",
+        "render::run: input={} format={:?} space={:?} prompt={:?} outliers={} reconcile={:?}",
         cfg.input.display(),
         cfg.format,
         cfg.space,
         cfg.prompt,
-        cfg.outliers
+        cfg.outliers,
+        cfg.reconcile
     );
+
+    // Design Phase 12, "Absence is never silent" -- stderr half; the artifact's half is
+    // `reconciliation::NO_RECONCILE_NOTE`. Advisory only, mirroring the `--min-enrichment` warning.
+    if let Some(warning) = no_reconcile_warning(cfg.reconcile.as_deref()) {
+        log::warn!("render::run: {warning}");
+        eprintln!("{warning}");
+    }
 
     if let Some(ext) = cfg.input.extension().and_then(OsStr::to_str)
         && (ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
@@ -46,11 +62,7 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
         );
     }
 
-    let body =
-        fs::read_to_string(&cfg.input).with_context(|| format!("failed to read report at {}", cfg.input.display()))?;
-    check_schema_version(&body, &cfg.input)?;
-    let report: Report =
-        serde_json::from_str(&body).with_context(|| format!("failed to parse report at {}", cfg.input.display()))?;
+    let report = load_report(&cfg.input, "report")?;
 
     // Branch once at the source: the html-source family (`Html`, `MarqueeHtml`) never touches
     // pandoc; the markdown-source family is the unchanged template-or-opus pipeline. Generation
@@ -87,6 +99,9 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
             persona_block.as_ref(),
             pricing,
             cfg.outliers,
+            cfg.prior.as_deref(),
+            cfg.reconcile.as_deref(),
+            cfg.reconcile_user.as_deref(),
         )?;
         render_via_opus_markdown(&context, &prompt, cfg)
     }
@@ -103,6 +118,9 @@ fn generate_html(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Resu
         persona_block.as_ref(),
         pricing,
         cfg.outliers,
+        cfg.prior.as_deref(),
+        cfg.reconcile.as_deref(),
+        cfg.reconcile_user.as_deref(),
     )?;
     render_via_opus_html(&context, &prompt, cfg)
 }
@@ -222,47 +240,66 @@ pub(crate) fn default_output_path(report: &Report, format: Format) -> std::path:
     std::path::PathBuf::from(format!("./{}-claude-report.{}", prefix, ext))
 }
 
-#[derive(Debug, Clone)]
-pub enum Template {
-    BuiltIn,
-    Custom(String),
-}
-
 /// Resolve the configured transport selection against this host: is `claude` on PATH, and is a key
 /// set? The impure half of the decision, kept to one line each so `config::resolve_transport` stays
 /// pure and its whole precedence matrix is unit-testable.
 ///
 /// `which::which` mirrors `clyde::resolve_claude`, which already canonicalizes a relative PATH hit.
-fn resolve_transport_for(cfg: &RenderConfig) -> Result<TransportKind> {
+///
+/// Takes the two values it needs rather than a whole [`RenderConfig`], so a caller that has a
+/// selection and a format but no config (the eval) resolves through the SAME precedence matrix
+/// rather than a second copy of it.
+pub(crate) fn resolve_selected_transport(llm: crate::cli::Llm, format: Format) -> Result<TransportKind> {
     let resolved = crate::config::resolve_transport(
-        cfg.llm,
+        llm,
         which::which("claude").is_ok(),
         summarize::api_key_from_env().is_some(),
-        cfg.format,
+        format,
     )?;
     // Log the SELECTION for both transports, not just cli: an operator reading a log must be able to
     // tell what paid for an artifact without rerunning it. The cli path adds the resolved binary path
     // and version in `CliTransport::resolve`.
-    log::info!(
-        "render: llm transport selected={resolved:?} (requested={:?}) format={:?}",
-        cfg.llm,
-        cfg.format
-    );
+    log::info!("render: llm transport selected={resolved:?} (requested={llm:?}) format={format:?}");
     Ok(resolved)
 }
 
-fn render_via_opus_markdown(json_body: &str, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+fn render_via_opus_markdown(context: &RenderContext, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+    markdown_from_context(
+        context,
+        prompt,
+        Pins {
+            llm: cfg.llm,
+            format: cfg.format,
+            model: &cfg.markdown_model,
+            ceiling: cfg.markdown_max_output_tokens,
+        },
+    )
+}
+
+/// Everything a model call needs beyond the context and the prompt: which transport, which format
+/// (for the no-transport error's remedy), which model, and the output ceiling. A struct rather than
+/// four positional arguments, so the two render entry points and the eval cannot transpose them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Pins<'a> {
+    pub(crate) llm: crate::cli::Llm,
+    pub(crate) format: Format,
+    pub(crate) model: &'a str,
+    pub(crate) ceiling: u32,
+}
+
+/// The markdown render, over a context block and its [`Pins`] rather than a whole
+/// [`RenderConfig`]. `pub(crate)` because the eval renders through THIS function -- guards included
+/// -- so a fresh eval render can never be a different pipeline from the one users get.
+pub(crate) fn markdown_from_context(context: &RenderContext, prompt: &str, pins: Pins<'_>) -> Result<String> {
+    let json_body = &context.json;
+    let Pins { model, ceiling, .. } = pins;
     debug!(
-        "render::render_via_opus_markdown: context bytes={} prompt bytes={} model={} max_output_tokens={}",
+        "render::markdown_from_context: context bytes={} prompt bytes={} model={model} max_output_tokens={ceiling}",
         json_body.len(),
-        prompt.len(),
-        cfg.markdown_model,
-        cfg.markdown_max_output_tokens
+        prompt.len()
     );
-    let model = &cfg.markdown_model;
-    let ceiling = cfg.markdown_max_output_tokens;
     // Monomorphized per transport; no Box<dyn Transport>, per the house generics-for-DI rule.
-    let prose = match resolve_transport_for(cfg)? {
+    let prose = match resolve_selected_transport(pins.llm, pins.format)? {
         TransportKind::Api => {
             summarize::markdown(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, json_body)?
         }
@@ -271,35 +308,74 @@ fn render_via_opus_markdown(json_body: &str, prompt: &str, cfg: &RenderConfig) -
         }
     };
     // Render invents nothing: the whole markdown document is prose over the string-only facts, so
-    // every numeric token in it must appear verbatim in the context (which carries only pre-formatted
-    // display strings). A fabricated figure means the model computed or invented a number -> reject.
-    reject_foreign_numbers("markdown", &prose, json_body)?;
+    // every figure in it must be licensed by a QUOTABLE FACT -- a display figure the binary
+    // formatted, or the digits inside an identifier the prose cites verbatim. Not "any numeric token
+    // anywhere in the serialized block", which pre-approved every small integer that happened to
+    // fall inside a session id or a sha (design "Guard weakness (10)").
+    reject_foreign_numbers("markdown", &prose, &context.facts)?;
+    // ...and the class the VALUE guard structurally cannot reach: a fabricated unit on a licensed
+    // number ("14 hours of engineering time", where 14 is a real session count somewhere in the
+    // window). Claim-shaped, not value-shaped.
+    claim::reject_fabricated_claims("markdown", &prose, &context.facts)?;
     Ok(prose)
 }
 
 /// The html-source counterpart to [`render_via_opus_markdown`]. There is NO offline HTML path, so
 /// the missing-key error deliberately does NOT recommend `--template` (which produces markdown and
 /// is rejected for html-source formats).
-fn render_via_opus_html(context: &str, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+fn render_via_opus_html(context: &RenderContext, prompt: &str, cfg: &RenderConfig) -> Result<String> {
+    html_from_context(
+        context,
+        prompt,
+        Pins {
+            llm: cfg.llm,
+            format: cfg.format,
+            model: &cfg.html_model,
+            ceiling: cfg.html_max_output_tokens,
+        },
+    )
+}
+
+/// The html render over its [`Pins`], the counterpart to [`markdown_from_context`] and the function
+/// the eval's html pass calls, so the geometry allowlist it measures is the one users hit.
+pub(crate) fn html_from_context(context: &RenderContext, prompt: &str, pins: Pins<'_>) -> Result<String> {
+    let json_body = &context.json;
+    let Pins { model, ceiling, .. } = pins;
     debug!(
-        "render::render_via_opus_html: context bytes={} prompt bytes={} model={} max_output_tokens={}",
-        context.len(),
-        prompt.len(),
-        cfg.html_model,
-        cfg.html_max_output_tokens
+        "render::html_from_context: context bytes={} prompt bytes={} model={model} max_output_tokens={ceiling}",
+        json_body.len(),
+        prompt.len()
     );
-    let model = &cfg.html_model;
-    let ceiling = cfg.html_max_output_tokens;
-    let html = match resolve_transport_for(cfg)? {
-        TransportKind::Api => summarize::html(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, context)?,
-        TransportKind::Cli => summarize::html(&summarize::CliTransport::resolve()?, model, ceiling, prompt, context)?,
+    let html = match resolve_selected_transport(pins.llm, pins.format)? {
+        TransportKind::Api => {
+            summarize::html(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, json_body)?
+        }
+        TransportKind::Cli => summarize::html(&summarize::CliTransport::resolve()?, model, ceiling, prompt, json_body)?,
     };
     // Render invents nothing (html): CSS/JS geometry is legitimate authored markup full of numbers
     // that are NOT data (px, breakpoints, colors), so the guard runs over the VISIBLE TEXT only
-    // (style/script blocks and tag markup stripped). Every data figure a reader sees must appear
-    // verbatim in the string-only facts; a fabricated figure is rejected.
-    reject_foreign_numbers("html", &visible_text(&html), context)?;
+    // (style/script blocks and tag markup stripped). Every data figure a reader sees must be
+    // licensed by a quotable fact; a fabricated figure is rejected.
+    let visible = visible_text(&html);
+    reject_foreign_numbers("html", &visible, &context.facts)?;
+    // The claim-shaped half, over the same visible text: a fabricated unit rides on a licensed
+    // number, so the value guard passes it and only the claim guard sees it.
+    claim::reject_fabricated_claims("html", &visible, &context.facts)?;
+    // ...and the numbers `visible_text` throws away are exactly the ones Phase 11 unlocked. The
+    // prose guard has never seen an ATTRIBUTE, so the chart unlock gets its own allowlist over the
+    // SVG subtree: permitted elements, permitted attributes, and every digit-bearing value matched
+    // verbatim against the geometry the binary computed.
+    geometry::reject_foreign_geometry("html", &html, &context.facts)?;
     Ok(html)
+}
+
+/// Read, schema-gate, and parse a collected artifact. ONE path for every reader of one: the primary
+/// `-i` input, `--prior`, and the eval's fixtures. `label` names which input failed, so an error on
+/// a prior artifact does not read as an error on the report being rendered.
+pub(crate) fn load_report(path: &Path, label: &str) -> Result<Report> {
+    let body = fs::read_to_string(path).with_context(|| format!("failed to read {label} at {}", path.display()))?;
+    check_schema_version(&body, path)?;
+    serde_json::from_str(&body).with_context(|| format!("failed to parse {label} at {}", path.display()))
 }
 
 /// Gate on the artifact's `schema-version` BEFORE the full parse, so a wrong-shaped report is named
@@ -344,55 +420,73 @@ fn check_schema_version(body: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Reject generated prose that introduced a numeric token absent from the string-only `facts` (the
-/// serialized context block). This is the RUNTIME half of the render-invents-nothing guard, copied
-/// from `efficiency/src/narrate.rs` (`narrate`/`foreign_numbers`): the prompt-level "no arithmetic"
-/// rule is advisory, so a poisoned narrative is caught here and never escapes. `kind` names the path
-/// (markdown / html) for the operator-facing error and WARN. Fail closed.
-fn reject_foreign_numbers(kind: &str, prose: &str, facts: &str) -> Result<()> {
+/// Reject generated prose that stated a figure no quotable fact licenses. This is the RUNTIME half
+/// of the render-invents-nothing guard: the prompt-level "no arithmetic" rule is advisory, so a
+/// poisoned narrative is caught here and never escapes. `kind` names the path (markdown / html) for
+/// the operator-facing error and WARN. Fail closed.
+///
+/// `facts` is the [`QuotableFacts`] set built beside the context block, NOT the serialized block
+/// itself: the block's session ids, timestamps and shas used to pre-approve effectively every
+/// small integer (design "Guard weakness (10)"), which is why a fabricated "14 hours of engineering
+/// time" passed. A false positive here is a hard render failure, so the identifier half of the fact
+/// set exists to keep legitimate citations (an untitled session by `short-id`, a prose PR reference)
+/// passing.
+fn reject_foreign_numbers(kind: &str, prose: &str, facts: &QuotableFacts) -> Result<()> {
     debug!(
-        "render::reject_foreign_numbers: kind={kind} prose_chars={} facts_chars={}",
+        "render::reject_foreign_numbers: kind={kind} prose_chars={} quotable_figures={}",
         prose.chars().count(),
-        facts.chars().count()
+        facts.figure_count()
     );
-    let foreign = foreign_numbers(prose, facts);
+    let foreign = facts.foreign_figures(prose);
     if !foreign.is_empty() {
+        // Each token WITH the sentence it appeared in. A bare token list names the number and not
+        // the claim, so the operator has to re-run a paid render just to see where it was written;
+        // the excerpt is what makes "fix this" actionable on the first read.
+        let cited: Vec<String> = foreign
+            .iter()
+            .map(|t| format!("{t:?} in {:?}", excerpt(prose, t)))
+            .collect();
         log::warn!(
-            "render::reject_foreign_numbers: {kind} path REJECTED -- generated prose introduced \
-             number(s) absent from the string-only facts: {foreign:?}"
+            "render::reject_foreign_numbers: {kind} path REJECTED -- generated prose stated \
+             figure(s) no quotable fact licenses: {}",
+            cited.join("; ")
         );
         bail!(
-            "{kind} rendering introduced number(s) absent from the computed facts: {foreign:?} -- the \
-             render-invents-nothing contract was violated; refusing to emit the artifact"
+            "{kind} rendering introduced number(s) absent from the computed facts: {} -- the \
+             render-invents-nothing contract was violated; refusing to emit the artifact",
+            cited.join("; ")
         );
     }
     debug!("render::reject_foreign_numbers: kind={kind} clean");
     Ok(())
 }
 
-/// Every numeric token (`42`, `4.12`, `155`) in `text`. Copied verbatim from `narrate.rs`, which
-/// already correctly treats a date (`2026-07-01` -> `2026`, `07`, `01`) and a version as separate
-/// tokens that each match the facts, so legitimate dates/versions never read as fabricated.
-fn numeric_tokens(text: &str) -> Vec<String> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\d+(?:\.\d+)?").expect("numeric-token pattern is a valid regex"))
-        .find_iter(text)
-        .map(|m| m.as_str().to_string())
-        .collect()
-}
+/// Chars of prose kept on each side of a rejected figure, so the excerpt reads as a claim rather
+/// than a fragment.
+const EXCERPT_RADIUS: usize = 60;
 
-/// Numbers in `prose` that do NOT appear anywhere in the string-only `facts` -- i.e. numbers the
-/// model invented (a sum, a projection, a fabricated figure). A non-empty result is the
-/// render-invents-nothing violation [`reject_foreign_numbers`] fails on. The `facts` are the
-/// serialized context block, so any figure the binary pre-formatted into it is permitted and any
-/// figure NOT in it is rejected -- checking against the curated string-only facts, never the raw
-/// report (which would widen the whitelist with recombinable operands, design Phase 5).
-fn foreign_numbers(prose: &str, facts: &str) -> Vec<String> {
-    let present = numeric_tokens(facts);
-    numeric_tokens(prose)
-        .into_iter()
-        .filter(|n| !present.contains(n))
-        .collect()
+/// The prose around `needle`'s first occurrence, char-based (crate lint) and whitespace-collapsed so
+/// a wrapped markdown paragraph reads as one line in the error. Empty when the token cannot be
+/// located verbatim (a comma-grouped figure is normalized before comparison, so this can happen).
+///
+/// `pub(crate)` for the claim guard, whose rejection is the same kind of hard render failure and so
+/// owes the operator the same "here is the sentence" excerpt.
+pub(crate) fn excerpt(prose: &str, needle: &str) -> String {
+    let chars: Vec<char> = prose.chars().collect();
+    let needle_chars: Vec<char> = needle.chars().collect();
+    let at = (0..chars.len().saturating_sub(needle_chars.len().saturating_sub(1)))
+        .find(|&i| chars[i..].starts_with(&needle_chars[..]));
+    let Some(at) = at else {
+        return String::new();
+    };
+    let start = at.saturating_sub(EXCERPT_RADIUS);
+    let end = (at + needle_chars.len() + EXCERPT_RADIUS).min(chars.len());
+    chars[start..end]
+        .iter()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The reader-visible text of an HTML document: `<style>`/`<script>` block CONTENTS and all tag
@@ -402,7 +496,10 @@ fn foreign_numbers(prose: &str, facts: &str) -> Vec<String> {
 /// fabricated DATA figure always surfaces in visible text (a headline, a label, a table cell); the
 /// pre-formatted display strings the model may quote also live there. Byte-slice-free (char-based)
 /// per the crate lint.
-fn visible_text(html: &str) -> String {
+///
+/// `pub(crate)` for the eval's mechanical layer, which must scan an HTML artifact exactly the way
+/// this path does or it would grade a different document than the guard checked.
+pub(crate) fn visible_text(html: &str) -> String {
     let stripped = strip_blocks(&strip_blocks(html, "script"), "style");
     let mut out = String::with_capacity(stripped.len());
     let mut in_tag = false;
@@ -424,7 +521,10 @@ fn visible_text(html: &str) -> String {
 /// name (`style` / `script`). A missing closing tag drops the rest of the document from that opener
 /// (fail closed: unmatched markup never leaks unchecked into the visible-text scan). Char-based, no
 /// byte slicing.
-fn strip_blocks(html: &str, tag: &str) -> String {
+///
+/// `pub(crate)` for the geometry allowlist, which strips the same two blocks for the same reason
+/// before scanning tags: their numbers are authored CSS/JS, not data.
+pub(crate) fn strip_blocks(html: &str, tag: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
@@ -499,8 +599,46 @@ pub(crate) fn resolve_html_prompt(explicit: Option<&Path>, workspace_dir: &Path)
 struct ContextBlock<'a> {
     persona: &'a PersonaBlock,
     options: ContextOptions,
+    /// The pricing basis for every dollar figure below (design "Pricing basis, always present",
+    /// Phase 6): what it is priced against, whether it is an invoice (never), and which feed
+    /// resolved it. `basis.note` is the required, verbatim header disclosure both templates carry.
+    basis: Basis,
+    /// How this artifact was produced, one pre-formatted sentence per note, straight from
+    /// [`Report::notes`]: always the M2 window statement, plus one line per field a MERGE could not
+    /// carry. Absent entirely (never an empty list) when the report recorded none, so the prompt's
+    /// "omit it" rule needs no empty-vs-absent special case. Without this the reader never learns
+    /// the window is session-level or that a merged field was omitted (design "API Design", `notes`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<&'a str>,
     period: PeriodView,
     totals: TotalsView,
+    /// How much of `totals.spend` carries a repo and on what evidence, one row per `repo-source`
+    /// plus `(unattributed)`. Top-level rather than under `aggregates` because it is a statement
+    /// ABOUT the whole figure, not another rollup of it, and because the prose cites it next to the
+    /// headline. The rows sum to `totals.spend` by construction.
+    attribution: Attribution,
+    /// How much of the window's sessions carry an enrich `summary` (design Phase 9, "Systemic
+    /// property"): the evidence base the narrative should cite. `run_collect` already warns on
+    /// stderr when this falls below `--min-enrichment` (Phase 3); this is the SAME fact carried into
+    /// the prompt so the narrative can state the gap in prose and correctly fall back to `title`
+    /// for the sessions it does not cover, rather than silently treating every session as enriched.
+    enrichment_coverage: String,
+    /// Present only when `--reconcile` matched this report's window (design Phase 12, finding 6
+    /// closure): billed spend from the authoritative Analytics export against the modeled total.
+    /// See [`Self::reconciliation_status`] (ALWAYS present) for the never-silent absence case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reconciliation: Option<Reconciliation>,
+    /// Always present (design Phase 12, "Absence is never silent"): quoted verbatim, states
+    /// whether [`Self::reconciliation`] is this render's authoritative figure or absent because no
+    /// export was supplied -- see [`reconciliation::NO_RECONCILE_NOTE`] / [`reconciliation::reconciled_note`].
+    reconciliation_status: String,
+    /// The period's spend set against its own output and calendar (design Phase 7, finding 9):
+    /// `per-commit`, `per-pr`, `per-active-day`, `per-session`, and the session-spend percentiles,
+    /// each a display string the binary divided. Top-level for the same reason as `attribution`: it
+    /// is a statement ABOUT the headline figure, not another rollup of it. Fields are ABSENT on a
+    /// zero denominator, and both templates carry the exact wording that keeps a ratio from being
+    /// read as a price tag (see [`UnitCosts`]).
+    unit_costs: UnitCosts,
     aggregates: &'a Aggregates,
     /// The v2 efficiency signal set, all pre-formatted display strings (design Phase 5): the
     /// agent-type cost headline plus the report-wide cache/tool/interrupt/compaction signals and the
@@ -512,6 +650,12 @@ struct ContextBlock<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     outcomes: Option<OutcomesView>,
     sessions: Vec<SessionView<'a>>,
+    /// The prior period's aggregates (design Phase 8, gap 7): lights up the Month over Month
+    /// section both templates already document but had no backing field for. Absent entirely
+    /// (never an empty object) when `--prior` was not supplied, so the prompt's "omit the section"
+    /// rule needs no empty-vs-absent special case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prior: Option<PriorView>,
 }
 
 /// The report-wide efficiency headline, string-only (design Phase 5). `agent-type-costs` is the
@@ -531,17 +675,28 @@ struct EfficiencyView {
     interrupts: u64,
     /// Total context compactions observed across the window.
     compactions: u64,
-    /// HEADLINE: tokens + `$` attributed to each subagent TYPE, pre-sorted by spend descending.
+    /// HEADLINE: tokens + `$` attributed to each subagent TYPE, pre-sorted by spend descending, plus
+    /// the `(main-session)` residual. A true PARTITION of `totals.spend` (Phase 5): same pricing
+    /// basis, every dollar in exactly one row.
     agent_type_costs: Vec<WorkloadRow>,
-    /// Tokens + `$` grouped by skill (`attributionSkill`), pre-sorted by spend descending.
+    /// Tokens + `$` grouped by skill (`attributionSkill`), pre-sorted by spend descending. An
+    /// attribution TAG set, not a partition -- see [`Self::by_skill_coverage`].
     by_skill: Vec<WorkloadRow>,
-    /// Tokens + `$` grouped by MCP tool (`attributionMcpTool`), pre-sorted by spend descending.
+    /// Tokens + `$` grouped by MCP tool (`attributionMcpTool`), pre-sorted by spend descending. An
+    /// attribution TAG set, not a partition -- see [`Self::by_mcp_coverage`].
     by_mcp: Vec<WorkloadRow>,
+    /// How much of `totals.spend` the `by-skill` rows cover, and on what pricing basis, e.g.
+    /// `"$412.19 of $9,450.31 (4.4%), embedded-price basis"`. Binary-computed so the prose can state
+    /// the coverage as a fact rather than reconciling a tag set that cannot sum to anything.
+    by_skill_coverage: String,
+    /// The same statement for the `by-mcp` rows.
+    by_mcp_coverage: String,
 }
 
-/// One agent-type / skill / mcp-tool attribution row, string-only. `spend` is the catalog's
-/// embedded-priced figure formatted as a display string (see `report::SessionEntry` notes on why
-/// these differ from the fetched-feed model spend).
+/// One agent-type / skill / mcp-tool attribution row, string-only. `spend` is a display string. On
+/// `agent-type-costs` it is priced from report's fetched feed (the same basis as `totals.spend`); on
+/// `by-skill` / `by-mcp` it is the catalog's embedded-priced figure, which is why those two carry a
+/// coverage string instead of summing to the total.
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct WorkloadRow {
@@ -576,6 +731,13 @@ struct OutcomeTotalsView {
     slack_messages: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     files_edited: Option<u64>,
+    /// Volume of file content produced (Phase 7), the evidence `files-edited`'s bare path count
+    /// lacks. Absent until a session is reindexed under Phase 7, so a pre-Phase-7 catalog omits it
+    /// rather than reporting zero lines against thousands of edited files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lines_written: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lines_replaced: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -584,14 +746,73 @@ struct ContextOptions {
     include_tradeoffs: bool,
 }
 
+/// The pricing basis, always present (design Phase 6, "Pricing basis, always present"). Every dollar
+/// figure downstream is `tokens x published per-token rate`, never a billed/invoiced total, and
+/// `note` states that scope in the same sentence as the citation so a finance reader does not expect
+/// this figure to reconcile against the authoritative Analytics cost report (design Resolved
+/// Decisions, "Tatari pays for Claude Enterprise..."; supersedes the earlier "not an amount
+/// invoiced" wording).
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct Basis {
+    /// Always "published list rates" -- `is_invoice` is the machine-checkable half of the same fact.
+    pricing: String,
+    /// Always `false`: this artifact never carries a billed/invoiced total (see `note`).
+    is_invoice: bool,
+    /// Which resolution path produced the [`Pricing`] this render used: `embedded` | `fetched` |
+    /// `override`. NOTE: `claude-pricing` does not distinguish a live network fetch from an on-disk
+    /// cache hit at the type level (both resolve to `Source::Fetched`), so both surface as
+    /// `fetched` here; `override` covers `Source::UserOverride`, a fourth case the doc's
+    /// `embedded | cached | fetched` vocabulary does not name.
+    feed_source: String,
+    /// The resolved feed's own `data-version` (an ISO-8601 timestamp), or `"unknown"` when the
+    /// feed carried none.
+    feed_version: String,
+    /// One sentence, carried verbatim into the required header line by both templates.
+    note: String,
+}
+
+/// The disclosure sentence, verbatim (design Phase 6 / Resolved Decisions "Tatari pays for Claude
+/// Enterprise, and the Analytics cost report is the authoritative spend number"). The scope caveat
+/// rides in the SAME sentence as the citation -- naming only the authoritative source, with no scope
+/// statement, is what let a reader expect the two figures to match and read a mismatch as "clyde
+/// miscounted".
+const BASIS_NOTE: &str = "Total spend is modeled Claude Code catalog spend at published list rates; \
+     account-level billed spend comes from Claude Enterprise Analytics.";
+
+fn build_basis(pricing: &Pricing) -> Basis {
+    let feed_source = match pricing.source() {
+        claude_pricing::Source::Embedded => "embedded",
+        claude_pricing::Source::Fetched { .. } => "fetched",
+        claude_pricing::Source::UserOverride(_) => "override",
+    };
+    debug!(
+        "render::build_basis: feed-source={} feed-version={:?}",
+        feed_source,
+        pricing.data_version()
+    );
+    Basis {
+        pricing: "published list rates".to_string(),
+        is_invoice: false,
+        feed_source: feed_source.to_string(),
+        feed_version: pricing.data_version().unwrap_or("unknown").to_string(),
+        note: BASIS_NOTE.to_string(),
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct PeriodView {
     since: String,
     until: String,
-    /// Calendar days, `until` treated as the EXCLUSIVE next boundary (June 1 -> July 1 = 30),
-    /// distinct from the inclusive-both-ends record-matching bound (Definitions section).
+    /// INCLUSIVE calendar date-span count (design "by-day, corrected"): `num_days() + 1` between
+    /// `since` and `until`'s dates, e.g. June 26 -> July 25 = 30. This is the same count `by-day`
+    /// zero-fills, so `by-day.len() == period.days` always holds by construction. Previously
+    /// exclusive (`num_days()` alone), which could make `active-days` exceed `days` and print the
+    /// nonsense "Active Days: 30 of 29".
     days: i64,
+    /// Count of `aggregates.by-day` rows with `active: true`, NOT the row count -- every calendar
+    /// date in the window now has a row, active or not.
     active_days: usize,
     generated: String,
 }
@@ -640,16 +861,28 @@ struct TotalRow {
     spend: String,
 }
 
-/// Slim per-session view: `short-id`, `title`, `repo`, `begin`/`end`, `tokens-human`,
-/// `spend-display`, and model NAMES only (no per-model token detail). No `jsonl-paths`, and NO raw
-/// `spend` operand (design Phase 5, string-only context): sessions feed THEMES and CITATIONS only
-/// (never counting or summing), so the display string is all the model needs; `short-id` backs the
-/// untitled-session fallback.
+/// Slim per-session view: `short-id`, `title`, `summary`, `tags`, `repo`, `begin`/`end`,
+/// `tokens-human`, `spend-display`, and model NAMES only (no per-model token detail). No
+/// `jsonl-paths`, and NO raw `spend` operand (design Phase 5, string-only context): sessions feed
+/// THEMES and CITATIONS only (never counting or summing), so the display string is all the model
+/// needs; `short-id` backs the untitled-session fallback.
+///
+/// `title` is Claude Code's own `ai-title`, resolved from the session's OPENING exchange alone
+/// (design "Systemic property"): a label for identifying a session in a table or citation, never
+/// evidence of a theme. `summary` is the enrich pass's own digest of the FULL transcript (head +
+/// tail up to 500K chars) and is the evidence a theme should cite; `None` for a session the enrich
+/// pass never reached, in which case the prompt falls back to `title` (see the top-level
+/// `enrichment-coverage` field for how much of the window that affects). `tags` is the enrich
+/// pass's topic labels, empty when absent.
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct SessionView<'a> {
     short_id: String,
     title: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<&'a str>,
     repo: Option<&'a str>,
     begin: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -663,26 +896,51 @@ struct SessionView<'a> {
     outcomes: Option<&'a crate::outcome::Outcomes>,
 }
 
+/// Build the model's context block AND the quotable-facts sets that bound what the artifact may say
+/// about it. The two are returned together ([`RenderContext`]) so the guard can never be run against
+/// a different block than the one the model was handed.
 pub(crate) fn build_context_block(
     report: &Report,
     include_tradeoffs: bool,
     persona: Option<&PersonaBlock>,
     pricing: &Pricing,
     outliers_n: usize,
-) -> Result<String> {
+    prior_path: Option<&Path>,
+    reconcile_path: Option<&Path>,
+    reconcile_user: Option<&str>,
+) -> Result<RenderContext> {
     debug!(
-        "render::build_context_block: sessions={} include_tradeoffs={} outliers-n={}",
+        "render::build_context_block: sessions={} include_tradeoffs={} outliers-n={} prior={:?} \
+         reconcile={:?} reconcile-user={:?}",
         report.sessions.len(),
         include_tradeoffs,
-        outliers_n
+        outliers_n,
+        prior_path,
+        reconcile_path,
+        reconcile_user
     );
     let default_persona = PersonaBlock::default();
     let aggregates = aggregate::compute(report, outliers_n, pricing);
+    let period = build_period_view(report, &aggregates);
+    let prior = build_prior_view(prior_path, period.days, pricing)?;
+    // Who the reconciliation is scoped to: `--reconcile-user` when the operator named one,
+    // otherwise the SAME identity the report's persona block already resolved
+    // (`persona whoami`'s work email) -- one mechanism for "who is this report about", never two
+    // that can disagree.
+    let operator = reconcile_user.or_else(|| persona.and_then(|p| p.email.as_deref()));
+    let (reconciliation, reconciliation_status) = build_reconciliation_view(reconcile_path, operator, report)?;
     let block = ContextBlock {
         persona: persona.unwrap_or(&default_persona),
         options: ContextOptions { include_tradeoffs },
-        period: build_period_view(report, &aggregates),
+        basis: build_basis(pricing),
+        notes: build_notes(report),
+        period,
         totals: build_totals_view(report),
+        attribution: aggregate::compute_attribution(report),
+        enrichment_coverage: build_enrichment_coverage(report),
+        reconciliation,
+        reconciliation_status,
+        unit_costs: aggregate::compute_unit_costs(report, &aggregates.by_day),
         aggregates: &aggregates,
         efficiency: build_efficiency_view(report),
         outcomes: build_outcomes_view(report),
@@ -691,17 +949,41 @@ pub(crate) fn build_context_block(
             .iter()
             .map(|(sid, entry)| build_session_view(sid, entry))
             .collect(),
+        prior,
     };
-    serde_json::to_string(&block).context("failed to serialize context block to JSON")
+    let json = serde_json::to_string(&block).context("failed to serialize context block to JSON")?;
+    let facts = QuotableFacts::from_context_json(&json)?;
+    debug!(
+        "render::build_context_block: context_bytes={} quotable_figures={}",
+        json.len(),
+        facts.figure_count()
+    );
+    Ok(RenderContext { json, facts })
+}
+
+/// The artifact's production notes, borrowed as-is: [`Report::notes`] is already a list of
+/// display sentences (the M2 window statement, and one line per field a merge omitted), so there is
+/// nothing to format. An empty list serializes to no key at all.
+fn build_notes(report: &Report) -> Vec<&str> {
+    let notes: Vec<&str> = report.notes.iter().map(String::as_str).collect();
+    debug!("render::build_notes: notes={}", notes.len());
+    notes
 }
 
 fn build_period_view(report: &Report, aggregates: &Aggregates) -> PeriodView {
-    let days = (report.until.date_naive() - report.since.date_naive()).num_days();
+    let days = (report.until.date_naive() - report.since.date_naive()).num_days() + 1;
+    let active_days = aggregates.by_day.iter().filter(|r| r.active).count();
+    debug!(
+        "render::build_period_view: days={} active-days={} by-day-rows={}",
+        days,
+        active_days,
+        aggregates.by_day.len()
+    );
     PeriodView {
         since: report.since.format("%Y-%m-%d").to_string(),
         until: report.until.format("%Y-%m-%d").to_string(),
         days,
-        active_days: aggregates.by_day.len(),
+        active_days,
         generated: report.generated.format("%Y-%m-%d").to_string(),
     }
 }
@@ -764,29 +1046,153 @@ fn build_totals_view(report: &Report) -> TotalsView {
     }
 }
 
+/// The `enrichment-coverage` context field (design Phase 9): how many of the window's sessions
+/// carry an enrich `summary`, as a single factual sentence the model may quote verbatim rather than
+/// recompute. Counted over `report.sessions` -- the SAME collection `sessions` in the context is
+/// built from -- so the figure matches exactly what the model can see, not a separate collect-time
+/// sample. `run_collect`'s `--min-enrichment` warning (Phase 3) fires on the same underlying fact at
+/// collect time; this is that fact's render-time counterpart, carried where the prompt can cite it.
+fn build_enrichment_coverage(report: &Report) -> String {
+    let total = report.sessions.len();
+    let enriched = report.sessions.values().filter(|e| e.summary.is_some()).count();
+    debug!("render::build_enrichment_coverage: enriched={enriched} total={total}");
+    if total == 0 {
+        return "0 of 0 sessions carry an enrich summary".to_string();
+    }
+    let share = enriched as f64 / total as f64 * 100.0;
+    format!(
+        "{enriched} of {total} sessions in the window ({share:.1}%) carry an enrich summary; the \
+         rest are cited by title only"
+    )
+}
+
 /// Re-expose the persisted `Totals.outcomes` rollup as the context's `outcomes.totals`, fields
 /// present-if-nonzero (design API section). `None` when the report carries no rollup, which
 /// keeps the `outcomes` key out of the context entirely.
 fn build_outcomes_view(report: &Report) -> Option<OutcomesView> {
     let totals = report.totals.outcomes.as_ref()?;
-    let nonzero = |v: u64| if v == 0 { None } else { Some(v) };
     Some(OutcomesView {
-        totals: OutcomeTotalsView {
-            sessions_with_commits: nonzero(totals.sessions_with_commits),
-            commits: nonzero(totals.commits),
-            prs_opened: nonzero(totals.prs_opened),
-            confluence_writes: nonzero(totals.confluence_writes),
-            jira_writes: nonzero(totals.jira_writes),
-            slack_messages: nonzero(totals.slack_messages),
-            files_edited: nonzero(totals.files_edited),
-        },
+        totals: outcome_totals_view(totals),
     })
+}
+
+/// Shared by [`build_outcomes_view`] (the current period) and [`build_prior_view`] (Phase 8): the
+/// same present-if-nonzero conversion, so the two periods' outcome figures are built by one code
+/// path rather than two that could drift.
+fn outcome_totals_view(totals: &OutcomeTotals) -> OutcomeTotalsView {
+    let nonzero = |v: u64| if v == 0 { None } else { Some(v) };
+    OutcomeTotalsView {
+        sessions_with_commits: nonzero(totals.sessions_with_commits),
+        commits: nonzero(totals.commits),
+        prs_opened: nonzero(totals.prs_opened),
+        confluence_writes: nonzero(totals.confluence_writes),
+        jira_writes: nonzero(totals.jira_writes),
+        slack_messages: nonzero(totals.slack_messages),
+        files_edited: nonzero(totals.files_edited),
+        lines_written: nonzero(totals.lines_written),
+        lines_replaced: nonzero(totals.lines_replaced),
+    }
+}
+
+/// The prior period's aggregates (design Phase 8, `--prior`): lights up the Month over Month
+/// section both templates already document but had no backing field for. Aggregated through the
+/// SAME [`aggregate::compute`] as the current period, from a schema-gated report file, so the two
+/// sides of the comparison are computed identically rather than by two code paths that could
+/// drift. Absent entirely (never emitted with empty/zeroed fields) when `--prior` was not supplied.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct PriorView {
+    since: String,
+    until: String,
+    days: i64,
+    /// `false` when `days` differs from the current period's `period.days`, so the prompt states
+    /// the length mismatch rather than comparing e.g. a 30-day window against a 14-day one as if
+    /// they covered equal ground.
+    comparable: bool,
+    /// Present only when this prior artifact predates repo-source provenance and the outcome
+    /// counters added by this design (see [`predates_fidelity_fields`]). When present, `outcomes`
+    /// below is deliberately omitted: a `0` from a build that never measured the field is not the
+    /// same fact as an observed zero, and both templates must quote this sentence instead of citing
+    /// `outcomes` as if it were a real measurement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    predates_fields: Option<String>,
+    totals: TotalsView,
+    by_repo: Vec<RepoRow>,
+    by_org: Vec<OrgRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcomes: Option<OutcomeTotalsView>,
+}
+
+/// Verbatim caveat both templates quote in place of `prior.outcomes` when [`predates_fidelity_fields`]
+/// fires. Stated once here so the two templates and any future caller never restate it differently.
+const PRIOR_PREDATES_NOTE: &str = "the prior period was collected before this clyde build tracked \
+     repo-source provenance and several outcome counters (lines written, lines replaced); its \
+     per-session outcome figures are not comparable and are omitted here.";
+
+/// `true` when `report` predates repo-source provenance (design Phase 1-3 of this doc): at least
+/// one session carries a `repo` but none carries a `repo_source`. Phase 3 is the first phase that
+/// persists `repo_source` alongside `repo`, so this is a reliable signal already present in the
+/// artifact that `report` was collected before every fidelity fix in this design landed --
+/// including the Phase 7 `lines-written`/`lines-replaced` counters, which default to `0` under
+/// `#[serde(default)]` and would otherwise read as a real zero measurement rather than "not
+/// measured yet" for a session this old.
+fn predates_fidelity_fields(report: &Report) -> bool {
+    let has_repo = report.sessions.values().any(|s| s.repo.is_some());
+    let has_repo_source = report.sessions.values().any(|s| s.repo_source.is_some());
+    has_repo && !has_repo_source
+}
+
+/// Load, schema-gate, and aggregate a `--prior <report.json>` file into a [`PriorView`]. `None`
+/// when `--prior` was not supplied. `current_days` is the CURRENT period's already-computed
+/// `period.days`, used only to set [`PriorView::comparable`].
+fn build_prior_view(prior_path: Option<&Path>, current_days: i64, pricing: &Pricing) -> Result<Option<PriorView>> {
+    let Some(path) = prior_path else {
+        debug!("render::build_prior_view: no --prior supplied");
+        return Ok(None);
+    };
+    debug!("render::build_prior_view: path={}", path.display());
+    let report = load_report(path, "--prior report")?;
+
+    let days = (report.until.date_naive() - report.since.date_naive()).num_days() + 1;
+    let comparable = days == current_days;
+    let predates_fields = predates_fidelity_fields(&report).then(|| PRIOR_PREDATES_NOTE.to_string());
+    // Aggregated through the SAME `aggregate::compute` as the current period (design Phase 8), so
+    // both sides of the comparison are computed identically rather than by two drifting code paths.
+    // `outliers_n` is 0: the prior period's outlier table is not part of this design's scope.
+    let aggregates = aggregate::compute(&report, 0, pricing);
+    let outcomes = if predates_fields.is_none() {
+        report.totals.outcomes.as_ref().map(outcome_totals_view)
+    } else {
+        None
+    };
+    debug!(
+        "render::build_prior_view: sessions={} days={} comparable={} predates-fields={} by-repo={} by-org={}",
+        report.sessions.len(),
+        days,
+        comparable,
+        predates_fields.is_some(),
+        aggregates.by_repo.len(),
+        aggregates.by_org.len()
+    );
+    Ok(Some(PriorView {
+        since: report.since.format("%Y-%m-%d").to_string(),
+        until: report.until.format("%Y-%m-%d").to_string(),
+        days,
+        comparable,
+        predates_fields,
+        totals: build_totals_view(&report),
+        by_repo: aggregates.by_repo,
+        by_org: aggregates.by_org,
+        outcomes,
+    }))
 }
 
 fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a> {
     SessionView {
         short_id: short_id(sid).to_string(),
         title: entry.title.as_deref(),
+        summary: entry.summary.as_deref(),
+        tags: entry.tags.iter().map(String::as_str).collect(),
         repo: entry.repo.as_deref(),
         begin: entry.begin,
         end: entry.end,
@@ -795,225 +1201,6 @@ fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a>
         models: entry.models.keys().map(String::as_str).collect(),
         outcomes: entry.outcomes.as_ref(),
     }
-}
-
-/// Build the report-wide [`EfficiencyView`] from the collected sessions' curated signals + raw
-/// passthrough (design Phase 5). The two ratios `totals` already carries authoritatively
-/// (`cache-read-share`, `tool-error-rate`, both ratio-of-sums from Phase 4) are formatted straight
-/// from `totals`; `cache-1h-write-fraction` is recomputed via the SAME `finalize` path over the
-/// union of every session's raw counters (so it stays consistent with those two). Interrupts,
-/// compactions, and the agent-type / by-skill / by-mcp buckets are additive, so they sum across the
-/// report's rows. In the default (rollup) view each session is one row and these sums are exact; in
-/// `--no-rollup` they sum over the displayed decomposition (documented tradeoff).
-fn build_efficiency_view(report: &Report) -> EfficiencyView {
-    debug!(
-        "render::build_efficiency_view: sessions={} cache-read-share={:?} tool-error-rate={:?}",
-        report.sessions.len(),
-        report.totals.cache_read_share,
-        report.totals.tool_error_rate
-    );
-    let mut grand = RawCounters::default();
-    let mut agent: BTreeMap<String, WorkloadCost> = BTreeMap::new();
-    let mut by_skill: BTreeMap<String, WorkloadCost> = BTreeMap::new();
-    let mut by_mcp: BTreeMap<String, WorkloadCost> = BTreeMap::new();
-    let mut interrupts: u64 = 0;
-    let mut compactions: u64 = 0;
-    for entry in report.sessions.values() {
-        grand.merge(&entry.efficiency.aggregate.raw);
-        interrupts += entry.interrupts;
-        compactions += entry.compactions;
-        merge_workload(&mut agent, &entry.agent_type_costs);
-        merge_workload(&mut by_skill, &entry.by_skill);
-        merge_workload(&mut by_mcp, &entry.by_mcp);
-    }
-    let grand_signals = finalize(grand);
-    let view = EfficiencyView {
-        cache_read_share: fmt_ratio_pct(report.totals.cache_read_share),
-        tool_error_rate: fmt_ratio_pct(report.totals.tool_error_rate),
-        cache_1h_write_fraction: fmt_ratio_pct(grand_signals.cache_1h_write_fraction),
-        interrupts,
-        compactions,
-        agent_type_costs: workload_rows(agent),
-        by_skill: workload_rows(by_skill),
-        by_mcp: workload_rows(by_mcp),
-    };
-    debug!(
-        "render::build_efficiency_view: agent-types={} skills={} mcp-tools={} interrupts={} compactions={}",
-        view.agent_type_costs.len(),
-        view.by_skill.len(),
-        view.by_mcp.len(),
-        view.interrupts,
-        view.compactions
-    );
-    view
-}
-
-/// A ratio in `[0, 1]` as a one-decimal percent string; `None` -> `"n/a"` (never `NaN`). One decimal
-/// matches the existing `aggregates.cache.cache-read-share` display convention.
-fn fmt_ratio_pct(x: Option<f64>) -> String {
-    match x {
-        Some(v) => format!("{:.1}%", v * 100.0),
-        None => "n/a".to_string(),
-    }
-}
-
-/// Accumulate a per-key `WorkloadCost` map into `base` (tokens + `$` both additive).
-fn merge_workload(base: &mut BTreeMap<String, WorkloadCost>, add: &BTreeMap<String, WorkloadCost>) {
-    for (k, v) in add {
-        let bucket = base.entry(k.clone()).or_default();
-        bucket.tokens += v.tokens;
-        bucket.cost_usd += v.cost_usd;
-    }
-}
-
-/// Convert an accumulated `WorkloadCost` map into pre-formatted display rows, pre-sorted by spend
-/// descending (ties broken by name for determinism) so the model copies the order, never re-sorts.
-fn workload_rows(map: BTreeMap<String, WorkloadCost>) -> Vec<WorkloadRow> {
-    let mut rows: Vec<(String, WorkloadCost)> = map.into_iter().collect();
-    rows.sort_by(|a, b| {
-        b.1.cost_usd
-            .partial_cmp(&a.1.cost_usd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    rows.into_iter()
-        .map(|(name, wc)| WorkloadRow {
-            name,
-            tokens_human: format_tokens_human(wc.tokens),
-            spend: format_usd(wc.cost_usd),
-        })
-        .collect()
-}
-
-fn load_template(custom: Option<&Path>) -> Result<Template> {
-    match custom {
-        Some(path) => {
-            let body =
-                fs::read_to_string(path).with_context(|| format!("failed to read template at {}", path.display()))?;
-            Ok(Template::Custom(body))
-        }
-        None => Ok(Template::BuiltIn),
-    }
-}
-
-pub fn to_markdown(report: &Report, template: &Template, pricing: &Pricing) -> String {
-    match template {
-        Template::BuiltIn => render_built_in(report, pricing),
-        Template::Custom(body) => render_custom(report, body),
-    }
-}
-
-fn render_built_in(report: &Report, pricing: &Pricing) -> String {
-    let mut out = String::new();
-    out.push_str("# Claude Code session report\n\n");
-    out.push_str(&format!("- **host:** {}\n", report.host));
-    out.push_str(&format!(
-        "- **period:** {} -> {}\n",
-        report.since.format("%Y-%m-%d"),
-        report.until.format("%Y-%m-%d")
-    ));
-    out.push_str(&format!("- **sessions:** {}\n", report.totals.sessions));
-
-    let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
-    out.push_str(&format!("- **total tokens:** {}\n", format_int(total_tokens)));
-    out.push_str(&format!("- **total spend:** {}\n", format_usd(report.totals.spend_usd)));
-    if !report.totals.untracked_models.is_empty() {
-        out.push_str(&format!(
-            "- **untracked models:** {}\n",
-            report.totals.untracked_models.join(", ")
-        ));
-    }
-    out.push('\n');
-
-    out.push_str("## Totals by model\n\n");
-    if report.totals.models.is_empty() {
-        out.push_str("_no model usage_\n\n");
-    } else {
-        out.push_str("| model | input | output | cache 5m write | cache 1h write | cache read | total | spend |\n");
-        out.push_str("|-------|------:|-------:|---------------:|---------------:|-----------:|------:|------:|\n");
-        for (model, m) in &report.totals.models {
-            out.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                model,
-                format_int(m.input),
-                format_int(m.output),
-                format_int(m.cache_5m_write),
-                format_int(m.cache_1h_write),
-                format_int(m.cache_read),
-                format_int(m.total),
-                format_optional_usd(m.spend_usd),
-            ));
-        }
-        out.push('\n');
-    }
-
-    // Sourced from `aggregate::compute` (design: "aggregate.rs subsumes and replaces
-    // render::group_by_repo"). Outliers are unused by this table, so 0 is passed rather than
-    // computing a table this renderer never shows.
-    let by_repo = aggregate::compute(report, 0, pricing).by_repo;
-    out.push_str("## By repo\n\n");
-    if by_repo.is_empty() {
-        out.push_str("_no sessions with a detected repo_\n\n");
-    } else {
-        out.push_str("| repo | sessions | total tokens | spend | models |\n");
-        out.push_str("|------|---------:|-------------:|------:|--------|\n");
-        for row in &by_repo {
-            out.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
-                row.repo,
-                row.sessions,
-                row.tokens_human,
-                row.spend,
-                row.models.join(", "),
-            ));
-        }
-        out.push('\n');
-    }
-
-    out.push_str("## Sessions\n\n");
-    let mut by_repo_with_none: BTreeMap<String, Vec<(String, &SessionEntry)>> = BTreeMap::new();
-    for (sid, entry) in &report.sessions {
-        let key = entry.repo.clone().unwrap_or_else(|| "(no repo)".into());
-        by_repo_with_none.entry(key).or_default().push((sid.clone(), entry));
-    }
-    for (key, mut entries) in by_repo_with_none {
-        entries.sort_by_key(|a| a.1.begin);
-        out.push_str(&format!("### {}\n\n", key));
-        for (sid, entry) in entries {
-            let title = entry.title.as_deref().unwrap_or("<untitled>");
-            let short = short_id(&sid);
-            let models_str: Vec<&str> = entry.models.keys().map(|s| s.as_str()).collect();
-            let untracked_suffix = if entry.untracked_models.is_empty() {
-                String::new()
-            } else {
-                format!(" | untracked: {}", entry.untracked_models.join(", "))
-            };
-            out.push_str(&format!(
-                "- **{}** ({}) {} -> {} | {} | {} tokens | {}{}\n",
-                title,
-                short,
-                entry.begin.format("%Y-%m-%d %H:%M"),
-                entry.end.format("%Y-%m-%d %H:%M"),
-                models_str.join(", "),
-                format_int(entry.total_tokens()),
-                format_optional_usd(entry.spend_usd),
-                untracked_suffix,
-            ));
-        }
-        out.push('\n');
-    }
-
-    out
-}
-
-fn render_custom(report: &Report, body: &str) -> String {
-    let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
-    body.replace("{{host}}", &report.host)
-        .replace("{{since}}", &report.since.format("%Y-%m-%d").to_string())
-        .replace("{{until}}", &report.until.format("%Y-%m-%d").to_string())
-        .replace("{{session-count}}", &report.totals.sessions.to_string())
-        .replace("{{total-tokens}}", &format_int(total_tokens))
-        .replace("{{total-spend}}", &format_usd(report.totals.spend_usd))
 }
 
 fn write_pdf(markdown: &str, output: &Path, pdf_engine: &str) -> Result<()> {

@@ -43,7 +43,15 @@ use crate::model::{
 ///    column and INVALIDATES the v6/v7 efficiency annotation (NULLs `efficiency_json` + the three
 ///    scalars + `outcome_json`) so the next `reindex_efficiency` pass repopulates BOTH per-model
 ///    tokens and outcomes. Like v7, cursor-neutral (see [`migrate_v8_extend_efficiency`]).
-const SCHEMA_VERSION: i64 = 9;
+/// v10 added persisted repo attribution: `repo`/`repo_source`/`repo_rank` on `sessions`, written
+///    upgrade-only (strictly-improving `repo_rank`, never `COALESCE`) by `db::repo::Db::upsert_repo`
+///    from the `common::repo` four-rule chain, plus the `repo_paths` learned-path map (rule 2's
+///    backing store, latest-observation-wins via `db::repo::Db::record_repo_path`) — see
+///    [`migrate::migrate_v10_repo`] and `docs/design/2026-07-26-report-story-fidelity.md`. The SAME
+///    migration also INVALIDATES the efficiency + outcome blobs (NULLs `efficiency_json`, the three
+///    scalars, and `outcome_json`) so the next `reindex_efficiency` pass computes
+///    `Outcomes::repos_touched`, rule 3's input, which the v8/v9 blobs do not carry.
+const SCHEMA_VERSION: i64 = 10;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -166,7 +174,7 @@ END;
 /// stays in sync with one source of truth.
 const COLS: &str = "s.id, s.session_id, s.cwd, s.project_dir, s.transcript_path, s.title, \
      s.first_prompt, s.summary, s.tags, s.git_branch, s.model, s.n_msgs, s.created, s.modified, \
-     s.cost, s.host, s.archived, s.staged_path, s.tags_source";
+     s.cost, s.host, s.archived, s.staged_path, s.tags_source, s.repo, s.repo_source";
 
 /// Outcome of a single [`Db::upsert_session`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,18 +236,25 @@ impl Db {
         }
         let conn =
             Connection::open(path).with_context(|| format!("failed to open sessions.db at {}", path.display()))?;
-        Self::init(conn)
+        Self::init(conn, Some(path))
     }
 
     /// In-memory store for tests.
     pub fn open_memory() -> Result<Self> {
         debug!("Db::open_memory");
         let conn = Connection::open_in_memory().context("failed to open in-memory sessions.db")?;
-        Self::init(conn)
+        Self::init(conn, None)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    /// `path` is `None` for an in-memory store (nothing on disk to snapshot). For an on-disk store,
+    /// [`migrate::snapshot_before_v10`] runs BEFORE the migration ladder, per the house
+    /// migration-verification rule (`rules/rust.md`: "Snapshot the DB before the first run of a
+    /// schema change").
+    fn init(conn: Connection, path: Option<&Path>) -> Result<Self> {
         apply_pragmas(&conn).context("failed to apply PRAGMAs")?;
+        if let Some(path) = path {
+            migrate::snapshot_before_v10(&conn, path).context("failed to snapshot the DB before the v10 migration")?;
+        }
         migrate::migrate(&conn).context("failed to migrate schema")?;
         Ok(Self { conn })
     }
@@ -1052,10 +1067,10 @@ impl Db {
                     Ok(SearchHit {
                         record: map_record(row)?,
                         matched,
-                        // COLS has 19 columns (indices 0..=18); bm25 score is appended at index
-                        // 19, and the snippet() excerpt at index 20.
-                        score: row.get(19)?,
-                        snippet: row.get(20)?,
+                        // COLS has 21 columns (indices 0..=20); bm25 score is appended at index
+                        // 21, and the snippet() excerpt at index 22.
+                        score: row.get(21)?,
+                        snippet: row.get(22)?,
                         // Coverage is filled in later, only for the body tier under OR fallback
                         // (see `Db::annotate_body_coverage`); `None` on every raw hit.
                         terms_matched: None,
@@ -1096,10 +1111,7 @@ fn append_filters(sql: &mut String, binds: &mut Vec<Box<dyn rusqlite::types::ToS
         sql.push_str(" AND s.archived = 0");
     }
     if let Some(repo) = &filters.repo {
-        sql.push_str(" AND (s.cwd LIKE ? OR s.project_dir LIKE ?)");
-        let pat = format!("%{repo}%");
-        binds.push(Box::new(pat.clone()));
-        binds.push(Box::new(pat));
+        append_repo_filter(sql, binds, repo);
     }
     if let Some(since) = &filters.since {
         sql.push_str(" AND s.modified >= ?");
@@ -1124,6 +1136,33 @@ fn append_filters(sql: &mut String, binds: &mut Vec<Box<dyn rusqlite::types::ToS
         sql.push_str(" AND s.model LIKE ?");
         binds.push(Box::new(format!("%{model}%")));
     }
+}
+
+/// Append the `--repo` predicate shared by EVERY read path (`ls`, the Phase 3 catalog the report
+/// consumes, and `session export`), so the flag can never mean one thing on one surface and
+/// something else on another.
+///
+/// Predicates on the persisted `s.repo` attribution (schema v10), NOT on `s.cwd`/`s.project_dir`.
+/// Those paths are the input to ONE of the four resolution rules; `s.repo` is the answer all four
+/// produce. Filtering on the path re-derives an attribution the chain already made and disagrees
+/// with it: a session resolved by `files-touched` or `git-origin` exports `repo: "org/name"` and was
+/// nonetheless EXCLUDED by `--repo org/name` whenever its cwd was `$HOME` or a temp dir -- the
+/// "one name, two answers" defect the repo column exists to kill.
+///
+/// Substring, not exact: `--repo clyde` matching `tatari-tv/clyde` is the ergonomic the path form
+/// had, and it survives the move because `s.repo` still carries the org prefix. `%`/`_` in the value
+/// are LIKE wildcards, so they are escaped (with `\`) and matched as literals. A session with NO
+/// persisted repo matches NO repo filter -- fail closed: no attribution beats a wrong one.
+fn append_repo_filter(sql: &mut String, binds: &mut Vec<Box<dyn rusqlite::types::ToSql>>, repo: &str) {
+    debug!("db::append_repo_filter: repo={repo:?}");
+    sql.push_str(r" AND s.repo LIKE ? ESCAPE '\'");
+    binds.push(Box::new(format!("%{}%", escape_like(repo))));
+}
+
+/// Escape SQLite `LIKE` metacharacters (`%`, `_`, and the `\` escape char itself) so a filter value
+/// is matched as a literal, not a pattern. Paired with an `ESCAPE '\'` clause on the `LIKE`.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_")
 }
 
 /// Apply the four mandatory PRAGMAs. WAL is per-database (sticky); the rest are per-connection.
@@ -1155,7 +1194,9 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
     // 15  s.host
     // 16  s.archived
     // 17  s.staged_path
-    // 18  s.tags_source  <-- appended last so prior indices are stable
+    // 18  s.tags_source
+    // 19  s.repo         <-- v10, appended so prior indices stay stable
+    // 20  s.repo_source
     let tags: String = row.get(8)?;
     let created: Option<String> = row.get(12)?;
     let modified: String = row.get(13)?;
@@ -1172,6 +1213,8 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         tags: tags.split_whitespace().map(str::to_string).collect(),
         tags_source: row.get::<_, Option<String>>(18)?,
         git_branch: row.get(9)?,
+        repo: row.get(19)?,
+        repo_source: row.get(20)?,
         model: row.get(10)?,
         n_msgs: row.get(11)?,
         created: created.as_deref().and_then(parse_dt),
@@ -1351,10 +1394,15 @@ mod query;
 /// discipline, mirroring `query`'s own-columns-and-mapper shape.
 mod catalog;
 
-/// Schema creation + `PRAGMA user_version` migrations (the v1..v8 ladder + `ensure_column`). Split
+/// Schema creation + `PRAGMA user_version` migrations (the v1..v10 ladder + `ensure_column`). Split
 /// out of `db.rs` for file-size discipline; the schema/trigger consts and `SCHEMA_VERSION` stay here
 /// (referenced by the write path too) and are imported by the submodule.
 mod migrate;
+
+/// Schema v10 repo attribution: `Db::upsert_repo`, `Db::record_repo_path`, `Db::clear_repo`, and the
+/// catalog-backed `common::repo::PathMap` impl. Split out for file-size discipline, mirroring
+/// `catalog`/`query`'s own-concern-per-file shape.
+mod repo;
 
 #[cfg(test)]
 mod tests;

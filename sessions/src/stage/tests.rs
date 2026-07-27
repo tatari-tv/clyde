@@ -22,6 +22,7 @@ fn session_line(ts: &str) -> String {
 fn stage_dormant_filters_by_cutoff_and_records_path() {
     let tmp = tempfile::TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
+    let repo_root = tmp.path().join("repos");
     let staged_root = tmp.path().join("staged");
 
     let proj_a = projects.join("-home-saidler-repos-a");
@@ -36,11 +37,11 @@ fn stage_dormant_filters_by_cutoff_and_records_path() {
     );
 
     let db = Db::open_memory().unwrap();
-    reindex(&db, &projects).unwrap();
+    reindex(&db, &projects, &repo_root).unwrap();
 
     // Make session A look dormant (old mtime) and B fresh, by setting file mtimes then reindexing.
     set_old_mtime(&proj_a.join(format!("{UUID_A}.jsonl")), Duration::days(30));
-    reindex(&db, &projects).unwrap();
+    reindex(&db, &projects, &repo_root).unwrap();
 
     // Cutoff = 7 days ago: only A (30d old) is dormant.
     let cutoff = Utc::now() - Duration::days(7);
@@ -60,6 +61,7 @@ fn stage_dormant_filters_by_cutoff_and_records_path() {
 fn stage_dormant_all_stages_everything() {
     let tmp = tempfile::TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
+    let repo_root = tmp.path().join("repos");
     let staged_root = tmp.path().join("staged");
     write(
         &projects.join("a").join(format!("{UUID_A}.jsonl")),
@@ -71,7 +73,7 @@ fn stage_dormant_all_stages_everything() {
     );
 
     let db = Db::open_memory().unwrap();
-    reindex(&db, &projects).unwrap();
+    reindex(&db, &projects, &repo_root).unwrap();
 
     let stats = stage_dormant(&db, None, &staged_root).unwrap();
     assert_eq!(stats.considered, 2);
@@ -88,12 +90,13 @@ fn stage_dormant_all_stages_everything() {
 fn staged_copy_survives_ttl_reap() {
     let tmp = tempfile::TempDir::new().unwrap();
     let projects = tmp.path().join("projects");
+    let repo_root = tmp.path().join("repos");
     let staged_root = tmp.path().join("staged");
     let transcript = projects.join("a").join(format!("{UUID_A}.jsonl"));
     write(&transcript, &session_line("2026-06-21T10:00:00Z"));
 
     let db = Db::open_memory().unwrap();
-    reindex(&db, &projects).unwrap();
+    reindex(&db, &projects, &repo_root).unwrap();
     stage_dormant(&db, None, &staged_root).unwrap();
 
     // Simulate Claude's 30-day TTL reaping the live transcript, then reconcile.

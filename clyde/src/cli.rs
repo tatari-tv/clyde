@@ -144,7 +144,7 @@ pub struct SearchArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct LsArgs {
-    /// Substring match against cwd / project (e.g. a repo name).
+    /// Substring match against the resolved repo attribution (e.g. `clyde` or `tatari-tv/clyde`).
     #[arg(long)]
     pub repo: Option<String>,
     /// Only sessions modified since this point: a relative span (e.g. 7d, 24h, 30m) or a date.
@@ -201,6 +201,16 @@ pub struct ReindexArgs {
     /// Override the Claude projects dir (default: ~/.claude/projects).
     #[arg(long)]
     pub projects_dir: Option<PathBuf>,
+    /// Clear the persisted repo attribution (`repo`/`repo-source`/`repo-rank`) for the named
+    /// session(s), or every session when `--session` is omitted, then re-run resolution against
+    /// current cwd / `repo-paths` state. The repair path a strictly-improving write requires: once
+    /// a session's repo is persisted, only a HIGHER-confidence source can ever overwrite it, so a
+    /// wrong first resolution needs an explicit operator reset.
+    #[arg(long)]
+    pub reresolve_repo: bool,
+    /// Limit `--reresolve-repo` to these session ids (space-separated). Requires `--reresolve-repo`.
+    #[arg(long, num_args = 1..)]
+    pub session: Option<Vec<String>>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -213,7 +223,7 @@ pub struct ExportArgs {
     /// Human-time filter on `modified`, distinct from `--cursor` (the opaque revision).
     #[arg(long)]
     pub since: Option<String>,
-    /// Substring match against cwd / project dir (e.g. `org/repo`).
+    /// Substring match against the resolved repo attribution (e.g. `clyde` or `tatari-tv/clyde`).
     #[arg(long)]
     pub repo: Option<String>,
     /// Require this tag.

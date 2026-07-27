@@ -373,6 +373,131 @@ fn efficiency_accepts_valid_boundary_fractions() {
     assert_eq!(cfg.efficiency().tool_error_rate_ceiling(), 1.0);
 }
 
+// ---- repo-root -----------------------------------------------------------------------------------
+
+#[test]
+fn repo_root_defaults_to_home_repos() {
+    assert!(
+        Config::default().repo_root().ends_with("repos"),
+        "repo-root default must be <home>/repos, got {}",
+        Config::default().repo_root().display()
+    );
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    let cfg = load_from(&path).unwrap();
+    assert_eq!(cfg, Config::default(), "a missing file must equal Config::default()");
+    assert!(cfg.repo_root().ends_with("repos"));
+}
+
+#[test]
+fn repo_root_override_from_clyde_yml() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("clones");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, format!("repo-root: {}\n", root.display())).unwrap();
+    assert_eq!(load_from(&path).unwrap().repo_root(), root);
+}
+
+/// A relative `repo-root` can never match an absolute cwd, so rule 4 would silently stop firing.
+/// Reject it at load, naming the key.
+///
+/// BITES: drop `deserialize_with` from the field and this loads clean.
+#[test]
+fn repo_root_rejects_a_relative_path_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "repo-root: repos\n").unwrap();
+    let err = format!("{:#}", load_from(&path).unwrap_err());
+    assert!(err.contains("repo-root"), "must name the key the user set: {err}");
+    assert!(err.contains("absolute"), "must say what is wrong: {err}");
+}
+
+/// A typo'd root matches nothing and degrades attribution with no signal, so a nonexistent
+/// directory is a load error rather than a silent no-op.
+#[test]
+fn repo_root_rejects_a_missing_directory() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    let missing = dir.path().join("no-such-root");
+    std::fs::write(&path, format!("repo-root: {}\n", missing.display())).unwrap();
+    let err = format!("{:#}", load_from(&path).unwrap_err());
+    assert!(err.contains("repo-root"), "must name the key the user set: {err}");
+    assert!(err.contains("existing directory"), "must say what is wrong: {err}");
+}
+
+/// A file is not a directory: the check is `is_dir`, not `exists`.
+#[test]
+fn repo_root_rejects_a_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    let file = dir.path().join("not-a-dir");
+    std::fs::write(&file, "").unwrap();
+    std::fs::write(&path, format!("repo-root: {}\n", file.display())).unwrap();
+    assert!(load_from(&path).is_err(), "a file must not pass as a repo root");
+}
+
+#[test]
+fn repo_root_rejects_the_typo_form() {
+    // deny_unknown_fields: `repo-roots` must fail LOUD rather than silently keeping the default.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "repo-roots: /tmp\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "deny_unknown_fields should reject `repo-roots`"
+    );
+}
+
+// ---- min-enrichment ------------------------------------------------------------------------------
+
+#[test]
+fn min_enrichment_defaults_to_half() {
+    assert_eq!(Config::default().min_enrichment(), DEFAULT_MIN_ENRICHMENT);
+    assert_eq!(DEFAULT_MIN_ENRICHMENT, 0.5, "the documented default is 50%");
+}
+
+#[test]
+fn min_enrichment_override_from_clyde_yml() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "min-enrichment: 0.8\n").unwrap();
+    assert_eq!(load_from(&path).unwrap().min_enrichment(), 0.8);
+}
+
+/// `min-enrichment: 50` (meaning 50%) is the confusion worth failing on: silently accepted, it
+/// would configure a floor no window can ever meet and warn on every single run.
+#[test]
+fn min_enrichment_rejects_a_percent_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "min-enrichment: 50\n").unwrap();
+    let err = format!("{:#}", load_from(&path).unwrap_err());
+    assert!(err.contains("min-enrichment"), "must name the key the user set: {err}");
+    assert!(err.contains("0.5 means 50%"), "must say what the units are: {err}");
+}
+
+#[test]
+fn min_enrichment_rejects_a_negative_fraction() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "min-enrichment: -0.1\n").unwrap();
+    assert!(load_from(&path).is_err());
+}
+
+#[test]
+fn min_enrichment_rejects_the_typo_form() {
+    // deny_unknown_fields: `min-enrichement` must fail LOUD rather than silently keeping 0.5.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "min-enrichement: 0.8\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "deny_unknown_fields should reject `min-enrichement`"
+    );
+}
+
 #[test]
 fn xdg_config_dir_honors_env_and_falls_back() {
     let guard = ENV_LOCK.lock().unwrap();

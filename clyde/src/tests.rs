@@ -25,6 +25,8 @@ fn base_record(transcript_path: PathBuf) -> SessionRecord {
         tags: vec![],
         tags_source: None,
         git_branch: None,
+        repo: None,
+        repo_source: None,
         model: None,
         n_msgs: 0,
         created: None,

@@ -15,7 +15,7 @@ use eyre::{Context, Result, ensure};
 use log::{debug, trace, warn};
 use rusqlite::{OptionalExtension, params};
 
-use super::{Db, parse_dt};
+use super::{Db, append_repo_filter, escape_like, parse_dt};
 use crate::export::{
     EnrichStatus, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters, ExportRecord,
 };
@@ -29,7 +29,7 @@ use crate::transcript::transcript_layout_parts;
 const EXPORT_COLS: &str = "s.session_id, s.host, s.cwd, s.project_dir, s.git_branch, s.created, \
      s.modified, s.updated_at, s.title, s.first_prompt, s.n_msgs, s.model, s.summary, s.tags, \
      s.tags_source, s.enriched_at, s.enrich_status, s.enrich_model, s.prompt_version, \
-     s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.efficiency_json";
+     s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.efficiency_json, s.repo";
 
 impl Db {
     /// Bulk metadata export: the versioned envelope of [`ExportRecord`] for every row matching
@@ -74,13 +74,7 @@ impl Db {
             binds.push(Box::new(since.to_rfc3339()));
         }
         if let Some(repo) = &filters.repo {
-            // Substring match, but `%`/`_` in the value are LIKE wildcards -- escape them (with `\`)
-            // so a literal `%` or `_` in a repo name matches itself, not "any run" / "any char"
-            // (finding: treat filters as literals, not LIKE patterns).
-            sql.push_str(r" AND (s.cwd LIKE ? ESCAPE '\' OR s.project_dir LIKE ? ESCAPE '\')");
-            let pat = format!("%{}%", escape_like(repo));
-            binds.push(Box::new(pat.clone()));
-            binds.push(Box::new(pat));
+            append_repo_filter(&mut sql, &mut binds, repo);
         }
         if let Some(tag) = &filters.tag {
             // Exact `=` needs no escaping; the space-delimited LIKE forms match the tag as a literal
@@ -166,12 +160,6 @@ impl Db {
     }
 }
 
-/// Escape SQLite `LIKE` metacharacters (`%`, `_`, and the `\` escape char itself) so a filter value
-/// is matched as a literal, not a pattern. Paired with an `ESCAPE '\'` clause on the `LIKE`.
-fn escape_like(s: &str) -> String {
-    s.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_")
-}
-
 /// Read the parsed, bounded body for `session_id` from an already-resolved `layout`, mapping the
 /// happy and unhappy paths into an [`ExportBody`]. Separated from [`Db::export_one`] so the body
 /// logic is unit-testable without a DB row.
@@ -249,6 +237,8 @@ struct ExportRaw {
     archived: bool,
     /// The full nested `SessionEfficiency` JSON blob (schema v6); `None` when un-annotated.
     efficiency_json: Option<String>,
+    /// The PERSISTED `<org>/<repo>` attribution (schema v10); `None` until a rule has fired.
+    repo: Option<String>,
 }
 
 /// Map one row to [`ExportRaw`]. Index order mirrors [`EXPORT_COLS`] exactly.
@@ -278,12 +268,13 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
         staged_path: row.get(21)?,
         archived: row.get::<_, i64>(22)? != 0,
         efficiency_json: row.get(23)?,
+        repo: row.get(24)?,
     })
 }
 
 /// Derive an [`ExportRecord`] from raw columns plus the injected clock. This is where the contract's
 /// derived fields are computed: `scope` re-derived via `classify(cwd)` (never the stored NULLable
-/// column, finding S1); `repo` from `cwd` (finding R1); `duration-secs` as `modified - created`
+/// column, finding S1); `duration-secs` as `modified - created`
 /// (equal to the doc's "mtime - earliest ts" on live rows and the reaped fallback, since `modified`
 /// IS the transcript mtime, finding D1); `dormant` request-relative against the injected `now`
 /// (finding T1). `body` is left `None` (the bulk path); [`Db::export_one`] fills it under
@@ -295,7 +286,11 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
 fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono::Duration) -> Result<ExportRecord> {
     let cwd_path = raw.cwd.as_deref().map(Path::new);
     let scope = session::classify(cwd_path).as_str().to_string();
-    let repo = session::repo_slug(cwd_path);
+    // `repo` is the PERSISTED v10 column, NOT `session::repo_slug(cwd)`. Deriving it from the cwd
+    // here meant export and `report collect` answered differently for the same session the moment a
+    // worktree was deleted: two fields with one name and two answers. Index time resolved it while
+    // the evidence existed; export just reports what was resolved.
+    let repo = raw.repo;
     let enrich_status = raw
         .enrich_status
         .as_deref()

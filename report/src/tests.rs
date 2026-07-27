@@ -100,6 +100,7 @@ fn collect_config(db_path: &Path, output: &Path, since: &str, until: &str, no_ou
             db_path: db_path.to_path_buf(),
             no_rollup: false,
             no_outcomes,
+            min_enrichment: common::config::DEFAULT_MIN_ENRICHMENT,
         }),
     }
 }
@@ -170,6 +171,7 @@ fn collect_carries_catalog_outcomes() {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 2,
+        ..Default::default()
     };
     insert_indexed(&db, SID_A, "2026-06-15T10:00:00Z", usage(10, 5, 0), &outcomes);
     drop(db);
@@ -206,6 +208,7 @@ fn collect_no_outcomes_drops_outcomes() {
         jira_writes: 0,
         slack_messages: 0,
         files_edited: 1,
+        ..Default::default()
     };
     insert_indexed(&db, SID_A, "2026-06-15T10:00:00Z", usage(10, 5, 0), &outcomes);
     drop(db);
@@ -431,4 +434,200 @@ fn log_file_path_resolves_under_unified_clyde_logs_dir() {
         None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
     }
     drop(guard);
+}
+
+/// Fail closed on the OTHER blob: with outcomes enabled, a window session whose `outcome_json` is
+/// NULL exits non-zero naming the reindex remedy and writes no artifact.
+///
+/// This guard is what makes the v10 outcome-blob reset safe to ship. Without it, an upgraded
+/// catalog would silently report "no outcomes anywhere" and, worse, silently lose every session's
+/// `repos-touched` -- `by-repo` coverage would fall and the artifact would never say why. BITES:
+/// delete the guard and this writes a report and exits 0.
+#[test]
+fn collect_fails_closed_on_null_outcome_json_and_writes_no_artifact() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("sessions.db");
+    let db = Db::open_at(&db_path).unwrap();
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
+    );
+    drop(db);
+    // The catalog's own write path always lands both blobs, so reach past it: this is the state a
+    // half-applied annotation leaves behind.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("UPDATE sessions SET outcome_json = NULL", []).unwrap();
+    }
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(&db_path, &output, "2026-06-01T00:00:00Z", "2026-06-30T23:59:59Z", false);
+    let err = run(&cfg).unwrap_err();
+    assert!(
+        err.to_string().contains("outcome data"),
+        "the error must name the missing blob: {err}"
+    );
+    assert!(err.to_string().contains("reindex"), "and the remedy: {err}");
+    assert!(!output.exists(), "no artifact may be written on the fail-closed path");
+}
+
+/// `--no-outcomes` opts OUT of the outcome guard: the report says it carries no outcomes, so a NULL
+/// blob is not an incomplete catalog, it is a column nobody asked for.
+#[test]
+fn collect_no_outcomes_tolerates_a_null_outcome_json() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("sessions.db");
+    let db = Db::open_at(&db_path).unwrap();
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
+    );
+    drop(db);
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("UPDATE sessions SET outcome_json = NULL", []).unwrap();
+    }
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(&db_path, &output, "2026-06-01T00:00:00Z", "2026-06-30T23:59:59Z", true);
+    let result = run(&cfg).unwrap();
+    assert_eq!(result.sessions_emitted, 1);
+    assert!(output.exists());
+}
+
+/// Collect reads the PERSISTED `sessions.repo` / `sessions.repo_source`, not a live resolver: the
+/// session's cwd here is a directory that has never existed on this machine, and the attribution
+/// still lands in the artifact with its provenance.
+///
+/// BITES: put the collect-time `repo::Resolver` back and this fails, because `!cwd.exists()` is the
+/// exact condition that produced the measured `$3,845.92` of unattributed spend.
+#[test]
+fn collect_reads_repo_and_provenance_from_the_catalog_for_a_vanished_cwd() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("sessions.db");
+    let db = Db::open_at(&db_path).unwrap();
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
+    );
+    db.upsert_repo(
+        SID_A,
+        &common::repo::Resolved {
+            repo: "tatari-tv/clyde".to_string(),
+            source: common::repo::RepoSource::KnownPath,
+        },
+    )
+    .unwrap();
+    drop(db);
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(&db_path, &output, "2026-06-01T00:00:00Z", "2026-06-30T23:59:59Z", false);
+    run(&cfg).unwrap();
+
+    let report: Report = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    let entry = &report.sessions[SID_A];
+    assert_eq!(entry.repo.as_deref(), Some("tatari-tv/clyde"));
+    assert_eq!(
+        entry.repo_source.as_deref(),
+        Some("known-path"),
+        "provenance travels with the slug so a guess is never rendered as an observation"
+    );
+}
+
+/// A session the chain never resolved carries neither field, and collect does NOT invent one.
+#[test]
+fn collect_leaves_an_unresolved_session_unattributed() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("sessions.db");
+    let db = Db::open_at(&db_path).unwrap();
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
+    );
+    drop(db);
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(&db_path, &output, "2026-06-01T00:00:00Z", "2026-06-30T23:59:59Z", false);
+    run(&cfg).unwrap();
+
+    let report: Report = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(report.sessions[SID_A].repo, None);
+    assert_eq!(report.sessions[SID_A].repo_source, None);
+}
+
+/// Build a bare `CatalogEntry` carrying only what the enrichment gate reads.
+fn entry_with_summary(sid: &str, summary: Option<&str>) -> sessions::CatalogEntry {
+    let record = sessions::SessionRecord {
+        id: 0,
+        session_id: sid.to_string(),
+        cwd: None,
+        project_dir: String::new(),
+        transcript_path: PathBuf::new(),
+        title: None,
+        first_prompt: None,
+        summary: summary.map(str::to_string),
+        tags: Vec::new(),
+        tags_source: None,
+        git_branch: None,
+        repo: None,
+        repo_source: None,
+        model: None,
+        n_msgs: 1,
+        created: None,
+        modified: dt("2026-06-15T10:00:00Z"),
+        cost: None,
+        host: "desk".into(),
+        archived: false,
+        staged_path: None,
+    };
+    sessions::CatalogEntry {
+        record,
+        efficiency_json: None,
+        outcome_json: None,
+        cache_read_share: None,
+        tool_errors: None,
+        cost_usd: None,
+    }
+}
+
+/// The enrich-coverage gate is a WARNING, not a gate: it fires below the floor, is silent at or
+/// above it, and is silent on an empty window (0 of 0 is not a coverage problem).
+#[test]
+fn enrichment_warning_fires_only_below_the_floor() {
+    let one_of_four = vec![
+        entry_with_summary("a", Some("summarized")),
+        entry_with_summary("b", None),
+        entry_with_summary("c", None),
+        entry_with_summary("d", None),
+    ];
+    let warning = crate::enrichment_warning(&one_of_four, 0.5).expect("25% is below a 50% floor");
+    assert!(warning.contains("1 of 4"), "names the gap: {warning}");
+    assert!(warning.contains("25.0%"), "names the coverage: {warning}");
+    assert!(warning.contains("50.0%"), "names the floor: {warning}");
+    assert!(warning.contains("clyde session enrich"), "names the remedy: {warning}");
+
+    assert!(
+        crate::enrichment_warning(&one_of_four, 0.25).is_none(),
+        "exactly at the floor is not below it"
+    );
+    assert!(
+        crate::enrichment_warning(&one_of_four, 0.0).is_none(),
+        "a zero floor never warns"
+    );
+    assert!(
+        crate::enrichment_warning(&[], 0.5).is_none(),
+        "an empty window has no coverage to be short of"
+    );
 }
