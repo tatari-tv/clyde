@@ -101,6 +101,48 @@ fn an_unpermitted_attribute_with_no_digits_fails_on_the_allowlist_alone() {
     }
 }
 
+/// The one attribute the model actually emits unbidden. Phase 13 measured 9 rejections across 24
+/// fresh HTML renders (37.5%), every one of them this attribute and nothing else, so it is
+/// permitted with a digit-free value.
+#[test]
+fn the_models_preserve_aspect_ratio_passes() {
+    let html = AUTHORIZED.replace(
+        r#"class="spark""#,
+        r#"class="spark" preserveAspectRatio="xMidYMid meet""#,
+    );
+    check_html(&html).unwrap();
+}
+
+/// Permitting `preserveAspectRatio` widened the NAME list and nothing else. A value carrying a
+/// digit still has to be in the geometry set, so the attribute cannot become a smuggling channel.
+#[test]
+fn a_preserve_aspect_ratio_carrying_a_digit_fails() {
+    let html = AUTHORIZED.replace(
+        r#"class="spark""#,
+        r#"class="spark" preserveAspectRatio="xMidYMid meet 2""#,
+    );
+    let err = check_html(&html).unwrap_err();
+    assert!(format!("{err}").contains("not one the binary computed"), "{err}");
+}
+
+/// The other half of that widening: an attribute NEXT to the newly permitted one, carrying a
+/// digit, is still rejected. This is the case Phase 11's allowlist test could not distinguish --
+/// it fails on the allowlist, and it would fail on the digit rule too, which is the point: both
+/// rules survived the widening.
+#[test]
+fn a_digit_bearing_unpermitted_attribute_is_still_rejected() {
+    for planted in [
+        r#"<svg viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet" width="1000"><polyline points="0,290 500,150 1000,10"/></svg>"#,
+        r#"<svg viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet" opacity="0.5"><polyline points="0,290 500,150 1000,10"/></svg>"#,
+    ] {
+        let err = check_html(planted).unwrap_err();
+        assert!(
+            format!("{err}").contains("are permitted there"),
+            "planted {planted}: {err}"
+        );
+    }
+}
+
 /// A permitted attribute is still not a licence to carry a number: `stroke-width="2"` is authored
 /// geometry and belongs in the stylesheet.
 #[test]

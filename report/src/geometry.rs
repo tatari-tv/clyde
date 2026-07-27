@@ -34,11 +34,25 @@ const PERMITTED_ELEMENTS: &[&str] = &["svg", "polyline", "g", "text", "title"];
 
 /// Attributes permitted on those elements: the two verbatim geometry carriers, plus presentation
 /// attributes that carry no geometry. Compared lowercased, because HTML attribute names are
-/// case-insensitive and the authored spelling is `viewBox`.
+/// case-insensitive and the authored spellings are `viewBox` and `preserveAspectRatio`.
+///
+/// `preserveaspectratio` is here on measurement, not on principle. Phase 13 rendered 24 fresh HTML
+/// artifacts and rejected 9 of them (37.5%), every single one for this attribute and never for
+/// anything else: the model adds it reflexively on an `<svg>`, and clyde never emits it. Its value
+/// (`xMidYMid meet`) carries no digit, so permitting it cannot smuggle geometry.
 ///
 /// Being permitted is NOT a licence to carry a number: a digit-bearing value still has to be in the
-/// geometry set, so `stroke-width="2"` is rejected and belongs in the stylesheet.
-const PERMITTED_ATTRIBUTES: &[&str] = &["viewbox", "points", "class", "fill", "stroke", "stroke-width"];
+/// geometry set, so `stroke-width="2"` is rejected and belongs in the stylesheet, and a
+/// `preserveAspectRatio` carrying a digit is rejected the same way.
+const PERMITTED_ATTRIBUTES: &[&str] = &[
+    "viewbox",
+    "points",
+    "class",
+    "fill",
+    "stroke",
+    "stroke-width",
+    "preserveaspectratio",
+];
 
 /// One parsed tag. Attribute names are lowercased; values are kept EXACTLY as authored, because the
 /// geometry check is byte for byte.

@@ -106,8 +106,15 @@ Inside that `<svg>`, this is the COMPLETE list of what is allowed. The render fa
 
 - Elements: `svg`, `polyline`, `g`, `text`, `title`. NOT `path`, `circle`, `rect`, `line`, `image`,
   `defs`, `desc`, or anything else.
-- Attributes: `viewBox`, `points`, `class`, `fill`, `stroke`, `stroke-width`. NOT `d`, `x`, `y`,
-  `x1`, `y1`, `cx`, `cy`, `r`, `width`, `height`, `transform`, `stroke-dasharray`, or anything else.
+- Attributes, the WHOLE list: `viewBox`, `points`, `class`, `fill`, `stroke`, `stroke-width`,
+  `preserveAspectRatio`. Any attribute not on that list fails the render on its NAME alone, before
+  its value is even looked at. NOT `d`, `x`, `y`, `x1`, `y1`, `cx`, `cy`, `r`, `width`, `height`,
+  `transform`, `stroke-dasharray`, `stroke-linecap`, `opacity`, `style`, `id`, `aria-*`, `role`,
+  `xmlns`, `mask`, `marker-end`, `dominant-baseline`, or anything else you would reach for out of
+  habit. If you want it and it is not on the list, put it in the `<style>` block as a class rule.
+- `preserveAspectRatio` is permitted ONLY with a digit-free value (`xMidYMid meet` and the like).
+  It is on the list because it is presentational and carries no coordinates, not because attributes
+  outside the list are tolerated.
 - NO attribute inside the `<svg>` may contain a digit unless its value is one of the two copied
   strings. That covers `class` names (use digit-free ones) and `stroke-width`, which is a number you
   chose: set the stroke width in the `<style>` block from a class instead of as an attribute.

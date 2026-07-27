@@ -122,13 +122,15 @@ pub(crate) struct Regression {
 /// are stochastic against a live model and both were observed failing on one invocation and passing
 /// on an identical retry:
 ///
-/// - the HTML path's geometry allowlist (Phase 11), which Phase 12 saw reject a chart `<svg>`
-///   carrying `preserveaspectratio`, an attribute the allowlist does not permit;
+/// - the HTML path's geometry allowlist (Phase 11). The rejection it measured at 37.5% across 24
+///   fresh renders was `preserveaspectratio`, every time; that attribute is now permitted (its
+///   value carries no digit, so it cannot smuggle geometry), which is exactly the kind of decision
+///   this instrument exists to inform. Everything else in the allowlist stands;
 /// - the prose path's quotable-facts guard (Phase 10), whose own notes record that a narrowed
 ///   whitelist trades silent acceptance for loud rejection.
 ///
-/// Whether to widen either list is a pending decision, so this sizes the problem and reports it
-/// rather than quietly loosening the guard that found it. A MARKDOWN rejection fails its fixture
+/// The rate is what says whether a guard is calibrated or merely strict, so it keeps being measured
+/// rather than assumed settled. A MARKDOWN rejection fails its fixture
 /// (there is no artifact left to judge); an HTML rejection does not, because gating on it would
 /// make `otto eval` flake for exactly the reason it exists to measure. Either way the RATE is what
 /// this report is for.

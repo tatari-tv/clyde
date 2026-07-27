@@ -267,7 +267,7 @@ fn the_scored_report_serializes() {
             markdown_error: None,
             markdown_findings: Vec::new(),
             html_ok: false,
-            html_error: Some("preserveaspectratio is not permitted".into()),
+            html_error: Some("stroke-dasharray is not permitted".into()),
             html_findings: Vec::new(),
             verdict: None,
             regressions: vec![Regression {
@@ -285,7 +285,7 @@ fn the_scored_report_serializes() {
             html_renders: 3,
             html_rejections: 1,
             html_rejection_rate: "33.3%".into(),
-            reasons: vec!["small (html): preserveaspectratio".into()],
+            reasons: vec!["small (html): stroke-dasharray".into()],
         },
         passed: false,
     };
