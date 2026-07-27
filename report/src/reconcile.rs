@@ -8,11 +8,11 @@
 //! **The export must be PER-USER (`--report user-cost`), and the comparison is scoped to the
 //! operator this report belongs to.** `clyde report` reads one user's session logs on one machine,
 //! so the only billed figure it can honestly set beside its own total is that same user's bill.
-//! Measured on the real 2026-06-26..2026-07-25 window: the org-wide `--report cost` export bills
-//! `<withheld>` across the whole organization against a modeled `$9,450.31`, which published an
-//! `unseen-account-spend` of `<withheld>` -- everyone else in the organization's Claude usage, presented in a
-//! per-user report as spend clyde failed to account for. The operator-scoped figures for the same
-//! window are `<withheld>` billed against `$9,450.31` modeled: partial coverage with a remainder
+//! Measured on a real 30-day window: the org-wide `--report cost` export bills every seat in the
+//! organization, which published an `unseen-account-spend` more than an order of magnitude larger
+//! than the operator's entire modeled total -- the rest of the company's Claude usage, presented in
+//! a per-user report as spend clyde failed to account for. Scoped to the operator, the same window
+//! reconciles to partial coverage with a remainder
 //! (claude.ai web, Cowork, other clients and hosts) the scope note can actually explain. An
 //! org-wide export is therefore REJECTED here, by name, rather than folded.
 //!

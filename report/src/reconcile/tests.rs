@@ -533,9 +533,8 @@ fn fold_includes_a_model_present_only_in_export_with_zero_modeled() {
 fn fold_reads_the_export_amount_as_cents_not_dollars() {
     // Regression: the Analytics cost endpoints report MINOR UNITS. `fold` originally parsed
     // `amount` straight into dollars, which overstated the authoritative billed figure by 100x --
-    // on the real 2026-06-26..2026-07-25 window that published "<withheld> billed" for an
-    // actual bill of <withheld>, in the one block whose entire job is citing the real number to a
-    // finance reader. The skill documents the unit explicitly: "Amount fields on cost endpoints are
+    // publishing an eight-figure bill for a five-figure one, in the one block whose entire job is
+    // citing the real number to a finance reader. The skill documents the unit explicitly: "Amount fields on cost endpoints are
     // decimal-string cents (e.g. `\"41280.000000\"` = $412.80)".
     let report = report_with(
         "2026-06-26T00:00:00Z",
@@ -568,7 +567,8 @@ fn fold_reads_the_export_amount_as_cents_not_dollars() {
 fn the_scope_note_describes_the_operators_own_unseen_usage_not_other_users() {
     // The rewritten guard sentence has one job: explain the remainder as the SAME PERSON'S usage
     // clyde cannot see. Wording that implies other users would leave the dominant term of the old
-    // org-wide figure uncovered, which is how a per-user report published "<withheld> unseen".
+    // org-wide figure uncovered, which is how a per-user report published the whole company's
+    // spend as one person's unaccounted-for usage.
     let note = scope_note(ME);
     assert!(note.contains("claude.ai web"));
     assert!(note.contains("Cowork"));

@@ -1402,9 +1402,9 @@ true; they do not conflict, because the gap is not a discount. Pulled live with
 
 | figure | value |
 |---|---|
-| `amount` (billed) | `<withheld>` |
-| `list_amount` | `<withheld>` |
-| gap | `<withheld>`, 0.25% of list |
+| `amount` (billed) | org-wide total, withheld (public repo) |
+| `list_amount` | org-wide total, withheld (public repo) |
+| gap | 0.25% of list |
 
 Three independent reasons the gap cannot be a discount:
 
@@ -1435,9 +1435,9 @@ window, through the shipped code path:
 
 | figure | org-wide (shipped) | operator-scoped (this fix) |
 |---|---|---|
-| billed | `<withheld>` across the whole organization | `<withheld>` (the operator's rows) |
+| billed | org-wide, every seat (withheld) | operator only, the operator's rows (withheld) |
 | modeled | `$9,450.31` | `$9,450.31` |
-| unseen-account-spend | `<withheld>` | `<withheld>` |
+| unseen-account-spend | larger than the entire modeled total | a modest share of the bill |
 
 The old figure was everyone else in the organization's Claude usage presented, in a report titled with one person's
 name, as spend clyde failed to account for. The new one is partial coverage with a remainder the scope
@@ -1504,7 +1504,8 @@ note can actually explain.
 ### Verified live (2026-07-26, real export + real 30-day window, through the CLI)
 - `reconcile::fold` on the real `user-cost` export: `operator=<the operator> matched=7 of
   the full export across every actor`, `billed-total=<withheld> modeled-total=9450.31
-  unseen-account-spend=<withheld>`. Filename window path exercised (`stamped=0`).
+  unseen-account-spend=<withheld>`. Filename window path exercised (`stamped=0`). Real billed
+  figures are withheld: this repo is public and they are Tatari vendor spend.
 - The same export with every `actor` stripped (the org-wide shape, the full export) is rejected with the
   ORG-WIDE error and the `--report user-cost` remedy.
 - No operator anywhere fails with the `--reconcile-user` remedy.
@@ -1573,8 +1574,9 @@ what rules size out.
 - The child now receives `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`, and the render connects
   from inside the sandbox instead of burning 175s on a refused direct connection. The full-window
   `--llm cli --reconcile` artifact carries the operator-scoped Reconciliation section end to end:
-  billed `<withheld>`, modeled `$9,450.31`, unseen-account-spend `<withheld>`, scope note naming the operator, and a per-model table headed by `claude-opus-4-8` at `<withheld>` billed
-  against `<withheld>` modeled.
+  the operator's billed total, modeled `$9,450.31`, an unseen-account-spend of roughly 15% of that
+  bill, a scope note naming the operator, and a per-model table headed by `claude-opus-4-8`. Real
+  billed figures are withheld here: this repo is public and they are Tatari vendor spend.
 - `CLOUDSDK_PROXY_PASSWORD` is present in this environment and does NOT reach the child
   (`child_env_forwards_the_proxy_address_and_never_a_proxy_credential`, which fails if the
   enumeration is widened to a glob).

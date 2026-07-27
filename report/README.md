@@ -51,11 +51,11 @@ Three things that surprise people:
 
 - **The export must be `--report user-cost`, not `--report cost`.** `clyde report` reads one user's
   sessions on one machine, so the only billed figure it can honestly set beside its own total is
-  that same user's. The org-wide export is rejected by name: over 2026-06-26..2026-07-25 it bills
-  `<withheld>` across the whole organization against a modeled `$9,450.31`, which would publish `<withheld>` of
-  other people's Claude usage as spend clyde failed to account for. The per-user figures for that
-  same window are `<withheld>` billed against `$9,450.31` modeled -- partial coverage, remainder
-  explainable.
+  that same user's. The org-wide export is rejected by name: it bills every seat in the
+  organization, so setting it beside one operator's modeled total publishes the rest of the
+  company's Claude usage as spend clyde failed to account for -- on a real window that dwarfed the
+  operator's own figure by more than an order of magnitude. Scoped to the operator, the same window
+  reconciles to partial coverage with an explainable remainder.
 - **The operator is the persona's work email** (`persona whoami`), the same identity the report's
   persona block carries. Override it with `--reconcile-user <email>`. An export with no row for that
   person is a hard error: never a silent `$0.00` billed, never a fallback to the org total.
