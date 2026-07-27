@@ -2,7 +2,9 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-26
-**Status:** Implemented (panel reviewed, consensus closed, no open questions)
+**Status:** Implemented (panel reviewed, consensus closed; 9 of 9 acceptance criteria verified
+2026-07-27, one of them after a real-scale failure closed by a post-plan guard; eight accepted open
+items, none blocking -- see Open Questions)
 **Review Passes Completed:** 5/5
 
 ## Summary
@@ -952,30 +954,104 @@ to the OPERATOR"); the bullets below are what shipped.*
 These are the mechanically checkable gates the implementation audit verifies. Phase-level criteria
 carry the rest; every phase has its own.
 
-- [ ] On the frozen 30-day fixture, `by-repo` coverage reaches **at least the ceiling Phase 0
+Walked criterion by criterion against the code and the committed evidence on 2026-07-27. Each box is
+ticked only where the evidence is named; anything not verifiable from here says so rather than
+riding on an assumption.
+
+- [x] On the frozen 30-day fixture, `by-repo` coverage reaches **at least the ceiling Phase 0
       measured** (not merely "exceeds 59.3%", which is too weak a bar for "substantially all spend"),
       `attribution` buckets sum to 100% of `totals.spend-usd`, and a second collect after renaming
       every session cwd off disk produces byte-identical repo attribution.
-- [ ] `sessions.repo` is strictly improving: a stored `path-guess` is overwritten by a later
+      **PASS.** Measured on the live 30-day window rather than a frozen fixture (there is no frozen
+      30-day fixture; the committed fixtures are synthesized and small, by the public-repo rule):
+      `by-repo` coverage 93.1% against the 59.3% baseline, and rule 3 delivered 74 sessions /
+      `$1,245.68` in the cold-cwd subset against Phase 0's measured ceiling of 73 / `$1,207.92`.
+      Attribution rows sum to `totals.spend-usd`, with a `-$0.06` per-session pricing residual
+      carried in `(unattributed)`. The rename half is pinned by test, not by a second live collect:
+      `sessions::db::repo::tests::upsert_repo_rejects_a_downgrade` plus the collect-side
+      `collect_reads_repo_and_provenance_from_the_catalog_for_a_vanished_cwd` -- report reads the
+      persisted column, so a vanished cwd cannot move it.
+- [x] `sessions.repo` is strictly improving: a stored `path-guess` is overwritten by a later
       `known-path`, the reverse is rejected, and `--reresolve-repo` clears and re-resolves on demand.
-- [ ] `sum(agent-type-costs.spend) == totals.spend-usd` within `$0.01` with the `main-session`
+      **PASS.** `upsert_repo_accepts_an_upgrade`, `upsert_repo_rejects_a_downgrade`,
+      `upsert_repo_is_a_noop_on_an_equal_rank`, `clear_repo_resets_one_named_session`, and
+      `clear_repo_resets_every_session_when_none_named` (`sessions/src/db/repo/tests.rs`).
+- [x] `sum(agent-type-costs.spend) == totals.spend-usd` within `$0.01` with the `main-session`
       bucket included, and neither prompt template instructs the model not to reconcile it.
-- [ ] Month over month renders copied prior figures (not an empty section) with `--prior`, is absent
+      **PASS.** Live 30-day window: the partition sums to `$9,450.31` against a headline of
+      `$9,450.31`, unrounded delta `$0.0046`. Pinned by
+      `report::tests::agent_type_costs_partition_totals_with_a_positive_main_session_residual` and
+      `..._survives_no_rollup`; the template half by
+      `render::tests::both_templates_declare_agent_type_costs_a_partition`, which fails if either
+      template contains "never reconcile".
+- [x] Month over month renders copied prior figures (not an empty section) with `--prior`, is absent
       without it, and states the predates-the-fields caveat on a pre-change prior artifact.
-- [ ] A planted `<path d>`, `<circle cx>`, and fabricated `points` list each independently fail the
+      **PASS.** `render::tests::prior::build_context_block_includes_prior_when_supplied`,
+      `..._omits_prior_key_without_the_flag`, `..._prior_states_predates_fields_instead_of_zeros`,
+      and `..._prior_comparable_is_false_on_a_length_mismatch`; the `medium` fixture renders the
+      section end to end and its `require-sections` list carries `Month over Month`.
+- [x] A planted `<path d>`, `<circle cx>`, and fabricated `points` list each independently fail the
       HTML render, and a disallowed element inside a chart subtree fails it.
-- [ ] A render without `--reconcile` warns on stderr AND says in the artifact that no authoritative
-      export was supplied; with a real matching-window export it shows billed, modeled,
-      `unseen-account-spend`, and `scope_note`.
-- [ ] `by-day` has exactly `period.days` rows; the `since` row counts only sessions that began that
+      **PASS.** `render::tests::geometry::each_planted_fabrication_independently_fails_the_render`
+      and `..._an_element_outside_the_permitted_set_fails_inside_a_chart_subtree`.
+- [x] A render without `--reconcile` warns on stderr AND says in the artifact that no authoritative
+      export was supplied; with a real matching-window **per-user** export it shows the operator,
+      billed, modeled, `unseen-account-spend`, and `scope_note`, and an org-wide export is rejected
+      by name. *(Restated 2026-07-27 for the operator-scoped design that shipped; the original
+      wording was written against the superseded org-wide one and named no operator.)*
+      **PASS.** `render::tests::reconcile::build_context_block_reconciliation_absent_by_default_states_no_export_supplied`,
+      `..._present_when_window_matches`, `..._bails_on_an_org_wide_export`,
+      `..._bails_when_no_operator_can_be_resolved`, `no_reconcile_warning_fires_only_when_the_flag_is_absent`,
+      and `both_templates_document_reconciliation_as_always_present_and_deny_miscount_framing`.
+      Exercised live through the CLI against the real per-user export and the real 30-day window, on
+      both the fold and the full `--llm cli --reconcile` render; billed figures are withheld from
+      this repo, which is public.
+- [x] `by-day` has exactly `period.days` rows; the `since` row counts only sessions that began that
       day; carried-in sessions appear only in `aggregates.carried-in`.
-- [ ] Every rendered artifact carries the pricing-basis note naming the Analytics cost report as
+      **PASS.** `render::tests::by_day_length_equals_period_days_for_bare_date_and_rfc3339_until`,
+      `active_days_never_exceeds_days`,
+      `aggregate::tests::since_row_counts_only_sessions_that_began_on_since_date`, and
+      `by_day_excludes_pre_since_session_into_carried_in_row`. Live: 30 rows for 30 days, 29 active,
+      the `since` row at 14 sessions / `$104.94` (was 30 / `$459.16` under the clamp), carried-in 16
+      sessions / `$354.22`.
+- [x] Every rendered artifact carries the pricing-basis note naming the Analytics cost report as
       authoritative, a zero-token unpriceable model produces no untracked-models warning, and a render
       with `--reconcile` against a real matching-window export shows billed, modeled,
       `unseen-account-spend`, and `scope_note`. (The reader-facing name is `unseen-account-spend`
       everywhere; "delta" was this criterion's stale spelling of the same figure.)
-- [ ] The quotable-facts whitelist is under 20% the size of the pre-change whitelist on the same
+      **PASS, with one clause verified by observation rather than by a standing check.** The context
+      field and both templates' required header line are pinned by
+      `build_context_block_always_carries_the_pricing_basis`,
+      `render_built_in_includes_the_pricing_basis_note` and
+      `custom_template_substitutes_the_basis_note_placeholder`; all SIX committed model-authored
+      goldens carry the sentence verbatim; but no mechanical eval check asserts it, so "every
+      rendered artifact" rests on six observed artifacts plus the prompt instruction, not on a gate.
+      Recorded as an accepted open item below. The zero-token half is pinned by
+      `zero_token_model_is_dropped_from_models_and_untracked` with its negative twin
+      `nonzero_token_unpriced_model_still_flagged_untracked`, and confirmed live (`untracked-models`
+      empty, no `<synthetic>` row). The reconciliation half is criterion 6 above.
+- [x] The quotable-facts whitelist is under 20% the size of the pre-change whitelist on the same
       fixture, a planted speculative figure is rejected, and `otto eval` passes all three fixtures.
+      **PASS on all three clauses, and the middle one FAILED first and was closed by a later commit
+      -- recorded here rather than quietly ticked.**
+      1. Whitelist size: 6.4% of the pre-change raw token count on the real window, 9.7% on the
+         fixture, asserted in CI by `figure_whitelist_is_under_a_fifth_of_the_pre_change_whitelist`.
+         The two stricter readings (distinct-set, and share of previously-accepted tokens still
+         accepted) are 33.7% and 48.2% and are printed beside it rather than asserted; Phase 10's
+         notes record why they cannot be reached while dates and display strings stay quotable.
+      2. Planted speculative figure: **FAILED at real scale during Phase 10.** On a 1,523-session
+         window `14` is a genuinely licensed count (a day with 14 sessions, a repo with 14 sessions,
+         a PR numbered 14), so the planted "14 hours of engineering time" passed the value guard;
+         it was rejected only at fixture scale
+         (`planted_fourteen_hours_is_rejected_where_it_previously_passed`). The fabrication is the
+         UNIT, not the number, and no whitelist of VALUES can catch it. Closed by a post-plan
+         commit, `report/src/claim.rs`, the claim-shaped guard Phase 10's notes recommended:
+         duration units the context is never denominated in, day counts framed as labor, and bare
+         `Nx` multipliers, wired into both render paths.
+      3. `otto eval`: observed exiting 0 with `small` 3/3/3/3, `medium` 3/3/3/3, `pathological`
+         2/3/3/3 against floors 2/2/3/2. That run predates the four post-Phase-13 fixups; the
+         `preserveAspectRatio` fixup among them only lowers the HTML guard-rejection rate the eval
+         measures, and `otto ci`'s offline mechanical layer is green on all six goldens since.
 
 ## Resolved Decisions
 
@@ -1306,10 +1382,65 @@ Single flat `v*` tag for the workspace. One release. No cross-repo blast radius:
 
 ## Open Questions
 
-None. Both questions raised during authoring are closed and recorded in Resolved Decisions: the
-billing arrangement (Tatari pays for Claude Enterprise, so the Analytics cost report is the
-authoritative spend figure and reconciliation closes finding 6) and the availability of an Enterprise
-Analytics key.
+**Authoring: none.** Both questions raised while writing this doc are closed and recorded in Resolved
+Decisions: the billing arrangement (Tatari pays for Claude Enterprise, so the Analytics cost report
+is the authoritative spend figure and reconciliation closes finding 6) and the availability of an
+Enterprise Analytics key.
+
+**Implementation: eight accepted open items, none blocking.** Every phase's Open questions bucket in
+the implementation notes was swept on 2026-07-27. Most are closed -- by a later phase, by a
+superseding Resolved Decision, or by measurement -- and the remainder are recorded here rather than
+left implicit, because a doc that claims "no open questions" while its notes carry live ones is
+lying about its own state. None of these blocks the release; each is a named, sized follow-up.
+
+Verification gaps (the three the implementation left live):
+
+1. **The persona fallback for `--reconcile` has never run live.** Every live reconciliation run
+   passed `--reconcile-user` explicitly, because `persona whoami` needs an Okta token no headless
+   session has (re-confirmed 2026-07-27: it exits with the non-interactive login error). The path is
+   covered by unit test (`reconcile::build_context_block_reconciliation_present_when_window_matches`
+   resolves the operator from a persona block). Worth one interactive run before anyone relies on
+   the flagless form.
+2. **The markdown guard's rejection rate on a REAL window is unmeasured.** Two full-window
+   `--llm cli --reconcile` renders: one refused at the foreign-number gate on a token the model
+   computed (`"0.8"`), the second passed and wrote the artifact. That is the guard working, not a
+   transport failure, but one-in-two is a very different number from the fixtures' 0% over three
+   renders. Measure it Phase-13-style on real data before relying on an unattended monthly render.
+3. **A rejection message can quote the wrong line.** `render::excerpt` does a plain substring search
+   for the normalized token, so `"0.8"` matched inside `$80.81` and quoted a table row unrelated to
+   the offending sentence. It costs a re-run to find the real claim. A word-boundary or
+   sentence-scoped excerpt would fix it; not done, and out of scope of every phase here.
+
+Coverage and surface questions (open by design, each needing Scott's call, none a defect):
+
+4. **No standing check pins the pricing-basis note in a RENDERED artifact.** The context field and
+   both templates' required header line are tested, and all six committed goldens carry the sentence
+   verbatim, but the eval's mechanical layer never asserts it. A one-line `require-sections`-style
+   check would turn an observation into a gate (see Acceptance Criteria, criterion 8).
+5. **Should `OutlierRow` carry its own `summary`?** Today the Outlier Sessions table's "What it
+   produced" column requires the model to cross-reference `sessions[]` by `short-id`.
+6. **Should `sessions[].outcomes` counts stay figure-classified in the quotable sets?** They are the
+   densest source of small-integer coverage in the figure set (sessions x six count fields) and the
+   prompts license them only for citations. Splitting them out needs path-aware classification
+   (parent key plus leaf key), a mechanism this doc did not ask for.
+7. **Keep or drop `text` and `title` in the SVG permitted-element list?** With coordinates
+   unlicensed, `<text>` has no real use inside a chart subtree. Kept as harmless surface for a
+   future labeled chart.
+8. **Should the eval persist guard-rejection rates across runs?** One run's figures land in
+   `eval-report.json`; the RATE is the interesting number and it is only meaningful over several
+   runs. Nothing here asked for persistence, so nothing was built.
+
+Closed during implementation, for the record (each has its evidence in the implementation notes or
+in Resolved Decisions above): the zero-token `unknown` agent-type row (dropped), the PR-merged
+counter (not built, the Phase 0 finding corrected), Phase 13's zero-commit fixture (the
+`pathological` fixture carries zero outcomes), the `notes` context field (shipped), the context
+block's size growth (a 942KB block renders end to end in ~255s), Phase 10's whitelist-denominator
+reading and its "14 hours" limit (the claim guard), `stroke-width` (never fired live),
+`preserveAspectRatio` (permitted, on measurement), the `--llm cli` "fails on a full-size window"
+claim (false; it was the proxy defect), `billed` reading `amount` rather than `list_amount` ("billed"
+in this doc means the real account-level bill, which is `amount`; the two differ only if the account
+carries negotiated pricing, and `list_amount` would answer a different question than finding 6
+asks), and the doc's own `--report cost` / org-wide wording (superseded above).
 
 ## References
 

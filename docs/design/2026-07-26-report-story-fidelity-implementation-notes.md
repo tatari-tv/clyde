@@ -1693,3 +1693,56 @@ rather than a silent rewrite of what the doc believed at the time -- the doc's o
   is not in `ci`, the three synthesized fixtures exist under `fixtures/report/`, and the Phase 0
   PR-merged correction is already a superseding entry.
 - `otto ci`: green.
+
+## Audit fix (2026-07-27): acceptance criteria walked, status line corrected
+
+Docs only, no code. The doc claimed `Implemented ... no open questions` over nine unticked
+acceptance-criteria boxes and live open questions in these notes. Both are now true statements.
+
+### Design decisions
+- **Every one of the nine criteria was walked against the code and the committed evidence, and each
+  tick names that evidence** (test names, live measurements, or the fixture that exercises it).
+  Verdict: 9 PASS, 0 FAIL, 0 unverified -- but two carry qualifications recorded in the criterion
+  itself rather than hidden behind the checkbox:
+  - Criterion 9's "a planted speculative figure is rejected" **FAILED at real scale** during
+    Phase 10 (on a 1,523-session window `14` is a licensed count, so "14 hours of engineering time"
+    passed the value guard) and was closed later by `report/src/claim.rs`, a post-plan claim-shaped
+    guard. The criterion records the failure, why no value whitelist could ever have met it, and
+    what closed it.
+  - Criterion 8's "every rendered artifact carries the pricing-basis note" is verified by six
+    observed goldens plus the tested template instruction, NOT by a standing check. Said so, and
+    filed the missing gate as an accepted open item.
+- **The reconciliation criterion was RESTATED, with the change marked.** It was written against the
+  org-wide design and named no operator; it now reads as the operator-scoped behavior that shipped
+  (per-user export, operator named, org-wide rejected), with an inline note that it was restated and
+  why. Restating a criterion to match the code is only honest when the restatement is visible.
+- **The doc's Open Questions section now carries eight accepted open items**, swept from every
+  phase's Open questions bucket in these notes, split into three verification gaps and five
+  design/surface questions, plus a one-paragraph record of everything that closed and how. The three
+  the implementation actually left live are the persona fallback (needs one interactive run), the
+  markdown guard's real-window rejection rate (one in two on the only two real renders, against 0%
+  on fixtures), and `render::excerpt` quoting the wrong line on a rejection.
+- **The status line states the count rather than claiming zero.** "No open questions" over live ones
+  is the failure mode this fix exists to remove; the line now carries the criteria verdict and the
+  open-item count and points at the section.
+
+### Deviations
+- None.
+
+### Tradeoffs
+- **`render::excerpt` was recorded, not fixed.** It is a real defect with a cheap fix
+  (word-boundary or sentence-scoped excerpt), but this commit is scoped to documentation and a code
+  change riding inside a docs commit is exactly the undisclosed scope creep the audit was looking
+  for. Filed as accepted open item 3.
+
+### Open questions
+- None new. The eight accepted items now live in the design doc's Open Questions section, which is
+  the source of truth for them; these notes record how each one got there.
+
+### Verification
+- `persona whoami` re-run 2026-07-27 to check whether open item 1 could simply be closed: it still
+  exits with the non-interactive Okta error, so the item stands as written rather than being
+  ticked on a guess.
+- The `pathological` fixture's `totals.outcomes` is all zeroes, which is what closes Phase 7's
+  zero-commit-fixture question: `unit-costs.per-commit` is absent there by construction.
+- `otto ci`: green.
