@@ -234,7 +234,9 @@ pub struct ExportFilters {
     /// Human-time filter on `modified` (`modified >= since`). Separate from `cursor`; passing both
     /// ANDs them.
     pub since: Option<DateTime<Utc>>,
-    /// Match `<org>/<repo>` against the session's path.
+    /// Substring match against the session's PERSISTED `<org>/<repo>` attribution (the same value
+    /// [`ExportRecord::repo`] exports), never against its path. A session the chain resolved from
+    /// git origin or files-touched matches here even when its cwd says nothing about the repo.
     pub repo: Option<String>,
     /// Require this tag.
     pub tag: Option<String>,

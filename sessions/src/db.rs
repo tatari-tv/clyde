@@ -1111,10 +1111,7 @@ fn append_filters(sql: &mut String, binds: &mut Vec<Box<dyn rusqlite::types::ToS
         sql.push_str(" AND s.archived = 0");
     }
     if let Some(repo) = &filters.repo {
-        sql.push_str(" AND (s.cwd LIKE ? OR s.project_dir LIKE ?)");
-        let pat = format!("%{repo}%");
-        binds.push(Box::new(pat.clone()));
-        binds.push(Box::new(pat));
+        append_repo_filter(sql, binds, repo);
     }
     if let Some(since) = &filters.since {
         sql.push_str(" AND s.modified >= ?");
@@ -1139,6 +1136,33 @@ fn append_filters(sql: &mut String, binds: &mut Vec<Box<dyn rusqlite::types::ToS
         sql.push_str(" AND s.model LIKE ?");
         binds.push(Box::new(format!("%{model}%")));
     }
+}
+
+/// Append the `--repo` predicate shared by EVERY read path (`ls`, the Phase 3 catalog the report
+/// consumes, and `session export`), so the flag can never mean one thing on one surface and
+/// something else on another.
+///
+/// Predicates on the persisted `s.repo` attribution (schema v10), NOT on `s.cwd`/`s.project_dir`.
+/// Those paths are the input to ONE of the four resolution rules; `s.repo` is the answer all four
+/// produce. Filtering on the path re-derives an attribution the chain already made and disagrees
+/// with it: a session resolved by `files-touched` or `git-origin` exports `repo: "org/name"` and was
+/// nonetheless EXCLUDED by `--repo org/name` whenever its cwd was `$HOME` or a temp dir -- the
+/// "one name, two answers" defect the repo column exists to kill.
+///
+/// Substring, not exact: `--repo clyde` matching `tatari-tv/clyde` is the ergonomic the path form
+/// had, and it survives the move because `s.repo` still carries the org prefix. `%`/`_` in the value
+/// are LIKE wildcards, so they are escaped (with `\`) and matched as literals. A session with NO
+/// persisted repo matches NO repo filter -- fail closed: no attribution beats a wrong one.
+fn append_repo_filter(sql: &mut String, binds: &mut Vec<Box<dyn rusqlite::types::ToSql>>, repo: &str) {
+    debug!("db::append_repo_filter: repo={repo:?}");
+    sql.push_str(r" AND s.repo LIKE ? ESCAPE '\'");
+    binds.push(Box::new(format!("%{}%", escape_like(repo))));
+}
+
+/// Escape SQLite `LIKE` metacharacters (`%`, `_`, and the `\` escape char itself) so a filter value
+/// is matched as a literal, not a pattern. Paired with an `ESCAPE '\'` clause on the `LIKE`.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_")
 }
 
 /// Apply the four mandatory PRAGMAs. WAL is per-database (sticky); the rest are per-connection.

@@ -15,7 +15,7 @@ use eyre::{Context, Result, ensure};
 use log::{debug, trace, warn};
 use rusqlite::{OptionalExtension, params};
 
-use super::{Db, parse_dt};
+use super::{Db, append_repo_filter, escape_like, parse_dt};
 use crate::export::{
     EnrichStatus, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters, ExportRecord,
 };
@@ -74,13 +74,7 @@ impl Db {
             binds.push(Box::new(since.to_rfc3339()));
         }
         if let Some(repo) = &filters.repo {
-            // Substring match, but `%`/`_` in the value are LIKE wildcards -- escape them (with `\`)
-            // so a literal `%` or `_` in a repo name matches itself, not "any run" / "any char"
-            // (finding: treat filters as literals, not LIKE patterns).
-            sql.push_str(r" AND (s.cwd LIKE ? ESCAPE '\' OR s.project_dir LIKE ? ESCAPE '\')");
-            let pat = format!("%{}%", escape_like(repo));
-            binds.push(Box::new(pat.clone()));
-            binds.push(Box::new(pat));
+            append_repo_filter(&mut sql, &mut binds, repo);
         }
         if let Some(tag) = &filters.tag {
             // Exact `=` needs no escaping; the space-delimited LIKE forms match the tag as a literal
@@ -164,12 +158,6 @@ impl Db {
         }
         Ok(Some(record))
     }
-}
-
-/// Escape SQLite `LIKE` metacharacters (`%`, `_`, and the `\` escape char itself) so a filter value
-/// is matched as a literal, not a pattern. Paired with an `ESCAPE '\'` clause on the `LIKE`.
-fn escape_like(s: &str) -> String {
-    s.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_")
 }
 
 /// Read the parsed, bounded body for `session_id` from an already-resolved `layout`, mapping the

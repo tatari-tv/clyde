@@ -144,7 +144,7 @@ pub struct SearchArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct LsArgs {
-    /// Substring match against cwd / project (e.g. a repo name).
+    /// Substring match against the resolved repo attribution (e.g. `clyde` or `tatari-tv/clyde`).
     #[arg(long)]
     pub repo: Option<String>,
     /// Only sessions modified since this point: a relative span (e.g. 7d, 24h, 30m) or a date.
@@ -223,7 +223,7 @@ pub struct ExportArgs {
     /// Human-time filter on `modified`, distinct from `--cursor` (the opaque revision).
     #[arg(long)]
     pub since: Option<String>,
-    /// Substring match against cwd / project dir (e.g. `org/repo`).
+    /// Substring match against the resolved repo attribution (e.g. `clyde` or `tatari-tv/clyde`).
     #[arg(long)]
     pub repo: Option<String>,
     /// Require this tag.

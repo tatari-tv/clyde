@@ -148,7 +148,8 @@ pub struct SearchResults {
 /// Metadata filters for `ls` (no full-text component). All fields optional / additive.
 #[derive(Debug, Clone, Default)]
 pub struct Filters {
-    /// Substring match against cwd / project_dir (e.g. a repo name).
+    /// Substring match against the persisted `<org>/<repo>` attribution (e.g. `clyde` or
+    /// `tatari-tv/clyde`), never against cwd / project_dir.
     pub repo: Option<String>,
     /// Only sessions modified at or after this instant.
     pub since: Option<DateTime<Utc>>,

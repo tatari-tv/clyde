@@ -529,26 +529,24 @@ fn export_fails_closed_on_a_non_contract_enrich_status() {
 fn export_repo_filter_treats_like_wildcards_as_literals() {
     let db = Db::open_memory().unwrap();
     // Two repos differing only where a `_` LIKE wildcard would over-match: `a_b` vs `axb`.
-    db.upsert_session(
-        &parsed_cwd(
-            UUID_A,
-            "/tmp/a.jsonl",
-            "/home/saidler/repos/scottidler/a_b",
-            "2026-06-21T10:00:00Z",
-        ),
-        "desk",
-    )
-    .unwrap();
-    db.upsert_session(
-        &parsed_cwd(
-            UUID_B,
-            "/tmp/b.jsonl",
-            "/home/saidler/repos/scottidler/axb",
-            "2026-06-21T10:00:00Z",
-        ),
-        "desk",
-    )
-    .unwrap();
+    for (id, path, repo) in [
+        (UUID_A, "/tmp/a.jsonl", "scottidler/a_b"),
+        (UUID_B, "/tmp/b.jsonl", "scottidler/axb"),
+    ] {
+        db.upsert_session(
+            &parsed_cwd(id, path, &format!("/home/saidler/repos/{repo}"), "2026-06-21T10:00:00Z"),
+            "desk",
+        )
+        .unwrap();
+        db.upsert_repo(
+            id,
+            &Resolved {
+                repo: repo.to_string(),
+                source: RepoSource::KnownPath,
+            },
+        )
+        .unwrap();
+    }
 
     let out = db
         .export(
@@ -565,6 +563,91 @@ fn export_repo_filter_treats_like_wildcards_as_literals() {
         "`_` is a literal, not a wildcard: only a_b matches"
     );
     assert_eq!(out.sessions[0].session_id, UUID_A);
+}
+
+#[test]
+fn export_repo_filter_matches_attribution_the_cwd_does_not_show() {
+    // The defect this pins: `--repo` used to predicate on `s.cwd`/`s.project_dir` while the record
+    // EXPORTS the persisted `s.repo`. A session the chain resolved from files-touched out of a
+    // `$HOME` cwd therefore exported `repo: "tatari-tv/clyde"` and was excluded by
+    // `--repo tatari-tv/clyde` -- one name, two answers.
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(UUID_A, "/tmp/a.jsonl", "/home/saidler", "2026-06-21T10:00:00Z"),
+        "desk",
+    )
+    .unwrap();
+    db.upsert_repo(
+        UUID_A,
+        &Resolved {
+            repo: "tatari-tv/clyde".to_string(),
+            source: RepoSource::FilesTouched,
+        },
+    )
+    .unwrap();
+
+    let out = db
+        .export(
+            &ExportFilters {
+                repo: Some("tatari-tv/clyde".to_string()),
+                ..Default::default()
+            },
+            &export_ctx("2026-07-01T00:00:00Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        out.sessions.len(),
+        1,
+        "a session whose persisted repo IS the filter value must match, whatever its cwd says"
+    );
+    assert_eq!(out.sessions[0].repo.as_deref(), Some("tatari-tv/clyde"));
+
+    // The bare repo name still matches: substring, so the org prefix stays optional.
+    let bare = db
+        .export(
+            &ExportFilters {
+                repo: Some("clyde".to_string()),
+                ..Default::default()
+            },
+            &export_ctx("2026-07-01T00:00:00Z"),
+        )
+        .unwrap();
+    assert_eq!(
+        bare.sessions.len(),
+        1,
+        "`--repo clyde` must still match `tatari-tv/clyde`"
+    );
+}
+
+#[test]
+fn export_repo_filter_excludes_an_unattributed_session_whose_path_matches() {
+    // Fail closed, the other direction: a path that LOOKS like the repo is not attribution. Until a
+    // rule fires, the session has no repo, so it matches no repo filter.
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            "/tmp/a.jsonl",
+            "/home/saidler/repos/tatari-tv/clyde",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+
+    let out = db
+        .export(
+            &ExportFilters {
+                repo: Some("tatari-tv/clyde".to_string()),
+                ..Default::default()
+            },
+            &export_ctx("2026-07-01T00:00:00Z"),
+        )
+        .unwrap();
+    assert!(
+        out.sessions.is_empty(),
+        "an unattributed session must not be matched on its path alone"
+    );
 }
 
 #[test]

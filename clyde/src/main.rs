@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
 use eyre::{Context, Result};
-use log::{LevelFilter, debug, warn};
+use log::{LevelFilter, debug, error, warn};
 
 use cli::{
     Cli, Command, EnrichArgs, ExportArgs, LsArgs, ReindexArgs, ResumeArgs, SearchArgs, SessionsCommand, StageArgs,
@@ -662,24 +662,16 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     if args.session.is_some() && !args.reresolve_repo {
         eyre::bail!("--session requires --reresolve-repo");
     }
-    if args.reresolve_repo {
-        let cleared = match &args.session {
-            Some(ids) => {
-                let mut total = 0usize;
-                for id in ids {
-                    let session_id = resolve_one_session_id(db, id)?;
-                    total += db.clear_repo(Some(&session_id))?;
-                }
-                total
-            }
-            None => db.clear_repo(None)?,
-        };
-        println!(
-            "{} cleared repo attribution for {} session(s); reresolving...",
-            "✓".green(),
-            cleared
-        );
-    }
+    // Resolve every `--session` id to exactly one concrete session BEFORE anything is written: an
+    // ambiguous or absent id must fail the command, not fail it halfway through a repair.
+    let targets = match &args.session {
+        Some(ids) => Some(
+            ids.iter()
+                .map(|id| resolve_one_session_id(db, id))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        None => None,
+    };
 
     let stats = sessions::reindex(db, &projects_dir, cfg.repo_root())?;
     // Phase 6: after the content reindex, annotate every un-annotated session (`efficiency_json
@@ -692,10 +684,88 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     // what writes. Re-run the chain now that those blobs exist, so a session whose cwd is `$HOME` or
     // a temp dir is attributed within THIS command rather than on some later reindex. Scoped to
     // sessions the chain could still improve, so it is a no-op for the already-resolved majority.
-    let reresolved = sessions::resolve_repos(db, cfg.repo_root())?;
+    //
+    // `--reresolve-repo`'s clear happens HERE, not up top: it is destructive and irreversible-by-
+    // rank, so it waits until the last possible moment -- every fallible step above has already
+    // succeeded, and the only step left is the one that repopulates what the clear erased.
+    let reresolved = if args.reresolve_repo {
+        reresolve_repo(db, targets.as_deref(), cfg.repo_root())?
+    } else {
+        sessions::resolve_repos(db, cfg.repo_root())?
+    };
     debug!("cmd_reindex: post-efficiency repo pass evaluated {reresolved} session(s)");
     print_reindex(&stats, &eff);
     Ok(())
+}
+
+/// The `--reresolve-repo` repair: snapshot the current attribution, clear it, re-run the chain, and
+/// RESTORE the snapshot if the re-resolution fails. Returns the number of sessions the chain
+/// evaluated.
+///
+/// The restore is what makes the repair safe to run. `clear_repo` commits on its own, and the
+/// `sessions.repo` write is strictly-improving, so an error between the clear and a successful
+/// re-resolution would otherwise leave the operator worse off than before they started: attribution
+/// erased, and no later reindex able to notice anything is missing. A restore failure is reported
+/// alongside the original error rather than replacing it -- the cause of the run failing is the more
+/// useful of the two.
+fn reresolve_repo(db: &Db, targets: Option<&[String]>, repo_root: &std::path::Path) -> Result<usize> {
+    debug!("reresolve_repo: targets={targets:?} repo_root={}", repo_root.display());
+    let snapshot = match targets {
+        Some(ids) => {
+            let mut rows = Vec::new();
+            for id in ids {
+                rows.extend(db.snapshot_repo(Some(id))?);
+            }
+            rows
+        }
+        None => db.snapshot_repo(None)?,
+    };
+    let cleared = match targets {
+        Some(ids) => {
+            let mut total = 0usize;
+            for id in ids {
+                total += db.clear_repo(Some(id))?;
+            }
+            total
+        }
+        None => db.clear_repo(None)?,
+    };
+    println!(
+        "{} cleared repo attribution for {} session(s); reresolving...",
+        "✓".green(),
+        cleared
+    );
+
+    match sessions::resolve_repos(db, repo_root) {
+        Ok(evaluated) => Ok(evaluated),
+        Err(e) => {
+            warn!(
+                "reresolve_repo: re-resolution failed, restoring {} snapshot row(s)",
+                snapshot.len()
+            );
+            match db.restore_repo(&snapshot) {
+                Ok(restored) => {
+                    eprintln!(
+                        "{} re-resolution failed; restored the prior attribution for {} session(s)",
+                        "✗".red(),
+                        restored
+                    );
+                    Err(e).context("--reresolve-repo failed; the prior attribution was restored")
+                }
+                Err(restore_err) => {
+                    error!("reresolve_repo: restore ALSO failed: {restore_err:#}");
+                    eprintln!(
+                        "{} re-resolution failed AND the restore failed; repo attribution for {} \
+                         session(s) is cleared. Re-run `clyde session reindex --reresolve-repo` \
+                         once the underlying error is fixed. Restore error: {restore_err:#}",
+                        "✗".red(),
+                        snapshot.len()
+                    );
+                    Err(e).context("--reresolve-repo failed and the attribution restore also failed")
+                }
+            }
+        }
+    }
 }
 
 /// Resolve `needle` to exactly one session id, erroring loudly on zero or multiple matches. Shared
@@ -790,14 +860,24 @@ fn lazy_reindex(db: &Db, skip: bool) {
         warn!("lazy_reindex: cannot resolve ~/.claude/projects; querying stored data only");
         return;
     };
-    // A broken clyde.yml degrades to the default repo-root (rule 4 only) rather than skipping the
-    // whole cheap incremental refresh -- "stale data beats no answer" applies here too.
-    let repo_root = common::config::load()
-        .map(|cfg| cfg.repo_root().to_path_buf())
-        .unwrap_or_else(|e| {
-            warn!("lazy_reindex: failed to load clyde config, falling back to the default repo-root: {e}");
-            common::config::Config::default().repo_root().to_path_buf()
-        });
+    // A broken clyde.yml SKIPS the refresh entirely rather than falling back to the default
+    // repo-root. Reindexing writes repo attribution, and that write is strictly-improving: rule 4
+    // resolving a session against the WRONG root persists an answer of equal rank that no later
+    // pass -- including one run after the config is fixed -- can ever overwrite. The operator would
+    // then need `--reresolve-repo` to undo damage a mistyped config key caused silently.
+    //
+    // "Stale data beats no answer" still holds for the QUERY (it proceeds against stored data); it
+    // does not license a persistent wrong write on the way there.
+    let repo_root = match common::config::load() {
+        Ok(cfg) => cfg.repo_root().to_path_buf(),
+        Err(e) => {
+            warn!(
+                "lazy_reindex: failed to load clyde config, skipping the incremental refresh so a \
+                 default repo-root cannot persist wrong attribution; querying stored data only: {e}"
+            );
+            return;
+        }
+    };
     if let Err(e) = sessions::reindex(db, &projects_dir, &repo_root) {
         warn!("lazy_reindex: reindex failed, querying stored data only: {e}");
     }

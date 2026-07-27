@@ -204,6 +204,15 @@ fn list_filters_by_repo_since_and_model() {
     b.modified = dt("2026-01-01T00:00:00Z");
     b.model = Some("claude-sonnet-4-6".into());
     db.upsert_session(&b, "desk").unwrap();
+    // `--repo` predicates on the PERSISTED attribution, not the path, so the row needs one.
+    db.upsert_repo(
+        UUID_B,
+        &common::repo::Resolved {
+            repo: "scottidler/loopr".into(),
+            source: common::repo::RepoSource::KnownPath,
+        },
+    )
+    .unwrap();
 
     let by_repo = db
         .list(&Filters {

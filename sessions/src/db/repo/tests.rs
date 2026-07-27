@@ -262,3 +262,107 @@ fn clear_repo_resets_every_session_when_none_named() {
         assert_eq!(row.rank, 99);
     }
 }
+
+#[test]
+fn snapshot_then_restore_puts_a_cleared_attribution_back() {
+    let db = Db::open_memory().unwrap();
+    seed(&db, UUID_A);
+    seed(&db, UUID_B);
+    db.upsert_repo(
+        UUID_A,
+        &Resolved {
+            repo: "tatari-tv/clyde".into(),
+            source: RepoSource::GitOrigin,
+        },
+    )
+    .unwrap();
+    db.upsert_repo(
+        UUID_B,
+        &Resolved {
+            repo: "scottidler/loopr".into(),
+            source: RepoSource::FilesTouched,
+        },
+    )
+    .unwrap();
+
+    let snapshot = db.snapshot_repo(None).unwrap();
+    assert_eq!(snapshot.len(), 2, "both attributed rows are captured");
+
+    db.clear_repo(None).unwrap();
+    assert_eq!(repo_row(&db, UUID_A).repo, None);
+    assert_eq!(repo_row(&db, UUID_B).rank, 99);
+
+    let restored = db.restore_repo(&snapshot).unwrap();
+    assert_eq!(restored, 2);
+    let a = repo_row(&db, UUID_A);
+    assert_eq!(a.repo.as_deref(), Some("tatari-tv/clyde"));
+    assert_eq!(a.source.as_deref(), Some(RepoSource::GitOrigin.as_str()));
+    assert_eq!(a.rank, RepoSource::GitOrigin.rank());
+    let b = repo_row(&db, UUID_B);
+    assert_eq!(b.repo.as_deref(), Some("scottidler/loopr"));
+    assert_eq!(b.rank, RepoSource::FilesTouched.rank());
+}
+
+#[test]
+fn snapshot_skips_unattributed_rows_and_restore_is_unconditional() {
+    let db = Db::open_memory().unwrap();
+    seed(&db, UUID_A);
+    seed(&db, UUID_B);
+    db.upsert_repo(
+        UUID_A,
+        &Resolved {
+            repo: "tatari-tv/clyde".into(),
+            source: RepoSource::FilesTouched,
+        },
+    )
+    .unwrap();
+
+    // Only the attributed row is worth capturing; restoring a NULL over a NULL is a wasted write.
+    let snapshot = db.snapshot_repo(None).unwrap();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].session_id, UUID_A);
+
+    // Simulate a re-resolution that got partway: it wrote a BETTER answer before failing. The
+    // restore must still put the snapshot back -- routing it through the strictly-improving guard
+    // would silently refuse, since git-origin outranks files-touched.
+    db.clear_repo(None).unwrap();
+    db.upsert_repo(
+        UUID_A,
+        &Resolved {
+            repo: "wrong/answer".into(),
+            source: RepoSource::GitOrigin,
+        },
+    )
+    .unwrap();
+    assert_eq!(repo_row(&db, UUID_A).repo.as_deref(), Some("wrong/answer"));
+
+    db.restore_repo(&snapshot).unwrap();
+    let a = repo_row(&db, UUID_A);
+    assert_eq!(
+        a.repo.as_deref(),
+        Some("tatari-tv/clyde"),
+        "restore is an undo, not a proposal: it overwrites a higher-rank partial write"
+    );
+    assert_eq!(a.rank, RepoSource::FilesTouched.rank());
+}
+
+#[test]
+fn snapshot_of_one_named_session_ignores_the_rest() {
+    let db = Db::open_memory().unwrap();
+    seed(&db, UUID_A);
+    seed(&db, UUID_B);
+    for id in [UUID_A, UUID_B] {
+        db.upsert_repo(
+            id,
+            &Resolved {
+                repo: "tatari-tv/clyde".into(),
+                source: RepoSource::GitOrigin,
+            },
+        )
+        .unwrap();
+    }
+
+    let snapshot = db.snapshot_repo(Some(UUID_A)).unwrap();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].session_id, UUID_A);
+}

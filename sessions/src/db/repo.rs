@@ -41,6 +41,17 @@ pub struct RepoAttribution {
     pub rank: i64,
 }
 
+/// One row of a pre-clear attribution snapshot: everything [`Db::restore_repo`] needs to put a
+/// session back byte for byte. Carries the id alongside the attribution so a snapshot is a
+/// self-contained restore instruction, never a list the caller has to re-pair with ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoSnapshot {
+    pub session_id: String,
+    pub repo: Option<String>,
+    pub source: Option<String>,
+    pub rank: i64,
+}
+
 impl Db {
     /// Upgrade-only write of `sessions.repo`/`repo_source`/`repo_rank`: the row changes ONLY when
     /// `resolved.source.rank()` STRICTLY improves on the stored `repo_rank` (`?2 < repo_rank` in the
@@ -116,6 +127,73 @@ impl Db {
         };
         debug!("Db::clear_repo: cleared {n} row(s)");
         Ok(n)
+    }
+
+    /// Read the current attribution for one session, or every ATTRIBUTED session when `session_id`
+    /// is `None`, as a restore instruction for [`Db::restore_repo`].
+    ///
+    /// Paired with [`Db::clear_repo`] so `--reresolve-repo` can undo itself: the clear commits
+    /// immediately, and every step that would repopulate the column (`reindex`, the efficiency
+    /// pass, `resolve_repos`) can fail, so without a snapshot a mid-run error leaves the operator
+    /// with attribution ERASED by the very command they ran to repair it.
+    ///
+    /// The `None` form deliberately skips rows that have nothing to restore (`repo IS NULL`): a
+    /// snapshot of the unattributed majority is bytes with no information, and restoring them would
+    /// be a write per row for a guaranteed no-op.
+    pub fn snapshot_repo(&self, session_id: Option<&str>) -> Result<Vec<RepoSnapshot>> {
+        debug!("Db::snapshot_repo: session_id={session_id:?}");
+        let map = |r: &rusqlite::Row<'_>| {
+            Ok(RepoSnapshot {
+                session_id: r.get(0)?,
+                repo: r.get(1)?,
+                source: r.get(2)?,
+                rank: r.get(3)?,
+            })
+        };
+        let rows: Vec<RepoSnapshot> = match session_id {
+            Some(id) => {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT session_id, repo, repo_source, repo_rank FROM sessions WHERE session_id = ?1")?;
+                stmt.query_map(params![id], map)?.collect::<rusqlite::Result<_>>()?
+            }
+            None => {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT session_id, repo, repo_source, repo_rank FROM sessions WHERE repo IS NOT NULL")?;
+                stmt.query_map([], map)?.collect::<rusqlite::Result<_>>()?
+            }
+        };
+        debug!("Db::snapshot_repo: captured {} row(s)", rows.len());
+        Ok(rows)
+    }
+
+    /// Put a [`Db::snapshot_repo`] result back, in one transaction. Returns the count of rows
+    /// written.
+    ///
+    /// Deliberately UNCONDITIONAL, unlike [`Db::upsert_repo`]'s strictly-improving write: this is
+    /// not a resolution proposing an answer, it is the undo of a clear putting back the answer that
+    /// was already there. Routing it through the rank guard would silently refuse to restore
+    /// anything a partial re-resolution had already written at an equal or better rank -- which is
+    /// exactly the state a failed run leaves behind.
+    pub fn restore_repo(&self, rows: &[RepoSnapshot]) -> Result<usize> {
+        debug!("Db::restore_repo: rows={}", rows.len());
+        let tx = self.conn.unchecked_transaction()?;
+        let mut restored = 0usize;
+        {
+            let mut stmt =
+                tx.prepare("UPDATE sessions SET repo = ?2, repo_source = ?3, repo_rank = ?4 WHERE session_id = ?1")?;
+            for row in rows {
+                trace!(
+                    "Db::restore_repo: session_id={} repo={:?} rank={}",
+                    row.session_id, row.repo, row.rank
+                );
+                restored += stmt.execute(params![row.session_id, row.repo, row.source, row.rank])?;
+            }
+        }
+        tx.commit()?;
+        debug!("Db::restore_repo: restored {restored} row(s)");
+        Ok(restored)
     }
 
     /// Rule 3's input for one session: `Outcomes::repos_touched` out of the stored `outcome_json`.
