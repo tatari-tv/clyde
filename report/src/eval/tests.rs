@@ -122,7 +122,11 @@ fn phase_ten_criterion_three_holds_against_the_committed_goldens() {
         }
         let markdown = fixture.golden_markdown.as_ref().unwrap();
         saw_untitled |= ground.untitled_short_ids.iter().any(|sid| markdown.contains(sid));
-        saw_pr |= markdown.contains("/pull/") || markdown.contains('#');
+        // The SAME matcher `Citation::PrReference` runs, not an approximation of it. The earlier
+        // `markdown.contains('#')` was satisfied by every `##` heading in every golden, so `saw_pr`
+        // was true unconditionally and the assertion below could not fail -- a criterion-3
+        // guarantee that proved nothing.
+        saw_pr |= mechanical::pr_pattern().is_match(markdown);
     }
     assert!(
         saw_untitled,
@@ -296,6 +300,8 @@ fn the_scored_report_serializes() {
             html_error: Some("stroke-dasharray is not permitted".into()),
             html_findings: Vec::new(),
             verdict: None,
+            judge_error: None,
+            load_error: None,
             regressions: vec![Regression {
                 dimension: "coverage".into(),
                 score: 1,
@@ -400,5 +406,84 @@ fn a_render_missing_the_top_repo_scores_below_its_coverage_floor() {
     assert!(
         !verdict.regressions(&fixture.spec).is_empty(),
         "and that score must be reported as a regression, which is what exits non-zero"
+    );
+}
+
+/// The criterion-3 PR proof only means something if the matcher can say NO. The earlier form
+/// (`markdown.contains('#')`) said yes to every `##` heading, so `saw_pr` was unconditionally true.
+/// Pin the matcher's discrimination directly: heading-shaped prose is not a PR reference, and each
+/// shape `Citation::PrReference` documents is.
+#[test]
+fn the_pr_reference_matcher_rejects_markdown_headings() {
+    let pr = mechanical::pr_pattern();
+
+    // What made the old assertion vacuous.
+    assert!(
+        !pr.is_match("## Spend against output\n\n### By repo\n"),
+        "markdown headings are not PR references"
+    );
+    assert!(!pr.is_match("no references here at all"));
+    assert!(
+        !pr.is_match("channel #general"),
+        "a bare `#` with no digits is not a PR"
+    );
+
+    // Each shape the enum's doc comment names.
+    assert!(pr.is_match("closed by #62"));
+    assert!(pr.is_match("landed in PR 62"));
+    assert!(pr.is_match("PRs 61 and 62"));
+    assert!(pr.is_match("https://github.com/tatari-tv/clyde/pull/62"));
+}
+
+/// A fixture that cannot be loaded is RECORDED as a failed outcome, never propagated: the run must
+/// still reach `write_report` so the earlier fixtures' paid renders land on disk.
+#[test]
+fn an_unloadable_fixture_becomes_a_failed_outcome_named_for_its_directory() {
+    let err = eyre::eyre!("eval.yml: missing field `summary`");
+    let outcome = FixtureOutcome::unloadable(Path::new("/fixtures/report/pathological"), &err);
+
+    assert_eq!(
+        outcome.name, "pathological",
+        "named from the directory, not the unread eval.yml"
+    );
+    assert!(!outcome.passed, "an unevaluated fixture never passes");
+    assert_eq!(outcome.sessions, 0);
+    let recorded = outcome.load_error.expect("the reason is carried, not swallowed");
+    assert!(
+        recorded.contains("missing field `summary`"),
+        "the underlying error must survive into the report: {recorded}"
+    );
+    assert!(outcome.judge_error.is_none(), "a load failure is not a judge failure");
+}
+
+/// A judge failure fails its fixture but is carried as data, so `run` can keep going and write the
+/// report. `passed` must consult it -- otherwise an unscored artifact would pass on the strength of
+/// its clean mechanical findings alone.
+#[test]
+fn a_recorded_judge_error_fails_the_fixture_and_serializes() {
+    let outcome = FixtureOutcome {
+        name: "small".into(),
+        summary: "a fixture".into(),
+        sessions: 9,
+        spend: "$1.00".into(),
+        markdown_ok: true,
+        markdown_error: None,
+        markdown_findings: Vec::new(),
+        html_ok: true,
+        html_error: None,
+        html_findings: Vec::new(),
+        verdict: None,
+        judge_error: Some("transport: 529 overloaded".into()),
+        load_error: None,
+        regressions: Vec::new(),
+        // The condition `evaluate` computes: everything mechanical is clean, but the artifact went
+        // unscored, so the fixture did not pass.
+        passed: false,
+    };
+    let json = serde_json::to_string(&outcome).unwrap();
+    assert!(json.contains("judge-error"), "kebab-case, and present: {json}");
+    assert!(
+        !json.contains("load-error"),
+        "an absent reason is omitted, not rendered null: {json}"
     );
 }

@@ -101,9 +101,49 @@ pub(crate) struct FixtureOutcome {
     pub html_findings: Vec<Finding>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
+    /// Why the judge produced no verdict for a markdown render that DID survive its guards: a
+    /// transport failure, an unparseable score block, a rate limit. Recorded like a guard rejection
+    /// rather than propagated, for the same reason -- a transient failure on fixture 3 must not
+    /// discard fixtures 1 and 2's paid renders (see [`Guards`]). Fails this fixture, never the run's
+    /// ability to write its report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge_error: Option<String>,
+    /// Why the fixture could not be evaluated AT ALL: an unreadable `eval.yml` or `report.json`, a
+    /// context that would not build, a golden that would not write. Same contract as
+    /// [`Self::judge_error`] -- recorded, not propagated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_error: Option<String>,
     /// `(dimension, score, floor)` for every dimension below its floor.
     pub regressions: Vec<Regression>,
     pub passed: bool,
+}
+
+impl FixtureOutcome {
+    /// The outcome for a fixture that could not be loaded or evaluated. Named from the directory,
+    /// because the `eval.yml` that carries the real name is exactly what could not be read.
+    fn unloadable(dir: &Path, error: &eyre::Report) -> Self {
+        let name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dir.display().to_string());
+        Self {
+            name,
+            summary: format!("fixture at {} could not be evaluated", dir.display()),
+            sessions: 0,
+            spend: crate::fmt::format_usd(0.0),
+            markdown_ok: false,
+            markdown_error: None,
+            markdown_findings: Vec::new(),
+            html_ok: false,
+            html_error: None,
+            html_findings: Vec::new(),
+            verdict: None,
+            judge_error: None,
+            load_error: Some(format!("{error:#}")),
+            regressions: Vec::new(),
+            passed: false,
+        }
+    }
 }
 
 /// A judged dimension that fell below the fixture's committed floor.
@@ -182,7 +222,18 @@ pub(crate) fn run(cfg: &EvalConfig, pricing: &Pricing) -> Result<RunResult> {
     let mut guards = Guards::default();
     let mut sessions_total = 0usize;
     for dir in &cfg.fixtures {
-        let outcome = evaluate(dir, cfg, pricing, &mut guards)?;
+        // A fixture that will not load is RECORDED as a failed fixture, never propagated. Every
+        // render in this loop is a paid model call, so letting fixture 3's unreadable `eval.yml`
+        // abort the run would throw away fixtures 1 and 2's calls AND skip `write_report`, leaving
+        // no evidence on disk -- the outcome the `Guards` contract above exists to prevent.
+        let outcome = match evaluate(dir, cfg, pricing, &mut guards) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                log::error!("eval::run: fixture at {} could not be evaluated: {e:#}", dir.display());
+                eprintln!("eval: {} -- FAILED to evaluate: {e:#}", dir.display());
+                FixtureOutcome::unloadable(dir, &e)
+            }
+        };
         sessions_total += outcome.sessions;
         outcomes.push(outcome);
     }
@@ -302,10 +353,25 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
 
     // No artifact, nothing to grade. Judging is skipped rather than faked, and the fixture fails on
     // the rejection itself.
+    //
+    // A judge that FAILS on an artifact that does exist is recorded the same way a guard rejection
+    // is, never propagated: the judge is a live model call, so a transport blip or a rate limit on
+    // this fixture would otherwise discard every earlier fixture's paid render and skip
+    // `write_report` entirely. The fixture fails; the run still lands its evidence on disk.
+    let mut judge_error = None;
     let verdict = match &markdown {
         Ok(prose) => {
             eprintln!("eval: {} -- judging", fixture.name);
-            Some(judge_artifact(cfg, &context, prose)?)
+            match judge_artifact(cfg, &context, prose) {
+                Ok(verdict) => Some(verdict),
+                Err(e) => {
+                    let reason = format!("{e:#}");
+                    log::warn!("eval::evaluate: fixture={} judge failed: {reason}", fixture.name);
+                    eprintln!("eval: {} -- judge FAILED: {reason}", fixture.name);
+                    judge_error = Some(reason);
+                    None
+                }
+            }
         }
         Err(_) => {
             eprintln!("eval: {} -- markdown render rejected, skipping the judge", fixture.name);
@@ -334,7 +400,14 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
     // pending decision this eval was asked to SIZE. Gating on it would make `otto eval` flake for
     // exactly the reason it is measuring. Its mechanical findings, when it did render, are a
     // failure like any other.
-    let passed = markdown_ok && markdown_findings.is_empty() && html_findings.is_empty() && regressions.is_empty();
+    //
+    // A judge failure fails the fixture too: an unscored artifact is an unmeasured one, exactly like
+    // a markdown rejection.
+    let passed = markdown_ok
+        && judge_error.is_none()
+        && markdown_findings.is_empty()
+        && html_findings.is_empty()
+        && regressions.is_empty();
     Ok(FixtureOutcome {
         name: fixture.name,
         summary: fixture.spec.summary,
@@ -347,6 +420,8 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
         html_error,
         html_findings,
         verdict,
+        judge_error,
+        load_error: None,
         regressions,
         passed,
     })
@@ -450,6 +525,12 @@ fn print_summary(report: &EvalReport) {
             if let Some(e) = e {
                 eprintln!("        {path} render rejected -- {e}");
             }
+        }
+        if let Some(e) = &f.judge_error {
+            eprintln!("        judge failed -- {e}");
+        }
+        if let Some(e) = &f.load_error {
+            eprintln!("        fixture could not be evaluated -- {e}");
         }
     }
     let g = &report.guards;

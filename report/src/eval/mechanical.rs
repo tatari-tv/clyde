@@ -490,7 +490,11 @@ fn quoted_pattern() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r#""([^"\n]{1,400})""#).expect("quoted-span pattern is a valid regex"))
 }
 
-fn pr_pattern() -> &'static Regex {
+/// The prose shapes `Citation::PrReference` accepts: `#N`, `PR N` / `PRs N`, or a `/pull/N` url.
+/// `pub(crate)` so the Phase 10 criterion-3 test asserts against THIS matcher rather than a
+/// hand-rolled approximation that can drift away from it (an earlier form of that test used a bare
+/// `contains('#')`, which every `##` markdown heading satisfied -- the assertion could not fail).
+pub(crate) fn pr_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?i)(#\d+|\bPRs? \d+|/pull/\d+)").expect("pr-reference pattern is a valid regex"))
 }

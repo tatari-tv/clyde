@@ -24,9 +24,14 @@ use std::path::{Path, PathBuf};
 const DEFAULT_ROOT: &str = "fixtures/report";
 
 fn main() -> Result<()> {
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    // `Builder::new()`, not `from_default_env()`: the level here is FIXED at info, and the previous
+    // form said otherwise while doing the same thing. `from_default_env()` reads `RUST_LOG` into the
+    // builder and the `filter_level` that followed overwrote it, so the env var was already dead --
+    // a name that promised configurability the code then took away. clyde takes its verbosity from
+    // `--log-level`, never `RUST_LOG` (see `report::setup_logging`, the same `Builder::new()` shape),
+    // and this fixture generator has no flag surface: its real output is the `println!` progress
+    // below, and the logger only reaches library internals.
+    env_logger::Builder::new().filter_level(log::LevelFilter::Info).init();
     let root: PathBuf = std::env::args()
         .nth(1)
         .unwrap_or_else(|| DEFAULT_ROOT.to_string())
