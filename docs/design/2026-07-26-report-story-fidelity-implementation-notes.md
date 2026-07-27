@@ -1518,3 +1518,79 @@ note can actually explain.
 - The design doc's Phase 12 text still says `--report cost` and its `scope_note` paragraph still
   describes the org-wide framing. The doc is point-in-time and these notes record the correction;
   flagging it in case Scott wants the doc amended rather than superseded here.
+
+## Defect fix (2026-07-26): the cli transport swallowed the real error and stripped the proxy env
+
+Two independent defects in `report/src/summarize/cli.rs`, both present since PR #60 / `a85e510`,
+root-caused by a spike with a clean 2x2 (the same payload fails in the Claude Code Bash sandbox and
+succeeds outside it, so payload SIZE was never the variable).
+
+### Design decisions
+- **`failure_detail` replaces the `error.message`-only mining, on BOTH paths.** `claude` writes
+  nothing to stderr on this failure; it puts the diagnosis in the stdout envelope, and not always
+  under `error`. The measured envelope was `{"is_error":true,"terminal_reason":"api_error",
+  "result":"API Error: Unable to connect to API (ENOTIMP)"}` -- no `error` field at all -- so
+  `exit_failure` printed `stderr: <empty>` and discarded the one sentence that answered the
+  question. The fallback chain is `error.message` -> `result` -> `terminal_reason`, with the reason
+  appended when a message exists (`api_error` classifies a sentence that does not classify itself).
+  Guard 2 had the identical blind spot and takes the same helper. Still observations only, never a
+  guessed cause, which is this module's own doctrine.
+- **`result` is bounded by `preview`.** On a half-failed call `result` can carry a truncated
+  ARTIFACT, and the error report must not become the artifact.
+- **The proxy variables are ENUMERATED, never globbed** -- `PROXY_VARS`, eight literal names
+  (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lowercase spellings). This host
+  carries `CLOUDSDK_PROXY_PASSWORD`: a `*PROXY*` glob would hand a credential to the child and
+  reintroduce exactly the secret-leak class the allowlist exists to prevent. A proxy ADDRESS is not
+  a secret; a proxy PASSWORD is. An unset or empty variable is not forwarded, so an empty
+  `HTTPS_PROXY=` can never mask a real one.
+
+### Deviations
+- None. Both fixes landed at the seams the brief named.
+
+### Tradeoffs
+- **The allowlist grew from three names to three plus four-of-eight-spellings.** The alternative
+  (leave the child with no proxy) makes `--llm cli` structurally unusable inside the Claude Code
+  Bash sandbox, which is where clyde is most often driven. The addition is address-shaped
+  configuration, and the two child-env tests pin both halves: the addresses arrive, the credential
+  does not.
+
+### Correcting the record: `--llm cli` does NOT fail on the full-size window
+
+Phase 6 recorded "no return within 2 minutes" and Phases 9 through 13 propagated it as "`--llm cli`
+fails on the full-size window". That is FALSE, and the phase notes above carry the wrong claim.
+Phase 6's observation was a premature kill; the later failures were the proxy defect fixed here
+(the child burned ~175s attempting a direct connection the netns refused, then exited 1 with the
+`ENOTIMP` envelope whose message was being discarded).
+
+Measured 2026-07-26 after this fix, INSIDE the Bash sandbox, on the full 1,523-session window
+(`--format markdown --llm cli --reconcile`): two runs, both reaching the model and generating a
+complete artifact in ~255 seconds, well under the 900s `CLAUDE_TIMEOUT`. The second wrote the
+19KB artifact; the first was refused at the foreign-number gate (see Open questions). Payload
+942,140 bytes renders fine; the 1,013-byte spike payload failed for the same proxy reason, which is
+what rules size out.
+
+### Verified live (2026-07-26)
+- The child now receives `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`, and the render connects
+  from inside the sandbox instead of burning 175s on a refused direct connection. The full-window
+  `--llm cli --reconcile` artifact carries the operator-scoped Reconciliation section end to end:
+  billed `<withheld>`, modeled `$9,450.31`, unseen-account-spend `<withheld>`, scope note naming the operator, and a per-model table headed by `claude-opus-4-8` at `<withheld>` billed
+  against `<withheld>` modeled.
+- `CLOUDSDK_PROXY_PASSWORD` is present in this environment and does NOT reach the child
+  (`child_env_forwards_the_proxy_address_and_never_a_proxy_credential`, which fails if the
+  enumeration is widened to a glob).
+- Both new envelope tests BITE: reverting `failure_detail` to `error.message` only fails
+  `guard_is_error_falls_back_to_result_and_terminal_reason_when_no_error_field` and its
+  `exit_failure` twin; deleting the `PROXY_VARS` loop fails the child-env test.
+
+### Open questions
+- **One of the two full-window `--llm cli` renders was rejected by the foreign-number guard**, on a
+  token the model computed (`"0.8"`) rather than copied; the second run of the identical command
+  passed and wrote the artifact. That is the guard doing its job on a real 1,523-session window, not
+  a transport failure -- the artifact was generated in full and refused at the gate. The fixtures
+  measure a 0% markdown rejection rate over three renders; one in two on a real window is a
+  different number, and worth a Phase-13-style measurement on real data before anyone relies on an
+  unattended monthly render.
+- The excerpt in that rejection message is misleading: `render::excerpt` does a plain substring
+  search for the normalized token, so `"0.8"` matched inside `$80.81` and quoted a table row that
+  had nothing to do with the offending sentence. Not fixed here (out of scope for this brief), but
+  it costs a re-run to find the real claim.

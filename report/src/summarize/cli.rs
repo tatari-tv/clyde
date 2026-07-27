@@ -175,11 +175,7 @@ fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Resul
     // well-formed envelope saying exactly what is wrong; reporting that as a generic failure throws
     // away the one useful sentence we were given.
     if envelope.is_error {
-        let detail = envelope
-            .error
-            .as_ref()
-            .and_then(|e| e.message.as_deref())
-            .unwrap_or("no error message in the envelope");
+        let detail = failure_detail(&envelope).unwrap_or_else(|| NO_DETAIL_IN_ENVELOPE.to_string());
         bail!("claude -p reported an error: {detail}\n{observations}\n{ESCAPE_HATCH}");
     }
 
@@ -271,7 +267,8 @@ impl CliTransport {
         let stderr = preview(&output.stderr);
         let detail = parse_envelope(&output.stdout)
             .ok()
-            .and_then(|e| e.error.and_then(|e| e.message))
+            .as_ref()
+            .and_then(failure_detail)
             .map(|m| format!("\n  message: {m}"))
             .unwrap_or_default();
         format!(
@@ -328,6 +325,9 @@ impl Spawn {
 /// agent-invoked render must not present itself to the child as a nested session of the caller — and
 /// `ANTHROPIC_API_KEY`, because `--llm cli` must mean what it says and cost attribution must never
 /// silently flip to the key.
+///
+/// The proxy variables ([`PROXY_VARS`]) are the one addition, and they are enumerated by name for
+/// the same fail-closed reason the rest of this list is.
 fn child_env() -> Vec<(String, String)> {
     let mut env = Vec::new();
     // Measured 2026-07-24: an `env -i` child with NO env at all still authenticates, because the
@@ -345,8 +345,42 @@ fn child_env() -> Vec<(String, String)> {
     // An npm-installed Claude Code can print an update notice, and anything ahead of the JSON would
     // make a successful generation look like a malformed envelope. Belt; parse_envelope is suspenders.
     env.push(("NO_UPDATE_NOTIFIER".into(), "1".into()));
+    // How the child reaches the network at all in a sandboxed environment. See PROXY_VARS.
+    for name in PROXY_VARS {
+        match std::env::var(name) {
+            Ok(value) if !value.is_empty() => {
+                debug!("child_env: forwarding {name} to the child");
+                env.push((name.to_string(), value));
+            }
+            _ => {}
+        }
+    }
     env
 }
+
+/// The proxy variables forwarded to the child, ENUMERATED BY NAME.
+///
+/// Why they are needed: the Claude Code Bash sandbox advertises its egress proxy only through these
+/// variables. With `env_clear()` and no passthrough the child `claude` attempts a direct connection,
+/// the network namespace refuses it, and the render burns ~175 seconds before exiting 1 with an
+/// `ENOTIMP` connection error that reads like a broken login (measured 2026-07-26; the same payload
+/// renders fine outside the sandbox, so size was never the variable).
+///
+/// Why NOT a `*PROXY*` glob: this host also carries `CLOUDSDK_PROXY_PASSWORD`. A glob would hand a
+/// credential to the child and reintroduce exactly the secret-leak class the allowlist exists to
+/// prevent. A proxy ADDRESS is not a secret; a proxy PASSWORD is. Both cases of each name, because
+/// the lowercase spellings are the conventional ones for `curl`-family tools and either may be the
+/// one that is set.
+const PROXY_VARS: [&str; 8] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+];
 
 /// Read `claude --version`, or a placeholder. Deliberately non-fatal: the version is for the operator
 /// (logged on every render, named in every failure), so failing to read it must not fail the render.
@@ -440,6 +474,49 @@ fn check_model(model_usage: &BTreeMap<String, ModelUsage>, requested: &str, obse
     Ok(())
 }
 
+/// What a failing envelope says, in the order the CLI actually says it.
+///
+/// `claude` does NOT put its diagnosis on stderr; it puts it in the stdout envelope, and NOT always
+/// under `error.message`. Measured 2026-07-26 on a connection failure: the envelope was
+/// `{"is_error":true,"terminal_reason":"api_error","result":"API Error: Unable to connect to API
+/// (ENOTIMP)"}` with **no `error` field at all**. Mining only `error.message` printed
+/// `stderr: <empty>` and threw away the one sentence that answered the question, on both the
+/// non-zero-exit path and Guard 2.
+///
+/// So the fallback chain is `error.message` -> `result` -> `terminal_reason`, and the reason is
+/// appended when a message was found, because "api_error" classifies a sentence that does not
+/// classify itself. Still observations only, never a guessed cause (see the module docs).
+fn failure_detail(envelope: &Envelope) -> Option<String> {
+    let message = envelope
+        .error
+        .as_ref()
+        .and_then(|e| e.message.as_deref())
+        // On this failure shape the diagnosis rides in `result`, the same field a SUCCESSFUL call
+        // returns the artifact in. Bounded by `preview`, so a truncated artifact echoed back on a
+        // half-failed call cannot become the error report.
+        .or(envelope.result.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| preview(s.as_bytes()));
+    let reason = envelope
+        .terminal_reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let detail = match (message, reason) {
+        (Some(m), Some(r)) => format!("{m} (terminal_reason: {r})"),
+        (Some(m), None) => m,
+        (None, Some(r)) => format!("terminal_reason: {r}"),
+        (None, None) => return None,
+    };
+    debug!("failure_detail: bytes={}", detail.len());
+    Some(detail)
+}
+
+/// Guard 2's last resort: the envelope claimed an error and carried no `error.message`, no `result`
+/// and no `terminal_reason`. Named so the test that pins it cannot drift from the string.
+const NO_DETAIL_IN_ENVELOPE: &str = "no error message, result, or terminal_reason in the envelope";
+
 /// First [`STDERR_PREVIEW_BYTES`] of a byte stream, as trimmed lossy text. Display only, so lossy
 /// decoding is correct here (unlike the envelope, which carries content).
 fn preview(bytes: &[u8]) -> String {
@@ -473,6 +550,10 @@ struct Envelope {
     model_usage: BTreeMap<String, ModelUsage>,
     #[serde(default)]
     error: Option<ErrorBody>,
+    /// The CLI's own classification of a terminal failure (`api_error`, ...). Present on failure
+    /// envelopes that carry no `error` object at all, which is why [`failure_detail`] reads it.
+    #[serde(default)]
+    terminal_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
