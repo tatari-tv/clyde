@@ -74,8 +74,9 @@ fn a_notes_digits_are_quotable_only_inside_the_verbatim_sentence() {
         facts.foreign_figures(&format!("Methodology: {note}.")).is_empty(),
         "the note must be quotable verbatim"
     );
+    let foreign = facts.foreign_figures("The window covered 8675309 sessions.");
     assert_eq!(
-        facts.foreign_figures("The window covered 8675309 sessions."),
+        foreign.iter().map(|f| f.token.clone()).collect::<Vec<_>>(),
         vec!["8675309".to_string()],
         "a number lifted out of a note is not a licensed figure"
     );

@@ -304,10 +304,10 @@ fn foreign_figures(prose: &str, context: &RenderContext) -> Vec<Finding> {
         .facts
         .foreign_figures(prose)
         .into_iter()
-        .map(|token| {
+        .map(|figure| {
             finding(
                 "foreign-figures",
-                format!("the prose states {token:?}, which no quotable fact licenses"),
+                format!("the prose states {:?}, which no quotable fact licenses", figure.token),
             )
         })
         .collect()
