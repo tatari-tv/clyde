@@ -75,7 +75,7 @@ and no way to treat the accumulated reasoning in past sessions as retrievable kn
 These corrected two earlier assumptions and must not be re-litigated:
 
 1. **`sessions-index.json` is NOT a usable backbone.** Claude maintains a per-project index,
-   but it is **stale and disjoint**: in `-home-saidler` it lists 146 sessions (transcripts
+   but it is **stale and disjoint**: in `-home-user` it lists 146 sessions (transcripts
    already cleaned up) with **zero overlap** against the 79 current JSONL files, and it exists
    for only 26 of 97 project dirs. **The JSONL is the sole trustworthy source.** (96% carry
    `ai-title`; the 4% without fall back to first user prompt.)

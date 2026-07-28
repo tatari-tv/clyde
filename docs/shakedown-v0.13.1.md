@@ -1,7 +1,7 @@
 # CLI Shakedown Report: clyde v0.13.1
 
 **Date:** 2026-07-24
-**Binary:** `/home/saidler/.cargo/bin/clyde` (v0.13.1, installed from `clyde` workspace member)
+**Binary:** `/home/user/.cargo/bin/clyde` (v0.13.1, installed from `clyde` workspace member)
 **Tag:** `v0.13.1` annotated, on merged main `0e0a49b` (PR #57)
 **Focus:** verify the per-message usage dedupe fix, then prove every number clyde reports is right.
 
@@ -182,9 +182,9 @@ let repo = rec.cwd.as_deref().and_then(|c| resolver.detect(Path::new(c)));
 **in the session's original cwd**. If that directory is gone, git fails and the repo becomes `None`,
 permanently. Confirmed gone-but-referenced cwds in the live catalog:
 
-- `/home/saidler/repos/tatari-tv/clyde/.bare/.claude/worktrees/agent-ab2d9698abfc7e718` (ephemeral agent worktrees)
-- `/home/saidler/repos/tatari-tv/clyde/main`, `/home/saidler/repos/tatari-tv/marquee/main` (removed worktrees)
-- `/home/saidler/repos/tatari-tv/clyde-plugin`
+- `/home/user/repos/tatari-tv/clyde/.bare/.claude/worktrees/agent-ab2d9698abfc7e718` (ephemeral agent worktrees)
+- `/home/user/repos/tatari-tv/clyde/main`, `/home/user/repos/tatari-tv/marquee/main` (removed worktrees)
+- `/home/user/repos/tatari-tv/clyde-plugin`
 
 So every `isolation: "worktree"` agent session and every cleaned-up worktree loses its repo, and the
 loss is not recoverable by re-collecting. `tatari-tv/clyde` ranks 9th at $171.06 / 26 sessions while

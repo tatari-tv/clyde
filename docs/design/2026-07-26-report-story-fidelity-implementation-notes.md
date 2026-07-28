@@ -684,7 +684,7 @@ live fetch from a cache hit is a `claude-pricing` change this phase's scope excl
 - **Live line counters**: the catalog's stored `outcome_json` predates these fields, so a collect today
   reports `lines-written: 0` (and the context omits the key). Extraction itself is confirmed against
   real transcripts: running `efficiency::outcome::extract` over the 46 transcripts under
-  `~/.claude/projects/-home-saidler-repos-tatari-tv-clyde` yields **36,057 lines written / 7,833 lines
+  `~/.claude/projects/-home-user-repos-tatari-tv-clyde` yields **36,057 lines written / 7,833 lines
   replaced** (e.g. one session: 8 files edited, 947 written, 33 replaced). The release's v10 reindex is
   what makes those figures reach a report.
 

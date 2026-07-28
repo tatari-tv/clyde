@@ -6,7 +6,7 @@ the design doc (`2026-07-08-cost-accuracy-verification.md`). One section per pha
 ## Phase 0: Freeze-snapshot reconciliation spike
 
 ### Design decisions
-- Frozen fixture chosen: session `90a97cb9-c6ab-494f-bec6-ee4adace467a` (repo
+- Frozen fixture chosen: session `90a97cb9` (repo
   `scottidler/manifest`, 841-line parent + 11 subagent files) — a real session
   with substantial subagent spend, in-window for the `[today-30, today]` filter.
 - Snapshot lives in the session scratchpad (NOT checked in): copying real session

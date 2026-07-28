@@ -42,23 +42,23 @@ fn seed_session(projects: &Path, project_dir: &str, sid: &str, cwd: &str, ts: &s
 fn seed_projects(projects: &Path) {
     seed_session(
         projects,
-        "-home-saidler-repos-tatari-tv-marquee",
+        "-home-user-repos-tatari-tv-marquee",
         SID_A,
-        "/home/saidler/repos/tatari-tv/marquee",
+        "/home/user/repos/tatari-tv/marquee",
         "2026-06-21T10:00:00Z",
     );
     seed_session(
         projects,
-        "-home-saidler-repos-tatari-tv-loopr",
+        "-home-user-repos-tatari-tv-loopr",
         SID_B,
-        "/home/saidler/repos/tatari-tv/loopr",
+        "/home/user/repos/tatari-tv/loopr",
         "2026-06-22T10:00:00Z",
     );
     seed_session(
         projects,
-        "-home-saidler-repos-tatari-tv-clyde",
+        "-home-user-repos-tatari-tv-clyde",
         SID_C,
-        "/home/saidler/repos/tatari-tv/clyde",
+        "/home/user/repos/tatari-tv/clyde",
         "2026-06-23T10:00:00Z",
     );
 }

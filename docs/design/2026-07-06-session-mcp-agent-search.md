@@ -23,7 +23,7 @@ all inside the existing read-only MCP server.
 - Search is two-tier FTS5: `sessions_fts` (title/tags/summary) then `sessions_body_fts`
   (concatenated transcript text), each ranked by raw `bm25()` (`sessions/src/db.rs:66-67`,
   `db.rs:636-670`).
-- Evidence: session `0379a7de-fb55-41a6-84ff-2df6120a35dd` (2026-07-07). An agent asked
+- Evidence: session `0379a7de` (2026-07-07). An agent asked
   to find the dictation/transcription session via this MCP failed at every step and fell
   back to grepping raw jsonl by hand.
 
@@ -428,8 +428,8 @@ Phase 1's first test asserts it anyway.
 
 ## References
 
-- Evidence session: `0379a7de-fb55-41a6-84ff-2df6120a35dd` (2026-07-07)
-- Target failure session: `e6e8e008-ba8e-4d86-8c4c-6f28c7e3b314` ("Voice-driven workflow
+- Evidence session: `0379a7de` (2026-07-07)
+- Target failure session: `e6e8e008` ("Voice-driven workflow
   on Linux with 3x speed", 2026-06-29)
 - MCP design: `docs/design/2026-06-22-klod-sessions-mcp.md`
 - Search sort: `docs/design/2026-06-28-sessions-search-sort.md`

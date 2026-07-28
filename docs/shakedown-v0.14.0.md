@@ -1,7 +1,7 @@
 # CLI Shakedown Report: clyde v0.14.0
 
 **Date:** 2026-07-25
-**Binary:** `/home/saidler/.cargo/bin/clyde`, `clyde v0.14.0` (installed from `main` at `a85e510` via `cargo install --path clyde --locked`)
+**Binary:** `/home/user/.cargo/bin/clyde`, `clyde v0.14.0` (installed from `main` at `a85e510` via `cargo install --path clyde --locked`)
 **Scope:** the four surfaces from the recent design docs -- `report` (render-from-data, Claude CLI transport, output ceilings), `cost pricing` (feed-staleness gate, Opus 5 pricing), `efficiency` (session signals), `session export` (versioned contract).
 
 ## Summary
@@ -69,7 +69,7 @@ $ clyde report render -i rep.json --format markdown -o tiny.md ; echo $?
 report failed: claude -p produced 4929 output tokens, over the 500-token ceiling for the
 Markdown job; refusing to publish an artifact that exceeded its budget. Raise
 render.markdown-max-output-tokens in clyde.yml, or narrow the window with a shorter --since.
-  binary:  /home/saidler/.local/bin/claude
+  binary:  /home/user/.local/bin/claude
   version: 2.1.220 (Claude Code) (minimum supported: 2.1.219)
 1
 ```

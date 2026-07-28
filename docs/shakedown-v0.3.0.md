@@ -1,7 +1,7 @@
 # CLI Shakedown Report: clyde v0.3.0 (FULL)
 
 **Date:** 2026-06-28
-**Binary:** `/home/saidler/.cargo/bin/clyde` (v0.3.0)
+**Binary:** `/home/user/.cargo/bin/clyde` (v0.3.0)
 **Scope:** Full — every subcommand exercised, including the mutating/long-running
 ones (`tag`, `reindex`, `stage`, `enrich`, `serve`) run safely, plus `bootstrap`
 by discovery only. Absorbed tools (`report`, `cost`, `permit`) fully exercised.

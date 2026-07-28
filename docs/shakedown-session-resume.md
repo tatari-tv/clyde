@@ -1,6 +1,6 @@
 # CLI Shakedown Report: `clyde session resume` + `sessions`→`session` rename
 
-**Binary:** `/home/saidler/.cargo/bin/clyde` (`v0.4.0-8-gaf924a8`, branch `open`, PR #11)
+**Binary:** `/home/user/.cargo/bin/clyde` (`v0.4.0-8-gaf924a8`, branch `open`, PR #11)
 **Date:** 2026-06-30
 **Scope:** the new `resume` verb, the clean-break rename, the `--` passthrough rule, the
 resume error matrix, and `doctor` stale-unit detection. Interactive `claude` launches were
