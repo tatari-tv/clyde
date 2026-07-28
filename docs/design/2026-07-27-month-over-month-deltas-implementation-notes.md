@@ -161,3 +161,101 @@ the shape a wide fabrication actually takes and the number `MAX_CITED` is set ag
   token, not 41. Corrected both comments to cite only the directly-verified real log line instead.
 
 No new open questions from this amendment.
+
+## Phase 2: Persist a rejected render
+
+### Design decisions
+
+- One call site, not three. `reject_foreign_numbers`, `claim::reject_fabricated_claims`, and
+  `geometry::reject_foreign_geometry` still each own their own guard logic and their own error
+  message; persistence wraps the OUTCOME of running all of them, not each one individually. A new
+  `guarded(kind, ext, artifact, guards)` in `render/rejected.rs` takes a closure that runs the
+  guards for one format and, on `Err`, hands the artifact and the error to the persist path. Both
+  `markdown_from_context` and `html_from_context` now read as "run the guards, wrapped" instead of
+  three sequential `?`s with no shared failure handling, and there is exactly one place a future
+  fourth guard has to be added to for its rejections to persist too.
+- The artifact persisted is the FULL render, not what the guards scanned. HTML's guards run over
+  `visible_text(&html)` (style/script stripped, markup stripped), because that is what a fabricated
+  DATA figure must surface in; but the diagnostic worth keeping on disk is the html a human can open
+  in a browser, so `guarded("html", "html", &html, ...)` is called with `html`, and `visible` stays
+  local to the closure that runs the guards over it.
+- All three html guards ride the same closure: prose (`reject_foreign_numbers`), claim
+  (`claim::reject_fabricated_claims`), and geometry (`geometry::reject_foreign_geometry`), in that
+  order, short-circuiting on the first `?`. A rejection from any of the three persists the same
+  html artifact; the caller does not need to know which guard fired to know what to do about it.
+- `persist_rejected` never rescues and never masks: on a successful write it calls
+  `eyre::Report::wrap_err` on the guard's own error to prepend the path, so the operator's first
+  read names both the violation and where to go look at it; on any failure to persist (no
+  resolvable `xdg_data_dir()`, `fs::create_dir_all` failing, the write itself failing, or the
+  uniquify loop running out of suffixes) it logs a WARN naming the persist failure and returns the
+  ORIGINAL error completely unchanged. There is no path through this function that turns a
+  rejection into a success, and no path that silently drops why the render was rejected in the
+  first place.
+- Filename uniquification is a bounded counter loop (`MAX_REJECTED_SUFFIXES_TRIED = 1000`), not an
+  unbounded `loop`, per the crate's no-magic-numbers convention: a directory that somehow never
+  frees up a fresh name is a genuine failure (persist errors out, the guard error still
+  propagates), not an infinite loop.
+- Split into its own file, `report/src/render/rejected.rs`, rather than added inline to
+  `render.rs`. `render.rs` was already at 1488 of the crate's 1500-line cap before this phase (the
+  cap this same file's own doc comment on `reconciliation.rs` cites Phase 11 for splitting
+  `chart`/`geometry` out over); the new persistence logic pushed it over on first pass, so it moved
+  out along the same seam `reconciliation.rs`/`template.rs`/`workload.rs` already established.
+  `guarded` is `pub(super)`, re-exported into `render`'s namespace with `use rejected::guarded;`, so
+  both call sites and the crate's test convention (tests live in `render/tests/rejected.rs`, not a
+  submodule of `rejected.rs` itself) needed no further change.
+
+### Deviations
+
+- None from the phase's spec. `xdg_data_dir()`, the `<YYYY-MM-DD>-<HHMMSS>-<kind>.<ext>` naming, the
+  counter-suffix uniquification, the best-effort/fail-closed contract, and covering all three html
+  guards are all built exactly as specified.
+
+### Tradeoffs
+
+- `Utc::now()` for the timestamp rather than `Local::now()`. Every other timestamp this crate
+  writes into a filename or a report body (`report.since`/`report.until`/`report.generated`,
+  `render.rs:1102-1106`) is UTC; a rejected-render filename sorting consistently with everything
+  else on disk beat rendering it in the operator's local zone, and the design doc's own filename
+  example does not specify which.
+- The counter-suffix bound (1000) is generous relative to the one collision this path can plausibly
+  see (a single operator, one render at a time, landing two rejections in the same wall-clock
+  second) rather than tuned to a measured worst case, because there is no real-world data yet on how
+  often that collision fires. Named as a `const` with a comment explaining the reasoning rather than
+  left as a magic number, so a future reader can tell it was a judgment call and not an oversight.
+
+### Open questions
+
+- None.
+
+### Amendment, 2026-07-27: pin "writes nothing on rejection" with its own test
+
+Acceptance Criterion 3's last clause was unverified: "The render still fails and still writes
+nothing to the output path." Everything else in the criterion had a test; this half only held
+because `run` happens to call `generate` before `route`, with nothing pinning that order.
+
+- Extracted the shared shape both branches of `run` already had (`let x = generate(...)?;
+  route(x)?;`) into `generate_then_route(generate, route)`: `generate()?` short-circuits before
+  `route` ever runs. Generic over the artifact type, so the markdown and html branches of `run`
+  call the SAME function rather than each holding an independent copy of the ordering.
+- Added it to `render/rejected.rs` rather than `render.rs`: it is the other half of the same
+  guarantee `guarded` already lives there for (a rejection writes nothing an operator did not ask
+  for), and `render.rs` was again at the crate's 1500-line cap once the new function and its call
+  sites landed.
+- New test, `render/tests/rejected.rs`:
+  `a_guard_rejection_writes_nothing_to_the_output_path`. Calls `generate_then_route` directly (the
+  real function `run` calls, not a reimplementation of its shape) with a `generate` that fails the
+  way a guard rejection does, and a `route` that performs a REAL filesystem write into a `TempDir`.
+  Asserts the overall result is `Err` and that the output path does not exist on disk.
+- **Proved it bites.** Temporarily changed the signature to `generate: impl FnOnce() ->
+  Result<T>` with `T: Default`, and the body to `let artifact = generate().unwrap_or_default();
+  route(&artifact)` -- the exact bug class the team lead named (a future refactor calling `route`
+  regardless of whether `generate` succeeded). Ran the new test: it failed immediately on the
+  `result.is_err()` assertion (`route`'s `Ok(..)` return now propagated as the function's own
+  result). Reverted to the real implementation and reran: passes. The test does not merely compile
+  against the happy path; it fails when the ordering it exists to pin is broken.
+- Verified end to end after the change: `cargo test -p report` -> 498 passed, 0 failed, 3 ignored
+  (matches the post-Phase-4 baseline); `cargo fmt -p report -- --check` clean; `cargo clippy -p
+  report --all-targets -- -D warnings` clean; `render.rs` at 1498 lines, under the 1500 cap.
+
+No new open questions from this amendment.
+

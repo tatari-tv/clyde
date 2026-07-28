@@ -25,6 +25,8 @@ use std::process::{Command, Output, Stdio};
 
 mod reconciliation;
 use reconciliation::{build_reconciliation_view, no_reconcile_warning};
+mod rejected;
+use rejected::{generate_then_route, guarded};
 mod template;
 mod workload;
 use template::{load_template, to_markdown};
@@ -66,15 +68,19 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
 
     // Branch once at the source: the html-source family (`Html`, `MarqueeHtml`) never touches
     // pandoc; the markdown-source family is the unchanged template-or-opus pipeline. Generation
-    // (live API) and routing (write/publish an already-generated artifact string) are separated so
-    // routing is unit-testable with injected strings — see `route_html_artifact` /
-    // `route_markdown_artifact` and their tests.
+    // and routing are separated so routing is unit-testable with injected strings -- see
+    // `route_html_artifact`/`route_markdown_artifact` -- and both go through `generate_then_route`,
+    // which owns the "a rejected render writes nothing to the output path" contract (Phase 2, AC3).
     let dest = if cfg.format.is_html_source() {
-        let html = generate_html(cfg, &report, pricing)?;
-        route_html_artifact(&html, &report, cfg)?
+        generate_then_route(
+            || generate_html(cfg, &report, pricing),
+            |html| route_html_artifact(html, &report, cfg),
+        )?
     } else {
-        let markdown = generate_markdown(cfg, &report, pricing)?;
-        route_markdown_artifact(&markdown, &report, cfg)?
+        generate_then_route(
+            || generate_markdown(cfg, &report, pricing),
+            |markdown| route_markdown_artifact(markdown, &report, cfg),
+        )?
     };
 
     Ok(RunResult {
@@ -312,11 +318,13 @@ pub(crate) fn markdown_from_context(context: &RenderContext, prompt: &str, pins:
     // formatted, or the digits inside an identifier the prose cites verbatim. Not "any numeric token
     // anywhere in the serialized block", which pre-approved every small integer that happened to
     // fall inside a session id or a sha (design "Guard weakness (10)").
-    reject_foreign_numbers("markdown", &prose, &context.facts)?;
-    // ...and the class the VALUE guard structurally cannot reach: a fabricated unit on a licensed
-    // number ("14 hours of engineering time", where 14 is a real session count somewhere in the
-    // window). Claim-shaped, not value-shaped.
-    claim::reject_fabricated_claims("markdown", &prose, &context.facts)?;
+    guarded("markdown", "md", &prose, || {
+        reject_foreign_numbers("markdown", &prose, &context.facts)?;
+        // ...and the class the VALUE guard structurally cannot reach: a fabricated unit on a
+        // licensed number ("14 hours of engineering time", where 14 is a real session count
+        // somewhere in the window). Claim-shaped, not value-shaped.
+        claim::reject_fabricated_claims("markdown", &prose, &context.facts)
+    })?;
     Ok(prose)
 }
 
@@ -357,15 +365,17 @@ pub(crate) fn html_from_context(context: &RenderContext, prompt: &str, pins: Pin
     // (style/script blocks and tag markup stripped). Every data figure a reader sees must be
     // licensed by a quotable fact; a fabricated figure is rejected.
     let visible = visible_text(&html);
-    reject_foreign_numbers("html", &visible, &context.facts)?;
-    // The claim-shaped half, over the same visible text: a fabricated unit rides on a licensed
-    // number, so the value guard passes it and only the claim guard sees it.
-    claim::reject_fabricated_claims("html", &visible, &context.facts)?;
-    // ...and the numbers `visible_text` throws away are exactly the ones Phase 11 unlocked. The
-    // prose guard has never seen an ATTRIBUTE, so the chart unlock gets its own allowlist over the
-    // SVG subtree: permitted elements, permitted attributes, and every digit-bearing value matched
-    // verbatim against the geometry the binary computed.
-    geometry::reject_foreign_geometry("html", &html, &context.facts)?;
+    guarded("html", "html", &html, || {
+        reject_foreign_numbers("html", &visible, &context.facts)?;
+        // The claim-shaped half, over the same visible text: a fabricated unit rides on a licensed
+        // number, so the value guard passes it and only the claim guard sees it.
+        claim::reject_fabricated_claims("html", &visible, &context.facts)?;
+        // ...and the numbers `visible_text` throws away are exactly the ones Phase 11 unlocked. The
+        // prose guard has never seen an ATTRIBUTE, so the chart unlock gets its own allowlist over
+        // the SVG subtree: permitted elements, permitted attributes, and every digit-bearing value
+        // matched verbatim against the geometry the binary computed.
+        geometry::reject_foreign_geometry("html", &html, &context.facts)
+    })?;
     Ok(html)
 }
 

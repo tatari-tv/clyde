@@ -1440,4 +1440,6 @@ mod prior;
 mod quotable;
 #[cfg(test)]
 mod reconcile;
+#[cfg(test)]
+mod rejected;
 mod workload;

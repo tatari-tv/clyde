@@ -31,3 +31,10 @@ fixtures/report/local/
 # golden, so a paid call can be diffed instead of re-bought. Scratch evidence, never committed.
 fixtures/report/*/rejected.md
 fixtures/report/*/rejected.html
+
+# A guard-rejected render is persisted under `xdg_data_dir()/clyde/rejected/` (design
+# 2026-07-27-month-over-month-deltas.md, Phase 2) carrying the operator's own real spend figures.
+# That path is normally outside this repo entirely, but `xdg_data_dir()` honors any absolute
+# `$XDG_DATA_HOME`, including one pointed inside the workspace -- so the guarantee that it can
+# never be committed has to come from this ignore rule, not from the path alone.
+rejected/
