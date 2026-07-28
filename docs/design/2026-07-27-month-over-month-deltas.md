@@ -2,10 +2,20 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-27
-**Status:** In Review
+**Status:** Partially Implemented (Phases 1, 2, 4-scoped). Phases 0, 3, 5, 6 superseded: Phase 0's
+STOP invalidated this doc's root cause, and Scott re-scoped the work on 2026-07-27 (see Resolved
+Decisions). The `--prior` rejection rate this doc set out to fix is UNCHANGED and unmeasured.
 **Review Passes Completed:** 5/5
 
 ## Summary
+
+> **Correction, 2026-07-27, after Phase 0.** The Summary and Problem Statement below are the
+> ORIGINAL thesis and both are wrong on two counts. The nine-render table's split is wrong (real:
+> 5 `--prior` renders, 4 rejected, not 3-of-4), and the root cause is unproven: not one of the four
+> `--prior` rejections is a confirmed Month over Month comparison figure. The one rejection readable
+> in full, "above 100 sessions", is a threshold about the CURRENT period, not a subtraction. Read
+> the Phase 0 entry and Scott's re-scope in Resolved Decisions before trusting anything in this
+> section. Kept unedited as the point-in-time record of what was believed when the doc was written.
 
 `clyde report render --prior` is rejected by its own fail-closed prose guard 75% of the time, and
 100% of the time on the HTML path. The guard is right every time it fires. The binary asks the model
@@ -332,6 +342,9 @@ span it matched. Both guards then quote the text that actually failed.
 
 #### Phase 3: Compute and license `prior.change`
 **Model:** opus
+**Status: PARKED** by Scott's 2026-07-27 post-STOP decision in Resolved Decisions. Not built. Moves
+to the new doc, and only on the "the templates ask for a computation they forbid" argument, never as
+the fix for the `--prior` rejection rate.
 - Add `format_percent_signed` and `format_int_signed` to `report/src/fmt.rs`, with tests in
   `report/src/fmt/tests.rs`.
 - Add `PriorChange`, computed in `build_prior_view` from the current report and the prior artifact.
@@ -356,6 +369,9 @@ span it matched. Both guards then quote the text that actually failed.
 
 #### Phase 4: Point both templates at the computed change
 **Model:** opus
+**Status: SCOPED DOWN.** Only the first bullet ships, the `or KPI deltas` deletion, which is a
+self-contained contradiction. Every other bullet documents or quotes `prior.change` and is parked
+with Phase 3.
 - `report-html.pmt:444`: delete `or KPI deltas`. That phrase is the contradiction.
 - Both templates: document `prior.change` in the context-block section (four fields, direction is
   current minus prior, percent may be absent and why), and rewrite the Month over Month section to
@@ -384,6 +400,7 @@ span it matched. Both guards then quote the text that actually failed.
 
 #### Phase 5: Make misattachment falsifiable in the eval
 **Model:** opus
+**Status: PARKED**, depends entirely on Phase 3. Not built.
 
 The guard sees MAGNITUDE ONLY. `numeric_pattern` (`quotable.rs:493-499`) captures digits, and
 `normalize` (`:502-504`) strips commas; sign, `$`, `%`, direction and metric are all invisible to it,
@@ -458,6 +475,8 @@ bigger, and no test in Phases 1 through 4 can see it. That is the gap this phase
 
 #### Phase 6: Measure the rate and decide
 **Model:** opus
+**Status: PARKED.** Its gate measures a fix that is no longer shipping, against a baseline this doc
+recorded wrong. Rewritten in the new doc, not patched here.
 - `otto eval` once and record `guards.markdown-rejection-rate` / `guards.html-rejection-rate`. The
   medium fixture is the only one carrying a `prior.json`, so those two rates cover three fixtures
   mixed and are a regression check, not the `--prior` measurement. The per-configuration signal comes
@@ -488,27 +507,47 @@ bigger, and no test in Phases 1 through 4 can see it. That is the gap this phase
 
 ## Acceptance Criteria
 
-- [ ] `prior.change` carries up to four display-rounded strings (both percents absent exactly when
+Verdicts recorded 2026-07-27 after the re-scope. Two criteria test work that was never built, and
+they are marked N/A rather than left unchecked, so nobody reads an empty box as a pending task.
+
+- [N/A] `prior.change` carries up to four display-rounded strings (both percents absent exactly when
       the prior denominator is zero), and every string it emits, fed back through
       `QuotableFacts::foreign_figures`, yields no foreign figure.
-- [ ] `rg "KPI deltas" report/templates/` returns nothing, and both templates name the
+      **Phase 3 parked. `prior.change` does not exist.**
+- [~] `rg "KPI deltas" report/templates/` returns nothing, and both templates name the
       `prior.change` fields.
-- [ ] A rejection is legible on the first read: the error quotes the span the guard actually
+      **First clause PASSES** (`rg` exits 1, no match; test
+      `report_html_no_longer_asks_for_kpi_deltas`). **Second clause N/A**: naming a field that does
+      not exist would be a lie in a template the model reads verbatim.
+- [x] A rejection is legible on the first read: the error quotes the span the guard actually
       rejected (proven by a test whose prose contains an earlier lookalike of the same token, and by
       one with multibyte text before the match), and it names a persisted copy of the render under
       `xdg_data_dir()/clyde/rejected/`. The render still fails and still writes nothing to the output
       path.
-- [ ] A change magnitude UNIQUE to `prior.change`, quoted outside the Month over Month section or
+      **PASSES, all four clauses.** `excerpt_quotes_the_rejected_span_not_an_earlier_lookalike`,
+      `excerpt_lands_on_the_right_span_with_multibyte_text_before_it`,
+      `a_rejected_render_is_persisted_and_the_error_names_the_path`, and for the last clause a pair:
+      `a_guard_rejection_writes_nothing_to_the_output_path` (the `generate_then_route` helper) plus
+      `a_generation_failure_writes_nothing_to_the_output_path` (that `run` is still WIRED to it).
+      The pair is not redundant, and that was verified rather than assumed: with `run` rewired to
+      route-before-generate, the first passes green and the second fails.
+      Beyond the criterion, the citation list is grouped per token and capped at `MAX_CITED`, with
+      the elided count always named. Ungrouped, one real rejection shape produced a 6,667-character
+      message; grouped, 266.
+- [N/A] A change magnitude UNIQUE to `prior.change`, quoted outside the Month over Month section or
       contradicting the sign of the string it was copied from, is a mechanical `Finding`. Proven by
       two tests that bite against a hand-built artifact; the committed goldens are a
       does-not-misfire guard and are explicitly NOT evidence about the window shape, since they
       carry no `prior.change` magnitude until Phase 6 regenerates them.
-- [ ] Measured over 8 renders in each `--prior` configuration (HTML, markdown), at most 1 of the 8 is
+      **Phase 5 parked, and it only ever existed to cover Phase 3's risk.**
+- [N/A] Measured over 8 renders in each `--prior` configuration (HTML, markdown), at most 1 of the 8 is
       rejected. 8 renders is sharp against "no better than the 75% baseline"
       (P(<=1 of 8 | p=0.75) is about 0.00038) and cannot resolve 5% against 15%; the doc says so
       rather than over-reading the number. The 4 no-`--prior` renders are a smoke test and prove
       nothing either way. Above the gate, Phase 6 records the measured rate and opens option E rather
       than closing the work.
+      **Phase 6 parked. The `--prior` rejection rate is UNCHANGED by this work and still unmeasured
+      after the change.** Nothing shipped here targets it: the rate is the new doc's problem.
 
 ## Resolved Decisions
 
@@ -655,6 +694,40 @@ The follow-up doc Scott asked Phase 0 to name is: round-number and threshold inv
 sections describing the CURRENT period (daily session-count claims, repo-spend superlatives), a
 defect this design's `prior.change` field does nothing to fix, since it never touches the current-period
 narrative at all.
+
+**2026-07-27, Scott, after Phase 0's STOP:** ship the three parts that do not depend on the failed
+premise, park the rest, open a new doc for the real defect.
+
+Building:
+
+- **Phase 1** (quote the span the guard rejected). Stands on its own merits.
+- **Phase 2** (persist a rejected render). Stands on its own merits.
+- **Phase 4, scoped to the contradiction only**: delete `or KPI deltas` from `report-html.pmt:444`.
+  A KPI delta is a subtraction and Hard prohibition 1 forbids it, so the instruction contradicts
+  itself whatever the rejection data says. Nothing else in Phase 4 ships, because the rest of it
+  documents and quotes `prior.change`, which Phase 3 is no longer building.
+
+Parked, pending the new doc:
+
+- **Phase 3** (`prior.change`). The field may still be worth building: both templates ask for a
+  comparison the model is forbidden to compute, and that is a real contradiction. It is NOT
+  established as the cause of the 80% `--prior` rejection rate, so it does not ship as that fix.
+- **Phase 5** (misattachment as a mechanical finding). Depends entirely on Phase 3.
+- **Phase 6** (measure and decide). Its gate is written against a rate this doc mis-measured, and
+  against a fix that is no longer shipping. It gets rewritten in the new doc, not patched here.
+
+Sequencing argument for doing 1 and 2 first, and it is the load-bearing one: three of the four
+`--prior` rejections (#2, #3, #6, all HTML) are UNCLASSIFIABLE today, and the reason is defects 2 and
+3 of this doc. `excerpt` (`render.rs:474-478`) scans the whole document for the first substring match
+rather than reusing the guard's span, and the rejected artifact is discarded. Phase 0 labeled those
+three "not comparison figures" by token-shape analogy to the two readable rejections; that is an
+inference, not a reading. Phases 1 and 2 are the instruments that turn the next rejection into
+evidence. The new doc should be written after they land, not before.
+
+Correction to Phase 0's own report while accepting its verdict: the STOP is right on the gate as
+written (it required at least two confirmed comparison figures out of three, and the confirmed count
+is zero), but "zero are comparison figures" overstates what the evidence supports. One is confirmed
+NOT a comparison figure by content, one is mechanically impossible, and three are unknown.
 
 ## Alternatives Considered
 

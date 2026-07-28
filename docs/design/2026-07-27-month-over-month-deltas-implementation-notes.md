@@ -316,3 +316,58 @@ No new open questions from this amendment.
 
 - None.
 
+
+## Orchestration notes, 2026-07-27 (team-lead)
+
+Changes I made directly rather than through a phase agent, plus deviations I own.
+
+### Design decisions
+
+- **Two commits for Phase 2, not one.** The follow-up wiring test
+  (`a_generation_failure_writes_nothing_to_the_output_path`) landed as its own commit instead of
+  being amended into Phase 2's. By the time I asked for it, two other agents' commits sat on top of
+  Phase 2's, so amending meant rewriting their SHAs, and interactive rebase is unavailable in this
+  environment. Commit tidiness was not worth risking another agent's work. This breaks the
+  one-commit-per-phase rule and the call is mine, not the phase agent's.
+- **`permit` fix shipped on this branch** (`9e185ca`), on Scott's explicit approval. Not a phase of
+  this doc. It is here because `otto ci`'s `test` task is `cargo test --workspace` with default
+  fail-fast, cargo reaches `permit` before `report`, and the pre-existing `permit` failure stopped
+  the run before `report`'s tests ever executed. Every "otto ci green" claimed on this branch prior
+  to that commit was therefore vacuous for `report`. The phases were genuinely tested only because
+  each agent separately ran `cargo test -p report`.
+
+### Deviations
+
+- **Phases 3, 5, 6 not built.** Phase 0's STOP invalidated the root cause and Scott re-scoped. See
+  Resolved Decisions in the design doc.
+- **Phase 4 shipped scoped to one deletion.** Everything else in it depended on `prior.change`.
+- **A design-doc correction the phase agents did not make.** Phase 0's report stated that zero of
+  the four `--prior` rejections are comparison figures. The STOP verdict is right, but that phrasing
+  overstates the evidence: one is confirmed not-a-comparison by content, one is mechanically
+  impossible, and three are UNKNOWN because `excerpt` was broken and the artifact was discarded.
+  Unproven is not disproven, and the new doc should not inherit the stronger claim.
+
+### Tradeoffs
+
+- **Kept both output-path tests instead of picking one.** Phase 2's exercises the
+  `generate_then_route` helper; mine exercises `run`'s wiring to it. Verified non-redundant by
+  breaking the wiring: with routing hoisted above generation, the helper test passes green and the
+  wiring test fails. One test would have left a real hole.
+- **Did not refactor a transport seam into `markdown_from_context` / `html_from_context`.** That is
+  what a genuine end-to-end guard-rejection test needs, since those functions resolve their
+  transport internally via `resolve_selected_transport`. It is a refactor of the hot render path and
+  was not requested, so the criterion is closed by composition instead. Named here so the gap is
+  visible rather than implied.
+
+### Open questions
+
+- **The `--prior` rejection rate is untouched and unmeasured.** Nothing shipped here targets it.
+  That is the whole point of the re-scope, and it is the new doc's problem.
+- **`--prior` is not logged.** `render::run`'s INFO line carries `input`, `format`, `space`,
+  `prompt`, `outliers`, `reconcile`, and nothing about the prior path. Phase 0 could only recover
+  each render's configuration by digging the literal shell commands out of a subagent transcript,
+  which is not a repeatable diagnostic. Under the function-level logging rule, an unlogged
+  load-bearing parameter is its own small fix.
+- **The `permit` boundary check is exact `PathBuf` equality** against `std::env::temp_dir()` and
+  `dirs::home_dir()`. Correct on this machine, where the walk hits `/tmp` exactly. It would not
+  match a symlinked or trailing-slash `$TMPDIR` naming the same directory.
