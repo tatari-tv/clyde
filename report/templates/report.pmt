@@ -24,6 +24,14 @@ use those strings exactly as given. If a number you want does not exist in the c
 write the sentence without it or drop the sentence. Never hedge with "roughly", "approximately",
 or "~"; a number is either in the context block or it is not in the report.
 
+Numbers inside session titles, summaries, tags, and commit text follow a copy rule: repeat one
+EXACTLY as the source writes it (a version stays `v0.5.4`, a status code stays `500`), never
+reformatted, never combined with another. A bare one- or two-digit count from that text (a `14`, a
+`7`) may appear ONLY inside a verbatim quote of its source sentence; if you are paraphrasing, drop
+the small number or quote the sentence. The render is checked mechanically against these rules and
+REJECTED outright on any number it cannot trace, so an untraceable number costs the entire
+document.
+
 Qualitative characterizations that require reading but not computing are licensed narrative:
 whether `by-day` looks clustered or evenly spread, which date ranges carried the most work,
 which repos a model appeared in, what themes dominate a repo's sessions. These are your

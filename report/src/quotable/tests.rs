@@ -406,3 +406,88 @@ fn classify_reads_the_shape_only_for_the_overloaded_key() {
         Class::FigureAndGeometry
     );
 }
+
+/// A context whose free text carries the shapes the 2026-07-28 live failures rejected: dotted
+/// versions and a 3-digit status code inside an enrich summary.
+fn versioned_context() -> QuotableFacts {
+    QuotableFacts::from_context_json(
+        r#"{
+          "totals": {"sessions": 12, "spend": "$100.00"},
+          "sessions": [
+            {"short-id": "9d4c1f28", "title": "cut the release",
+             "summary": "bump to v0.5.4 after the API 500 retry storm; v0.5.0 shipped Friday",
+             "tags": ["release"],
+             "begin": "2026-07-03T09:00:00Z", "end": "2026-07-03T10:00:00Z"}
+          ]
+        }"#,
+    )
+    .unwrap()
+}
+
+/// BITES: the exact live failure class of 2026-07-28. Three renders in a row were rejected for
+/// paraphrasing TRUE numbers out of commit-message text ("shipped as v0.5.0" against a summary
+/// reading "bump to v0.5.0"), because the mask demanded the whole identifier verbatim. Drop the
+/// `cited` set (or re-split versions into `0.5` + `4`) and this fails.
+#[test]
+fn paraphrased_versions_and_status_codes_from_summaries_are_licensed() {
+    let facts = versioned_context();
+    let prose = "The team shipped v0.5.4 once the 500 errors stopped; v0.5.0 had landed earlier.";
+    assert_eq!(tokens(&facts.foreign_figures(prose)), Vec::<String>::new());
+}
+
+/// The boundary the licensing rule preserves: a bare 1-2 digit integer from free text is NOT
+/// licensed on its own -- the fabricated "14 hours" stays caught even when a summary carries a
+/// bare `14` -- but quoting the source sentence verbatim still passes via the mask.
+#[test]
+fn bare_small_integers_from_free_text_stay_verbatim_only() {
+    let facts = QuotableFacts::from_context_json(
+        r#"{"sessions": [{"short-id": "7b2290ff", "title": "flake hunt",
+             "summary": "fixed 14 flaky tests in the permit crate",
+             "begin": "2026-07-11T13:00:00Z", "end": "2026-07-11T15:30:00Z"}]}"#,
+    )
+    .unwrap();
+    let paraphrase = "The window saved roughly 14 hours of engineering time.";
+    assert_eq!(tokens(&facts.foreign_figures(paraphrase)), vec!["14"]);
+    let quoted = r#"One session "fixed 14 flaky tests in the permit crate" and moved on."#;
+    assert_eq!(tokens(&facts.foreign_figures(quoted)), Vec::<String>::new());
+}
+
+/// A dotted version lexes as ONE token IN ITS EXACT FORM: citing `v0.5.4` licenses `v0.5.4` and
+/// nothing else -- not a standalone `4`, and not a reformatted `0.5.4` with the prefix dropped
+/// (the templates' copy rule, enforced mechanically).
+#[test]
+fn a_version_is_one_exact_token_and_licenses_no_other_form() {
+    let facts = versioned_context();
+    assert_eq!(tokens(&facts.foreign_figures("We made 4 attempts.")), vec!["4"]);
+    assert_eq!(
+        tokens(&facts.foreign_figures("We are on v0.5.4 now.")),
+        Vec::<String>::new()
+    );
+    assert_eq!(tokens(&facts.foreign_figures("We are on 0.5.4 now.")), vec!["0.5.4"]);
+}
+
+/// Random-character identifiers (shas, short-ids, urls) never feed the cited set: a 3+ digit run
+/// inside hex must not become a quotable figure, or the pre-change whitelist is back.
+#[test]
+fn digit_runs_inside_ids_and_shas_are_not_licensed() {
+    // `7b2290ff` carries the run `2290`; `versioned_context`'s summary carries no `2290`.
+    let facts = QuotableFacts::from_context_json(
+        r#"{"sessions": [{"short-id": "7b2290ff", "title": "untitled work",
+             "begin": "2026-07-11T13:00:00Z", "end": "2026-07-11T15:30:00Z"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        tokens(&facts.foreign_figures("The org ran 2,290 sessions this month.")),
+        vec!["2290"]
+    );
+}
+
+/// A number sourced from nowhere still fails: the cited set widens citation, never invention.
+#[test]
+fn unsourced_numbers_still_reject_with_the_cited_set_in_play() {
+    let facts = versioned_context();
+    assert_eq!(
+        tokens(&facts.foreign_figures("That saved $777.77 across 999 sessions.")),
+        vec!["777.77", "999"]
+    );
+}
