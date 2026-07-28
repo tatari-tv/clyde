@@ -7,8 +7,7 @@ Design doc: `docs/design/2026-07-27-month-over-month-deltas.md`
 ### Design decisions
 
 - Established the per-render `--prior` configuration from the exact shell commands in the shipit
-  subagent's transcript
-  (`~/.claude/projects/-home-saidler-repos-tatari-tv-clyde/6dbe3155-f40f-46d3-9b1c-52a760d99246/subagents/agent-ashipit-d399c59e432f168f.jsonl`),
+  subagent's session transcript, under the operator's local Claude Code project directory,
   not from this doc's own summary table, because the log never records `--prior` (confirmed by
   reading `render.rs:41` and `lib.rs:150`: the field isn't in the INFO line, and the two `debug!`
   lines that would carry it never fired because all nine renders ran at the default `Info` filter).

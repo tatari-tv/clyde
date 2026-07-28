@@ -626,9 +626,9 @@ would name it, `render::build_prior_view` (`:1150,1153`) and `render::build_cont
 none). The log alone cannot answer which renders used `--prior`.
 
 The nine `render::run` timestamps were confirmed against `~/.local/share/clyde/logs/report.log`
-(14:46:18 through 15:24:41, all against `/home/saidler/clyde-30d.json`). The `--prior` configuration
-per render was established independently, not inferred from this doc's own table: the shipit
-subagent's transcript (`~/.claude/projects/-home-saidler-repos-tatari-tv-clyde/6dbe3155-f40f-46d3-9b1c-52a760d99246/subagents/agent-ashipit-d399c59e432f168f.jsonl`)
+(14:46:18 through 15:24:41, all against the same 30-day collect artifact). The `--prior`
+configuration per render was established independently, not inferred from this doc's own table: the
+shipit subagent's session transcript, under the operator's local Claude Code project directory,
 carries ten literal `clyde report render -i ...` shell invocations in this window. The first
 (14:42:01, `reconcile=None`) is the already-discarded warm-up attempt. The remaining nine match the
 nine `render::run` log lines one for one, same order, same count, timestamps a few seconds apart
