@@ -556,12 +556,14 @@ fn pre_change_pattern() -> &'static Regex {
 ///
 /// A DOTTED VERSION is ONE token for the same reason: `v0.5.4` used to lex as `0.5` plus a bare
 /// `4`, so no licensing rule could ever make a real version from a commit message quotable without
-/// also handing the prose a standalone `4`. As one token, `0.5.4` licenses `0.5.4` and nothing
-/// else.
+/// also handing the prose a standalone `4`. The `v`/`V` prefix is PART of the token when present,
+/// so the exact lexical form is what gets licensed: a source `v0.5.4` licenses `v0.5.4` and not a
+/// reformatted `0.5.4`, matching the templates' copy rule ("repeat one EXACTLY as the source
+/// writes it").
 fn numeric_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"\d{4}-\d{2}-\d{2}|\d+(?:\.\d+){2,}|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+        Regex::new(r"\d{4}-\d{2}-\d{2}|[vV]?\d+(?:\.\d+){2,}|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
             .expect("numeric-token pattern is a valid regex")
     })
 }

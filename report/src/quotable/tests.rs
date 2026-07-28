@@ -452,16 +452,18 @@ fn bare_small_integers_from_free_text_stay_verbatim_only() {
     assert_eq!(tokens(&facts.foreign_figures(quoted)), Vec::<String>::new());
 }
 
-/// A dotted version lexes as ONE token: citing `v0.5.4` licenses `0.5.4` and nothing else, so the
-/// trailing `4` never becomes a standalone prose figure.
+/// A dotted version lexes as ONE token IN ITS EXACT FORM: citing `v0.5.4` licenses `v0.5.4` and
+/// nothing else -- not a standalone `4`, and not a reformatted `0.5.4` with the prefix dropped
+/// (the templates' copy rule, enforced mechanically).
 #[test]
-fn a_version_is_one_token_and_licenses_no_bare_digit() {
+fn a_version_is_one_exact_token_and_licenses_no_other_form() {
     let facts = versioned_context();
     assert_eq!(tokens(&facts.foreign_figures("We made 4 attempts.")), vec!["4"]);
     assert_eq!(
-        tokens(&facts.foreign_figures("We are on 0.5.4 now.")),
+        tokens(&facts.foreign_figures("We are on v0.5.4 now.")),
         Vec::<String>::new()
     );
+    assert_eq!(tokens(&facts.foreign_figures("We are on 0.5.4 now.")), vec!["0.5.4"]);
 }
 
 /// Random-character identifiers (shas, short-ids, urls) never feed the cited set: a 3+ digit run
