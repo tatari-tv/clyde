@@ -21,6 +21,7 @@
 //! clyde never holds the Analytics key and never calls the API itself; it only reads a file the user
 //! already produced (design Non-Goals, "Putting an Analytics API key in clyde").
 
+use crate::cents::round_cents;
 use crate::fmt::{format_optional_usd, format_usd, format_usd_signed};
 use crate::report::Report;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -144,14 +145,6 @@ pub struct ReconRow {
 /// The Analytics cost endpoints report money in minor units (cents). Every `amount` read out of an
 /// export is divided by this exactly once, in [`fold`], so nothing downstream has to remember.
 const CENTS_PER_DOLLAR: f64 = 100.0;
-
-/// Round a dollar figure to cents, normalizing negative zero to `+0.0` (same convention as
-/// `report::round_cents` / `merge::round_cents` -- every dollar choke point in this crate
-/// re-normalizes independently rather than sharing a public helper across modules).
-fn round_cents(x: f64) -> f64 {
-    let cents = (x * 100.0).round() / 100.0;
-    if cents == 0.0 { 0.0 } else { cents }
-}
 
 /// A by-model row's modeled figure, distinguishing three states a bare `Option<f64>` cannot: the
 /// model is entirely absent from `totals.models` (clyde's catalog never used it this window, a

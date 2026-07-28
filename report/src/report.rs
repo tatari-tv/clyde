@@ -12,6 +12,7 @@
 //! differs from a pre-Phase-4 report for a boundary-straddling session reads as expected; the shift
 //! is stated in [`Report::notes`].
 
+use crate::cents::round_cents;
 use crate::outcome::{self, OutcomeTotals, Outcomes};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
@@ -230,21 +231,6 @@ pub struct CollectedSession {
     /// Parsed from the catalog's `outcome_json`; `None` when extraction observed nothing (a stored
     /// all-empty object collapses to `None` here) or when the report is `--no-outcomes`.
     pub outcomes: Option<Outcomes>,
-}
-
-/// Round a dollar figure to cents, normalizing negative zero to `+0.0`.
-///
-/// `-0.0` is not hypothetical. Rust's `Sum for f64` folds from `-0.0`
-/// (`core/src/iter/traits/accum.rs:164`), so summing an EMPTY iterator of priced models yields
-/// `-0.0`, and `(-0.0 * 100.0).round() / 100.0` preserves the sign all the way into serde. Every
-/// zero-session report therefore serialized `"spend-usd": -0.0`, which reads as a broken number to
-/// anyone running collect on a fresh catalog. Normalize once here, at the single choke point every
-/// dollar figure in the report passes through.
-fn round_cents(x: f64) -> f64 {
-    let cents = (x * 100.0).round() / 100.0;
-    // `-0.0 == 0.0` is true in IEEE 754, so this catches negative zero with no signum dance, and
-    // leaves every other value untouched.
-    if cents == 0.0 { 0.0 } else { cents }
 }
 
 /// Build the pretty-printed report JSON and the session count, without performing any I/O. Shared by

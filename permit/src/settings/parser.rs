@@ -116,16 +116,23 @@ pub fn load_settings(settings_path: &Path, settings_local_path: &Path) -> Result
 /// (e.g. a repo checked out at `/tmp/some-project`) is unaffected: only the boundary directory
 /// itself is skipped, not its descendants.
 pub fn discover_settings_local(start_dir: &Path) -> PathBuf {
+    // The walk stops on PathBuf EQUALITY, so a symlinked or trailing-slash `$TMPDIR` naming the
+    // same directory as the walked path would never compare equal and the boundary would silently
+    // stop applying (issue #69). Canonicalize both sides: canonicalizing `start_dir` also
+    // canonicalizes every parent the loop visits, so the comparison is like with like. A path that
+    // fails to canonicalize (does not exist) keeps its raw form rather than dropping the boundary.
+    let canonical = |p: PathBuf| p.canonicalize().unwrap_or(p);
     let home = dirs::home_dir();
     let boundary: Vec<PathBuf> = [Some(std::env::temp_dir()), home.clone()]
         .into_iter()
         .flatten()
+        .map(canonical)
         .collect();
     let fallback = home
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude")
         .join("settings.local.json");
-    discover_settings_local_bounded(start_dir, &boundary, fallback)
+    discover_settings_local_bounded(&canonical(start_dir.to_path_buf()), &boundary, fallback)
 }
 
 /// Core walk, parameterized on the boundary roots and the fallback path so the boundary
@@ -216,7 +223,10 @@ mod tests {
         std::fs::create_dir_all(&subdir).expect("mkdir sub");
 
         let found = discover_settings_local(&subdir);
-        assert_eq!(found, expected);
+        // `discover_settings_local` canonicalizes `start_dir`, so the found path is canonical;
+        // canonicalize the expectation too or this fails wherever the temp dir is symlinked
+        // (macOS `/tmp` -> `/private/tmp`).
+        assert_eq!(found, expected.canonicalize().expect("canonicalize"));
     }
 
     #[test]
@@ -274,6 +284,41 @@ mod tests {
         let boundary = vec![shared_root.path().to_path_buf()];
         let found = discover_settings_local_bounded(&start, &boundary, PathBuf::from("/fallback"));
         assert_eq!(found, expected);
+    }
+
+    /// BITES: spell the boundary root as a SYMLINK to the real directory (a symlinked `$TMPDIR`
+    /// is exactly this) and the walk's `PathBuf` equality never fires -- it escapes the boundary
+    /// and launders the stray file (issue #69). `discover_settings_local` therefore canonicalizes
+    /// the boundary AND `start_dir` before walking; this pins both the defect and the fix.
+    #[test]
+    fn a_symlinked_boundary_root_stops_the_walk_only_once_canonicalized() {
+        let real_root = TempDir::new().expect("temp");
+        let stray_claude = real_root.path().join(".claude");
+        std::fs::create_dir_all(&stray_claude).expect("mkdir");
+        let stray = stray_claude.join("settings.local.json");
+        std::fs::write(&stray, r#"{"permissions":{}}"#).expect("write");
+        let start = real_root.path().join("nested").join("cwd");
+        std::fs::create_dir_all(&start).expect("mkdir sub");
+
+        let alias_holder = TempDir::new().expect("temp");
+        let alias = alias_holder.path().join("tmp-alias");
+        std::os::unix::fs::symlink(real_root.path(), &alias).expect("symlink");
+
+        let fallback = PathBuf::from("/fallback/settings.local.json");
+
+        // The raw pair IS the defect: the symlink never compares equal to the walked real path,
+        // so the boundary silently stops applying and the stray file is matched.
+        let escaped = discover_settings_local_bounded(&start, std::slice::from_ref(&alias), fallback.clone());
+        assert_eq!(
+            escaped, stray,
+            "precondition: a raw symlink boundary does not stop the walk"
+        );
+
+        // Canonicalized the way `discover_settings_local` does it, the boundary holds.
+        let boundary = vec![alias.canonicalize().expect("canonicalize boundary")];
+        let start = start.canonicalize().expect("canonicalize start");
+        let found = discover_settings_local_bounded(&start, &boundary, fallback.clone());
+        assert_eq!(found, fallback, "the canonicalized symlink boundary must stop the walk");
     }
 
     #[test]
