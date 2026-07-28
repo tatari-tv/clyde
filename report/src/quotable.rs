@@ -6,7 +6,7 @@
 //! the guard reliably caught a fabricated dollar figure and let a fabricated "14 hours of
 //! engineering time" straight through.
 //!
-//! The fix is to stop treating the serialized block as the whitelist and derive THREE sets from its
+//! The fix is to stop treating the serialized block as the whitelist and derive FOUR sets from its
 //! leaves instead:
 //!
 //! - [`QuotableFacts::figures`] -- the numeric tokens the prose may state as figures: display
@@ -16,6 +16,12 @@
 //!   `begin`/`end`, commit shas, PR refs, and the free-text `title`/`summary`/`tags` a citation
 //!   quotes. Their digits are exempt only inside a verbatim occurrence (see [`QuotableFacts::mask`]),
 //!   so citing session `a1b2c3d4` never adds `1`, `2`, `3` and `4` to the prose whitelist.
+//! - `QuotableFacts::cited` -- numeric tokens lexed from identifier text that the prose may repeat
+//!   WITHOUT reproducing the whole identifier: structured tokens (versions, decimals, dates) and
+//!   bare integers of 3+ digits. Exists because the prompt instructs the model to cite
+//!   titles/summaries/commit text -- a paraphrase task -- and the verbatim mask alone rejected
+//!   every paraphrase of a true, sourced number. Bare 1-2 digit integers are excluded so the
+//!   planted-"14 hours" catch survives; see the field docs for the full trade.
 //! - [`QuotableFacts::geometry`] -- chart coordinates (Phase 11's `viewBox`/`points`, plus the
 //!   `-percent-of-max` bar widths), each stored as its WHOLE value rather than tokenized. Kept
 //!   SEPARATE from the prose whitelist on purpose: a single `points` string would otherwise inject
@@ -99,6 +105,15 @@ const PERCENT_OF_MAX_SUFFIX: &str = "-percent-of-max";
 /// citable ("the session on 2026-07-01").
 const TIMESTAMP_KEYS: &[&str] = &["begin", "end", "feed-version"];
 
+/// The identifier keys whose value is FREE TEXT the prompt instructs the model to cite -- the only
+/// leaves whose numeric tokens feed [`QuotableFacts::cited`]. Deliberately NOT every identifier:
+/// a sha, short-id, or URL is random characters, and lexing those would license every 3+ digit run
+/// in every hex id as a standalone prose figure (`8f14e45f...` licensing a bare `167`), which is
+/// the pre-change whitelist creeping back in through identifiers nobody cites as prose. `notes` is
+/// also excluded: it is binary-authored methodology text the prompt orders quoted verbatim WHOLE
+/// (never paraphrased), so a count inside a note stays quotable only inside its sentence.
+const FREE_TEXT_KEYS: &[&str] = &["title", "summary", "tags"];
+
 /// The one key whose class depends on the value's JSON shape, not on the key alone.
 ///
 /// `commits` is overloaded across the context block: `sessions[].outcomes.commits` is an ARRAY OF
@@ -141,12 +156,26 @@ pub(crate) struct RenderContext {
     pub(crate) facts: QuotableFacts,
 }
 
-/// The three quotable sets. See the module docs for what each one licenses.
+/// The quotable sets. See the module docs for what each one licenses.
 #[derive(Debug, Default)]
 pub(crate) struct QuotableFacts {
     figures: BTreeSet<String>,
     identifiers: BTreeSet<String>,
     geometry: BTreeSet<String>,
+    /// Numeric tokens lexed from FREE-TEXT identifier leaves ([`FREE_TEXT_KEYS`]: title, summary,
+    /// tags) that the prose may repeat WITHOUT reproducing the whole identifier: structured
+    /// tokens (`0.5.4`, `0.85`, dates) and bare integers of three or more digits (`500`, `2026`).
+    /// The prompt tells the model to CITE session titles, summaries and
+    /// commit text -- a paraphrase task -- while the identifier mask only exempts a byte-for-byte
+    /// reproduction of the whole string, so "shipped as v0.5.0" against a summary reading "bump to
+    /// v0.5.0" was rejected as fabrication: a true, sourced fact treated identically to an invented
+    /// one, at the cost of a full render each time. This set licenses what the prompt demands.
+    ///
+    /// Bare ONE- and TWO-digit integers are deliberately excluded: they are the high-collision class
+    /// (counts, day numbers), and licensing them from free text would re-legalize the planted
+    /// "14 hours of engineering time" the moment any summary carried a bare `14` -- this module's
+    /// motivating catch. Those stay quotable only inside a verbatim occurrence of their identifier.
+    cited: BTreeSet<String>,
 }
 
 /// One number in the prose no quotable fact licenses, carrying the BYTE span of the exact
@@ -174,10 +203,11 @@ impl QuotableFacts {
         let mut facts = Self::default();
         facts.walk("", &value);
         debug!(
-            "quotable::from_context_json: figures={} identifiers={} geometry={}",
+            "quotable::from_context_json: figures={} identifiers={} geometry={} cited={}",
             facts.figures.len(),
             facts.identifiers.len(),
-            facts.geometry.len()
+            facts.geometry.len(),
+            facts.cited.len()
         );
         if log::log_enabled!(log::Level::Debug) {
             let raw = numeric_token_count(json);
@@ -218,6 +248,10 @@ impl QuotableFacts {
         for m in numeric_pattern().find_iter(prose) {
             let token = normalize(m.as_str());
             if self.figures.contains(&token) {
+                continue;
+            }
+            if self.cited.contains(&token) {
+                trace!("quotable::foreign_figures: token={token} licensed by citable source text");
                 continue;
             }
             if masked.get(m.start()..m.end()).is_some_and(|s| s.iter().all(|b| *b)) {
@@ -385,6 +419,17 @@ impl QuotableFacts {
             return;
         }
         self.identifiers.insert(raw.to_string());
+        // Token-level licensing for the free text the prompt tells the model to cite: see the
+        // `cited` field docs for the rule and the trade, and `FREE_TEXT_KEYS` for why other
+        // identifiers (shas, ids, urls) never feed it.
+        if FREE_TEXT_KEYS.contains(&key) {
+            for m in numeric_pattern().find_iter(raw) {
+                let token = normalize(m.as_str());
+                if cited_token_qualifies(&token) {
+                    self.cited.insert(token);
+                }
+            }
+        }
         if key == "commits"
             && raw.chars().count() > SHORT_SHA_CHARS
             && let Some(short) = char_prefix(raw, SHORT_SHA_CHARS)
@@ -503,19 +548,33 @@ fn pre_change_pattern() -> &'static Regex {
 /// (`6200`) matches the comma-grouped form the artifact prints (`6,200`) once [`normalize`] strips
 /// the separators, which the pre-change guard only ever got away with by accident.
 ///
-/// A date (`2026-07-01` -> `2026`, `07`, `01`) and a version still decompose into separate tokens
-/// that each match the facts, so legitimate dates and versions never read as fabricated.
 /// A calendar date is ONE token, not three. The pre-change guard split `2026-07-14` into `2026`,
 /// `07` and `14`, which is how every day-of-month in the window became a pre-approved standalone
 /// integer -- the planted "14 hours" rode in on the 14th of the month. Keeping the date whole means
 /// a date is quotable as a date and nothing else; [`QuotableFacts::add_figure_tokens`] adds the YEAR
 /// back on its own, because a header ("Claude Code, April 2026") legitimately states it.
+///
+/// A DOTTED VERSION is ONE token for the same reason: `v0.5.4` used to lex as `0.5` plus a bare
+/// `4`, so no licensing rule could ever make a real version from a commit message quotable without
+/// also handing the prose a standalone `4`. As one token, `0.5.4` licenses `0.5.4` and nothing
+/// else.
 fn numeric_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"\d{4}-\d{2}-\d{2}|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+        Regex::new(r"\d{4}-\d{2}-\d{2}|\d+(?:\.\d+){2,}|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
             .expect("numeric-token pattern is a valid regex")
     })
+}
+
+/// Whether a token lexed from citable identifier text is licensed on its own (the
+/// [`QuotableFacts::cited`] set): anything EXCEPT a bare integer of one or two digits. Structured
+/// tokens (a dot, a date's dashes) and 3+ digit integers carry enough shape that repeating one is
+/// citation, not invention; a bare `14` carries none, and licensing it from free text is exactly
+/// how the fabricated "14 hours" would come back.
+fn cited_token_qualifies(token: &str) -> bool {
+    let digits = token.chars().filter(char::is_ascii_digit).count();
+    let structured = token.chars().any(|c| !c.is_ascii_digit());
+    structured || digits >= 3
 }
 
 /// One canonical spelling per figure: `6,200` and `6200` are the same fact, so they compare equal.
