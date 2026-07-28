@@ -69,7 +69,10 @@ tasks:
   test:
     help: "Run all tests"
     bash: |
-      cargo test --workspace
+      # --no-fail-fast: cargo runs crates in order and stops at the first failing crate, so
+      # without it one early-crate failure silently skips every later crate's tests and the
+      # run reads as "one known failure" rather than "N suites never ran" (issue #66).
+      cargo test --workspace --no-fail-fast
 
   ci:
     help: "Full CI pipeline (lint + bloat + check + test in parallel)"

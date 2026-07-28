@@ -119,8 +119,12 @@ Inside that `<svg>`, this is the COMPLETE list of what is allowed. The render fa
   It is on the list because it is presentational and carries no coordinates, not because attributes
   outside the list are tolerated.
 - NO attribute inside the `<svg>` may contain a digit unless its value is one of the two copied
-  strings. That covers `class` names (use digit-free ones) and `stroke-width`, which is a number you
-  chose: set the stroke width in the `<style>` block from a class instead of as an attribute.
+  strings. That covers `stroke-width`, which is a number you chose: set the stroke width in the
+  `<style>` block from a class instead of as an attribute.
+- CLASS NAMES ARE ATTRIBUTES TOO and the digit rule applies to them: every `class` inside the
+  `<svg>` must be digit-free. `class="trend"` passes; `class="stroke2"` fails the render on the
+  digit alone, even when the width it styles sits correctly in the `<style>` block. Name the class
+  for its role (`trend`, `axis`, `stroke-wide`), never for the number it sets.
 - Axis labels would need `x`/`y` coordinates, so they do NOT go inside the `<svg>`. Put `y-labels`
   and `x-labels` in ordinary HTML around the chart (an axis strip laid out with CSS), each string
   copied verbatim.

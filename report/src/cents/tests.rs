@@ -119,3 +119,25 @@ fn a_real_half_cent_remainder_still_orders_the_allocation() {
     let both = allocate(&[1.0025, 2.0075], 3.02).unwrap();
     assert_eq!(dollars(&both), vec![1.01, 2.01]);
 }
+
+/// BITES: drop the negative-zero branch from `round_cents` and the serialized artifact reads
+/// `"spend-usd": -0.0` again -- the shipped defect that came back through `merge`'s own copy,
+/// which lacked the normalization the other two copies had (issue #67).
+#[test]
+fn round_cents_normalizes_negative_zero_out_of_the_serialized_artifact() {
+    // Rust's `Sum for f64` folds from -0.0, so an empty priced-model sum is the real input shape.
+    let empty_sum: f64 = std::iter::empty::<f64>().sum();
+    assert!(empty_sum.is_sign_negative(), "precondition: an empty f64 sum is -0.0");
+    let rounded = round_cents(empty_sum);
+    assert!(rounded.is_sign_positive(), "-0.0 must normalize to +0.0");
+    assert_eq!(serde_json::to_string(&rounded).unwrap(), "0.0");
+    // A negative value that ROUNDS to zero is normalized too, not just literal -0.0.
+    assert_eq!(serde_json::to_string(&round_cents(-0.0049)).unwrap(), "0.0");
+}
+
+#[test]
+fn round_cents_rounds_to_the_nearest_cent_and_touches_nothing_else() {
+    assert_eq!(round_cents(1.014), 1.01);
+    assert_eq!(round_cents(1.016), 1.02);
+    assert_eq!(round_cents(-2.016), -2.02, "a negative non-zero keeps its sign");
+}

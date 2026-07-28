@@ -40,13 +40,15 @@ const WORKSPACE_HTML_PROMPT_PATH: &str = "templates/report-html.pmt";
 
 pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
-        "render::run: input={} format={:?} space={:?} prompt={:?} outliers={} reconcile={:?}",
+        "render::run: input={} format={:?} space={:?} prompt={:?} outliers={} reconcile={:?} prior={:?} llm={:?}",
         cfg.input.display(),
         cfg.format,
         cfg.space,
         cfg.prompt,
         cfg.outliers,
-        cfg.reconcile
+        cfg.reconcile,
+        cfg.prior,
+        cfg.llm
     );
 
     // Design Phase 12, "Absence is never silent" -- stderr half; the artifact's half is

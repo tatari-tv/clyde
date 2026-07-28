@@ -12,6 +12,7 @@
 //!    blind-summed from each input's `totals`. Blind-summing would double-count any session that
 //!    appears in more than one input; re-summing the actual entries is correct by construction.
 
+use crate::cents::round_cents;
 use crate::config::{MergeConfig, Output};
 use crate::outcome;
 use crate::report::{ModelTokens, Report, SessionEntry, Totals, WINDOW_NOTE};
@@ -269,10 +270,6 @@ fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>, outcomes_enabled:
 /// distinct hosts are joined `a+b+c` so the provenance is visible in the output.
 fn multi_host_marker(hosts: &BTreeSet<String>) -> String {
     hosts.iter().cloned().collect::<Vec<_>>().join("+")
-}
-
-fn round_cents(x: f64) -> f64 {
-    (x * 100.0).round() / 100.0
 }
 
 /// Emit the merged JSON to the configured destination: `-o <file>` writes atomically (temp +

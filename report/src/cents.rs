@@ -21,6 +21,25 @@ use log::{trace, warn};
 /// Cents in a dollar. The unit allocation happens in, because it is the unit the artifact displays.
 pub(crate) const CENTS_PER_DOLLAR: f64 = 100.0;
 
+/// Round a dollar figure to cents, normalizing negative zero to `+0.0`.
+///
+/// `-0.0` is not hypothetical. Rust's `Sum for f64` folds from `-0.0`
+/// (`core/src/iter/traits/accum.rs:164`), so summing an EMPTY iterator of priced models yields
+/// `-0.0`, and `(-0.0 * 100.0).round() / 100.0` preserves the sign all the way into serde. Every
+/// zero-session report therefore serialized `"spend-usd": -0.0`, which reads as a broken number to
+/// anyone running collect on a fresh catalog.
+///
+/// This is the ONE copy. It used to live three times (`report`, `reconcile`, `merge`), each module
+/// re-normalizing independently, and the copies diverged exactly as copies do: `merge`'s dropped
+/// the negative-zero normalization, so a merged artifact could serialize `-0.0` where the other
+/// paths could not (issue #67). Every dollar choke point in the crate now rounds here.
+pub(crate) fn round_cents(x: f64) -> f64 {
+    let cents = (x * CENTS_PER_DOLLAR).round() / CENTS_PER_DOLLAR;
+    // `-0.0 == 0.0` is true in IEEE 754, so this catches negative zero with no signum dance, and
+    // leaves every other value untouched.
+    if cents == 0.0 { 0.0 } else { cents }
+}
+
 /// Decimal places of a CENT figure kept before flooring, to absorb accumulated `f64` error.
 ///
 /// Load bearing. Every value here is a sum of per-session dollars, so it carries the usual binary
