@@ -396,7 +396,7 @@ Recorded here rather than left in a chat log, because the next reader will read 
 
 ## References
 
-- Handoff: `/tmp/claude-1000/-home-saidler-repos-tatari-tv-clyde/327e8d07-9777-4576-8692-9b4584a84ed3/scratchpad/handoff-pricing-staleness-gap.md`
+- Handoff: `/tmp/claude-1000/-home-user-repos-tatari-tv-clyde/327e8d07/scratchpad/handoff-pricing-staleness-gap.md`
 - PR that surfaced both items: https://github.com/tatari-tv/clyde/pull/59
 - `docs/design/2026-06-29-move-pricing-feed-publishing-to-clyde.md` (the governing feed design; D2/D3/F1/F2 are cited in the code comments)
 - `pricing/src/fetch.rs:1-34` (the state-machine module doc), `:124-135` (fast path), `:192-199` (`fallback_chain`), `:341` (`load_from_cache`), `:412-430` (the existing guard), `:481` (`fetched_feed_is_stale`), `:502` (`is_canonical_utc`)

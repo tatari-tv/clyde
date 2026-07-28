@@ -50,7 +50,7 @@ The problem is what reaches the prompt. Measured against a real 30-day window co
 | sessions with any outcome | 385 of 1,523 (25.3%) |
 | enrich summaries available | 663 of 1,697 catalog sessions |
 
-The top unattributed cwd is `/home/saidler/repos/tatari-tv/clyde/main` with 136 sessions. That
+The top unattributed cwd is `/home/user/repos/tatari-tv/clyde/main` with 136 sessions. That
 worktree layout was replaced by sibling directories (`clyde-ft`, `clyde-report`), so the flagship
 work of the month attributes to nothing, while the path string still literally contains
 `tatari-tv/clyde`.
@@ -357,7 +357,7 @@ shown to be layout-agnostic, but that reasoning ignores the cold start: `repo_pa
 from cwds alive at reindex time (there is no historical path table to seed from, `sessions/src/db.rs`),
 so on the first post-v10 reindex rule 2 cannot serve the 283 sessions and `$1,945.85` whose
 directories are already gone. Those fall to rules 3 and 4. And the dominant case resolves
-**correctly** under rule 4: the top unattributed cwd, `/home/saidler/repos/tatari-tv/clyde/main` with
+**correctly** under rule 4: the top unattributed cwd, `/home/user/repos/tatari-tv/clyde/main` with
 136 sessions, pattern-matches to `tatari-tv/clyde`, which is right. The fabrication hazard is confined
 to the smaller vanished-sibling subset (`clyde-ft` -> `tatari-tv/clyde-ft`). Dropping rule 4 would
 forfeit a correct answer for the dominant case to avoid a wrong answer in a minority one.
@@ -1105,22 +1105,22 @@ riding on an assumption.
   `~/.claude/projects/`.** Exactly four top-level keys occur, ever: `push` (703 occurrences),
   `commit` (567), `pr` (292), `branch` (58). No `merge`, `tag`, or `reset` key exists at the top
   level.
-  - `commit.kind`: `committed` (542, session `08f49ceb-a399-4bd9-8a58-4beb571f362f`), `amended`
-    (23, `cdd5a721-f1d9-46fd-8af4-2e46aa5e88d8`), `cherry-picked` (2,
-    `1968b508-3db0-41f6-8e5a-032adfcd3eb0`).
-  - `pr.action`: `created` (246, `7114f1fa-833e-46d7-9e88-c0f387fde9c9`), `commented` (22,
-    `a0c3b437-6532-4704-8d26-419c8aa06ad5`), `closed` (15, `e8afafd9-a2a8-4556-826e-269534529fc5`),
-    `edited` (3, `3cba2836-9fc8-4ab1-ba75-aed5bde79f2c`), `merged` (4,
-    `9bfe1134-f4b7-4fc0-85df-b91b22da98cc`), `ready` (2, `bb9acc7d-e16b-459e-9da0-d531ba4a3623`).
-  - `branch.action`: `rebased` (40, `6af15be6-886e-4a33-931f-9419829001bc`), `merged` (18,
-    `89371f4b-550f-4d92-96fc-152d2cd3b203`).
+  - `commit.kind`: `committed` (542, session `08f49ceb`), `amended`
+    (23, `cdd5a721`), `cherry-picked` (2,
+    `1968b508`).
+  - `pr.action`: `created` (246, `7114f1fa`), `commented` (22,
+    `a0c3b437`), `closed` (15, `e8afafd9`),
+    `edited` (3, `3cba2836`), `merged` (4,
+    `9bfe1134`), `ready` (2, `bb9acc7d`).
+  - `branch.action`: `rebased` (40, `6af15be6`), `merged` (18,
+    `89371f4b`).
   - **A merge is recorded, twice over:** `pr.action == "merged"` and `branch.action == "merged"`
     both fire live. `outcome.rs` today reads only `commit.kind` (`committed`/`cherry-picked`) and
     `pr.action == "created"`, so a PR-merged counter is a filter on a field already present in
     every transcript, not new instrumentation.
 - **2026-07-26, Phase 0: `Edit`/`Write` payload, and the two candidate counters are both
   DERIVABLE.** `Edit` `tool_use.input` carries `file_path`, `old_string`, and `new_string`
-  verbatim (confirmed live, e.g. session `0055fcaa-eca2-42c7-b8c4-d06cdb689da4`); a per-edit line
+  verbatim (confirmed live, e.g. session `0055fcaa`); a per-edit line
   delta is `new_string.lines().count() - old_string.lines().count()`, summable per session. `Write`
   `tool_use.input.content` carries the full file body as a string on every confirmed call, so its
   length is present with no extra instrumentation. **Yes** to a PR-merged counter
@@ -1156,7 +1156,7 @@ riding on an assumption.
   (cwd is `$HOME`, a temp dir, or otherwise outside the `<repo-root>/<org>/<repo>` shape rule 4
   pattern-matches). Reproduced live: `clyde report collect --since 2026-06-26 --until 2026-07-25`
   yields 1,523 sessions / `$9,450.31`; 562 have `repo: null`; splitting those 562 by whether the
-  cwd matches `^/home/saidler/repos/[^/]+/[^/]+` (rule-4 recoverable) reproduces the doc's own
+  cwd matches `^/home/user/repos/[^/]+/[^/]+` (rule-4 recoverable) reproduces the doc's own
   283 / `$1,945.85` (matches) and 279 / `$1,900.07` (matches) exactly. Restricting to precisely the
   `Edit`/`Write` calls `efficiency::outcome::union` already extracts, confirmed by a non-error
   `tool_result` (the real code path, not a looser scan that also counts `MultiEdit`/`NotebookEdit`
@@ -1165,7 +1165,7 @@ riding on an assumption.
   - **73 sessions / $1,207.92** have a UNIQUE argmax `<org>/<repo>` slug -- **this is the real rule-3
     ceiling** (26.2% of the 279 sessions, 63.6% of the $1,900.07).
   - The other **7 sessions / $159.42** tie between two-or-more equally-edited repos (e.g. session
-    `13781a0c-7efe-460a-bf6c-700b7c0a9d61` edits one file each in `tatari-tv/appsec-hiring-plan`
+    `13781a0c` edits one file each in `tatari-tv/appsec-hiring-plan`
     and `tatari-tv/appsec-screening`) and rule 3 abstains per the tie rule, falling through to
     rule 4.
   - The remaining **199 sessions / $532.73** (148 / $133.00 with no confirmed Edit/Write at all,

@@ -9,7 +9,7 @@ Running record of how the implementation diverges from or interprets
 - Renamed the XDG namespace constant `KLOD_DIR` -> `CLYDE_DIR` (`session/src/paths.rs`)
   rather than keeping the symbol name and only changing its value, so the symbol matches
   the value and greps stay honest.
-- Left the literal on-disk path `/home/saidler/repos/tatari-tv/klod/main` in
+- Left the literal on-disk path `/home/user/repos/tatari-tv/klod/main` in
   `session/src/scope/tests.rs` unchanged. That test only exercises org-based work/personal
   classification (any `tatari-tv/*` path is Work); the string reflects the real local
   checkout dir, which is still named `klod`. Renaming the GitHub repo (and thus the local
@@ -35,7 +35,7 @@ Running record of how the implementation diverges from or interprets
 ## Phase 1: Subtree-merge the four repos
 
 ### Design decisions
-- Subtree-added from the local clones (`/home/saidler/repos/tatari-tv/<repo>` `main`) rather
+- Subtree-added from the local clones (`/home/user/repos/tatari-tv/<repo>` `main`) rather
   than the GitHub remotes; the local checkouts were clean and on `main`, and a local fetch is
   faster and offline. Full history (no `--squash`), so each merge commit carries the original
   lineage as its second parent (verified: `git log <add-commit>^2` reaches the pre-merge HEAD;

@@ -17,8 +17,8 @@ const SID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 fn parsed(sid: &str) -> ParsedSession {
     ParsedSession {
         session_id: sid.to_string(),
-        cwd: Some(PathBuf::from("/home/saidler/repos/foo")),
-        project_dir: PathBuf::from("/home/saidler/.claude/projects/-home-saidler-repos-foo"),
+        cwd: Some(PathBuf::from("/home/user/repos/foo")),
+        project_dir: PathBuf::from("/home/user/.claude/projects/-home-user-repos-foo"),
         ai_title: Some("a title".to_string()),
         first_prompt: Some("hi".to_string()),
         command_name: None,

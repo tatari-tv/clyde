@@ -55,19 +55,19 @@ fn run_search(db_path: &Path, projects: &Path, terms: &[&str]) -> serde_json::Va
 fn seed_projects(projects: &Path) {
     write_jsonl(
         &projects
-            .join("-home-saidler-repos-tatari-tv-marquee")
+            .join("-home-user-repos-tatari-tv-marquee")
             .join(format!("{SID_KUBERNETES}.jsonl")),
         &[
-            r#"{"type":"user","cwd":"/home/saidler/repos/tatari-tv/marquee","gitBranch":"main","timestamp":"2026-06-21T10:00:00Z","message":{"content":"look into the kubernetes networking issue"}}"#,
+            r#"{"type":"user","cwd":"/home/user/repos/tatari-tv/marquee","gitBranch":"main","timestamp":"2026-06-21T10:00:00Z","message":{"content":"look into the kubernetes networking issue"}}"#,
             r#"{"type":"ai-title","aiTitle":"Kubernetes networking debug","sessionId":"x"}"#,
         ],
     );
     write_jsonl(
         &projects
-            .join("-home-saidler-repos-tatari-tv-loopr")
+            .join("-home-user-repos-tatari-tv-loopr")
             .join(format!("{SID_TERRAFORM}.jsonl")),
         &[
-            r#"{"type":"user","cwd":"/home/saidler/repos/tatari-tv/loopr","gitBranch":"main","timestamp":"2026-06-22T10:00:00Z","message":{"content":"migrate the terraform state bucket"}}"#,
+            r#"{"type":"user","cwd":"/home/user/repos/tatari-tv/loopr","gitBranch":"main","timestamp":"2026-06-22T10:00:00Z","message":{"content":"migrate the terraform state bucket"}}"#,
             r#"{"type":"ai-title","aiTitle":"Terraform state migration","sessionId":"y"}"#,
         ],
     );
