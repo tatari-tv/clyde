@@ -1424,6 +1424,8 @@ fn build_context_block_carries_line_counters_present_if_nonzero() {
 }
 
 #[cfg(test)]
+mod excerpt;
+#[cfg(test)]
 mod geometry;
 
 mod templates;
@@ -1438,4 +1440,6 @@ mod prior;
 mod quotable;
 #[cfg(test)]
 mod reconcile;
+#[cfg(test)]
+mod rejected;
 mod workload;

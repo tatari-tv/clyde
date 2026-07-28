@@ -209,6 +209,44 @@ fn planted_fourteen_hours_is_rejected_where_it_previously_passed() {
     );
 }
 
+/// Regression guard for the dedup this phase removed from `foreign_figures` itself (one entry per
+/// OCCURRENCE now, not per token, so `excerpt_at` can quote the exact span that was rejected). Left
+/// unguarded at the citation layer, that turns one repeated fabrication into a wall of near-identical
+/// lines. A real rejection on the `pathological` fixture (`~/.local/share/clyde/logs/report.log`,
+/// 2026-07-27T09:21:16Z) named four distinct tokens (`01`, `05`, `09`, `16`) under the OLD deduped
+/// code; had any one of those recurred densely in the artifact, per-occurrence citation (with no
+/// grouping) would have multiplied that one token into one line per hit. `reject_foreign_numbers`
+/// must still cite a repeated token exactly ONCE, name how many more times it recurred rather than
+/// dropping the count silently, and keep the message a bounded size no matter how many times the
+/// token repeats.
+#[test]
+fn a_token_repeated_past_the_cap_is_cited_once_with_the_elided_count_named() {
+    let facts = QuotableFacts::from_context_json(r#"{"totals":{"spend":"$4.12"}}"#).unwrap();
+    // 50 repeats of one fabricated token, well past any sane citation count. This exercises the
+    // RECURRENCE collapse specifically (one distinct token), separate from `MAX_CITED`'s cap on how
+    // many DISTINCT tokens get a full excerpt.
+    let prose = vec!["the count was 77 that day."; 50].join(" ");
+
+    let err = reject_foreign_numbers("markdown", &prose, &facts).unwrap_err();
+    let msg = format!("{err}");
+
+    assert_eq!(
+        msg.matches("\"77\"").count(),
+        1,
+        "a token repeated 50 times must be cited exactly once, not once per occurrence: {msg}"
+    );
+    assert!(
+        msg.contains("and 49 more occurrence"),
+        "the elided repeat count must be named rather than silently dropped: {msg}"
+    );
+    assert!(
+        msg.len() < 1000,
+        "one repeated token must not balloon the message regardless of how many times it repeats: \
+         {} bytes",
+        msg.len()
+    );
+}
+
 /// Phase 10 success criterion 3: three known-good artifacts, all figures passing. One markdown
 /// narrative, one HTML artifact scanned as the renderer scans it (visible text only), and one
 /// citation-heavy fragment. Every one of them cites an UNTITLED session by `short-id` and carries a
@@ -234,9 +272,8 @@ fn all_three_known_good_artifacts_pass() {
         PR 615 (https://github.com/tatari-tv/clyde/pull/615).\n\n\
         Unit costs: $10.50 per commit, $10.50 per PR, $10.50 per active day, with a $10.00 \
         median session and a $18.00 p90.\n";
-    assert_eq!(
-        facts.foreign_figures(markdown),
-        Vec::<String>::new(),
+    assert!(
+        facts.foreign_figures(markdown).is_empty(),
         "known-good artifact 1 (markdown narrative) must pass"
     );
 
@@ -249,9 +286,8 @@ fn all_three_known_good_artifacts_pass() {
         <table><tr><td>tatari-tv/clyde</td><td>20</td><td>$210.00</td><td>830,570</td></tr></table>\
         <p>Untitled session a14bc3e1 ($16.00) shipped #615.</p>\
         <div class=\"bar\" style=\"width: 100%\"></div></body></html>";
-    assert_eq!(
-        facts.foreign_figures(&visible_text(html)),
-        Vec::<String>::new(),
+    assert!(
+        facts.foreign_figures(&visible_text(html)).is_empty(),
         "known-good artifact 2 (html) must pass"
     );
 
@@ -261,9 +297,8 @@ fn all_three_known_good_artifacts_pass() {
         7 files edited) and a14bc3d3 (\"ship the thing 1\", $2.00), commit \
         a706dd2f4d197e6fad9f769ae33abd7b00000000 and its short form a706dd2, PRs #600 and #601, \
         tagged render and guard, spanning 2026-04-01T09:14:22Z to 2026-04-01T11:02:41Z.\n";
-    assert_eq!(
-        facts.foreign_figures(citations),
-        Vec::<String>::new(),
+    assert!(
+        facts.foreign_figures(citations).is_empty(),
         "known-good artifact 3 (citations) must pass"
     );
 }

@@ -293,11 +293,12 @@ fn charts_land_under_aggregates_and_only_their_labels_are_quotable() {
     assert!(ctx.json.contains("\"charts\":{\"by-day-spend\":"));
     assert!(ctx.json.contains("\"by-day-sessions\":"));
     // A y label is a display string the prose may state.
-    assert_eq!(ctx.facts.foreign_figures(&chart.y_labels[0]), Vec::<String>::new());
+    assert!(ctx.facts.foreign_figures(&chart.y_labels[0]).is_empty());
     // The polyline's coordinates are not. `290` is the baseline y of every zero-spend day and
     // appears in no display string, so stating it in prose is a fabrication.
+    let foreign = ctx.facts.foreign_figures("the chart bottoms out at 290");
     assert_eq!(
-        ctx.facts.foreign_figures("the chart bottoms out at 290"),
+        foreign.iter().map(|f| f.token.clone()).collect::<Vec<_>>(),
         vec!["290".to_string()],
         "a polyline coordinate must never become a quotable prose figure"
     );

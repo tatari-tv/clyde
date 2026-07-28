@@ -149,6 +149,19 @@ pub(crate) struct QuotableFacts {
     geometry: BTreeSet<String>,
 }
 
+/// One number in the prose no quotable fact licenses, carrying the BYTE span of the exact
+/// occurrence the regex matched. Before this, a rejection named only the token and the render guard
+/// re-searched the whole document for a `starts_with` match to build its excerpt -- which is how
+/// `500` quoted a line carrying the licensed `$1,500.08` and `100` quoted an unrelated model id. The
+/// span travels with the token so the caller quotes the actual violating occurrence instead of
+/// guessing at one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ForeignFigure {
+    pub(crate) token: String,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
 impl QuotableFacts {
     /// Derive the sets from a serialized context block. Re-parses the JSON rather than walking the
     /// `ContextBlock` before serialization so the sets are taken from EXACTLY the bytes the model
@@ -190,7 +203,10 @@ impl QuotableFacts {
     /// inside a verbatim occurrence of an identifier. The whole-token rule is what keeps the
     /// identifier set from re-widening the whitelist: a cited PR `#1` masks one byte of a fabricated
     /// `14`, which leaves the token only partly masked and therefore still checked.
-    pub(crate) fn foreign_figures(&self, prose: &str) -> Vec<String> {
+    ///
+    /// One entry per rejected OCCURRENCE, in match order, not deduped by token: each carries the
+    /// exact span it was found at, so a caller quoting the sentence never has to re-locate it.
+    pub(crate) fn foreign_figures(&self, prose: &str) -> Vec<ForeignFigure> {
         debug!(
             "quotable::foreign_figures: prose_bytes={} figures={} identifiers={}",
             prose.len(),
@@ -198,7 +214,7 @@ impl QuotableFacts {
             self.identifiers.len()
         );
         let masked = self.mask(prose);
-        let mut foreign = BTreeSet::new();
+        let mut foreign = Vec::new();
         for m in numeric_pattern().find_iter(prose) {
             let token = normalize(m.as_str());
             if self.figures.contains(&token) {
@@ -208,10 +224,14 @@ impl QuotableFacts {
                 trace!("quotable::foreign_figures: token={token} exempt inside a cited identifier");
                 continue;
             }
-            foreign.insert(token);
+            foreign.push(ForeignFigure {
+                token,
+                start: m.start(),
+                end: m.end(),
+            });
         }
         debug!("quotable::foreign_figures: foreign={}", foreign.len());
-        foreign.into_iter().collect()
+        foreign
     }
 
     /// Count of distinct figure tokens: the narrowing measurement against the pre-change whitelist

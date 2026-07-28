@@ -441,8 +441,8 @@ Produce ONE complete, self-contained HTML document.
 - Month over month, when `prior` is present: if `prior.predates-fields` is present, lead with that
   sentence verbatim and say nothing that would require `prior.outcomes` (it is absent for exactly
   this reason). If `prior.comparable` is `false`, state the length mismatch (`prior.days` against
-  `period.days`) before any other comparison. Otherwise, two to four factual bullets or KPI deltas
-  comparing this period against `prior` (both figures copied, never subtracted): spend and session
+  `period.days`) before any other comparison. Otherwise, two to four factual bullets comparing this
+  period against `prior` (both figures copied, never subtracted): spend and session
   totals side by side, repos that newly appeared or wound down, model-mix shifts. State facts, not
   verdicts; no "trend is improving" language.
 - The Reconciliation card is ALWAYS present, flag or no flag; `reconciliation-status` is shown

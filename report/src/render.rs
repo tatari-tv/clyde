@@ -25,6 +25,8 @@ use std::process::{Command, Output, Stdio};
 
 mod reconciliation;
 use reconciliation::{build_reconciliation_view, no_reconcile_warning};
+mod rejected;
+use rejected::{generate_then_route, guarded};
 mod template;
 mod workload;
 use template::{load_template, to_markdown};
@@ -66,15 +68,19 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
 
     // Branch once at the source: the html-source family (`Html`, `MarqueeHtml`) never touches
     // pandoc; the markdown-source family is the unchanged template-or-opus pipeline. Generation
-    // (live API) and routing (write/publish an already-generated artifact string) are separated so
-    // routing is unit-testable with injected strings — see `route_html_artifact` /
-    // `route_markdown_artifact` and their tests.
+    // and routing are separated so routing is unit-testable with injected strings -- see
+    // `route_html_artifact`/`route_markdown_artifact` -- and both go through `generate_then_route`,
+    // which owns the "a rejected render writes nothing to the output path" contract (Phase 2, AC3).
     let dest = if cfg.format.is_html_source() {
-        let html = generate_html(cfg, &report, pricing)?;
-        route_html_artifact(&html, &report, cfg)?
+        generate_then_route(
+            || generate_html(cfg, &report, pricing),
+            |html| route_html_artifact(html, &report, cfg),
+        )?
     } else {
-        let markdown = generate_markdown(cfg, &report, pricing)?;
-        route_markdown_artifact(&markdown, &report, cfg)?
+        generate_then_route(
+            || generate_markdown(cfg, &report, pricing),
+            |markdown| route_markdown_artifact(markdown, &report, cfg),
+        )?
     };
 
     Ok(RunResult {
@@ -312,11 +318,13 @@ pub(crate) fn markdown_from_context(context: &RenderContext, prompt: &str, pins:
     // formatted, or the digits inside an identifier the prose cites verbatim. Not "any numeric token
     // anywhere in the serialized block", which pre-approved every small integer that happened to
     // fall inside a session id or a sha (design "Guard weakness (10)").
-    reject_foreign_numbers("markdown", &prose, &context.facts)?;
-    // ...and the class the VALUE guard structurally cannot reach: a fabricated unit on a licensed
-    // number ("14 hours of engineering time", where 14 is a real session count somewhere in the
-    // window). Claim-shaped, not value-shaped.
-    claim::reject_fabricated_claims("markdown", &prose, &context.facts)?;
+    guarded("markdown", "md", &prose, || {
+        reject_foreign_numbers("markdown", &prose, &context.facts)?;
+        // ...and the class the VALUE guard structurally cannot reach: a fabricated unit on a
+        // licensed number ("14 hours of engineering time", where 14 is a real session count
+        // somewhere in the window). Claim-shaped, not value-shaped.
+        claim::reject_fabricated_claims("markdown", &prose, &context.facts)
+    })?;
     Ok(prose)
 }
 
@@ -357,15 +365,17 @@ pub(crate) fn html_from_context(context: &RenderContext, prompt: &str, pins: Pin
     // (style/script blocks and tag markup stripped). Every data figure a reader sees must be
     // licensed by a quotable fact; a fabricated figure is rejected.
     let visible = visible_text(&html);
-    reject_foreign_numbers("html", &visible, &context.facts)?;
-    // The claim-shaped half, over the same visible text: a fabricated unit rides on a licensed
-    // number, so the value guard passes it and only the claim guard sees it.
-    claim::reject_fabricated_claims("html", &visible, &context.facts)?;
-    // ...and the numbers `visible_text` throws away are exactly the ones Phase 11 unlocked. The
-    // prose guard has never seen an ATTRIBUTE, so the chart unlock gets its own allowlist over the
-    // SVG subtree: permitted elements, permitted attributes, and every digit-bearing value matched
-    // verbatim against the geometry the binary computed.
-    geometry::reject_foreign_geometry("html", &html, &context.facts)?;
+    guarded("html", "html", &html, || {
+        reject_foreign_numbers("html", &visible, &context.facts)?;
+        // The claim-shaped half, over the same visible text: a fabricated unit rides on a licensed
+        // number, so the value guard passes it and only the claim guard sees it.
+        claim::reject_fabricated_claims("html", &visible, &context.facts)?;
+        // ...and the numbers `visible_text` throws away are exactly the ones Phase 11 unlocked. The
+        // prose guard has never seen an ATTRIBUTE, so the chart unlock gets its own allowlist over
+        // the SVG subtree: permitted elements, permitted attributes, and every digit-bearing value
+        // matched verbatim against the geometry the binary computed.
+        geometry::reject_foreign_geometry("html", &html, &context.facts)
+    })?;
     Ok(html)
 }
 
@@ -441,47 +451,166 @@ fn reject_foreign_numbers(kind: &str, prose: &str, facts: &QuotableFacts) -> Res
     if !foreign.is_empty() {
         // Each token WITH the sentence it appeared in. A bare token list names the number and not
         // the claim, so the operator has to re-run a paid render just to see where it was written;
-        // the excerpt is what makes "fix this" actionable on the first read.
-        let cited: Vec<String> = foreign
-            .iter()
-            .map(|t| format!("{t:?} in {:?}", excerpt(prose, t)))
-            .collect();
+        // the excerpt is what makes "fix this" actionable on the first read. `excerpt_at` quotes the
+        // SPAN this fact's own regex match landed on, never a fresh substring search over the whole
+        // document (which is how `500` used to quote a line carrying the licensed `$1,500.08`).
+        //
+        // `group_by_label` collapses repeats of the SAME token to one cited excerpt: the old
+        // deduped `BTreeSet` cited a repeated fabrication once, and per-occurrence spans must not
+        // regress that to one near-identical line per hit. `cite` caps how many DISTINCT tokens get
+        // a full excerpt, naming whatever it elides rather than dropping it silently.
+        let groups = group_by_label(&foreign, |f| f.token.as_str(), |f| (f.start, f.end), |_| ());
+        let cited = cite(&groups, prose, |g, excerpt| format!("{:?} in {excerpt:?}", g.label));
         log::warn!(
             "render::reject_foreign_numbers: {kind} path REJECTED -- generated prose stated \
-             figure(s) no quotable fact licenses: {}",
-            cited.join("; ")
+             figure(s) no quotable fact licenses: {cited}"
         );
         bail!(
-            "{kind} rendering introduced number(s) absent from the computed facts: {} -- the \
-             render-invents-nothing contract was violated; refusing to emit the artifact",
-            cited.join("; ")
+            "{kind} rendering introduced number(s) absent from the computed facts: {cited} -- the \
+             render-invents-nothing contract was violated; refusing to emit the artifact"
         );
     }
     debug!("render::reject_foreign_numbers: kind={kind} clean");
     Ok(())
 }
 
+/// Distinct labels (a foreign figure's token, a claim guard's matched text) quoted in full in one
+/// rejection message. Grouping by label already collapses repeats of the SAME fabrication to one
+/// excerpt each; this bounds the OTHER axis -- a render that invents many DIFFERENT numbers -- so the
+/// message stays a legible list rather than a wall of text when a single rejection carries dozens of
+/// distinct tokens. A real rejection on the `pathological` fixture (`report.log`, 2026-07-27T09:21:16Z)
+/// carried four distinct tokens in one message; 8 leaves headroom above the widest rejection this
+/// crate has actually logged without inviting unbounded growth. [`cite`] never drops what it elides
+/// silently, so a genuinely wide fabrication still tells the operator how wide.
+const MAX_CITED: usize = 8;
+
+/// One label's occurrences collapsed: the label itself, how many times it recurred, the span of its
+/// FIRST occurrence (what a citation quotes), and whatever else the caller needs per label (a claim's
+/// broken rule; `()` when there is nothing to carry, as the value guard has).
+pub(crate) struct Occurrence<'a, E> {
+    pub(crate) label: &'a str,
+    pub(crate) count: usize,
+    start: usize,
+    end: usize,
+    pub(crate) extra: E,
+}
+
+/// Collapse `items` (in scan order) into one [`Occurrence`] per distinct label, first-seen order,
+/// counting repeats. `label_of` extracts the grouping key, `span_of` the first occurrence's excerpt
+/// span, `extra_of` whatever per-label data the caller's citation format needs.
+///
+/// Shared by [`reject_foreign_numbers`] (over [`crate::quotable::ForeignFigure`]) and
+/// `claim::reject_fabricated_claims` (over `claim::Violation`), which otherwise duplicate the exact
+/// same "many entries but legible" tradeoff over two different violation shapes.
+///
+/// O(items * distinct labels): linear search per item against the groups seen so far, not a hash map.
+/// This crate has never carried a violation list long enough for that to matter, and a hash map would
+/// sacrifice the deterministic, scan-order output every rejection message relies on for "the first
+/// thing the model said" ordering.
+pub(crate) fn group_by_label<'a, T, E>(
+    items: &'a [T],
+    label_of: impl Fn(&'a T) -> &'a str,
+    span_of: impl Fn(&'a T) -> (usize, usize),
+    extra_of: impl Fn(&'a T) -> E,
+) -> Vec<Occurrence<'a, E>> {
+    let mut groups: Vec<Occurrence<'a, E>> = Vec::new();
+    for item in items {
+        let label = label_of(item);
+        if let Some(existing) = groups.iter_mut().find(|g| g.label == label) {
+            existing.count += 1;
+            continue;
+        }
+        let (start, end) = span_of(item);
+        groups.push(Occurrence {
+            label,
+            count: 1,
+            start,
+            end,
+            extra: extra_of(item),
+        });
+    }
+    groups
+}
+
+/// Render `groups` into the semicolon-joined citation list a rejection message quotes: one entry per
+/// label, up to [`MAX_CITED`], each formatted by the caller's `line` closure over the label's excerpt
+/// and `extra`. A label that recurred gets an "(and N more occurrences)" tail; when [`MAX_CITED`]
+/// elides whole labels, a trailing "and N more citations not shown" says so. Never a silent cap: what
+/// is elided is always named, the same principle `excerpt_at` exists to serve for the span itself.
+pub(crate) fn cite<E>(
+    groups: &[Occurrence<'_, E>],
+    prose: &str,
+    mut line: impl FnMut(&Occurrence<'_, E>, &str) -> String,
+) -> String {
+    let shown = groups.len().min(MAX_CITED);
+    let mut cited: Vec<String> = groups[..shown]
+        .iter()
+        .map(|g| {
+            let excerpt = excerpt_at(prose, g.start, g.end);
+            let mut entry = line(g, &excerpt);
+            if g.count > 1 {
+                let more = g.count - 1;
+                entry.push_str(&format!(
+                    " (and {more} more occurrence{})",
+                    if more == 1 { "" } else { "s" }
+                ));
+            }
+            entry
+        })
+        .collect();
+    if groups.len() > shown {
+        let elided = groups.len() - shown;
+        cited.push(format!(
+            "and {elided} more citation{} not shown",
+            if elided == 1 { "" } else { "s" }
+        ));
+    }
+    cited.join("; ")
+}
+
 /// Chars of prose kept on each side of a rejected figure, so the excerpt reads as a claim rather
 /// than a fragment.
 const EXCERPT_RADIUS: usize = 60;
 
-/// The prose around `needle`'s first occurrence, char-based (crate lint) and whitespace-collapsed so
-/// a wrapped markdown paragraph reads as one line in the error. Empty when the token cannot be
-/// located verbatim (a comma-grouped figure is normalized before comparison, so this can happen).
+/// The prose around the BYTE span `start..end`, whitespace-collapsed so a wrapped markdown
+/// paragraph reads as one line in the error. `start`/`end` arrive from a regex match on `prose`
+/// (both quotable-facts and the claim guard hand back the span their own scan found), so they are
+/// BYTE offsets on a valid char boundary; the radius is then applied in CHARS, never bytes, per the
+/// crate's no-string-slice lint.
+///
+/// This replaces a prior `excerpt(prose, needle)` that re-searched the WHOLE document for `needle`'s
+/// first `starts_with` match, with no word-boundary check and no connection to the span the guard
+/// actually rejected -- which is how `500` quoted a line carrying the licensed `$1,500.08`, and `100`
+/// quoted an unrelated model id. Taking the span directly removes the re-search, and with it the bug
+/// class: there is no longer a second, independent place in the prose the excerpt could land on.
 ///
 /// `pub(crate)` for the claim guard, whose rejection is the same kind of hard render failure and so
 /// owes the operator the same "here is the sentence" excerpt.
-pub(crate) fn excerpt(prose: &str, needle: &str) -> String {
-    let chars: Vec<char> = prose.chars().collect();
-    let needle_chars: Vec<char> = needle.chars().collect();
-    let at = (0..chars.len().saturating_sub(needle_chars.len().saturating_sub(1)))
-        .find(|&i| chars[i..].starts_with(&needle_chars[..]));
-    let Some(at) = at else {
-        return String::new();
-    };
-    let start = at.saturating_sub(EXCERPT_RADIUS);
-    let end = (at + needle_chars.len() + EXCERPT_RADIUS).min(chars.len());
-    chars[start..end]
+pub(crate) fn excerpt_at(prose: &str, start: usize, end: usize) -> String {
+    // Map the BYTE span onto CHAR positions in one `char_indices` pass -- never a byte slice on
+    // `prose` itself, including for the matched span, so a multibyte character anywhere before the
+    // match can never misalign the window (the exact bug `eval/mechanical.rs`'s `em_dash` comment
+    // documents: `char_indices` yields byte offsets, and treating them as char offsets slides the
+    // window forward on any non-ASCII text ahead of the match).
+    let mut chars: Vec<char> = Vec::new();
+    let mut start_char = None;
+    let mut end_char = None;
+    for (byte_at, ch) in prose.char_indices() {
+        if byte_at == start {
+            start_char = Some(chars.len());
+        }
+        if byte_at == end {
+            end_char = Some(chars.len());
+        }
+        chars.push(ch);
+    }
+    // `end` lands past the last char when the match runs to the end of `prose`.
+    let start_char = start_char.unwrap_or(chars.len());
+    let end_char = end_char.unwrap_or(chars.len());
+
+    let window_start = start_char.saturating_sub(EXCERPT_RADIUS);
+    let window_end = (end_char + EXCERPT_RADIUS).min(chars.len());
+    chars[window_start..window_end]
         .iter()
         .collect::<String>()
         .split_whitespace()

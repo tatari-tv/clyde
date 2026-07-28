@@ -108,9 +108,36 @@ pub fn load_settings(settings_path: &Path, settings_local_path: &Path) -> Result
 /// Walk up from `start_dir` looking for `.claude/settings.local.json`.
 /// Falls back to `~/.claude/settings.local.json` if no project-level file found.
 /// Only matches regular files so a directory named `settings.local.json` is skipped.
+///
+/// The walk stops AT (never inside) a shared root: the OS temp dir or `$HOME`. Neither is ever a
+/// project - a stray `.claude/settings.local.json` dropped directly in `/tmp` or `$HOME` must not
+/// be laundered as this invocation's project-level settings just because some ancestor of
+/// `start_dir` happens to be one of them. A project genuinely nested under one of those roots
+/// (e.g. a repo checked out at `/tmp/some-project`) is unaffected: only the boundary directory
+/// itself is skipped, not its descendants.
 pub fn discover_settings_local(start_dir: &Path) -> PathBuf {
+    let home = dirs::home_dir();
+    let boundary: Vec<PathBuf> = [Some(std::env::temp_dir()), home.clone()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let fallback = home
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".claude")
+        .join("settings.local.json");
+    discover_settings_local_bounded(start_dir, &boundary, fallback)
+}
+
+/// Core walk, parameterized on the boundary roots and the fallback path so the boundary
+/// enforcement can be pinned in tests without mutating the real `$TMPDIR`/`$HOME` (which would
+/// race every other test's own `TempDir::new()` in the same process). `discover_settings_local`
+/// is the only real caller and always wires in the true OS temp dir and home dir.
+fn discover_settings_local_bounded(start_dir: &Path, boundary: &[PathBuf], fallback: PathBuf) -> PathBuf {
     let mut dir = start_dir.to_path_buf();
     loop {
+        if boundary.iter().any(|b| b == &dir) {
+            break;
+        }
         let candidate = dir.join(".claude").join("settings.local.json");
         if candidate.is_file() {
             return candidate;
@@ -120,10 +147,7 @@ pub fn discover_settings_local(start_dir: &Path) -> PathBuf {
             None => break,
         }
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".claude")
-        .join("settings.local.json")
+    fallback
 }
 
 fn parse_settings_file(path: &Path) -> Result<SettingsFile> {
@@ -204,6 +228,52 @@ mod tests {
             .join(".claude")
             .join("settings.local.json");
         assert_eq!(result, expected);
+    }
+
+    /// BITES: a `.claude/settings.local.json` sitting directly in a shared/system root (the OS
+    /// temp dir here, standing in for the boundary) must never be treated as this invocation's
+    /// project settings, even though it is a real ancestor of `start_dir`. Drop the boundary check
+    /// from `discover_settings_local_bounded` and this returns the stray file instead of falling
+    /// back - which is exactly the bug a real `/tmp/.claude/settings.local.json` (created by some
+    /// unrelated tool or session rooted at `/tmp`) would trigger for any invocation whose cwd
+    /// lives under `/tmp`, silently discarding the caller's real project-level settings.
+    #[test]
+    fn discover_stops_at_a_shared_boundary_root() {
+        let shared_root = TempDir::new().expect("temp");
+        let stray_claude = shared_root.path().join(".claude");
+        std::fs::create_dir_all(&stray_claude).expect("mkdir");
+        std::fs::write(stray_claude.join("settings.local.json"), r#"{"permissions":{}}"#).expect("write");
+
+        let start = shared_root.path().join("nested").join("cwd");
+        std::fs::create_dir_all(&start).expect("mkdir sub");
+
+        let boundary = vec![shared_root.path().to_path_buf()];
+        let fallback = PathBuf::from("/fallback/settings.local.json");
+
+        let found = discover_settings_local_bounded(&start, &boundary, fallback.clone());
+        assert_eq!(
+            found, fallback,
+            "the boundary root's own .claude/settings.local.json must never be matched"
+        );
+    }
+
+    /// A project genuinely nested under a boundary root (e.g. a repo checked out under `/tmp`) is
+    /// unaffected: only the boundary directory itself is skipped, never its descendants.
+    #[test]
+    fn discover_still_finds_a_project_nested_under_a_boundary_root() {
+        let shared_root = TempDir::new().expect("temp");
+        let project = shared_root.path().join("real-project");
+        let claude_dir = project.join(".claude");
+        std::fs::create_dir_all(&claude_dir).expect("mkdir");
+        let expected = claude_dir.join("settings.local.json");
+        std::fs::write(&expected, r#"{"permissions":{}}"#).expect("write");
+
+        let start = project.join("src");
+        std::fs::create_dir_all(&start).expect("mkdir sub");
+
+        let boundary = vec![shared_root.path().to_path_buf()];
+        let found = discover_settings_local_bounded(&start, &boundary, PathBuf::from("/fallback"));
+        assert_eq!(found, expected);
     }
 
     #[test]

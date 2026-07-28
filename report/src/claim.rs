@@ -35,12 +35,17 @@ use std::sync::OnceLock;
 
 use crate::quotable::QuotableFacts;
 
-/// One rejected claim: what matched, and which rule it broke. Typed rather than a formatted string,
-/// so the caller composes the operator-facing error instead of re-parsing one.
+/// One rejected claim: what matched, which rule it broke, and the BYTE span of the capture, so the
+/// caller quotes the actual clause via `render::excerpt_at` rather than re-searching the prose for
+/// the matched text (the same span-not-substring fix `QuotableFacts::ForeignFigure` carries).
+/// Typed rather than a formatted string, so the caller composes the operator-facing error instead of
+/// re-parsing one.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Violation {
     pub text: String,
     pub rule: &'static str,
+    pub start: usize,
+    pub end: usize,
 }
 
 const DURATION_RULE: &str = "no field in the context block is denominated in that unit, so the \
@@ -66,27 +71,20 @@ pub(crate) fn reject_fabricated_claims(kind: &str, prose: &str, facts: &Quotable
         return Ok(());
     }
     // The matched text WITH the sentence around it, for the same reason the foreign-number guard
-    // quotes an excerpt: a bare match names the phrase and not the claim it sits inside.
-    let cited: Vec<String> = violations
-        .iter()
-        .map(|v| {
-            format!(
-                "{:?} in {:?} -- {}",
-                v.text,
-                crate::render::excerpt(prose, &v.text),
-                v.rule
-            )
-        })
-        .collect();
+    // quotes an excerpt: a bare match names the phrase and not the claim it sits inside. Grouped and
+    // capped by `render::group_by_label`/`render::cite`, the same machinery the value guard uses, so
+    // a claim repeated many times over one artifact does not produce one line per occurrence.
+    let groups = crate::render::group_by_label(&violations, |v| v.text.as_str(), |v| (v.start, v.end), |v| v.rule);
+    let cited = crate::render::cite(&groups, prose, |g, excerpt| {
+        format!("{:?} in {excerpt:?} -- {}", g.label, g.extra)
+    });
     log::warn!(
         "claim::reject_fabricated_claims: {kind} path REJECTED -- generated prose made \
-         fabricated claim(s): {}",
-        cited.join("; ")
+         fabricated claim(s): {cited}"
     );
     bail!(
-        "{kind} rendering made claim(s) the context block cannot support: {} -- refusing to emit \
-         the artifact",
-        cited.join("; ")
+        "{kind} rendering made claim(s) the context block cannot support: {cited} -- refusing to emit \
+         the artifact"
     );
 }
 
@@ -129,6 +127,8 @@ pub(crate) fn fabricated_claims(prose: &str, facts: &QuotableFacts) -> Vec<Viola
             out.push(Violation {
                 text: claim.as_str().to_string(),
                 rule,
+                start: claim.start(),
+                end: claim.end(),
             });
         }
     }

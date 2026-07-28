@@ -74,6 +74,23 @@ fn both_templates_use_the_same_section_titles() {
         "report-html.pmt must use `Forward-Looking`, the name report.pmt uses"
     );
 }
+/// `report-html.pmt` asked the model for "KPI deltas" comparing this period against `prior` while
+/// forbidding it, in the same clause, from subtracting the two figures it was handed (Hard
+/// prohibition 1). A delta IS a subtraction, so the instruction contradicted itself on the one path
+/// that failed 100% of its `--prior` renders. `report.pmt` never carried the word and needs no
+/// change: its Month over Month clause already asks for the figures "side by side (both copied,
+/// never subtracted)".
+#[test]
+fn report_html_no_longer_asks_for_kpi_deltas() {
+    assert!(
+        !DEFAULT_HTML_PROMPT.contains("KPI deltas"),
+        "report-html.pmt must not ask for a KPI delta it forbids computing"
+    );
+    assert!(
+        DEFAULT_HTML_PROMPT.contains("both figures copied, never subtracted"),
+        "report-html.pmt must keep the side-by-side, never-subtracted instruction"
+    );
+}
 /// Both templates must forbid asserting a reporting CADENCE. The window is whatever `--since` /
 /// `--until` made it, and the context carries no recurrence, so a render that says "this recurring
 /// monthly report" states a fact nobody supplied. The prompts USED to assert it outright ("This is a

@@ -41,6 +41,13 @@ fn facts() -> QuotableFacts {
     QuotableFacts::from_context_json(context()).unwrap()
 }
 
+/// The rejected tokens only, in the order `foreign_figures` found them (match order, not sorted).
+/// Most assertions in this file care WHICH numbers were rejected, not the exact span; the span
+/// itself is exercised by the excerpt tests in `render/tests/excerpt.rs`.
+fn tokens(foreign: &[ForeignFigure]) -> Vec<String> {
+    foreign.iter().map(|f| f.token.clone()).collect()
+}
+
 /// THE phase criterion. A fabricated "14 hours of engineering time" is rejected, and the assertion
 /// that makes the test bite: the PRE-CHANGE whitelist contains `14` (it falls inside the `a14bc3d2`
 /// short-id and the commit sha), so the old guard passed this exact sentence. Revert the guard to
@@ -51,7 +58,11 @@ fn planted_hours_claim_is_rejected_where_the_pre_change_whitelist_passed() {
     let planted = "The window saved roughly 14 hours of engineering time.";
 
     let foreign = facts.foreign_figures(planted);
-    assert_eq!(foreign, vec!["14".to_string()], "the planted figure must be named");
+    assert_eq!(
+        tokens(&foreign),
+        vec!["14".to_string()],
+        "the planted figure must be named"
+    );
 
     assert!(
         all_numeric_tokens(context()).contains("14"),
@@ -64,7 +75,7 @@ fn planted_hours_claim_is_rejected_where_the_pre_change_whitelist_passed() {
 #[test]
 fn fabricated_multiplier_is_rejected() {
     let foreign = facts().foreign_figures("Throughput ran 3x the prior period.");
-    assert_eq!(foreign, vec!["3".to_string()]);
+    assert_eq!(tokens(&foreign), vec!["3".to_string()]);
 }
 
 /// False-positive case 1: an UNTITLED session cited by `short-id`. The id's digits are exempt
@@ -120,7 +131,7 @@ fn commit_sha_and_session_date_citations_pass() {
 #[test]
 fn a_partial_identifier_overlap_does_not_exempt_a_longer_number() {
     let foreign = facts().foreign_figures("PR 62 shipped 624 files.");
-    assert_eq!(foreign, vec!["624".to_string()]);
+    assert_eq!(tokens(&foreign), vec!["624".to_string()]);
 }
 
 /// Free text is citable but never quotable as a figure: the `14` inside a session `summary` does
@@ -135,7 +146,7 @@ fn a_number_inside_free_text_is_citable_but_not_a_figure() {
         "a verbatim summary citation passes"
     );
     assert_eq!(
-        facts.foreign_figures("The team reclaimed 14 whitelisted tokens."),
+        tokens(&facts.foreign_figures("The team reclaimed 14 whitelisted tokens.")),
         vec!["14".to_string()],
         "the same digits, restated as the artifact's own figure, do not"
     );
@@ -186,7 +197,10 @@ fn geometry_is_kept_out_of_the_prose_whitelist() {
         facts.figures.contains("63.5") && facts.licenses_geometry("63.5"),
         "a bar proportion is BOTH a quotable percent and legitimate geometry"
     );
-    assert_eq!(facts.foreign_figures("The chart peaked at 88."), vec!["88".to_string()]);
+    assert_eq!(
+        tokens(&facts.foreign_figures("The chart peaked at 88.")),
+        vec!["88".to_string()]
+    );
 }
 
 /// No blanket small-integer exemption: `0..=100` is NOT seeded, so an unlicensed small integer is
@@ -196,9 +210,9 @@ fn small_integers_are_not_blanket_exempt() {
     let facts = QuotableFacts::from_context_json(r#"{"totals":{"spend":"$4.12"}}"#).unwrap();
     let foreign = facts.foreign_figures("Roughly 7 engineers, 14 hours, 99 sessions.");
     assert_eq!(
-        foreign,
-        vec!["14".to_string(), "7".to_string(), "99".to_string()],
-        "every unlicensed small integer is reported"
+        tokens(&foreign),
+        vec!["7".to_string(), "14".to_string(), "99".to_string()],
+        "every unlicensed small integer is reported, in the order it was found"
     );
 }
 
@@ -278,11 +292,11 @@ fn a_percentile_label_licenses_its_ordinal_spelling_and_not_a_bare_number() {
         QuotableFacts::from_context_json(r#"{"unit-costs":{"session-spend-p50":"$7.29","session-spend-p90":"$8.79"}}"#)
             .unwrap();
     assert_eq!(
-        facts.foreign_figures("The median was $7.29 and the 90th percentile $8.79."),
+        tokens(&facts.foreign_figures("The median was $7.29 and the 90th percentile $8.79.")),
         Vec::<String>::new()
     );
     assert_eq!(
-        facts.foreign_figures("The window ran for 90 days."),
+        tokens(&facts.foreign_figures("The window ran for 90 days.")),
         vec!["90".to_string()],
         "a bare 90 is still unlicensed; only the ordinal SPELLING of the label is"
     );
@@ -325,7 +339,7 @@ fn a_digit_in_a_repo_slug_is_not_a_licensed_figure() {
 
     let foreign = facts.foreign_figures("The window saved roughly 14 hours of engineering time.");
     assert_eq!(
-        foreign,
+        tokens(&foreign),
         vec!["14".to_string()],
         "a digit run inside a repo slug must not license a bare figure elsewhere in the prose"
     );
