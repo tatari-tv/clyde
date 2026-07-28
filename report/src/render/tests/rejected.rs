@@ -135,3 +135,64 @@ fn a_guard_rejection_writes_nothing_to_the_output_path() {
         "route must never execute when generate returns Err: the output path must not exist on disk"
     );
 }
+
+/// Acceptance Criterion 3's last clause, at the WIRING level: "The render still fails and still
+/// writes nothing to the output path."
+///
+/// Three tests cover this clause between them, and each sees a failure the others cannot:
+/// - `a_guard_rejection_writes_nothing_to_the_output_path`, directly above, pins the
+///   `generate_then_route` HELPER: given a failing generate, route never runs.
+/// - `render_run_gates_on_schema_version_before_touching_the_api` (`render/tests.rs`) pins a
+///   failure BEFORE generation.
+/// - this one pins that `run` is actually WIRED to that helper, with generation on the failing
+///   side. Inline the wrong order back into `run` and the helper test still passes green while
+///   real renders start publishing rejected artifacts. That gap is what this closes.
+///
+/// It drives the real `run` with a real `RenderConfig` and a real output path. A missing
+/// `--template` is the cheapest generation failure that needs no transport: the guards themselves
+/// sit behind a live LLM call (`markdown_from_context` resolves its transport internally via
+/// `resolve_selected_transport`), so a genuine end-to-end rejection would need a transport injected
+/// into the hot render path, a refactor this branch deliberately did not take on.
+///
+/// BITES: hoist routing above generation in `run` (route first, generate second) and the existence
+/// assertion fails.
+#[test]
+fn a_generation_failure_writes_nothing_to_the_output_path() {
+    let tmp = TempDir::new().unwrap();
+    let json_path = tmp.path().join("claude-report.json");
+    let out = tmp.path().join("out.md");
+    fs::write(&json_path, serde_json::to_string_pretty(&sample_report()).unwrap()).unwrap();
+
+    let cfg = RenderConfig {
+        llm: crate::cli::Llm::Auto,
+        markdown_model: "claude-opus-4-8".into(),
+        html_model: "claude-opus-4-8".into(),
+        markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        html_max_output_tokens: common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
+        input: json_path,
+        output: Some(out.clone()),
+        format: crate::cli::Format::Markdown,
+        space: None,
+        template: Some(tmp.path().join("this-template-does-not-exist.md")),
+        prompt: None,
+        include_tradeoffs: false,
+        pdf_engine: "wkhtmltopdf".into(),
+        outliers: crate::aggregate::DEFAULT_OUTLIERS,
+        prior: None,
+        reconcile: None,
+        reconcile_user: None,
+    };
+
+    let err = run(&cfg, &pricing()).expect_err("a missing template must fail the render");
+    // Pin WHY it failed. Without this the test would pass on any error at all, including one raised
+    // before generation, and would stop testing the generation-then-routing ordering it exists for.
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("this-template-does-not-exist.md"),
+        "the failure must be the missing template inside generation, not something earlier: {msg}"
+    );
+    assert!(
+        !out.exists(),
+        "generation failed, so routing must never have run and the output path must be untouched"
+    );
+}
