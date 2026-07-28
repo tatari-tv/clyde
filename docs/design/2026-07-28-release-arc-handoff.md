@@ -37,7 +37,8 @@ companions, one handoff brief.
 ## Phases per release, and why the average lies
 
 **32 phases / 9 releases = 3.6 average. Ignore that number.** The distribution is bimodal and the
-median is zero.
+average sits in a gap: the per-release counts are 0, 0, 0, 0, 1, 4, 5, 8, 14, so the median is 1 and
+the modal release shipped zero phases.
 
 - **Four releases shipped zero phases**: `v0.12.2`, `v0.13.1`, `v0.13.2`, `v0.13.3`. All targeted
   fixes, no design doc, correctly so.
@@ -49,10 +50,11 @@ median is zero.
 - `v0.14.0` carried **three** design docs in one release (`report-render-claude-cli-transport` at 3
   phases, `pricing-feed-staleness-and-index` and `render-output-ceilings-config` sharing a 6-phase
   numbering). One tag, three plans.
-- `v0.16.0` has the **worst completion ratio in the set**: 4 of 7 phases. Every other doc-driven
-  release either completed its plan or came within one phase. This is the only one abandoned
-  mid-flight, and the phase count flatters it: Phase 0 was zero-code log mining and Phase 4 shipped
-  as a three-word deletion.
+- `v0.16.0` has the **worst completion ratio among single-repo plans**: 4 of 7 phases. `v0.12.3`'s
+  1-of-5 reads lower on paper, but its doc was cross-repo and the other phases shipped in other
+  repos; every other doc-driven release either completed its plan or came within one phase.
+  `v0.16.0` is the only one abandoned mid-flight, and the phase count flatters it: Phase 0 was
+  zero-code log mining and Phase 4 shipped as a three-word deletion.
 
 ## What each release was actually for
 
@@ -104,15 +106,16 @@ What Phase 0 established, from the logs plus the literal render invocations:
 The doc also counted a render that tripped the reconcile-identity guard on a deliberately corrupted
 export, before the LLM was ever called. It does not belong in the rate.
 
-**Zero of the four `--prior` rejections is a confirmed comparison figure.** One is readable in full
-and is a threshold about the current period ("above 100 sessions"), not a subtraction. One fired on a
-render with no `--prior` at all, so it cannot be a comparison by construction. **Three are
-unclassifiable**, and the reason is exactly the two defects this release fixed: the excerpt was wrong
-and the artifact was discarded.
+Five rejections occurred across the window's renders: four with `--prior`, one without. **Zero of
+the four `--prior` rejections is a confirmed comparison figure.** Of those four, one is readable in
+full and is a threshold about the current period ("above 100 sessions"), not a subtraction; the
+other **three are unclassifiable**, and the reason is exactly the two defects this release fixed:
+the excerpt was wrong and the artifact was discarded. The fifth rejection fired on a render with no
+`--prior` at all, so it cannot be a comparison by construction.
 
 **Unproven is not disproven.** Phase 0's own report said "zero are comparison figures"; that
-overstates it. The honest reading is one confirmed-not, one impossible, three unknown. Do not inherit
-the stronger claim.
+overstates it. The honest reading across all five: one confirmed-not, one impossible by
+construction, three unknown. Do not inherit the stronger claim.
 
 What actually shipped in `v0.16.0`:
 
@@ -151,9 +154,13 @@ demonstrated.
 
 ## Open defects
 
-None of these has a GitHub issue. That is the real reason they are still open: they live in doc prose,
-which is where work goes to be forgotten. The repo has exactly one open issue and it is the Renovate
-dependency dashboard. **Filing these is step one.**
+When this doc was first drafted, none of these had a GitHub issue -- they lived in doc prose, which
+is where work goes to be forgotten. **All seven are now filed, in row order:
+[#65](https://github.com/tatari-tv/clyde/issues/65) through
+[#71](https://github.com/tatari-tv/clyde/issues/71).** Fixes for rows 1 through 5 are open in
+[#73](https://github.com/tatari-tv/clyde/pull/73); the sweep for row 6 rides this doc's own PR
+([#72](https://github.com/tatari-tv/clyde/pull/72)); row 7 is the measurement, which runs on the
+binary that ships the fixes.
 
 Every line below was verified against the code on 2026-07-28.
 
@@ -203,6 +210,9 @@ remains is closing the cost ledger and the defect table.
 Mechanical. Each defect-table row becomes an issue linking back to this doc. This is what makes the
 ending visible: the arc is over when the issues are closed, not when a doc says so.
 
+Done: [#65](https://github.com/tatari-tv/clyde/issues/65) through
+[#71](https://github.com/tatari-tv/clyde/issues/71), one per defect-table row in order.
+
 ### Step 2: redaction sweep PR (defect 6)
 
 Highest urgency because the repo is public and independent of everything else, so it goes first.
@@ -211,6 +221,8 @@ The sweep as measured on 2026-07-28: 14 files carry operator-local strings (11 u
 username plus assorted absolute paths, project slugs and session UUIDs. Replace with neutral
 placeholders; the test fixtures will need their assertions updated in the same PR. One mechanical
 PR, no design doc.
+
+Done: this doc rides that PR ([#72](https://github.com/tatari-tv/clyde/pull/72)).
 
 ### Step 3: cleanup PR, no design doc (defects 1, 2, 3, 4, 5)
 
@@ -230,6 +242,8 @@ All five are targeted fixes under the triage rule. One PR, one patch release.
   token. Measured in Step 4, not on faith.
 - **#5** canonicalize both sides of the boundary comparison in `discover_settings_local`
   (`permit/src/settings/parser.rs:120-138`).
+
+Open: [#73](https://github.com/tatari-tv/clyde/pull/73), carrying the patch bump.
 
 ### Step 4: measure (zero code; the Phase 0 lesson applied as method)
 
