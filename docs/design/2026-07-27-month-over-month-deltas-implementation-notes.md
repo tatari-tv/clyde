@@ -259,3 +259,60 @@ because `run` happens to call `generate` before `route`, with nothing pinning th
 
 No new open questions from this amendment.
 
+## Phase 4 (scoped): Delete the KPI-deltas contradiction
+
+### Design decisions
+
+- Deleted only `or KPI deltas` from `report/templates/report-html.pmt:444`. The clause now reads
+  "two to four factual bullets comparing this period against `prior` (both figures copied, never
+  subtracted)", which matches the design's own headline rule with nothing left to contradict it.
+- `report/templates/report.pmt:418` was read and left untouched. It never said "deltas"; it already
+  reads "spend and session figures side by side (both copied, never subtracted)", which is correct
+  as written.
+- Added one test, `report_html_no_longer_asks_for_kpi_deltas`
+  (`report/src/render/tests/templates.rs`), asserting `DEFAULT_HTML_PROMPT` no longer contains `KPI
+  deltas` and still contains `both figures copied, never subtracted`, so the deletion is pinned
+  without touching the surrounding sentence's real content.
+- Read the prompt-edit ledger (`report/src/render/tests/templates.rs`) before touching anything.
+  It is not a checksum or a single "both templates changed" gate: it is one hand-written assertion
+  per rule, each naming the specific drift it guards against, over whichever templates that rule
+  actually applies to. Nothing in the file asserts "every phase touches both templates" as a
+  standing invariant; each test's own assertions are the only claim it makes. Since `report.pmt`
+  carries no version of this contradiction, no ledger test needed a new assertion against it, and
+  none was added.
+
+### Deviations
+
+- Shipped scoped down per Scott's 2026-07-27 post-STOP decision recorded in this doc's Resolved
+  Decisions, not the Phase 4 the original plan described. Not built, and parked with Phase 3 in the
+  new doc:
+  - documenting `prior.change` in either template's context-block section;
+  - rewriting the Month over Month section to quote `prior.change` verbatim;
+  - naming the closed set (spend and sessions only get a computed comparison);
+  - the decrease-direction instruction (copy the signed string, or use a direction verb with the
+    unsigned magnitude, never both);
+  - rewriting the `predates-fields` branch to let the change figures follow the caveat;
+  - the banned-phrasings list ("above N sessions", "roughly four times", "nearly triple", "nearly
+    doubled", `Nx` multipliers).
+  - `prior.change` does not exist; Phase 3 was never built. Any of the above would have documented
+    or quoted a field the binary never computes, which is a lie in a template the model reads
+    verbatim.
+  - Dropped `both_templates_name_the_prior_change_fields_and_forbid_a_delta_on_any_other_figure`
+    from the required tests. It tests the parked work above; nothing in this phase's actual change
+    calls for it.
+
+### Tradeoffs
+
+- Single-file edit against the design's plan of "both files change in this phase, ledger test
+  enforces it." Chosen because the contradiction is real in exactly one file: a KPI delta is a
+  subtraction, `report-html.pmt` asked for one and forbade it in the same clause, and `report.pmt`
+  never asked for a delta at all. Editing `report.pmt` to manufacture a matching diff, or weakening
+  the ledger to demand one, would both be worse than leaving a correct sentence alone. Verified the
+  ledger holds no assertion forcing this before deciding: each of its four existing tests names its
+  own concrete drift over both files because that phase's rule genuinely applied to both; none is a
+  generic "N files must change" gate that this phase's narrower, single-file fix would trip.
+
+### Open questions
+
+- None.
+
