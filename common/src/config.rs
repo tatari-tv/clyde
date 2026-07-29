@@ -87,6 +87,16 @@ pub const DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 32_000;
 /// tokens (3.2x headroom). Nothing measured argues for moving it.
 pub const DEFAULT_HTML_MAX_OUTPUT_TOKENS: u32 = 64_000;
 
+/// Default output ceiling for a prose SLOT (`render.slot-max-output-tokens`).
+///
+/// 1,500: a slot is three to six sentences of digit-free prose with `{{fact:key}}` placeholders
+/// where the figures go. The Phase 0 verification of the `executive-summary` slot returned 217
+/// output tokens, so this is nearly 7x the measured shape while staying small enough that a model
+/// that starts writing a whole document hits the ceiling instead of billing for one. Deliberately
+/// orders of magnitude below the whole-document ceilings above: that gap IS the cost argument for
+/// the inversion.
+pub const DEFAULT_SLOT_MAX_OUTPUT_TOKENS: u32 = 1_500;
+
 fn default_markdown_model() -> String {
     DEFAULT_MARKDOWN_MODEL.to_string()
 }
@@ -101,6 +111,10 @@ fn default_markdown_max_output_tokens() -> u32 {
 
 fn default_html_max_output_tokens() -> u32 {
     DEFAULT_HTML_MAX_OUTPUT_TOKENS
+}
+
+fn default_slot_max_output_tokens() -> u32 {
+    DEFAULT_SLOT_MAX_OUTPUT_TOKENS
 }
 
 /// Deserialize `render.markdown-max-output-tokens`, rejecting `0` loudly and BY NAME.
@@ -119,6 +133,13 @@ where
 
 /// Deserialize `render.html-max-output-tokens`. See [`de_markdown_max_output_tokens`] for why the
 /// two keys get one function each.
+fn de_slot_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    nonzero_ceiling(deserializer, "render.slot-max-output-tokens")
+}
+
 fn de_html_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -187,6 +208,13 @@ pub struct RenderConfig {
         deserialize_with = "de_html_max_output_tokens"
     )]
     html_max_output_tokens: u32,
+    /// Output ceiling for one prose slot. Defaults to [`DEFAULT_SLOT_MAX_OUTPUT_TOKENS`]. `0` is
+    /// rejected loudly.
+    #[serde(
+        default = "default_slot_max_output_tokens",
+        deserialize_with = "de_slot_max_output_tokens"
+    )]
+    slot_max_output_tokens: u32,
 }
 
 impl Default for RenderConfig {
@@ -198,6 +226,7 @@ impl Default for RenderConfig {
             html_model: default_html_model(),
             markdown_max_output_tokens: default_markdown_max_output_tokens(),
             html_max_output_tokens: default_html_max_output_tokens(),
+            slot_max_output_tokens: default_slot_max_output_tokens(),
         }
     }
 }
@@ -505,6 +534,12 @@ impl Config {
     /// unset).
     pub fn render_html_max_output_tokens(&self) -> u32 {
         self.render.html_max_output_tokens
+    }
+
+    /// The configured output ceiling for one prose slot ([`DEFAULT_SLOT_MAX_OUTPUT_TOKENS`] when
+    /// unset).
+    pub fn render_slot_max_output_tokens(&self) -> u32 {
+        self.render.slot_max_output_tokens
     }
 
     /// The resolved projects root for `clyde mcp serve`: the configured `projects-dir`, else the

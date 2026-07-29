@@ -4,7 +4,7 @@ use super::super::{HTML_SYSTEM_PROMPT, MARKDOWN_SYSTEM_PROMPT};
 use super::*;
 use common::config::{
     DEFAULT_HTML_MAX_OUTPUT_TOKENS, DEFAULT_HTML_MODEL as HTML_MODEL, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
-    DEFAULT_MARKDOWN_MODEL as MARKDOWN_MODEL,
+    DEFAULT_MARKDOWN_MODEL as MARKDOWN_MODEL, DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
 };
 
 use crate::ENV_LOCK;
@@ -32,6 +32,8 @@ fn default_job(kind: Kind) -> Job<'static> {
         // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
         Kind::Markdown | Kind::Judge => (MARKDOWN_MODEL, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS),
         Kind::Html => (HTML_MODEL, DEFAULT_HTML_MAX_OUTPUT_TOKENS),
+        // A slot rides the markdown MODEL pin with its own, much smaller ceiling.
+        Kind::Slot => (MARKDOWN_MODEL, DEFAULT_SLOT_MAX_OUTPUT_TOKENS),
     };
     Job {
         kind,

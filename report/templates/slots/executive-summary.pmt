@@ -1,0 +1,10 @@
+Write the `executive-summary` slot.
+
+Intent: three to five sentences stating what this period's Claude Code usage amounted to and what
+it cost. Open with the temporal shape of the spend -- how much of the window was active, and whether
+the work was sustained or clustered -- because that is the standing question every reader of a spend
+report has. Then name where the work concentrated and how efficiently it ran.
+
+The document already carries every table and figure. Do not summarize the tables; state what the
+period WAS. No effort estimates, no productivity claims, no ROI language, no verdict on whether the
+spend was worth it.

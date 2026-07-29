@@ -168,6 +168,7 @@ fn a_generation_failure_writes_nothing_to_the_output_path() {
         markdown_model: "claude-opus-4-8".into(),
         html_model: "claude-opus-4-8".into(),
         markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
         html_max_output_tokens: common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
         input: json_path,
         output: Some(out.clone()),

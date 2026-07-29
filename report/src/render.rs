@@ -26,6 +26,7 @@ use std::process::{Command, Output, Stdio};
 mod document;
 mod facts;
 mod reconciliation;
+mod slots;
 use reconciliation::{build_reconciliation_view, no_reconcile_warning};
 mod rejected;
 use rejected::{generate_then_route, guarded};
@@ -135,10 +136,42 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
             reconcile_user: cfg.reconcile_user.as_deref(),
         },
     )?;
-    // Phase 1 renders the document with every slot empty; Phase 2 fills them. An empty slot is a
-    // section header with no body, which is also the permanent degradation contract.
-    let prose = document::SlotProse::new();
+    let prose = slot_prose(cfg, &document::registry(&block));
     Ok(document::render(&block, &prose, chart_mode(cfg)))
+}
+
+/// Generate the prose slots for this render, or an empty set.
+///
+/// This is the top of the degradation ladder and it CANNOT fail. A host with no transport at all
+/// (no `claude` on PATH, no API key) is the offline story, not an error: the deterministic document
+/// is already complete, so an absent transport costs prose and nothing else. Monomorphized per
+/// transport arm, per the house generics-for-DI rule.
+fn slot_prose(cfg: &RenderConfig, reg: &facts::FactRegistry) -> document::SlotProse {
+    let model = &cfg.markdown_model;
+    let ceiling = cfg.slot_max_output_tokens;
+    match resolve_selected_transport(cfg.llm, cfg.format) {
+        Ok(TransportKind::Api) => match summarize::ApiTransport::from_env() {
+            Ok(t) => slots::generate(&t, reg, model, ceiling, cfg.include_tradeoffs),
+            Err(e) => no_transport(e),
+        },
+        Ok(TransportKind::Cli) => match summarize::CliTransport::resolve() {
+            Ok(t) => slots::generate(&t, reg, model, ceiling, cfg.include_tradeoffs),
+            Err(e) => no_transport(e),
+        },
+        Err(e) => no_transport(e),
+    }
+}
+
+/// Degrade to a prose-free artifact, loudly. Never silent: an operator reading stderr must be able
+/// to tell a thin report from a broken one.
+fn no_transport(e: eyre::Report) -> document::SlotProse {
+    let warning = format!(
+        "no LLM transport available, so the report's prose sections will be empty; the data \
+         sections are unaffected: {e:#}"
+    );
+    log::warn!("render::slot_prose: {warning}");
+    eprintln!("{warning}");
+    document::SlotProse::new()
 }
 
 /// Whether charts ship as sibling SVG assets or as inline markdown tables.

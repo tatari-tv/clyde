@@ -26,6 +26,10 @@ pub trait Transport {
 pub enum Kind {
     Markdown,
     Html,
+    /// One prose SLOT of the deterministic document (design "Render Inversion"): a few sentences of
+    /// digit-free prose with `{{fact:key}}` placeholders where figures go. Several per render, each
+    /// its own subprocess, each over a curated brief rather than the whole context block.
+    Slot,
     /// `clyde report eval`'s judge: a small JSON verdict over an already-rendered artifact
     /// (design Phase 13). It rides the existing transport rather than a second client, so the eval
     /// inherits `--llm` and needs no second credential.
@@ -48,6 +52,7 @@ impl Kind {
         match self {
             Kind::Markdown | Kind::Judge => "render.markdown-max-output-tokens",
             Kind::Html => "render.html-max-output-tokens",
+            Kind::Slot => "render.slot-max-output-tokens",
         }
     }
 }

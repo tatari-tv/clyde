@@ -2,7 +2,9 @@
 
 use super::super::Kind;
 use super::*;
-use common::config::{DEFAULT_HTML_MAX_OUTPUT_TOKENS, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS};
+use common::config::{
+    DEFAULT_HTML_MAX_OUTPUT_TOKENS, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
+};
 
 const MODEL: &str = "claude-opus-4-8";
 
@@ -25,6 +27,7 @@ fn job(kind: Kind) -> Job<'static> {
         // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
         Kind::Markdown | Kind::Judge => DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
         Kind::Html => DEFAULT_HTML_MAX_OUTPUT_TOKENS,
+        Kind::Slot => DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
     };
     Job {
         kind,

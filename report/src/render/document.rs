@@ -67,7 +67,7 @@ pub(super) fn render(block: &ContextBlock<'_>, prose: &SlotProse, charts: ChartM
         block.sessions.len(),
         prose.len()
     );
-    let reg = facts::build(block);
+    let reg = registry(block);
     let mut assets = Vec::new();
     let mut md = String::with_capacity(16 * 1024);
 
@@ -89,6 +89,16 @@ pub(super) fn render(block: &ContextBlock<'_>, prose: &SlotProse, charts: ChartM
 
     debug!("document::render: bytes={} assets={}", md.len(), assets.len());
     Artifact { markdown: md, assets }
+}
+
+/// Build the fact registry for one render's views.
+///
+/// Exposed so the slot layer and the document layer read the SAME registry: the caller builds it
+/// once, hands it to `slots::generate` to write the briefs, and `render` rebuilds an identical one
+/// from the same block to interpolate with. Both come from `facts::build` over one `ContextBlock`,
+/// which is what makes a briefed value and a printed value the same bytes.
+pub(super) fn registry(block: &ContextBlock<'_>) -> FactRegistry {
+    facts::build(block)
 }
 
 /// Obsidian frontmatter. The field set is the contract `report.pmt:222-249` specified, unchanged:
@@ -166,10 +176,18 @@ fn section(md: &mut String, title: &str, prose: Option<&String>, reg: &FactRegis
         return;
     };
     match interpolate(text, reg) {
-        Ok(filled) => {
-            let _ = writeln!(md, "{}", filled.trim_end());
-            let _ = writeln!(md);
-        }
+        // The post-interpolation structural re-check: what is about to be written is checked, not
+        // just what the model sent.
+        Ok(filled) => match super::slots::verify_interpolated(&filled) {
+            Ok(()) => {
+                let _ = writeln!(md, "{}", filled.trim_end());
+                let _ = writeln!(md);
+            }
+            Err(violation) => log::warn!(
+                "document::section: dropping slot {title:?} after interpolation: {violation} preview={:?}",
+                filled.chars().take(120).collect::<String>()
+            ),
+        },
         Err(unknown) => log::warn!(
             "document::section: dropping slot {title:?}; unresolved fact keys={unknown:?} preview={:?}",
             text.chars().take(120).collect::<String>()

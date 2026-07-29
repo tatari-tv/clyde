@@ -79,6 +79,10 @@ pub struct RenderConfig {
     /// Output ceiling for the html job, from `render.html-max-output-tokens` (default
     /// `common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS`).
     pub html_max_output_tokens: u32,
+    /// Output ceiling for ONE prose slot, from `render.slot-max-output-tokens` (default
+    /// `common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS`). Small on purpose: a slot is a few
+    /// sentences, and a model that starts writing a document hits this instead of billing for one.
+    pub slot_max_output_tokens: u32,
     /// Prior-period report JSON (`--prior`), lighting up the Month over Month section. `None`
     /// omits the section entirely from the render.
     pub prior: Option<PathBuf>,
@@ -237,6 +241,7 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 html_model: file.render_html_model().to_string(),
                 markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
                 html_max_output_tokens: file.render_html_max_output_tokens(),
+                slot_max_output_tokens: file.render_slot_max_output_tokens(),
                 prior: args.prior,
                 reconcile: args.reconcile,
                 reconcile_user: args.reconcile_user,
