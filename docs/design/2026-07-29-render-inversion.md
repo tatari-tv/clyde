@@ -24,12 +24,26 @@
 > require the table form regardless.
 >
 > **Resolution (Scott, 2026-07-29): keep SVG, fix marquee first.** `render::chart_mode` is unchanged.
-> `tatari-tv/marquee` sets `url_relative` on the ammonia builder its Markdown lane already
-> constructs, ships, and deploys; then this doc's PR follows. Brief:
-> `marquee/docs/design/2026-07-29-relative-asset-urls.md`. The alternative -- flipping the default to
-> the table form, one line -- was offered and declined in favor of charts that render as charts.
-> A clyde-side fix does not exist at any price: marquee assigns the slug at publish time, so at
-> render time the binary cannot know its own asset URL.
+> The alternative -- flipping the default to the table form, one line -- was offered and declined in
+> favor of charts that render as charts. A clyde-side fix does not exist at any price: marquee assigns
+> the slug at publish time, so at render time the binary cannot know its own asset URL.
+>
+> **CLOSED 2026-07-29. marquee v1.15.3 shipped the fix and it is verified against a real clyde
+> render.** marquee rewrites relative references during sanitization
+> ([marquee#70](https://github.com/tatari-tv/marquee/pull/70)), prod is on v1.15.3, and a live
+> `--format marquee-markdown` render of a real 284-session window publishes with working charts:
+>
+> ```
+> served HTML:  <img src="/p/~scott-idler/claude-report-2026-06-5/chart-0.svg">
+> 200 image/svg+xml  /p/~scott-idler/claude-report-2026-06-5/chart-0.svg
+> 200 image/svg+xml  /p/~scott-idler/claude-report-2026-06-5/chart-1.svg
+> 404                /p/~scott-idler/chart-0.svg          (the pre-fix path)
+> ```
+>
+> The pre-fix path still 404s, which is what proves the rewrite is the thing that fixed it rather
+> than something incidental. clyde needed no code change: `document.rs:580` already emitted the
+> supported shape. marquee's asset-name charter (flat, ASCII, no `.md` sibling, exact case) is now
+> asserted by a clyde test rather than assumed, since it is a cross-repo contract.
 
 ## Summary
 

@@ -288,6 +288,47 @@ fn svg_mode_emits_sibling_assets_and_references_them() {
     );
 }
 
+/// Every sibling asset must satisfy marquee's asset-name charter, or it 404s once published.
+///
+/// marquee v1.15.3 rewrites a relative reference in a Markdown post to `/p/{space}/{slug}/{file}`,
+/// which is what makes `![](chart-0.svg)` work at all. That rewrite is one flat path segment, and
+/// marquee enforces the shape on its side (`is_safe_asset_name`, `server/src/render/preview.rs`,
+/// plus `ALLOWED_EXTENSIONS` in `core/src/publish/validate.rs`). The rules below are marquee's, not
+/// ours, so they are asserted here rather than assumed:
+///
+/// - **Flat.** A `/` makes a fourth path segment and no route serves it.
+/// - **ASCII `[A-Za-z0-9._-]`.** Anything else percent-encodes and misses the key.
+/// - **No `.md` sibling.** `md` is off `ALLOWED_EXTENSIONS`, so publishing one fails 415 and takes
+///   the whole render's publish with it.
+/// - **Referenced byte-for-byte.** S3 keys are case-sensitive and the rewrite preserves case.
+///
+/// This is a cross-repo contract, so it gets a test rather than a comment: a future asset that
+/// violates it fails here instead of as a broken image in a published report.
+#[test]
+fn sibling_assets_satisfy_marquees_asset_name_charter() {
+    let artifact = render_with(&report_with_efficiency(), &SlotProse::new(), ChartMode::Svg);
+    assert!(
+        !artifact.assets.is_empty(),
+        "svg mode must emit assets or this proves nothing"
+    );
+    for asset in &artifact.assets {
+        let name = &asset.filename;
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+            "asset {name:?} is not flat ASCII [A-Za-z0-9._-]; marquee will 404 it"
+        );
+        assert!(
+            !name.ends_with(".md"),
+            "asset {name:?} would fail marquee publish with 415: md is off ALLOWED_EXTENSIONS"
+        );
+        assert!(
+            artifact.markdown.contains(&format!("]({name})")),
+            "asset {name} must be referenced by its EXACT filename; S3 keys are case-sensitive"
+        );
+    }
+}
+
 /// PDF and stdout have no directory a sibling file could live in, so `Table` must produce ZERO
 /// assets and inline the same data instead.
 #[test]

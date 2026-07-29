@@ -79,7 +79,7 @@ pub enum Command {
     /// Fails (writing nothing) if any session in the window has not been indexed — run
     /// `clyde session reindex` first.
     Collect(CollectArgs),
-    /// Render a collected JSON report into Markdown, PDF, HTML, or a published marquee post
+    /// Render a collected JSON report into Markdown, PDF, or a published marquee post
     /// (`--format`).
     ///
     /// Reads the JSON produced by `collect` (default: `./claude-report.json`) and writes a

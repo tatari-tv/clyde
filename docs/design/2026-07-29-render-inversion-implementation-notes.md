@@ -435,3 +435,69 @@ Two findings the static analysis did not have:
 `<base href>` was considered and rejected: it retargets every relative URL on the page (marquee's own
 chrome survives only because it happens to be absolute today) and it changes fragment-only links,
 which a generated report is full of. Reasoning recorded in the marquee brief.
+
+## Phase 6: marquee landed, chart criterion closed, live shakedown
+
+marquee v1.15.3 shipped the relative-asset rewrite
+([marquee#70](https://github.com/tatari-tv/marquee/pull/70)) and is live on prod
+(`sdv probe` reports `v1.15.3`, `environment: prod`, deployed 2026-07-29T16:06:39Z). That unblocked
+the one criterion Phase 0 could never close.
+
+### Design decisions
+
+- **No clyde code change was needed for charts.** `document.rs:580` already emitted
+  `![label](chart-N.svg)` with the asset written from the SAME `filename` binding, which is the shape
+  marquee now supports. Verified rather than assumed, because marquee's handoff listed six rules and
+  called clyde itself the remaining unknown.
+- **marquee's asset-name charter is now a clyde TEST, not a comment.** Flat, ASCII `[A-Za-z0-9._-]`,
+  no `.md` sibling, referenced by exact case. These are marquee's constraints, enforced in marquee,
+  and a violation surfaces as a 404 in a published report rather than a build failure -- so it gets an
+  assertion on our side (`document/tests.rs`, `sibling_assets_satisfy_marquees_asset_name_charter`).
+
+### Audit against marquee's six rules
+
+| Rule | clyde | Why it holds |
+|---|---|---|
+| Flat filenames | PASS | `format!("chart-{index}.svg")`, no separator |
+| ASCII `[A-Za-z0-9._-]` | PASS | literal prefix + digit + `.svg` |
+| Exact case | PASS **structurally** | ONE `filename` binding feeds both the reference and the asset; they cannot diverge |
+| No `.md` sibling | PASS | exactly one `assets.push` site in the whole crate, and it pushes `.svg` |
+| Sibling files, never inline `<svg>` | PASS | `writeln!(md, "<...")` has zero occurrences; `svg()` output reaches only `Asset.body` |
+| Query/fragment ride along | N/A | clyde emits bare filenames |
+
+### Live verification
+
+- **Local render**, 284 real sessions (2026-06-01..06-30), `--llm cli`: wrote `report.md` plus
+  `chart-0.svg` and `chart-1.svg` as siblings. No inline `<svg>` in the markdown.
+- **The late-period sentence landed and reads correctly:** "The final 7 days carried 155 sessions
+  across 6 active days and $1,843.43 of the total." Factual, no momentum language, which is what
+  `closing.pmt` forbids.
+- **Those figures were checked independently against the source JSON**, not just eyeballed:
+  tail sessions 155 (exact match), tail active days 6 (exact match), tail spend $1,843.43 (exact
+  match). This is the "Rust does math" claim actually tested against a real window rather than a
+  fixture.
+- **marquee publish:** the served HTML carries
+  `<img src="/p/~scott-idler/claude-report-2026-06-5/chart-0.svg">`, both charts return
+  `200 image/svg+xml`, and the pre-fix two-segment path still returns `404`. That last line matters:
+  it proves the rewrite is what fixed this, not something incidental.
+
+### Deviations
+
+- **`report/src/cli.rs:82` still advertised HTML.** `report --help` read "Render a collected JSON
+  report into Markdown, PDF, HTML, or a published marquee post" after Phase 3 deleted the HTML
+  formats. Another Phase 4 doc-sweep miss of the same class as `report/README.md`: the sweep checked
+  the READMEs and the format enum's own help, not the SUBCOMMAND's summary line. Fixed.
+
+### Findings that are NOT defects
+
+- **`totals.spend-usd` (4061.52) is $0.11 below the sum of per-session `spend-usd` (4061.63).**
+  Investigated rather than waved off: `totals.spend-usd` equals the sum of the per-MODEL figures
+  exactly, so the total is computed from aggregate token counts per model while per-session values are
+  each rounded to cents. Summing 284 individually-rounded figures accumulates the drift. Pre-existing
+  `collect`-stage behavior, untouched by this branch, and the render faithfully reports its input.
+  Recorded so the next person who diffs those two numbers does not re-derive it.
+
+### Open questions
+
+- **None.** Both shakedown criteria are now closed: the marquee chart publish above, and the
+  unattended-render criterion by this live run plus the golden layer.
