@@ -112,6 +112,24 @@ impl FactRegistry {
 /// and a sentinel is not a figure a slot may cite.
 const NOT_MEASURED: &str = "n/a";
 
+/// How many trailing days of the window the `late-period.*` facts summarize.
+///
+/// These facts replace the `Forward-Looking` section `report.pmt` used to define. That section asked
+/// the model to read late-period session titles and handoff docs and say what was still in flight --
+/// user-derived free text, which is exactly what a slot brief must never receive (see this module's
+/// header). The computable substitute is the SHAPE of the window's tail: how much work landed in its
+/// final days. Seven days because the unit that reads as "recently" on a monthly report is a week.
+const LATE_PERIOD_DAYS: usize = 7;
+
+/// Shortest window for which a trailing-slice fact says anything the totals do not.
+///
+/// At exactly [`LATE_PERIOD_DAYS`] the "final week" IS the period and the fact is a duplicate of
+/// `totals.*` wearing a different name -- two signals encoding one meaning, which the house rules
+/// forbid. Below it the slice is longer than the window and the figure is a lie. Requiring double
+/// means the tail is always a genuine subset. A shorter window registers NO `late-period.*` key, so
+/// a slot citing one fails validation and degrades, rather than printing a figure that misleads.
+const LATE_PERIOD_MIN_DAYS: usize = LATE_PERIOD_DAYS * 2;
+
 /// Build the registry from the same view structs the document layer renders.
 ///
 /// Every key is deliberate. When adding one, ask whether a slot citing it in the WRONG sentence
@@ -230,6 +248,8 @@ pub(super) fn build(block: &ContextBlock<'_>) -> FactRegistry {
         reg.insert("agent-types.top-spend", &top.spend);
     }
 
+    register_late_period(&mut reg, block);
+
     if let Some(prior) = &block.prior {
         reg.insert("prior.since", &prior.since);
         reg.insert("prior.until", &prior.until);
@@ -241,6 +261,41 @@ pub(super) fn build(block: &ContextBlock<'_>) -> FactRegistry {
 
     debug!("facts::build: registered={}", reg.len());
     reg
+}
+
+/// Register the `late-period.*` facts: the shape of the window's final [`LATE_PERIOD_DAYS`] days.
+///
+/// Summed from `by_day`, which the document already prints in full (as a chart or as a table,
+/// depending on `ChartMode`). So a figure cited here is not a number the reader has to take on
+/// faith -- it is the sum of rows on the page. That is what makes this an acceptable prose-only
+/// fact: unlike every other key, it has no single table cell to pair with, but its OPERANDS are all
+/// on the page and Rust did the addition.
+///
+/// Registers nothing at all for a window shorter than [`LATE_PERIOD_MIN_DAYS`]. Absent keys are the
+/// house pattern for "not measurable here": a slot that cites one fails validation and degrades to
+/// empty, which is strictly better than a fact that quietly means something else.
+fn register_late_period(reg: &mut FactRegistry, block: &ContextBlock<'_>) {
+    let by_day = &block.aggregates.by_day;
+    if by_day.len() < LATE_PERIOD_MIN_DAYS {
+        debug!(
+            "facts::register_late_period: window is {} days, under the {LATE_PERIOD_MIN_DAYS}-day \
+             minimum; registering no late-period facts",
+            by_day.len()
+        );
+        return;
+    }
+
+    // `rev().take(n)` rather than a tail slice: same rows, no computed index to get wrong.
+    let tail = || by_day.iter().rev().take(LATE_PERIOD_DAYS);
+    let sessions: u64 = tail().map(|row| row.sessions as u64).sum();
+    let spend: f64 = tail().map(|row| row.spend_raw).sum();
+    let active = tail().filter(|row| row.active).count();
+
+    debug!("facts::register_late_period: days={LATE_PERIOD_DAYS} sessions={sessions} active={active}");
+    reg.insert("late-period.days", LATE_PERIOD_DAYS.to_string());
+    reg.insert("late-period.sessions", crate::fmt::format_int(sessions));
+    reg.insert("late-period.spend", crate::fmt::format_usd(spend));
+    reg.insert("late-period.active-days", active.to_string());
 }
 
 /// Fold an arbitrary display name (a repo slug, a model name, an agent type) into a key segment.

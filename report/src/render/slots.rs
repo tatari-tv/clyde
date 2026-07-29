@@ -108,7 +108,20 @@ impl Slot {
                 "totals.sessions",
                 "models.top",
             ],
-            Slot::Closing => &["period.days", "totals.sessions", "totals.spend", "repos.top"],
+            // The `late-period.*` keys carry what the retired `Forward-Looking` section was for, in
+            // the only form a slot may receive it: computed figures, not session text. They are
+            // ABSENT on a window under two weeks (see `facts::LATE_PERIOD_MIN_DAYS`), so this slot's
+            // brief is short two lines there and the prose simply omits the trailing sentence.
+            Slot::Closing => &[
+                "period.days",
+                "totals.sessions",
+                "totals.spend",
+                "repos.top",
+                "late-period.days",
+                "late-period.sessions",
+                "late-period.spend",
+                "late-period.active-days",
+            ],
             Slot::Tradeoffs => &[
                 "efficiency.cache-read-share",
                 "efficiency.tool-error-rate",

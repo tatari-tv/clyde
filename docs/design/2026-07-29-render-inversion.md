@@ -13,18 +13,23 @@
 > digit-free `{{fact:key}}` prose citing only allowlisted keys, at 698 input / 217 output tokens
 > ($0.0097, 5.6s). The measured 217 is what `DEFAULT_SLOT_MAX_OUTPUT_TOKENS = 1500` is sized against.
 >
-> **marquee sibling-SVG URL resolution: NOT VERIFIED LIVE.** The Okta device grant timed out twice
-> unapproved, so no publish ran. Static analysis is dispositive on the mechanism, though: marquee's
-> routes are `/p/{space}/{slug}` (post) and `/p/{space}/{slug}/{file}` (asset)
-> (`server/src/routes.rs:165-180`), and there is NO `<base href>` anywhere in the marquee tree, so by
-> RFC 3986 a relative `chart-0.svg` resolves to `/p/{space}/chart-0.svg` -- the two-segment POST
-> route, which cannot serve an asset. That is this doc's own High-likelihood risk, confirmed by
-> construction rather than by observation.
+> **marquee sibling-SVG URL resolution: VERIFIED LIVE 2026-07-29, and it FAILS.** Scott
+> authenticated and a probe bundle was published. The asset serves at the three-segment asset route
+> (`200 image/svg+xml`); the relative reference resolves to the two-segment post route (`404`). The
+> served HTML carries `<img src="chart-0.svg">` verbatim and there is no `<base>` tag. This doc's own
+> High-likelihood risk, now confirmed by observation rather than by construction. Full probe output
+> and the two findings static analysis missed: Phase 0 addendum in the implementation notes.
 >
 > This did NOT gate any phase: both chart forms are implemented and tested, because PDF and stdout
-> require the table form regardless. It gates only the DEFAULT for the file/marquee path, which is
-> one line in `render::chart_mode`. Pending: one live publish, then either the recorded marquee
-> `<base href>` PR (shipping before this doc's PR) or flipping that default to the table form.
+> require the table form regardless.
+>
+> **Resolution (Scott, 2026-07-29): keep SVG, fix marquee first.** `render::chart_mode` is unchanged.
+> `tatari-tv/marquee` sets `url_relative` on the ammonia builder its Markdown lane already
+> constructs, ships, and deploys; then this doc's PR follows. Brief:
+> `marquee/docs/design/2026-07-29-relative-asset-urls.md`. The alternative -- flipping the default to
+> the table form, one line -- was offered and declined in favor of charts that render as charts.
+> A clyde-side fix does not exist at any price: marquee assigns the slug at publish time, so at
+> render time the binary cannot know its own asset URL.
 
 ## Summary
 

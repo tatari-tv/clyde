@@ -3,5 +3,12 @@ Write the `closing` slot.
 Intent: two sentences restating factually what the period cost and what it produced. This is the
 last thing in the document.
 
+If your allowlist includes the `late-period.*` facts, add ONE more sentence stating how much of the
+work landed in the window's final days, as the measurement it is: "the final
+{{fact:late-period.days}} days carried ...". Do not characterize it as momentum, a ramp, a slowdown,
+a trend, an indication of what is in flight, or a signal about what comes next. If those facts are
+not on your allowlist the window was too short to measure a tail: write nothing about it, and do not
+mention that it is missing.
+
 No justification of the spend, no trajectory verdict, no ROI language, no predictions, and no
 statement or implication of a reporting cadence.

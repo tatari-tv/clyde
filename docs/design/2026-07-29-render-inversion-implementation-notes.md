@@ -125,10 +125,12 @@ rewriting it.
 
 ### Open questions
 
-- The Phase 0 marquee question above (chart default: sibling SVG vs. table form).
-- **Forward-Looking:** drop it permanently (my read: its inputs are structurally unavailable to a
-  slot), fold it into the `closing` slot as one combined section, or give slots a curated
-  late-period signal the registry does not currently carry? Scott's call; nothing else blocks on it.
+- ~~The Phase 0 marquee question above (chart default: sibling SVG vs. table form).~~ **CLOSED in
+  Phase 5:** keep SVG, fix marquee first. Verified live in the Phase 0 addendum.
+- ~~**Forward-Looking:** drop it permanently, fold it into the `closing` slot, or give slots a
+  curated late-period signal?~~ **CLOSED in Phase 5.** Scott chose the curated fact, folded into
+  `closing`. No sixth slot, no restored section: `facts.rs` registers `late-period.*` and
+  `closing.pmt` spends one sentence on it.
 
 ## Phase 2: Slot generation and degradation
 
@@ -322,7 +324,114 @@ machinery excised from `render.rs`, `summarize.rs`, and `summarize/api.rs`. `ren
 
 ### Open questions
 
-- **Rename `render.markdown-model` to `render.slot-model`?** With `Kind::Markdown` deleted, the key's
-  name no longer describes what it pins (prose slots and the judge). My read is that it should be
-  renamed -- "names tell the truth" -- but it is a user-visible config key, so the rename is Scott's
-  call, not a sweep-up. Left as-is and documented accurately in the meantime.
+- ~~**Rename `render.markdown-model` to `render.slot-model`?**~~ **CLOSED in Phase 5.** Scott chose
+  the full-family rename: `render.model` (not `slot-model`, since it pins the judge too) and
+  `render.judge-max-output-tokens`.
+
+## Phase 5: Scott's calls on the three open questions
+
+All three open questions carried by Phases 0-4 were put to Scott on 2026-07-29 and answered. This
+phase records the answers and what they changed. Nothing here was a reviewer finding; every item is a
+decision the notes had explicitly deferred to him.
+
+### Design decisions
+
+- **Marquee chart default: keep SVG, fix marquee first (Scott's option B).** The chart criterion was
+  finally verified LIVE, and it fails: see the Phase 0 addendum below. Rather than flip
+  `render::chart_mode` to the table form, the fix goes in marquee, so charts on a published report
+  are charts. This makes clyde's PR depend on a second repo's ship order, which Scott accepted
+  explicitly when choosing between that and the one-line fallback.
+  - Blast radius: `tatari-tv/marquee` ships first (ammonia `url_relative` in its Markdown lane), then
+    this PR. Brief handed off at `marquee/docs/design/2026-07-29-relative-asset-urls.md`; Scott is
+    implementing it.
+  - `render::chart_mode` is UNCHANGED. `MarqueeMarkdown` still resolves to `ChartMode::Svg`; pdf and
+    stdout still force `Table` for the structural reason they always did.
+  - The shakedown criterion "a marquee publish with visible charts" therefore stays open until
+    marquee deploys. It gates the tag, not this PR's CI.
+
+- **Forward-Looking: one curated fact, folded into `closing` (Scott's call, both halves).** The
+  section does not come back and the slot enum stays at five. Instead `facts.rs` registers a
+  `late-period.*` family summarizing the window's final seven days, and `closing.pmt` spends one
+  sentence on it.
+  - Four keys: `late-period.days`, `.sessions`, `.spend`, `.active-days`, summed from `by_day`.
+  - `LATE_PERIOD_MIN_DAYS = 14` gates the whole family. Under a fortnight the "final week" IS the
+    period, so the facts would be `totals.*` under a second name -- two signals encoding one meaning.
+    A short window registers NO key, the brief is two lines shorter, and the prose omits the
+    sentence.
+  - This is the ONLY prose-only fact in the registry: it has no single table cell to pair with. It is
+    admissible because its operands are all on the page (`by_day` renders in full, as a chart or a
+    table) and Rust did the addition. Recorded here because the registry's module header states the
+    pairing rule, and this is the documented exception to it.
+  - `closing.pmt` forbids reading the tail as momentum, a ramp, a slowdown, a trend, or an indication
+    of what is in flight. The retired section's whole failure mode was inviting that reading from
+    session text; a figure invites it from a number, so the prohibition is explicit.
+
+- **Config family renamed (Scott's option A, the full family, not just the model key).** Both keys
+  named for the deleted `Kind::Markdown` are retired: `render.markdown-model` -> `render.model` and
+  `render.markdown-max-output-tokens` -> `render.judge-max-output-tokens`. `render.model` rather than
+  `render.slot-model` because it pins the judge too, so `slot-model` would be its own small lie.
+
+### Deviations
+
+- **`report/README.md` was rewritten, which Phase 4 should have done.** Phase 4's criterion was a
+  README grep that exits 0, and it passed on the ROOT `README.md` while `report/README.md` still
+  documented the `html` / `marquee-html` formats and the `html-model` / `html-max-output-tokens` keys
+  Phase 3 deleted. It also quoted per-render cost figures ($2.93 cli vs $1.53 api) measured on the
+  deleted whole-document call. Phase 4's "no deviations" claim was wrong on this file, and the grep
+  that was supposed to catch it was scoped too narrowly to see it.
+- **The 32,000 judge ceiling is left at its inherited value.** It was sized against the largest
+  whole-document markdown output ever measured, and the judge emits a four-object JSON verdict, so it
+  is now nominal rather than calibrated. Retiring the misleading NAME is this phase's scope;
+  re-deriving the NUMBER needs its own measurement and is not smuggled in here.
+
+### Tradeoffs
+
+- **`late-period.*` measures the tail's SHAPE, not what is in flight.** The retired section wanted
+  handoff docs and mid-execution design phases named. No fact registry can carry that without
+  carrying session text, so this is a substitute, not a restoration. It answers "how did the window
+  end" rather than "what is still open". Scott chose the curated fact over dropping the section
+  entirely, knowing that.
+- **Seven days is a judgment call, not a measurement.** It is the unit that reads as "recently" on a
+  monthly report. No data was consulted to pick it, and it is a single named const if that turns out
+  to be wrong.
+- **The rename breaks any existing `clyde.yml`.** `deny_unknown_fields` means a stale key is a loud
+  load failure rather than a silently ignored pin, which is the correct failure but still a failure.
+  Scott is the only holder of such a file, and he took the break.
+
+### Open questions
+
+- **None.** The three the earlier phases deferred are all answered above. The only thing still open
+  is a SHAKEDOWN criterion, not a question: the marquee chart publish cannot be verified until
+  marquee's fix deploys.
+
+## Phase 0 addendum: the marquee chart criterion, verified live
+
+Phase 0 recorded this criterion as `NOT VERIFIED LIVE` because the Okta device grant timed out twice
+unapproved. Scott authenticated on 2026-07-29 and it was verified. It FAILS, exactly as the static
+analysis predicted, and now by observation rather than by construction.
+
+Probe: a bundle shaped like `publish_marquee_markdown`'s (an `index.md` plus a sibling `chart-0.svg`,
+referenced relatively) published to `~scott-idler/sibling-svg-resolution-probe` on `internal`.
+
+```
+200 text/html      /p/~scott-idler/sibling-svg-resolution-probe
+200 image/svg+xml  /p/~scott-idler/sibling-svg-resolution-probe/chart-0.svg
+404               /p/~scott-idler/chart-0.svg
+```
+
+The served HTML carries `<img src="chart-0.svg">` verbatim and there is no `<base>` tag. The asset IS
+stored and servable, at the three-segment asset route; the relative reference resolves to the
+two-segment form, which is a different route entirely. So the bytes are fine and the URL is wrong.
+
+Two findings the static analysis did not have:
+
+- **The passthrough has a named cause.** Marquee's Markdown lane sanitizes with ammonia, and
+  `Builder::default()` sets `url_relative: UrlRelative::PassThrough`. The fix is one option on a
+  builder marquee already constructs, not new machinery.
+- **clyde could not emit the correct URL even if it wanted to.** Marquee assigns the slug at publish
+  time, so at render time the binary does not know its own space or slug. A clyde-side fix is
+  therefore not available at any price; it is marquee's or it is the table fallback.
+
+`<base href>` was considered and rejected: it retargets every relative URL on the page (marquee's own
+chrome survives only because it happens to be absolute today) and it changes fragment-only links,
+which a generated report is full of. Reasoning recorded in the marquee brief.

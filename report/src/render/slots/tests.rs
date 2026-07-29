@@ -7,7 +7,7 @@ use eyre::bail;
 use super::*;
 use crate::aggregate;
 use crate::persona::PersonaBlock;
-use crate::render::tests::{pricing, report_with_efficiency, sample_report};
+use crate::render::tests::{pricing, report_with_efficiency, sample_report, ts};
 use crate::render::{ViewOpts, document};
 use crate::report::Report;
 
@@ -363,6 +363,63 @@ fn the_brief_carries_only_this_slots_allowlisted_keys() {
     assert!(
         !facts.contains_key("attribution.covered"),
         "an off-allowlist key is not shown"
+    );
+}
+
+/// The closing brief carries the `late-period.*` facts, and prose citing them validates.
+///
+/// These keys are what replaced the retired `Forward-Looking` section, so this is the assertion that
+/// the replacement is actually reachable: on the allowlist, in the brief, and accepted by the
+/// validator. Without it the keys could sit in `facts.rs` forever, registered and never citable.
+#[test]
+fn the_closing_slot_can_cite_the_late_period_facts() {
+    let reg = registry_for(&sample_report());
+    let json = brief(Slot::Closing, &reg);
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let facts = parsed["facts"].as_object().unwrap();
+
+    for key in [
+        "late-period.days",
+        "late-period.sessions",
+        "late-period.spend",
+        "late-period.active-days",
+    ] {
+        assert!(facts.contains_key(key), "the closing brief omits {key}: {json}");
+    }
+
+    let reply = "The period closed as it ran. The final {{fact:late-period.days}} days carried \
+                 {{fact:late-period.sessions}} sessions and {{fact:late-period.spend}}.";
+    assert!(
+        validate(reply, Slot::Closing.allowlist()).is_ok(),
+        "closing prose citing the late-period facts must validate"
+    );
+}
+
+/// The tail sentence must degrade, not fail the render, on a window too short to have a tail.
+///
+/// `facts.rs` registers no `late-period.*` key under a fortnight, so a model that writes the
+/// sentence anyway is REJECTED for citing an unregistered key -- one retry, then an empty slot. That
+/// is the intended path, and it is only correct if the key is genuinely off the resolvable set.
+#[test]
+fn late_period_prose_is_rejected_when_the_window_is_too_short() {
+    let mut report = sample_report();
+    report.since = ts("2026-04-10T00:00:00Z");
+    report.until = ts("2026-04-16T00:00:00Z");
+    let reg = registry_for(&report);
+
+    let json = brief(Slot::Closing, &reg);
+    assert!(
+        !json.contains("late-period"),
+        "a short window shows the model no late-period fact: {json}"
+    );
+
+    // The key is still ON the allowlist (it is static), so validation passes but interpolation has
+    // nothing to substitute. That is the failure the post-interpolation re-check exists to catch.
+    let reply = "Closing. The final {{fact:late-period.days}} days carried nothing.";
+    let accepted = validate(reply, Slot::Closing.allowlist()).unwrap();
+    assert!(
+        document::interpolate(&accepted, &reg).is_err(),
+        "an unresolvable fact must fail rather than interpolate to empty"
     );
 }
 

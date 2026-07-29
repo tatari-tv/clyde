@@ -3,7 +3,7 @@
 use super::*;
 use crate::aggregate;
 use crate::persona::PersonaBlock;
-use crate::render::tests::{pricing, report_with_efficiency, report_with_outcomes, sample_report};
+use crate::render::tests::{pricing, report_with_efficiency, report_with_outcomes, sample_report, ts};
 use crate::render::{ViewOpts, document};
 use crate::report::Report;
 
@@ -119,6 +119,75 @@ fn curated_derived_keys_name_the_first_presorted_row() {
 
     assert_eq!(reg.get("repos.top"), Some(aggregates.by_repo[0].repo.as_str()));
     assert_eq!(reg.get("repos.top-spend"), Some(aggregates.by_repo[0].spend.as_str()));
+}
+
+/// The `late-period.*` facts summarize the window's TAIL, not the whole window.
+///
+/// `sample_report` spans 2026-04-01..04-30 with both of its sessions on the 10th and the 12th, so
+/// the final seven days (the 24th through the 30th) are empty. That asymmetry is the point: a
+/// implementation that summed all of `by_day` (or reused `totals.*`) would report 2 sessions and
+/// $0.60 here. Only a correct trailing slice reports zero.
+#[test]
+fn late_period_facts_measure_the_tail_not_the_total() {
+    let reg = registry_for(&sample_report());
+
+    assert_eq!(reg.get("late-period.days"), Some("7"));
+    assert_eq!(
+        reg.get("late-period.sessions"),
+        Some("0"),
+        "both sessions fall outside the final seven days"
+    );
+    assert_eq!(reg.get("late-period.spend"), Some("$0.00"));
+    assert_eq!(reg.get("late-period.active-days"), Some("0"));
+
+    // Guard against the tail being confused with the total.
+    assert_eq!(reg.get("totals.sessions"), Some("2"));
+    assert_eq!(reg.get("totals.spend"), Some("$0.60"));
+}
+
+/// The same facts, over a window whose activity IS in the tail, so a zero cannot pass by accident.
+#[test]
+fn late_period_facts_count_activity_inside_the_tail() {
+    let mut report = sample_report();
+    // 04-06..04-19 is 14 days, the minimum that registers. Its final seven (the 13th through the
+    // 19th) hold neither session; its first seven hold both. Shift to put them in the tail instead:
+    // 04-01..04-14 puts the 10th and 12th inside the closing week.
+    report.since = ts("2026-04-01T00:00:00Z");
+    report.until = ts("2026-04-14T00:00:00Z");
+    let reg = registry_for(&report);
+
+    assert_eq!(reg.get("late-period.days"), Some("7"));
+    assert_eq!(
+        reg.get("late-period.sessions"),
+        Some("2"),
+        "both sessions fall inside the final seven days of this window"
+    );
+    assert_eq!(reg.get("late-period.active-days"), Some("2"));
+}
+
+/// A window under `LATE_PERIOD_MIN_DAYS` registers NO `late-period.*` key.
+///
+/// Absent, not zero and not a sentinel: `Slot::Closing` cites these keys, and its validator rejects
+/// a placeholder whose key the registry does not carry, so the slot degrades to prose without the
+/// trailing sentence. A registered `"0"` would instead have it assert an empty final week that is
+/// really just a window too short to have one.
+#[test]
+fn late_period_facts_are_absent_on_a_short_window() {
+    let mut report = sample_report();
+    report.since = ts("2026-04-10T00:00:00Z");
+    report.until = ts("2026-04-16T00:00:00Z");
+    let reg = registry_for(&report);
+
+    for key in [
+        "late-period.days",
+        "late-period.sessions",
+        "late-period.spend",
+        "late-period.active-days",
+    ] {
+        assert_eq!(reg.get(key), None, "{key} must be absent on a sub-fortnight window");
+    }
+    // The window itself still reports normally; only the tail facts drop out.
+    assert_eq!(reg.get("totals.sessions"), Some("2"));
 }
 
 #[test]
