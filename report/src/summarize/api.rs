@@ -5,14 +5,14 @@
 //! BASELINE. It is no longer asserted byte-identical to the pre-transport behavior — that contract was
 //! retired when the output ceilings became `clyde.yml` keys, because a default a user can move is not
 //! a fact about past behavior. The assertion is anti-rot against the declared baseline: field order,
-//! the `stream` omission, the system prompt, the prompt/facts join, and the current defaults.
+//! the system prompt, the prompt/facts join, and the current defaults.
 //!
-//! Everything api-PRIVATE lives here and never reaches the [`Transport`] port: the streaming choice,
+//! Everything api-PRIVATE lives here and never reaches the [`Transport`] port:
 //! the endpoint, the version header, and the prompt/facts join. The output ceiling is NOT in that
 //! list — it is a `Job` field, shared across the port, because the cli transport checks the same
 //! value this one sets on the wire.
 
-use super::{Job, Kind, Transport, check_stop_reason, parse_sse_stream};
+use super::{Job, Transport, check_stop_reason};
 use eyre::{Context, Result, bail};
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
@@ -21,21 +21,6 @@ use std::time::Duration;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(300);
-
-impl Kind {
-    /// Whether this job's response is delivered as SSE.
-    ///
-    /// API-PRIVATE, and the reason it is not a field on `Job`: the cli transport has no delivery
-    /// choice to make, so a shared `stream` field would be one it must ignore. The output ceiling is
-    /// the opposite case — both transports use it — so it IS a field on `Job`.
-    ///
-    /// Html streams so the connection keeps flowing bytes and the 300s idle wall never fires on a
-    /// long generation; markdown reads a single JSON body. Derived from the KIND, not from a
-    /// threshold over `max_tokens`, so one value never carries two meanings.
-    fn streams(self) -> bool {
-        matches!(self, Kind::Html)
-    }
-}
 
 /// Reads `ANTHROPIC_API_KEY`, treating whitespace-only as absent. Lives here because after the
 /// transport split (and the removal of the vestigial `report::title` haiku path, design Phase 9)
@@ -85,10 +70,9 @@ impl ApiTransport {
 impl Transport for ApiTransport {
     fn complete(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<String> {
         let max_tokens = job.max_output_tokens;
-        let stream = job.kind.streams();
-        let body = build_body(job.model, system, max_tokens, stream, prompt, json_body);
+        let body = build_body(job.model, system, max_tokens, prompt, json_body);
         debug!(
-            "ApiTransport::complete: job={job:?} system bytes={} stream={stream} prompt+json bytes={}",
+            "ApiTransport::complete: job={job:?} system bytes={} prompt+json bytes={}",
             system.len(),
             body.messages.first().map(|m| m.content.len()).unwrap_or(0)
         );
@@ -98,10 +82,7 @@ impl Transport for ApiTransport {
             .build()
             .new_agent();
 
-        info!(
-            "ApiTransport::complete: calling {ENDPOINT} ({}) stream={stream}",
-            job.model
-        );
+        info!("ApiTransport::complete: calling {ENDPOINT} ({})", job.model);
         let mut response = agent
             .post(ENDPOINT)
             .header("x-api-key", &self.api_key)
@@ -110,32 +91,20 @@ impl Transport for ApiTransport {
             .send_json(&body)
             .with_context(|| "Anthropic API call failed")?;
 
-        let (text, stop_reason) = if stream {
-            let sse = response
-                .body_mut()
-                .read_to_string()
-                .with_context(|| "failed to read streaming Anthropic response")?;
-            let outcome = parse_sse_stream(&sse)?;
-            debug!(
-                "ApiTransport::complete: stream complete output_tokens={:?} stop_reason={:?} text bytes={}",
-                outcome.output_tokens,
-                outcome.stop_reason,
-                outcome.text.len()
-            );
-            (outcome.text, outcome.stop_reason)
-        } else {
-            let parsed: MessagesResponse = response
-                .body_mut()
-                .read_json()
-                .with_context(|| "failed to parse Anthropic response")?;
-            let text = parsed
-                .content
-                .into_iter()
-                .filter_map(|c| if c.r#type == "text" { Some(c.text) } else { None })
-                .collect::<Vec<_>>()
-                .join("\n");
-            (text, parsed.stop_reason)
-        };
+        // One delivery mode. Streaming existed so a long html generation kept the connection warm
+        // against the 300s idle wall; a slot is a few sentences and the judge is a small JSON
+        // verdict, so neither can approach it.
+        let parsed: MessagesResponse = response
+            .body_mut()
+            .read_json()
+            .with_context(|| "failed to parse Anthropic response")?;
+        let text = parsed
+            .content
+            .into_iter()
+            .filter_map(|c| if c.r#type == "text" { Some(c.text) } else { None })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stop_reason = parsed.stop_reason;
 
         if text.trim().is_empty() {
             bail!("Anthropic API returned empty content");
@@ -151,19 +120,11 @@ impl Transport for ApiTransport {
 /// The `prompt`/`json_body` join lives HERE, not on the port: the api transport puts both in one
 /// user message, while the cli transport delivers them on two channels. Same content, same order,
 /// different mechanism.
-fn build_body(
-    model: &str,
-    system: &str,
-    max_tokens: u32,
-    stream: bool,
-    prompt: &str,
-    json_body: &str,
-) -> MessagesRequest {
+fn build_body(model: &str, system: &str, max_tokens: u32, prompt: &str, json_body: &str) -> MessagesRequest {
     let user_msg = format!("{}\n\n```json\n{}\n```\n", prompt.trim_end(), json_body);
     MessagesRequest {
         model: model.into(),
         max_tokens,
-        stream,
         system: system.into(),
         messages: vec![Message {
             role: "user".into(),
@@ -172,19 +133,10 @@ fn build_body(
     }
 }
 
-fn is_false(b: &bool) -> bool {
-    !b
-}
-
 #[derive(Serialize)]
 struct MessagesRequest {
     model: String,
     max_tokens: u32,
-    /// Omitted entirely when false, which is the shape the markdown baseline test pins. A
-    /// `"stream":false` on the wire would be semantically equivalent but is still a change to the
-    /// declared baseline, so the omission is asserted rather than assumed.
-    #[serde(skip_serializing_if = "is_false")]
-    stream: bool,
     system: String,
     messages: Vec<Message>,
 }

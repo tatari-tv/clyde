@@ -25,6 +25,19 @@ use super::ContextBlock;
 /// prefix) and far below any of those sentences.
 const MAX_FACT_BYTES: usize = 96;
 
+/// The serialized context block.
+///
+/// Relocated here from `quotable.rs` when the guard stack was deleted, and reduced to the one field
+/// that still has a consumer: the eval's judge brief and its mechanical citation checks read the
+/// serialized block to know what the render was built FROM. The `facts` field it used to carry (the
+/// three quotable sets that licensed every figure in a model-authored artifact) has no referent any
+/// more -- Rust writes every figure now, so there is nothing to license.
+#[derive(Debug)]
+pub(crate) struct RenderContext {
+    /// The block, serialized, byte for byte.
+    pub(crate) json: String,
+}
+
 /// Facts a slot may cite, keyed by dotted-kebab name.
 ///
 /// `BTreeMap` rather than `HashMap` because the brief a slot receives is BUILT from this map and

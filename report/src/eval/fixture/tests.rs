@@ -21,7 +21,6 @@ fn a_bare_directory_loads_with_default_spec() {
     assert!(fixture.spec.floors.is_empty());
     assert!(fixture.spec.persona.is_none());
     assert!(fixture.prior.is_none() && fixture.analytics.is_none());
-    assert!(fixture.golden_markdown.is_none() && fixture.golden_html.is_none());
 }
 
 /// A directory with no `report.json` is a LOUD error. Skipping it would let an eval announce "all
@@ -49,7 +48,6 @@ fn optional_companions_are_discovered() {
     write(dir.path(), PRIOR_FILE, MINIMAL_REPORT);
     write(dir.path(), ANALYTICS_FILE, "[]");
     write(dir.path(), GOLDEN_MARKDOWN, "# artifact\n");
-    write(dir.path(), GOLDEN_HTML, "<!doctype html></html>");
     write(
         dir.path(),
         SPEC_FILE,
@@ -59,7 +57,6 @@ fn optional_companions_are_discovered() {
     let fixture = Fixture::load(dir.path()).unwrap();
     assert!(fixture.prior.is_some() && fixture.analytics.is_some());
     assert_eq!(fixture.golden_markdown.as_deref(), Some("# artifact\n"));
-    assert_eq!(fixture.golden_html.as_deref(), Some("<!doctype html></html>"));
     assert_eq!(fixture.spec.require_sections, vec!["Cost Summary".to_string()]);
     assert_eq!(fixture.spec.floor(Dimension::Coverage), 2);
     assert_eq!(fixture.spec.floor(Dimension::Readability), 0, "an unset floor is zero");

@@ -65,16 +65,25 @@ fn render_format_defaults_to_markdown() {
 fn load_from_reads_render_format() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("clyde.yml");
-    std::fs::write(&path, "render:\n  format: marquee-html\n").unwrap();
-    assert_eq!(load_from(&path).unwrap().render_format(), FormatConfig::MarqueeHtml);
+    std::fs::write(&path, "render:\n  format: marquee-markdown\n").unwrap();
+    assert_eq!(load_from(&path).unwrap().render_format(), FormatConfig::MarqueeMarkdown);
 }
 
+/// The retired html formats must be REJECTED by name rather than tolerated. `deny_unknown_fields`
+/// does not cover an enum VALUE, so this is the assertion that a stale `format: html` fails loudly
+/// instead of silently resolving to markdown.
 #[test]
-fn load_from_reads_render_format_html() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("clyde.yml");
-    std::fs::write(&path, "render:\n  format: html\n").unwrap();
-    assert_eq!(load_from(&path).unwrap().render_format(), FormatConfig::Html);
+fn load_from_rejects_the_retired_html_formats() {
+    for value in ["html", "marquee-html"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("clyde.yml");
+        std::fs::write(&path, format!("render:\n  format: {value}\n")).unwrap();
+        let err = load_from(&path).unwrap_err();
+        assert!(
+            format!("{err:#}").contains(value),
+            "a retired format must be named in the error: {err:#}"
+        );
+    }
 }
 
 #[test]
@@ -107,7 +116,7 @@ fn render_ceilings_default_when_the_file_is_absent() {
         cfg.render_markdown_max_output_tokens(),
         DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS
     );
-    assert_eq!(cfg.render_html_max_output_tokens(), DEFAULT_HTML_MAX_OUTPUT_TOKENS);
+    assert_eq!(cfg.render_slot_max_output_tokens(), DEFAULT_SLOT_MAX_OUTPUT_TOKENS);
 }
 
 #[test]
@@ -118,12 +127,12 @@ fn render_ceilings_come_from_clyde_yml_when_set() {
     // pair or a hardcoded value fails here.
     std::fs::write(
         &path,
-        "render:\n  markdown-max-output-tokens: 12345\n  html-max-output-tokens: 54321\n",
+        "render:\n  markdown-max-output-tokens: 12345\n  slot-max-output-tokens: 543\n",
     )
     .unwrap();
     let cfg = load_from(&path).unwrap();
     assert_eq!(cfg.render_markdown_max_output_tokens(), 12_345);
-    assert_eq!(cfg.render_html_max_output_tokens(), 54_321);
+    assert_eq!(cfg.render_slot_max_output_tokens(), 543);
 }
 
 #[test]
@@ -131,14 +140,14 @@ fn render_ceilings_are_independent_of_each_other() {
     // Setting only one must leave the other at its default, not zero it.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("clyde.yml");
-    std::fs::write(&path, "render:\n  html-max-output-tokens: 54321\n").unwrap();
+    std::fs::write(&path, "render:\n  slot-max-output-tokens: 543\n").unwrap();
     let cfg = load_from(&path).unwrap();
     assert_eq!(
         cfg.render_markdown_max_output_tokens(),
         DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
         "an unset ceiling keeps its default"
     );
-    assert_eq!(cfg.render_html_max_output_tokens(), 54_321);
+    assert_eq!(cfg.render_slot_max_output_tokens(), 543);
 }
 
 /// AC-C2: a ceiling of `0` is never a legitimate budget, and the error must name the KEY.
@@ -161,16 +170,16 @@ fn render_rejects_a_zero_markdown_ceiling_by_name() {
     );
 }
 
-/// The html half of AC-C2. Separate because each key is named by its own validator, and a single
+/// The slot half of AC-C2. Separate because each key is named by its own validator, and a single
 /// shared one naming neither would pass a test that only checked one side.
 #[test]
-fn render_rejects_a_zero_html_ceiling_by_name() {
+fn render_rejects_a_zero_slot_ceiling_by_name() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("clyde.yml");
-    std::fs::write(&path, "render:\n  html-max-output-tokens: 0\n").unwrap();
+    std::fs::write(&path, "render:\n  slot-max-output-tokens: 0\n").unwrap();
     let err = format!("{:#}", load_from(&path).unwrap_err());
     assert!(
-        err.contains("render.html-max-output-tokens"),
+        err.contains("render.slot-max-output-tokens"),
         "must name the key the user set: {err}"
     );
 }

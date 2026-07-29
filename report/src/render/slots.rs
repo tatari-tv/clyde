@@ -137,6 +137,12 @@ struct Brief<'a> {
 /// it replaces. Exceeding it means something leaked a collection in.
 pub(super) const MAX_BRIEF_BYTES: usize = 4_096;
 
+/// How many slots a render attempts. The eval reports degradation as filled-against-attempted, and
+/// deriving the denominator here keeps it from drifting from [`generate`]'s own loop.
+pub(super) fn count(include_tradeoffs: bool) -> usize {
+    UNCONDITIONAL.len() + usize::from(include_tradeoffs)
+}
+
 /// Generate every slot for one render.
 ///
 /// INFALLIBLE by construction: the return value is whatever prose survived validation. A slot that

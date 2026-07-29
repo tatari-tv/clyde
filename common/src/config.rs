@@ -45,8 +45,6 @@ pub enum FormatConfig {
     #[default]
     Markdown,
     Pdf,
-    Html,
-    MarqueeHtml,
     MarqueeMarkdown,
 }
 
@@ -71,9 +69,6 @@ pub enum LlmConfig {
 /// the model the keyless spike verified on both jobs. This is the ONE home for the default: the
 /// `report` crate reads it from here rather than carrying its own copy, so the two cannot drift.
 pub const DEFAULT_MARKDOWN_MODEL: &str = "claude-opus-4-8";
-/// Default pin for the html job (`render.html-model`). See [`DEFAULT_MARKDOWN_MODEL`].
-pub const DEFAULT_HTML_MODEL: &str = "claude-opus-4-8";
-
 /// Default output ceiling for the markdown job (`render.markdown-max-output-tokens`).
 ///
 /// 32,000: twice the largest markdown output ever measured (16,117 tokens on the 1,310-session
@@ -81,11 +76,6 @@ pub const DEFAULT_HTML_MODEL: &str = "claude-opus-4-8";
 /// `claude-opus-4-8` (64,000), so the cli path can deliver a document at this ceiling untruncated.
 /// Raised from the pre-config ceiling, which that same month exceeded by 117 tokens.
 pub const DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 32_000;
-
-/// Default output ceiling for the html job (`render.html-max-output-tokens`). Exactly what the
-/// `claude` CLI grants `claude-opus-4-8` (64,000), against a largest observed html output of 19,574
-/// tokens (3.2x headroom). Nothing measured argues for moving it.
-pub const DEFAULT_HTML_MAX_OUTPUT_TOKENS: u32 = 64_000;
 
 /// Default output ceiling for a prose SLOT (`render.slot-max-output-tokens`).
 ///
@@ -101,16 +91,8 @@ fn default_markdown_model() -> String {
     DEFAULT_MARKDOWN_MODEL.to_string()
 }
 
-fn default_html_model() -> String {
-    DEFAULT_HTML_MODEL.to_string()
-}
-
 fn default_markdown_max_output_tokens() -> u32 {
     DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS
-}
-
-fn default_html_max_output_tokens() -> u32 {
-    DEFAULT_HTML_MAX_OUTPUT_TOKENS
 }
 
 fn default_slot_max_output_tokens() -> u32 {
@@ -131,20 +113,13 @@ where
     nonzero_ceiling(deserializer, "render.markdown-max-output-tokens")
 }
 
-/// Deserialize `render.html-max-output-tokens`. See [`de_markdown_max_output_tokens`] for why the
+/// Deserialize `render.slot-max-output-tokens`. See [`de_markdown_max_output_tokens`] for why the
 /// two keys get one function each.
 fn de_slot_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     nonzero_ceiling(deserializer, "render.slot-max-output-tokens")
-}
-
-fn de_html_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    nonzero_ceiling(deserializer, "render.html-max-output-tokens")
 }
 
 /// Reject a zero output ceiling, naming the key the caller passed.
@@ -191,9 +166,6 @@ pub struct RenderConfig {
     /// Model pin for the markdown job. Defaults to [`DEFAULT_MARKDOWN_MODEL`].
     #[serde(default = "default_markdown_model")]
     markdown_model: String,
-    /// Model pin for the html job. Defaults to [`DEFAULT_HTML_MODEL`].
-    #[serde(default = "default_html_model")]
-    html_model: String,
     /// Output ceiling for the markdown job. Defaults to
     /// [`DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS`]. `0` is rejected loudly.
     #[serde(
@@ -201,13 +173,6 @@ pub struct RenderConfig {
         deserialize_with = "de_markdown_max_output_tokens"
     )]
     markdown_max_output_tokens: u32,
-    /// Output ceiling for the html job. Defaults to [`DEFAULT_HTML_MAX_OUTPUT_TOKENS`]. `0` is
-    /// rejected loudly.
-    #[serde(
-        default = "default_html_max_output_tokens",
-        deserialize_with = "de_html_max_output_tokens"
-    )]
-    html_max_output_tokens: u32,
     /// Output ceiling for one prose slot. Defaults to [`DEFAULT_SLOT_MAX_OUTPUT_TOKENS`]. `0` is
     /// rejected loudly.
     #[serde(
@@ -223,9 +188,7 @@ impl Default for RenderConfig {
             format: FormatConfig::default(),
             llm: LlmConfig::default(),
             markdown_model: default_markdown_model(),
-            html_model: default_html_model(),
             markdown_max_output_tokens: default_markdown_max_output_tokens(),
-            html_max_output_tokens: default_html_max_output_tokens(),
             slot_max_output_tokens: default_slot_max_output_tokens(),
         }
     }
@@ -519,21 +482,10 @@ impl Config {
         &self.render.markdown_model
     }
 
-    /// The configured model pin for the html job ([`DEFAULT_HTML_MODEL`] when unset).
-    pub fn render_html_model(&self) -> &str {
-        &self.render.html_model
-    }
-
     /// The configured output ceiling for the markdown job
     /// ([`DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS`] when unset).
     pub fn render_markdown_max_output_tokens(&self) -> u32 {
         self.render.markdown_max_output_tokens
-    }
-
-    /// The configured output ceiling for the html job ([`DEFAULT_HTML_MAX_OUTPUT_TOKENS`] when
-    /// unset).
-    pub fn render_html_max_output_tokens(&self) -> u32 {
-        self.render.html_max_output_tokens
     }
 
     /// The configured output ceiling for one prose slot ([`DEFAULT_SLOT_MAX_OUTPUT_TOKENS`] when

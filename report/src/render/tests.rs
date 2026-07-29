@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::config::{Config, RenderConfig, ResolvedCommand};
-use crate::render::template::Template;
 use crate::report::{ModelTokens, Report, SessionEntry, Totals};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
@@ -172,69 +171,6 @@ pub(super) fn sample_report() -> Report {
 }
 
 #[test]
-fn built_in_template_renders_header_totals_repo_table_and_sessions() {
-    let report = sample_report();
-    let md = to_markdown(&report, &Template::BuiltIn, &pricing());
-
-    assert!(md.contains("# Claude Code session report"));
-    assert!(md.contains("**host:** desk"));
-    assert!(md.contains("**period:** 2026-04-01 -> 2026-04-30"));
-    assert!(md.contains("**sessions:** 2"));
-    assert!(md.contains("**total tokens:** 5,650"), "got:\n{}", md);
-    assert!(md.contains("**total spend:** $0.60"), "got:\n{}", md);
-
-    assert!(md.contains("## Totals by model"));
-    assert!(md.contains("| claude-opus-4-7"));
-    assert!(md.contains("| claude-sonnet-4-6"));
-
-    assert!(md.contains("## By repo"));
-    assert!(md.contains("| tatari-tv/claude-report"));
-    assert!(
-        !md.contains("| (no repo)"),
-        "v1 by-repo table excludes (no repo) per resolved open question"
-    );
-
-    assert!(md.contains("## Sessions"));
-    assert!(md.contains("### tatari-tv/claude-report"));
-    assert!(md.contains("### (no repo)"));
-    assert!(md.contains("ship the report tool"));
-    assert!(md.contains("<untitled>"));
-    assert!(md.contains("9d4c1f28"));
-}
-
-#[test]
-fn empty_report_renders_safe_message() {
-    let report = Report {
-        schema_version: 2,
-        generated: ts("2026-04-27T19:42:08Z"),
-        host: "desk".into(),
-        since: ts("2026-04-01T00:00:00Z"),
-        until: ts("2026-04-30T00:00:00Z"),
-        outcomes_enabled: None,
-        notes: Vec::new(),
-        totals: totals(0, 0.0, BTreeMap::new()),
-        sessions: BTreeMap::new(),
-    };
-    let md = to_markdown(&report, &Template::BuiltIn, &pricing());
-    assert!(md.contains("**sessions:** 0"));
-    assert!(md.contains("_no model usage_"));
-    assert!(md.contains("_no sessions with a detected repo_"));
-}
-
-#[test]
-fn custom_template_substitutes_placeholders() {
-    let report = sample_report();
-    let custom = Template::Custom(
-        "host={{host}} since={{since}} until={{until}} count={{session-count}} tot={{total-tokens}} spend={{total-spend}}".into(),
-    );
-    let md = to_markdown(&report, &custom, &pricing());
-    assert_eq!(
-        md,
-        "host=desk since=2026-04-01 until=2026-04-30 count=2 tot=5,650 spend=$0.60"
-    );
-}
-
-#[test]
 fn build_context_block_includes_slim_shape() {
     let report = sample_report();
     let block = ctx(&report, true);
@@ -343,32 +279,6 @@ fn build_context_block_always_carries_the_pricing_basis() {
         ),
         "the disclosure sentence must carry the scope caveat in the same sentence as the citation \
          (design Resolved Decisions, 'Tatari pays for Claude Enterprise...')"
-    );
-}
-
-/// The built-in offline renderer (`--template` unset, no LLM) is a "rendered artifact" too (design
-/// Phase 6 success criterion: "every rendered artifact contains the basis note").
-#[test]
-fn render_built_in_includes_the_pricing_basis_note() {
-    let report = sample_report();
-    let md = to_markdown(&report, &Template::BuiltIn, &pricing());
-    assert!(
-        md.contains("Total spend is modeled Claude Code catalog spend at published list rates"),
-        "built-in markdown must carry the pricing basis note: {}",
-        md
-    );
-}
-
-/// A user-authored custom template can opt into the same disclosure via `{{basis-note}}`.
-#[test]
-fn custom_template_substitutes_the_basis_note_placeholder() {
-    let report = sample_report();
-    let custom = Template::Custom("basis={{basis-note}}".into());
-    let md = to_markdown(&report, &custom, &pricing());
-    assert_eq!(
-        md,
-        "basis=Total spend is modeled Claude Code catalog spend at published list rates; \
-         account-level billed spend comes from Claude Enterprise Analytics."
     );
 }
 
@@ -604,242 +514,6 @@ fn build_context_block_default_outliers_n_matches_default_outliers_const() {
     assert_eq!(outliers.len(), crate::aggregate::DEFAULT_OUTLIERS);
 }
 
-#[test]
-fn render_run_writes_markdown_file_with_custom_template() {
-    let tmp = TempDir::new().unwrap();
-    let json_path = tmp.path().join("claude-report.json");
-    let md = tmp.path().join("claude-report.md");
-    let template_path = tmp.path().join("template.md");
-    let report = sample_report();
-    fs::write(&json_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    fs::write(&template_path, "host={{host}} sessions={{session-count}}").unwrap();
-
-    let cfg = Config {
-        log_level: "info".into(),
-        command: ResolvedCommand::Render(RenderConfig {
-            llm: crate::cli::Llm::Auto,
-            markdown_model: "claude-opus-4-8".into(),
-            html_model: "claude-opus-4-8".into(),
-            markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
-            slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
-            html_max_output_tokens: common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
-            input: json_path.clone(),
-            output: Some(md.clone()),
-            format: crate::cli::Format::Markdown,
-            space: None,
-            template: Some(template_path),
-            prompt: None,
-            include_tradeoffs: false,
-            pdf_engine: "wkhtmltopdf".into(),
-            outliers: crate::aggregate::DEFAULT_OUTLIERS,
-            prior: None,
-            reconcile: None,
-            reconcile_user: None,
-        }),
-    };
-    let result = crate::run_with_config(&cfg).unwrap();
-    assert_eq!(result.sessions_emitted, 2);
-    let body = fs::read_to_string(&md).unwrap();
-    assert_eq!(body, "host=desk sessions=2");
-}
-
-#[test]
-fn render_run_rejects_yaml_input_extension() {
-    let tmp = TempDir::new().unwrap();
-    let yml = tmp.path().join("claude-report.yml");
-    fs::write(&yml, "schema-version: 1\n").unwrap();
-
-    let cfg = Config {
-        log_level: "info".into(),
-        command: ResolvedCommand::Render(RenderConfig {
-            llm: crate::cli::Llm::Auto,
-            markdown_model: "claude-opus-4-8".into(),
-            html_model: "claude-opus-4-8".into(),
-            markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
-            slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
-            html_max_output_tokens: common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
-            input: yml,
-            output: None,
-            format: crate::cli::Format::Markdown,
-            space: None,
-            template: None,
-            prompt: None,
-            include_tradeoffs: false,
-            pdf_engine: "wkhtmltopdf".into(),
-            outliers: crate::aggregate::DEFAULT_OUTLIERS,
-            prior: None,
-            reconcile: None,
-            reconcile_user: None,
-        }),
-    };
-    let err = crate::run_with_config(&cfg).unwrap_err();
-    let msg = format!("{}", err);
-    assert!(
-        msg.contains(".yml/.yaml") && msg.contains("JSON"),
-        "yaml-extension guard message must mention .yml/.yaml and JSON: {}",
-        msg
-    );
-}
-
-#[test]
-fn default_output_uses_since_yyyy_mm() {
-    let report = sample_report(); // since = 2026-04-01
-    let md = default_output_path(&report, crate::cli::Format::Markdown);
-    assert_eq!(md, std::path::PathBuf::from("./2026-04-claude-report.md"));
-    let pdf = default_output_path(&report, crate::cli::Format::Pdf);
-    assert_eq!(pdf, std::path::PathBuf::from("./2026-04-claude-report.pdf"));
-    let html = default_output_path(&report, crate::cli::Format::Html);
-    assert_eq!(html, std::path::PathBuf::from("./2026-04-claude-report.html"));
-}
-
-#[test]
-fn resolve_prompt_uses_explicit_path() {
-    let tmp = TempDir::new().unwrap();
-    let pmt = tmp.path().join("custom.pmt");
-    fs::write(&pmt, "EXPLICIT-PROMPT").unwrap();
-    let resolved = resolve_prompt(Some(&pmt), tmp.path()).unwrap();
-    assert_eq!(resolved, "EXPLICIT-PROMPT");
-}
-
-#[test]
-fn resolve_prompt_uses_workspace_file_when_no_explicit() {
-    let tmp = TempDir::new().unwrap();
-    let templates = tmp.path().join("templates");
-    fs::create_dir_all(&templates).unwrap();
-    fs::write(templates.join("report.pmt"), "WORKSPACE-PROMPT").unwrap();
-    let resolved = resolve_prompt(None, tmp.path()).unwrap();
-    assert_eq!(resolved, "WORKSPACE-PROMPT");
-}
-
-#[test]
-fn resolve_prompt_falls_back_to_baked_in_default() {
-    let tmp = TempDir::new().unwrap();
-    let resolved = resolve_prompt(None, tmp.path()).unwrap();
-    assert_eq!(resolved, DEFAULT_PROMPT);
-}
-
-#[test]
-fn resolve_prompt_workspace_edits_propagate_at_runtime() {
-    let tmp = TempDir::new().unwrap();
-    let templates = tmp.path().join("templates");
-    fs::create_dir_all(&templates).unwrap();
-    let pmt = templates.join("report.pmt");
-    fs::write(&pmt, "v1").unwrap();
-    assert_eq!(resolve_prompt(None, tmp.path()).unwrap(), "v1");
-    fs::write(&pmt, "v2").unwrap();
-    assert_eq!(resolve_prompt(None, tmp.path()).unwrap(), "v2");
-}
-
-#[test]
-fn resolve_html_prompt_uses_explicit_path() {
-    let tmp = TempDir::new().unwrap();
-    let pmt = tmp.path().join("custom-html.pmt");
-    fs::write(&pmt, "EXPLICIT-HTML-PROMPT").unwrap();
-    let resolved = resolve_html_prompt(Some(&pmt), tmp.path()).unwrap();
-    assert_eq!(resolved, "EXPLICIT-HTML-PROMPT");
-}
-
-#[test]
-fn resolve_html_prompt_uses_workspace_file_when_no_explicit() {
-    let tmp = TempDir::new().unwrap();
-    let templates = tmp.path().join("templates");
-    fs::create_dir_all(&templates).unwrap();
-    fs::write(templates.join("report-html.pmt"), "WORKSPACE-HTML-PROMPT").unwrap();
-    let resolved = resolve_html_prompt(None, tmp.path()).unwrap();
-    assert_eq!(resolved, "WORKSPACE-HTML-PROMPT");
-}
-
-#[test]
-fn resolve_html_prompt_falls_back_to_baked_in_default() {
-    let tmp = TempDir::new().unwrap();
-    let resolved = resolve_html_prompt(None, tmp.path()).unwrap();
-    assert_eq!(resolved, DEFAULT_HTML_PROMPT);
-}
-
-/// Offline routing seam: `route_html_artifact` takes an already-generated HTML string and writes it
-/// locally for `Format::Html`, so it is testable without the live API. `-o <path>` writes that file.
-#[test]
-fn route_html_artifact_writes_local_file() {
-    let tmp = TempDir::new().unwrap();
-    let out = tmp.path().join("report.html");
-    let report = sample_report();
-    let cfg = RenderConfig {
-        llm: crate::cli::Llm::Auto,
-        markdown_model: "claude-opus-4-8".into(),
-        html_model: "claude-opus-4-8".into(),
-        markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
-        slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
-        html_max_output_tokens: common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
-        input: tmp.path().join("claude-report.json"),
-        output: Some(out.clone()),
-        format: crate::cli::Format::Html,
-        space: None,
-        template: None,
-        prompt: None,
-        include_tradeoffs: false,
-        pdf_engine: "wkhtmltopdf".into(),
-        outliers: crate::aggregate::DEFAULT_OUTLIERS,
-        prior: None,
-        reconcile: None,
-        reconcile_user: None,
-    };
-    let html = "<!doctype html><html><body>injected</body></html>";
-    let dest = route_html_artifact(html, &report, &cfg).unwrap();
-    match dest {
-        OutputDest::File(p) => assert_eq!(p, out),
-        other => panic!("expected a File dest, got {other:?}"),
-    }
-    assert_eq!(fs::read_to_string(&out).unwrap(), html);
-}
-
-/// `route_html_artifact` honors the `-o -` stdout sigil (html is text, so stdout is legal).
-#[test]
-fn route_html_artifact_honors_stdout_sigil() {
-    let report = sample_report();
-    let cfg = RenderConfig {
-        llm: crate::cli::Llm::Auto,
-        markdown_model: "claude-opus-4-8".into(),
-        html_model: "claude-opus-4-8".into(),
-        markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
-        slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
-        html_max_output_tokens: common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
-        input: std::path::PathBuf::from("./claude-report.json"),
-        output: Some(std::path::PathBuf::from("-")),
-        format: crate::cli::Format::Html,
-        space: None,
-        template: None,
-        prompt: None,
-        include_tradeoffs: false,
-        pdf_engine: "wkhtmltopdf".into(),
-        outliers: crate::aggregate::DEFAULT_OUTLIERS,
-        prior: None,
-        reconcile: None,
-        reconcile_user: None,
-    };
-    let dest = route_html_artifact("<!doctype html><html></html>", &report, &cfg).unwrap();
-    assert!(matches!(dest, OutputDest::Stdout), "expected Stdout dest, got {dest:?}");
-}
-
-#[test]
-fn baked_in_default_matches_workspace_template() {
-    let on_disk =
-        fs::read_to_string("templates/report.pmt").expect("templates/report.pmt must exist relative to crate root");
-    assert_eq!(
-        DEFAULT_PROMPT, on_disk,
-        "DEFAULT_PROMPT (include_str!) must be byte-identical to templates/report.pmt"
-    );
-}
-
-#[test]
-fn baked_in_html_default_matches_workspace_template() {
-    let on_disk = fs::read_to_string("templates/report-html.pmt")
-        .expect("templates/report-html.pmt must exist relative to crate root");
-    assert_eq!(
-        DEFAULT_HTML_PROMPT, on_disk,
-        "DEFAULT_HTML_PROMPT (include_str!) must be byte-identical to templates/report-html.pmt"
-    );
-}
-
 /// Phase 6: `outcomes.totals` in the context re-exposes the persisted rollup with fields
 /// present-if-nonzero, per-session `outcomes` rides the slim session view, and outlier rows
 /// carry the session's outcome fields when available.
@@ -948,11 +622,8 @@ fn build_context_block_omits_outcomes_key_when_rollup_absent() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 5: render invents nothing (string-only context + foreign-number guard)
+// Phase 5: the context block carries display strings, never raw operands
 // ---------------------------------------------------------------------------
-
-/// Serialize all env-var-touching tests behind one lock (edition 2024, parallel test races).
-use crate::ENV_LOCK;
 
 /// Phase 5: the context is STRING-ONLY. The raw numeric OPERANDS the pre-Phase-5 context carried
 /// (`totals.tokens`, per-model `spend-usd`, per-session raw `spend`) are GONE, so the model has no
@@ -1088,51 +759,6 @@ fn build_context_block_carries_tag_set_coverage_strings() {
     );
 }
 
-/// Phase 7's prompt-edit ledger: BOTH templates license the `unit-costs` block, both carry the
-/// EXACT ratio wording (the one word between an honest ratio and a fabricated price tag), both ban
-/// the price-tag phrasings by name, and both document the per-repo `outcomes` a spend-against-output
-/// chart rests on.
-///
-/// BITES: soften either template's "each commit cost" ban, or drop the ratio sentence, and the
-/// matching assertion fails.
-#[test]
-fn both_templates_license_unit_costs_as_ratios_and_by_repo_outcomes() {
-    for (name, tpl) in [("report.pmt", DEFAULT_PROMPT), ("report-html.pmt", DEFAULT_HTML_PROMPT)] {
-        assert!(
-            tpl.contains("`unit-costs`"),
-            "{name} must document the unit-costs block or the model cannot quote it"
-        );
-        assert!(
-            tpl.contains("These are RATIOS, not prices"),
-            "{name} must frame unit costs as ratios"
-        );
-        assert!(
-            tpl.contains("including the ones that produced no commit"),
-            "{name} must state what the numerator actually covers"
-        );
-        assert!(
-            tpl.contains("NEVER write \"each commit cost\""),
-            "{name} must ban the price-tag phrasing by name"
-        );
-        assert!(
-            tpl.contains("summed across repos"),
-            "{name} must state that per-repo outcome counts are not summable"
-        );
-        assert!(
-            tpl.contains("`lines-written`"),
-            "{name} must document the new line counters"
-        );
-        assert!(
-            tpl.contains("NOT a `git diff` stat"),
-            "{name} must stop the line counters being labeled as diff stats"
-        );
-    }
-    assert!(
-        DEFAULT_HTML_PROMPT.contains("commits-percent-of-max"),
-        "the html template must license the output geometry its chart needs"
-    );
-}
-
 /// A stale schema-v1 artifact is rejected by VERSION, naming both versions and the re-collect
 /// remedy, rather than by a serde error about an internal field.
 ///
@@ -1187,6 +813,76 @@ fn render_rejects_v1_artifact_by_version_not_serde_error() {
     );
 }
 
+/// The outcome counters Phase 7 adds reach the prompt through `outcomes.totals` under the same
+/// present-if-nonzero rule as their siblings, so a pre-Phase-7 catalog (zero lines recorded)
+/// omits them rather than claiming thousands of edited files produced no lines.
+#[test]
+fn build_context_block_carries_line_counters_present_if_nonzero() {
+    let mut report = report_with_outcomes();
+    let block = ctx(&report, false);
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let totals = parsed
+        .get("outcomes")
+        .and_then(|o| o.get("totals"))
+        .expect("outcomes.totals key");
+    assert_eq!(totals.get("lines-written").and_then(|v| v.as_u64()), Some(310));
+    assert_eq!(totals.get("lines-replaced").and_then(|v| v.as_u64()), Some(96));
+
+    let outcomes = report.totals.outcomes.as_mut().unwrap();
+    outcomes.lines_written = 0;
+    outcomes.lines_replaced = 0;
+    let block = ctx(&report, false);
+    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
+    let totals = parsed.get("outcomes").and_then(|o| o.get("totals")).unwrap();
+    assert!(
+        totals.get("lines-written").is_none() && totals.get("lines-replaced").is_none(),
+        "an unreindexed catalog records no lines, so the field is absent: {totals}"
+    );
+}
+
+#[test]
+fn render_run_rejects_yaml_input_extension() {
+    let tmp = TempDir::new().unwrap();
+    let yml = tmp.path().join("claude-report.yml");
+    fs::write(&yml, "schema-version: 1\n").unwrap();
+
+    let cfg = Config {
+        log_level: "info".into(),
+        command: ResolvedCommand::Render(RenderConfig {
+            llm: crate::cli::Llm::Auto,
+            markdown_model: "claude-opus-4-8".into(),
+            markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+            slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
+            input: yml,
+            output: None,
+            format: crate::cli::Format::Markdown,
+            space: None,
+            include_tradeoffs: false,
+            pdf_engine: "wkhtmltopdf".into(),
+            outliers: crate::aggregate::DEFAULT_OUTLIERS,
+            prior: None,
+            reconcile: None,
+            reconcile_user: None,
+        }),
+    };
+    let err = crate::run_with_config(&cfg).unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains(".yml/.yaml") && msg.contains("JSON"),
+        "yaml-extension guard message must mention .yml/.yaml and JSON: {}",
+        msg
+    );
+}
+
+#[test]
+fn default_output_uses_since_yyyy_mm() {
+    let report = sample_report(); // since = 2026-04-01
+    let md = default_output_path(&report, crate::cli::Format::Markdown);
+    assert_eq!(md, std::path::PathBuf::from("./2026-04-claude-report.md"));
+    let pdf = default_output_path(&report, crate::cli::Format::Pdf);
+    assert_eq!(pdf, std::path::PathBuf::from("./2026-04-claude-report.pdf"));
+}
+
 /// WIRING: the version gate is actually reached by `render::run`, not merely present as a function.
 ///
 /// The unit test above proves `check_schema_version` works in isolation, which would still pass if
@@ -1217,16 +913,12 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
     let cfg = RenderConfig {
         llm: crate::cli::Llm::Auto,
         markdown_model: "claude-opus-4-8".into(),
-        html_model: "claude-opus-4-8".into(),
         markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
         slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
-        html_max_output_tokens: common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
         input: input.clone(),
         output: Some(tmp.path().join("out.md")),
         format: crate::cli::Format::Markdown,
         space: None,
-        template: None,
-        prompt: None,
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
@@ -1246,119 +938,6 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
         !tmp.path().join("out.md").exists(),
         "no output may be written for a rejected artifact"
     );
-}
-
-/// Break-the-code (markdown path): a semantically-fabricated figure (a plausible dollar amount NOT
-/// in the facts) injected into generated prose is REJECTED, naming the foreign number; prose that
-/// quotes only facts numbers passes. If the foreign-number filter is removed, the first assertion
-/// (expects Err) fails -- the test bites.
-#[test]
-fn markdown_guard_rejects_fabricated_number_accepts_verbatim() {
-    let facts = crate::quotable::QuotableFacts::from_context_json(
-        r#"{"totals":{"spend":"$4.12","tokens-human":"5,650"},"period":{"since":"2026-07-01"}}"#,
-    )
-    .unwrap();
-
-    let fabricated = "Spend was $4.12 this period, saving the team $9,999 in engineering time.";
-    let err = reject_foreign_numbers("markdown", fabricated, &facts).unwrap_err();
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("markdown") && msg.contains("render-invents-nothing"),
-        "error must name the path and the contract: {msg}"
-    );
-    assert!(
-        msg.contains("999"),
-        "the foreign number must be reported in the error: {msg}"
-    );
-
-    let clean = "Spend was $4.12 across the period beginning 2026-07-01; tokens totaled 5,650.";
-    reject_foreign_numbers("markdown", clean, &facts).expect("verbatim prose must pass the guard");
-}
-
-/// Break-the-code (html path): the guard runs over VISIBLE TEXT, so CSS/JS geometry (px,
-/// breakpoints, hex colors, a verbatim bar-width percent inside a `style=` attribute) never
-/// false-positives, but a fabricated figure in visible text IS rejected. Positive + negative; the
-/// Err assertion fails if the guard is removed.
-#[test]
-fn html_guard_checks_visible_text_not_css_geometry() {
-    let facts = crate::quotable::QuotableFacts::from_context_json(
-        r#"{"totals":{"spend":"$4.12"},"models":[{"spend-percent-of-max":43.7}]}"#,
-    )
-    .unwrap();
-
-    let good = "<!doctype html><html><head><style>body{padding:24px;color:#1a1a1a}\
-        @media(max-width:768px){body{font-size:14px}}</style></head>\
-        <body><h1>Total Spend: $4.12</h1><div style=\"width: 43.7%\"></div></body></html>";
-    reject_foreign_numbers("html", &visible_text(good), &facts)
-        .expect("css geometry and a verbatim data figure must pass the html guard");
-
-    let bad = "<!doctype html><html><head><style>body{padding:24px}</style></head>\
-        <body><h1>Saved $9,999 this month</h1></body></html>";
-    let err = reject_foreign_numbers("html", &visible_text(bad), &facts).unwrap_err();
-    assert!(format!("{err}").contains("html"), "html path error expected: {err}");
-}
-
-/// `visible_text` strips `<style>`/`<script>` block contents and all tag markup, keeping only the
-/// reader-visible text nodes -- so the html guard scans data figures, not authored CSS/JS numbers.
-#[test]
-fn visible_text_strips_style_script_and_tags() {
-    let html = "<!doctype html><html><head><style>.a{width:50px}</style>\
-        <script>var x=42;</script></head><body><p>Hello 7 world</p></body></html>";
-    let text = visible_text(html);
-    assert!(text.contains("Hello 7 world"), "visible text kept: {text:?}");
-    assert!(!text.contains("50"), "style block contents stripped: {text:?}");
-    assert!(!text.contains("42"), "script block contents stripped: {text:?}");
-    assert!(!text.contains("doctype"), "tag markup stripped: {text:?}");
-}
-
-/// Phase 5 success criterion: the offline `--template` path renders with NO Anthropic key. The key
-/// is removed from the environment for the duration; the render must still succeed.
-#[test]
-fn offline_template_path_requires_no_anthropic_key() {
-    let guard = ENV_LOCK.lock().unwrap();
-    let prior = std::env::var("ANTHROPIC_API_KEY").ok();
-    unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
-
-    let tmp = TempDir::new().unwrap();
-    let json_path = tmp.path().join("claude-report.json");
-    let md = tmp.path().join("out.md");
-    let template_path = tmp.path().join("t.md");
-    let report = sample_report();
-    fs::write(&json_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    fs::write(&template_path, "sessions={{session-count}}").unwrap();
-
-    let cfg = Config {
-        log_level: "info".into(),
-        command: ResolvedCommand::Render(RenderConfig {
-            llm: crate::cli::Llm::Auto,
-            markdown_model: "claude-opus-4-8".into(),
-            html_model: "claude-opus-4-8".into(),
-            markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
-            slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
-            html_max_output_tokens: common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
-            input: json_path,
-            output: Some(md.clone()),
-            format: crate::cli::Format::Markdown,
-            space: None,
-            template: Some(template_path),
-            prompt: None,
-            include_tradeoffs: false,
-            pdf_engine: "wkhtmltopdf".into(),
-            outliers: crate::aggregate::DEFAULT_OUTLIERS,
-            prior: None,
-            reconcile: None,
-            reconcile_user: None,
-        }),
-    };
-    let result = crate::run_with_config(&cfg).expect("offline template render must not need a key");
-    assert_eq!(result.sessions_emitted, 2);
-    assert_eq!(fs::read_to_string(&md).unwrap(), "sessions=2");
-
-    match prior {
-        Some(v) => unsafe { std::env::set_var("ANTHROPIC_API_KEY", v) },
-        None => unsafe { std::env::remove_var("ANTHROPIC_API_KEY") },
-    }
-    drop(guard);
 }
 
 /// Phase 7: the context carries top-level `unit-costs` display strings, and `by-repo` rows carry
@@ -1402,40 +981,6 @@ fn build_context_block_carries_unit_costs_and_by_repo_outcomes() {
     );
 }
 
-/// The outcome counters Phase 7 adds reach the prompt through `outcomes.totals` under the same
-/// present-if-nonzero rule as their siblings, so a pre-Phase-7 catalog (zero lines recorded)
-/// omits them rather than claiming thousands of edited files produced no lines.
-#[test]
-fn build_context_block_carries_line_counters_present_if_nonzero() {
-    let mut report = report_with_outcomes();
-    let block = ctx(&report, false);
-    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
-    let totals = parsed
-        .get("outcomes")
-        .and_then(|o| o.get("totals"))
-        .expect("outcomes.totals key");
-    assert_eq!(totals.get("lines-written").and_then(|v| v.as_u64()), Some(310));
-    assert_eq!(totals.get("lines-replaced").and_then(|v| v.as_u64()), Some(96));
-
-    let outcomes = report.totals.outcomes.as_mut().unwrap();
-    outcomes.lines_written = 0;
-    outcomes.lines_replaced = 0;
-    let block = ctx(&report, false);
-    let parsed: serde_json::Value = serde_json::from_str(&block).expect("must be valid JSON");
-    let totals = parsed.get("outcomes").and_then(|o| o.get("totals")).unwrap();
-    assert!(
-        totals.get("lines-written").is_none() && totals.get("lines-replaced").is_none(),
-        "an unreindexed catalog records no lines, so the field is absent: {totals}"
-    );
-}
-
-#[cfg(test)]
-mod excerpt;
-#[cfg(test)]
-mod geometry;
-
-mod templates;
-
 #[cfg(test)]
 mod narrative;
 #[cfg(test)]
@@ -1443,9 +988,5 @@ mod notes;
 #[cfg(test)]
 mod prior;
 #[cfg(test)]
-mod quotable;
-#[cfg(test)]
 mod reconcile;
-#[cfg(test)]
-mod rejected;
 mod workload;

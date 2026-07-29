@@ -57,8 +57,6 @@ pub struct RenderConfig {
     pub format: crate::cli::Format,
     /// Target marquee space for the `marquee-*` formats; `None` uses the caller's personal space.
     pub space: Option<String>,
-    pub template: Option<PathBuf>,
-    pub prompt: Option<PathBuf>,
     pub include_tradeoffs: bool,
     pub pdf_engine: String,
     /// Number of top-spend sessions in the outlier table (`--outliers <N>`, default
@@ -70,15 +68,9 @@ pub struct RenderConfig {
     /// Model pin for the markdown job, from `render.markdown-model` (default
     /// `common::config::DEFAULT_MARKDOWN_MODEL`).
     pub markdown_model: String,
-    /// Model pin for the html job, from `render.html-model` (default
-    /// `common::config::DEFAULT_HTML_MODEL`).
-    pub html_model: String,
     /// Output ceiling for the markdown job, from `render.markdown-max-output-tokens` (default
     /// `common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS`).
     pub markdown_max_output_tokens: u32,
-    /// Output ceiling for the html job, from `render.html-max-output-tokens` (default
-    /// `common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS`).
-    pub html_max_output_tokens: u32,
     /// Output ceiling for ONE prose slot, from `render.slot-max-output-tokens` (default
     /// `common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS`). Small on purpose: a slot is a few
     /// sentences, and a model that starts writing a document hits this instead of billing for one.
@@ -153,8 +145,6 @@ fn format_name(format: crate::cli::Format) -> &'static str {
     match format {
         crate::cli::Format::Markdown => "markdown",
         crate::cli::Format::Pdf => "pdf",
-        crate::cli::Format::Html => "html",
-        crate::cli::Format::MarqueeHtml => "marquee-html",
         crate::cli::Format::MarqueeMarkdown => "marquee-markdown",
     }
 }
@@ -210,15 +200,6 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                     format
                 );
             }
-            // `--template` produces markdown by plain string replacement; it has no meaning as an
-            // html-source input. Reject against the RESOLVED format (so a config-set html-source
-            // default plus a CLI `--template` still bails), mirroring the `-o` rejection above.
-            if format.is_html_source() && args.template.is_some() {
-                bail!(
-                    "--template is not valid with --format {:?}; the offline template produces markdown, not an HTML document",
-                    format
-                );
-            }
             // `--reconcile-user` scopes a reconciliation that is not happening; a flag that
             // silently does nothing is how a reader ends up believing a figure was checked when it
             // never was. Fail loudly instead of accepting the inert combination.
@@ -231,16 +212,12 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 output: args.output,
                 format,
                 space: args.space,
-                template: args.template,
-                prompt: args.prompt,
                 include_tradeoffs: args.include_tradeoffs,
                 pdf_engine: args.pdf_engine,
                 outliers: args.outliers,
                 llm,
                 markdown_model: file.render_markdown_model().to_string(),
-                html_model: file.render_html_model().to_string(),
                 markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
-                html_max_output_tokens: file.render_html_max_output_tokens(),
                 slot_max_output_tokens: file.render_slot_max_output_tokens(),
                 prior: args.prior,
                 reconcile: args.reconcile,
@@ -269,9 +246,8 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                     None => file.render_llm().into(),
                 },
                 markdown_model: file.render_markdown_model().to_string(),
-                html_model: file.render_html_model().to_string(),
                 markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
-                html_max_output_tokens: file.render_html_max_output_tokens(),
+                slot_max_output_tokens: file.render_slot_max_output_tokens(),
             })
         }
         crate::cli::Command::Merge(args) => {

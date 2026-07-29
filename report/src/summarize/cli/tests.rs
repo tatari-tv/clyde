@@ -2,9 +2,7 @@
 
 use super::super::Kind;
 use super::*;
-use common::config::{
-    DEFAULT_HTML_MAX_OUTPUT_TOKENS, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
-};
+use common::config::{DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, DEFAULT_SLOT_MAX_OUTPUT_TOKENS};
 
 const MODEL: &str = "claude-opus-4-8";
 
@@ -24,10 +22,9 @@ fn transport() -> CliTransport {
 /// change to either default flows through every Guard 6 case instead of being hand-edited per site.
 fn job(kind: Kind) -> Job<'static> {
     let max_output_tokens = match kind {
-        // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
-        Kind::Markdown | Kind::Judge => DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
-        Kind::Html => DEFAULT_HTML_MAX_OUTPUT_TOKENS,
         Kind::Slot => DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
+        // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
+        Kind::Judge => DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
     };
     Job {
         kind,
@@ -66,7 +63,9 @@ fn good_envelope() -> String {
         "success",
         "end_turn",
         "# Report\n\nprose",
-        12_706,
+        // A slot-sized output: the Phase 0 live measurement of the `executive-summary` slot. The old
+        // 12,706 was a whole-DOCUMENT render, which no longer fits under any live job's ceiling.
+        217,
         &real_model_usage(),
     )
 }
@@ -75,7 +74,7 @@ fn good_envelope() -> String {
 
 #[test]
 fn argv_carries_every_isolation_flag_by_name() {
-    let spawn = transport().build_spawn(job(Kind::Markdown), "SYS", "INSTRUCTION");
+    let spawn = transport().build_spawn(job(Kind::Slot), "SYS", "INSTRUCTION");
     let args = &spawn.args;
     let pos = |needle: &str| args.iter().position(|a| a == needle);
 
@@ -106,7 +105,7 @@ fn argv_carries_every_isolation_flag_by_name() {
 
 #[test]
 fn argv_never_passes_a_fallback_model() {
-    let spawn = transport().build_spawn(job(Kind::Html), "SYS", "INSTRUCTION");
+    let spawn = transport().build_spawn(job(Kind::Judge), "SYS", "INSTRUCTION");
     // A fallback model would let the CLI silently swap models, defeating the canonicalModel guard.
     assert!(
         !spawn.args.iter().any(|a| a.contains("fallback")),
@@ -119,9 +118,9 @@ fn argv_never_passes_a_fallback_model() {
 fn argv_carries_the_configured_model_and_the_shared_system_prompt() {
     let spawn = transport().build_spawn(
         Job {
-            kind: Kind::Markdown,
+            kind: Kind::Slot,
             model: "some-configured-model",
-            max_output_tokens: DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+            max_output_tokens: DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
         },
         "THE-SYSTEM",
         "THE-INSTRUCTION",
@@ -326,7 +325,7 @@ fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
         unsafe { std::env::set_var(k, v) };
     }
 
-    let mut spawn = transport().build_spawn(job(Kind::Markdown), "SYS", "P");
+    let mut spawn = transport().build_spawn(job(Kind::Slot), "SYS", "P");
     // Swap the program for `env`, which prints the environment it was handed. The env/args split is
     // exactly what a real render builds; only the executable differs.
     spawn.program = PathBuf::from("/usr/bin/env");
@@ -379,7 +378,7 @@ fn parse_envelope_reads_a_clean_envelope() {
     assert!(!env.is_error);
     assert_eq!(env.subtype.as_deref(), Some("success"));
     assert_eq!(env.stop_reason.as_deref(), Some("end_turn"));
-    assert_eq!(env.usage.unwrap().output_tokens, Some(12_706));
+    assert_eq!(env.usage.unwrap().output_tokens, Some(217));
 }
 
 #[test]
@@ -552,7 +551,7 @@ fn check(json: &str, kind: Kind) -> Result<String> {
 
 #[test]
 fn guards_pass_a_real_successful_envelope() {
-    let out = check(&good_envelope(), Kind::Markdown).unwrap();
+    let out = check(&good_envelope(), Kind::Slot).unwrap();
     assert_eq!(out, "# Report\n\nprose");
 }
 
@@ -562,14 +561,14 @@ fn guard_is_error_forwards_the_clis_own_message_verbatim() {
     // sentence away in favor of a generic failure is the bug this guard exists to prevent.
     let json = r#"{"is_error":true,"subtype":"error_during_execution",
                    "error":{"message":"OAuth token has expired. Please run /login."}}"#;
-    let err = check(json, Kind::Markdown).unwrap_err().to_string();
+    let err = check(json, Kind::Slot).unwrap_err().to_string();
     assert!(err.contains("OAuth token has expired"), "verbatim message: {err}");
     assert!(err.contains("--llm api"), "escape hatch: {err}");
 }
 
 #[test]
 fn guard_is_error_still_reports_when_the_envelope_carries_no_message() {
-    let err = check(r#"{"is_error":true,"subtype":"error"}"#, Kind::Markdown)
+    let err = check(r#"{"is_error":true,"subtype":"error"}"#, Kind::Slot)
         .unwrap_err()
         .to_string();
     assert!(err.contains(NO_DETAIL_IN_ENVELOPE), "got: {err}");
@@ -585,7 +584,7 @@ fn guard_is_error_falls_back_to_result_and_terminal_reason_when_no_error_field()
     let json = r#"{"type":"result","is_error":true,"subtype":"error_during_execution",
                    "terminal_reason":"api_error",
                    "result":"API Error: Unable to connect to API (ENOTIMP)"}"#;
-    let err = check(json, Kind::Markdown).unwrap_err().to_string();
+    let err = check(json, Kind::Slot).unwrap_err().to_string();
     assert!(err.contains("Unable to connect to API (ENOTIMP)"), "got: {err}");
     assert!(err.contains("terminal_reason: api_error"), "got: {err}");
 }
@@ -650,7 +649,7 @@ fn failure_detail_bounds_a_long_result() {
 #[test]
 fn guard_subtype_bails_on_anything_but_success() {
     let json = envelope_json(false, "error_max_turns", "end_turn", "partial", 10, &real_model_usage());
-    let err = check(&json, Kind::Markdown).unwrap_err().to_string();
+    let err = check(&json, Kind::Slot).unwrap_err().to_string();
     assert!(err.contains("subtype=error_max_turns"), "got: {err}");
     assert!(err.contains("expected \"success\""), "got: {err}");
 }
@@ -658,7 +657,7 @@ fn guard_subtype_bails_on_anything_but_success() {
 #[test]
 fn guard_subtype_bails_when_missing_entirely() {
     let json = r#"{"is_error":false,"stop_reason":"end_turn","result":"x"}"#;
-    let err = check(json, Kind::Markdown).unwrap_err().to_string();
+    let err = check(json, Kind::Slot).unwrap_err().to_string();
     assert!(err.contains("subtype=<missing>"), "got: {err}");
 }
 
@@ -674,7 +673,7 @@ fn guard_stop_reason_bails_on_max_tokens_truncation() {
         64_000,
         &real_model_usage(),
     );
-    let err = check(&json, Kind::Html).unwrap_err().to_string();
+    let err = check(&json, Kind::Judge).unwrap_err().to_string();
     assert!(err.contains("stop_reason=max_tokens"), "got: {err}");
     assert!(err.contains("truncated"), "must say the artifact is truncated: {err}");
     assert!(err.contains("--since"), "must name a remedy: {err}");
@@ -683,7 +682,7 @@ fn guard_stop_reason_bails_on_max_tokens_truncation() {
 #[test]
 fn guard_stop_reason_bails_when_missing() {
     let json = r#"{"is_error":false,"subtype":"success","result":"x"}"#;
-    let err = check(json, Kind::Markdown).unwrap_err().to_string();
+    let err = check(json, Kind::Slot).unwrap_err().to_string();
     assert!(err.contains("stop_reason=<missing>"), "got: {err}");
 }
 
@@ -692,22 +691,22 @@ fn guard_empty_result_bails_even_on_an_otherwise_clean_envelope() {
     // Exit 0, no error, end_turn, and nothing to show for it. Without this guard an empty artifact
     // would be published.
     let json = envelope_json(false, "success", "end_turn", "   \n  ", 0, &real_model_usage());
-    let err = check(&json, Kind::Markdown).unwrap_err().to_string();
+    let err = check(&json, Kind::Slot).unwrap_err().to_string();
     assert!(err.contains("empty result"), "got: {err}");
 }
 
 #[test]
 fn guard_output_ceiling_bails_when_the_job_budget_is_exceeded() {
     // `end_turn` proves a natural stop, NOT that output stayed under a ceiling the cli cannot set.
-    // 40,000 tokens is a natural stop that still blows the markdown job's raised budget.
-    let json = envelope_json(false, "success", "end_turn", "long prose", 40_000, &real_model_usage());
-    let err = check(&json, Kind::Markdown).unwrap_err().to_string();
-    assert!(err.contains("40000 output tokens"), "got: {err}");
-    assert!(err.contains("32000-token ceiling"), "must name the job ceiling: {err}");
+    // 5,000 tokens is a natural stop that still blows a slot's budget.
+    let json = envelope_json(false, "success", "end_turn", "long prose", 5_000, &real_model_usage());
+    let err = check(&json, Kind::Slot).unwrap_err().to_string();
+    assert!(err.contains("5000 output tokens"), "got: {err}");
+    assert!(err.contains("1500-token ceiling"), "must name the job ceiling: {err}");
     // A budget the user set deserves the line that raises it (Alternative 4: the tokens are already
     // billed by the time this fires, so an actionable error is all that is left to salvage).
     assert!(
-        err.contains("render.markdown-max-output-tokens"),
+        err.contains("render.slot-max-output-tokens"),
         "must name the config key that raises the budget: {err}"
     );
 }
@@ -715,12 +714,11 @@ fn guard_output_ceiling_bails_when_the_job_budget_is_exceeded() {
 #[test]
 fn guard_output_ceiling_allows_the_same_output_for_the_larger_job() {
     // The ceiling is per-JOB, and the value must sit STRICTLY BETWEEN the two ceilings or this test
-    // passes while proving nothing. 40,000 is over budget for markdown (32K) and fine for html (64K).
-    // At the old 20,000 it would be fine for both after the raise -- the exact vacuous shape AC-C6
-    // exists to catch.
-    let json = envelope_json(false, "success", "end_turn", "long prose", 40_000, &real_model_usage());
-    assert!(check(&json, Kind::Markdown).is_err());
-    assert_eq!(check(&json, Kind::Html).unwrap(), "long prose");
+    // passes while proving nothing. 5,000 is over budget for a slot (1.5K) and fine for the judge
+    // (32K); a value under both, or over both, would be the exact vacuous shape AC-C6 exists to catch.
+    let json = envelope_json(false, "success", "end_turn", "long prose", 5_000, &real_model_usage());
+    assert!(check(&json, Kind::Slot).is_err());
+    assert_eq!(check(&json, Kind::Judge).unwrap(), "long prose");
 }
 
 /// AC-C1's cli half: the ceiling Guard 6 enforces is the one on the `Job`, i.e. the one config
@@ -734,7 +732,7 @@ fn guard_output_ceiling_allows_the_same_output_for_the_larger_job() {
 #[test]
 fn guard_output_ceiling_enforces_the_configured_value_not_a_constant() {
     let configured = Job {
-        kind: Kind::Markdown,
+        kind: Kind::Slot,
         model: MODEL,
         max_output_tokens: 12_345,
     };
@@ -753,30 +751,32 @@ fn guard_output_ceiling_enforces_the_configured_value_not_a_constant() {
         .expect("exactly the configured ceiling must pass");
 }
 
-/// The html arm of Guard 6's bail, which nothing else exercises.
+/// The JUDGE arm of Guard 6's bail, which nothing else exercises.
 ///
-/// `each_kind_names_its_own_ceiling_key` proves the key FUNCTION returns the html key, and
-/// `guard_output_ceiling_allows_the_same_output_for_the_larger_job` drives `Kind::Html` only down the
-/// PASS path. Neither proves Guard 6 composes the html key into a real bail, so a `max_output_tokens_key()`
-/// that was correct in isolation could still be wired wrong here and no test would notice. Audit
-/// finding F3.
+/// `each_kind_names_its_own_ceiling_key` proves the key FUNCTION returns the right key per kind, and
+/// the pass-path test drives `Kind::Judge` only down the PASS path. Neither proves Guard 6 composes
+/// the judge's key into a real bail, so a `max_output_tokens_key()` that was correct in isolation
+/// could still be wired wrong here and no test would notice. Audit finding F3.
 ///
-/// BITES: hardcode `Kind::Markdown.max_output_tokens_key()` into the Guard 6 bail and this fails while
+/// BITES: hardcode `Kind::Slot.max_output_tokens_key()` into the Guard 6 bail and this fails while
 /// every other ceiling test stays green.
 #[test]
-fn guard_output_ceiling_names_the_html_key_when_the_html_job_is_over() {
-    let over = u64::from(DEFAULT_HTML_MAX_OUTPUT_TOKENS) + 1;
+fn guard_output_ceiling_names_the_judge_key_when_the_judge_job_is_over() {
+    let over = u64::from(DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS) + 1;
     let json = envelope_json(false, "success", "end_turn", "long prose", over, &real_model_usage());
-    let err = check(&json, Kind::Html).unwrap_err().to_string();
+    let err = check(&json, Kind::Judge).unwrap_err().to_string();
     assert!(
-        err.contains("render.html-max-output-tokens"),
-        "the html bail must name the html key, not the markdown one: {err}"
+        err.contains("render.markdown-max-output-tokens"),
+        "the judge bail must name the key that governs it: {err}"
     );
     assert!(
-        !err.contains("render.markdown-max-output-tokens"),
-        "naming the markdown key on an html failure is a remedy that cannot remedy: {err}"
+        !err.contains("render.slot-max-output-tokens"),
+        "naming the slot key on a judge failure is a remedy that cannot remedy: {err}"
     );
-    assert!(err.contains("64000-token ceiling"), "must name the html ceiling: {err}");
+    assert!(
+        err.contains("32000-token ceiling"),
+        "must name the judge ceiling: {err}"
+    );
 }
 
 #[test]
@@ -788,17 +788,17 @@ fn guard_output_ceiling_accepts_exactly_the_ceiling() {
         "success",
         "end_turn",
         "prose",
-        u64::from(DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS),
+        u64::from(DEFAULT_SLOT_MAX_OUTPUT_TOKENS),
         &real_model_usage(),
     );
-    assert!(check(&json, Kind::Markdown).is_ok());
+    assert!(check(&json, Kind::Slot).is_ok());
 }
 
 #[test]
 fn guard_model_mismatch_bails_on_a_substituted_model() {
     let usage = r#"{"claude-opus-4-8":{"canonicalModel":"claude-sonnet-5"}}"#;
     let json = envelope_json(false, "success", "end_turn", "prose", 100, usage);
-    let err = check(&json, Kind::Markdown).unwrap_err().to_string();
+    let err = check(&json, Kind::Slot).unwrap_err().to_string();
     assert!(err.contains("substituted model"), "got: {err}");
 }
 
@@ -807,7 +807,7 @@ fn guard_model_mismatch_error_carries_the_observations() {
     let usage = r#"{"claude-opus-4-8":{"canonicalModel":"claude-sonnet-5"}}"#;
     let json = envelope_json(false, "success", "end_turn", "prose", 100, usage);
     // The observations ride along via wrap_err, so an operator sees which binary produced this.
-    let err = format!("{:#}", check(&json, Kind::Markdown).unwrap_err());
+    let err = format!("{:#}", check(&json, Kind::Slot).unwrap_err());
     assert!(err.contains("/usr/local/bin/claude"), "got: {err}");
 }
 
@@ -817,7 +817,7 @@ fn guards_run_in_order_so_the_most_specific_cause_wins() {
     // downstream symptom like the missing stop_reason.
     let json = r#"{"is_error":true,"subtype":"error","error":{"message":"rate limit exceeded"},
                    "result":""}"#;
-    let err = check(json, Kind::Markdown).unwrap_err().to_string();
+    let err = check(json, Kind::Slot).unwrap_err().to_string();
     assert!(err.contains("rate limit exceeded"), "got: {err}");
     assert!(
         !err.contains("<missing>"),
@@ -857,7 +857,7 @@ fn credential_and_model_failures_carry_the_escape_hatch() {
         ),
     ];
     for json in cases {
-        let err = check(&json, Kind::Markdown).unwrap_err().to_string();
+        let err = check(&json, Kind::Slot).unwrap_err().to_string();
         assert!(err.contains("--llm api"), "must offer the api transport: {err}");
     }
 }
@@ -871,18 +871,18 @@ fn ceiling_failures_do_not_offer_a_transport_that_fails_the_same_way() {
     // Guard 4: truncation.
     // The count is INERT here: Guard 4 fires on `stop_reason: max_tokens` before Guard 6 sees it.
     let truncated = envelope_json(false, "success", "max_tokens", "trunc", 1_024, &real_model_usage());
-    let err = check(&truncated, Kind::Markdown).unwrap_err().to_string();
+    let err = check(&truncated, Kind::Slot).unwrap_err().to_string();
     assert!(!err.contains("--llm api"), "api path truncates identically: {err}");
     assert!(err.contains("--since"), "must still offer a remedy that works: {err}");
 
     // Guard 6: over budget on a natural stop.
-    let over = envelope_json(false, "success", "end_turn", "long", 40_000, &real_model_usage());
-    let err = check(&over, Kind::Markdown).unwrap_err().to_string();
+    let over = envelope_json(false, "success", "end_turn", "long", 5_000, &real_model_usage());
+    let err = check(&over, Kind::Slot).unwrap_err().to_string();
     assert!(!err.contains("--llm api"), "api path caps at the same ceiling: {err}");
-    assert!(err.contains("32000-token ceiling"), "must name the budget: {err}");
+    assert!(err.contains("1500-token ceiling"), "must name the budget: {err}");
     // The remedy it DOES offer must be one that works: the config key, not the other transport.
     assert!(
-        err.contains("render.markdown-max-output-tokens"),
+        err.contains("render.slot-max-output-tokens"),
         "must offer the remedy that actually remedies: {err}"
     );
 }

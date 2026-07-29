@@ -28,7 +28,7 @@
 //! loud version of that failure, with the remedy in its message.
 
 // `synth` is `pub` because the `fixtures` bin (a separate crate) drives it; the rest are
-// crate-internal, so their types can stay `pub(crate)` alongside `quotable::RenderContext`.
+// crate-internal, so their types can stay `pub(crate)` alongside `render::facts::RenderContext`.
 pub(crate) mod fixture;
 pub(crate) mod judge;
 pub(crate) mod mechanical;
@@ -37,8 +37,8 @@ pub mod synth;
 use crate::aggregate::DEFAULT_OUTLIERS;
 use crate::cli::{Format, Llm};
 use crate::config::TransportKind;
-use crate::quotable::RenderContext;
 use crate::render;
+use crate::render::facts::RenderContext;
 use crate::report::Report;
 use crate::summarize::{ApiTransport, CliTransport};
 use crate::{OutputDest, RunResult};
@@ -48,7 +48,7 @@ use eyre::{Context, Result, bail};
 use fixture::{Dimension, Fixture};
 use judge::Verdict;
 use log::debug;
-use mechanical::{Finding, Ground, Kind};
+use mechanical::{Finding, Ground};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -73,9 +73,9 @@ pub struct EvalConfig {
     pub write_goldens: bool,
     pub llm: Llm,
     pub markdown_model: String,
-    pub html_model: String,
     pub markdown_max_output_tokens: u32,
-    pub html_max_output_tokens: u32,
+    /// Output ceiling for one prose slot, from `render.slot-max-output-tokens`.
+    pub slot_max_output_tokens: u32,
 }
 
 /// One fixture's result.
@@ -86,19 +86,21 @@ pub(crate) struct FixtureOutcome {
     pub summary: String,
     pub sessions: usize,
     pub spend: String,
-    /// Whether the fresh markdown render survived the render pipeline's own guards, and why not
-    /// when it did not. A rejection is RECORDED rather than aborting the whole run: one fixture's
-    /// stochastic guard trip must not throw away the other fixtures' paid calls (see [`Guards`]).
+    /// Whether the fresh render produced an artifact at all, and why not when it did not.
+    ///
+    /// Post-inversion this can only be an INFRASTRUCTURE failure (an unreadable report, a transport
+    /// that could not be resolved), never a rejected artifact: Rust authors the document, so there is
+    /// nothing left that can refuse to publish one. Recorded rather than propagated, so one fixture's
+    /// failure does not discard the others' paid calls.
     pub markdown_ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub markdown_error: Option<String>,
-    /// Mechanical findings against the fresh markdown render. Empty is a pass.
+    /// Mechanical findings against the fresh render. Empty is a pass.
     pub markdown_findings: Vec<Finding>,
-    /// The same, for the fresh HTML render and its geometry allowlist.
-    pub html_ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub html_error: Option<String>,
-    pub html_findings: Vec<Finding>,
+    /// How many slots were attempted, and how many shipped empty after their retry. A degraded slot
+    /// is not a failure -- it is the designed worst case -- but it IS the number to watch.
+    pub slots_attempted: usize,
+    pub slots_degraded: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
     /// Why the judge produced no verdict for a markdown render that DID survive its guards: a
@@ -134,9 +136,8 @@ impl FixtureOutcome {
             markdown_ok: false,
             markdown_error: None,
             markdown_findings: Vec::new(),
-            html_ok: false,
-            html_error: None,
-            html_findings: Vec::new(),
+            slots_attempted: 0,
+            slots_degraded: 0,
             verdict: None,
             judge_error: None,
             load_error: Some(format!("{error:#}")),
@@ -178,14 +179,18 @@ pub(crate) struct Regression {
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Guards {
     pub markdown_renders: usize,
-    pub markdown_rejections: usize,
-    /// Percent of markdown renders the quotable-facts guard rejected, as a display string.
-    pub markdown_rejection_rate: String,
-    pub html_renders: usize,
-    pub html_rejections: usize,
-    /// Percent of html renders the geometry allowlist (or the prose guard) rejected.
-    pub html_rejection_rate: String,
-    /// One line per rejection, naming the fixture, the path, and the value that caused it.
+    /// Renders that produced no artifact. Structurally this can only be infrastructure (an
+    /// unreadable fixture, an unresolvable transport): the artifact is Rust-authored, so no
+    /// guard can discard one. The old whole-artifact rejection rate has no referent and is gone.
+    pub markdown_failures: usize,
+    /// Slots attempted across the run, and how many shipped empty after their retry. This replaces
+    /// the rejection rate as the number an operator watches: it is the only degradation left, and
+    /// it costs a paragraph rather than an artifact.
+    pub slots_attempted: usize,
+    pub slots_degraded: usize,
+    /// Percent of attempted slots that shipped empty, as a display string.
+    pub slot_degradation_rate: String,
+    /// One line per failure or degradation, naming the fixture and the reason.
     pub reasons: Vec<String>,
 }
 
@@ -237,8 +242,7 @@ pub(crate) fn run(cfg: &EvalConfig, pricing: &Pricing) -> Result<RunResult> {
         sessions_total += outcome.sessions;
         outcomes.push(outcome);
     }
-    guards.markdown_rejection_rate = rate(guards.markdown_rejections, guards.markdown_renders);
-    guards.html_rejection_rate = rate(guards.html_rejections, guards.html_renders);
+    guards.slot_degradation_rate = rate(guards.slots_degraded, guards.slots_attempted);
 
     let passed = outcomes.iter().all(|o| o.passed);
     let report = EvalReport {
@@ -287,82 +291,81 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
         context.json.len()
     );
 
-    eprintln!("eval: {} -- rendering markdown", fixture.name);
+    eprintln!("eval: {} -- rendering", fixture.name);
     guards.markdown_renders += 1;
-    let markdown = render::markdown_from_context(
-        &context,
-        &render::resolve_prompt(None, Path::new("."))?,
-        render::Pins {
-            llm: cfg.llm,
-            format: Format::Markdown,
-            model: &cfg.markdown_model,
-            ceiling: cfg.markdown_max_output_tokens,
+    let rendered = render::for_eval(
+        &report,
+        pricing,
+        fixture.spec.persona.as_ref(),
+        eval_opts(&fixture),
+        DEFAULT_OUTLIERS,
+        // `--write-goldens` renders STUBBED, and that makes regenerating a golden a free, offline
+        // operation: a golden IS the deterministic half of the document, so paying for slot prose
+        // that is then thrown away would be waste. A grading run renders live.
+        if cfg.write_goldens {
+            render::SlotSource::Stubbed
+        } else {
+            render::SlotSource::Live {
+                llm: cfg.llm,
+                model: &cfg.markdown_model,
+                ceiling: cfg.slot_max_output_tokens,
+            }
         },
     );
-    let (markdown_ok, markdown_error, markdown_findings) = match &markdown {
-        Ok(prose) => {
-            let findings = mechanical::check(Kind::Markdown, prose, &context, &ground, &fixture.spec);
-            if cfg.write_goldens {
-                write_artifact(&fixture, false, prose, findings.is_empty())?;
+    let (markdown_ok, markdown_error, markdown_findings, slots_attempted, slots_degraded, artifact, prose) =
+        match rendered {
+            Ok(r) => {
+                let degraded = r.attempted.saturating_sub(r.prose.len());
+                guards.slots_attempted += r.attempted;
+                guards.slots_degraded += degraded;
+                if degraded > 0 {
+                    guards
+                        .reasons
+                        .push(format!("{}: {degraded} slot(s) shipped empty", fixture.name));
+                }
+                let mut findings = mechanical::check(&r.markdown, &context, &ground, &fixture.spec);
+                findings.extend(mechanical::slot_prose(&r.prose));
+                // Only a CLEAN render becomes a golden: a golden is a known-good artifact by
+                // definition, and committing a failing one would make `otto ci` green against a
+                // broken renderer.
+                if cfg.write_goldens {
+                    if findings.is_empty() {
+                        write_golden(&fixture, &r.markdown)?;
+                    } else {
+                        eprintln!("eval: {} FAILED its checks; its golden is left untouched", fixture.name);
+                    }
+                }
+                (
+                    true,
+                    None,
+                    findings,
+                    r.attempted,
+                    degraded,
+                    Some(r.markdown),
+                    Some(r.prose),
+                )
             }
-            (true, None, findings)
-        }
-        Err(e) => {
-            let reason = format!("{e}");
-            log::warn!(
-                "eval::evaluate: fixture={} markdown render rejected: {reason}",
-                fixture.name
-            );
-            guards.markdown_rejections += 1;
-            guards.reasons.push(format!("{} (markdown): {reason}", fixture.name));
-            (false, Some(reason), Vec::new())
-        }
-    };
-
-    eprintln!("eval: {} -- rendering html", fixture.name);
-    guards.html_renders += 1;
-    let html = render::html_from_context(
-        &context,
-        &render::resolve_html_prompt(None, Path::new("."))?,
-        render::Pins {
-            llm: cfg.llm,
-            format: Format::Html,
-            model: &cfg.html_model,
-            ceiling: cfg.html_max_output_tokens,
-        },
-    );
-    let (html_ok, html_error, html_findings) = match &html {
-        Ok(doc) => {
-            let findings = mechanical::check(Kind::Html, doc, &context, &ground, &fixture.spec);
-            if cfg.write_goldens {
-                write_artifact(&fixture, true, doc, findings.is_empty())?;
+            Err(e) => {
+                let reason = format!("{e:#}");
+                log::warn!("eval::evaluate: fixture={} render failed: {reason}", fixture.name);
+                guards.markdown_failures += 1;
+                guards.reasons.push(format!("{}: {reason}", fixture.name));
+                (false, Some(reason), Vec::new(), 0, 0, None, None)
             }
-            (true, None, findings)
-        }
-        Err(e) => {
-            let reason = format!("{e}");
-            log::warn!(
-                "eval::evaluate: fixture={} html render rejected: {reason}",
-                fixture.name
-            );
-            guards.html_rejections += 1;
-            guards.reasons.push(format!("{} (html): {reason}", fixture.name));
-            (false, Some(reason), Vec::new())
-        }
-    };
+        };
 
-    // No artifact, nothing to grade. Judging is skipped rather than faked, and the fixture fails on
-    // the rejection itself.
+    // No artifact, nothing to grade. A judge FAILURE is recorded rather than propagated: the judge
+    // is a live model call, so a transport blip on this fixture would otherwise discard every
+    // earlier fixture's paid render and skip `write_report` entirely.
     //
-    // A judge that FAILS on an artifact that does exist is recorded the same way a guard rejection
-    // is, never propagated: the judge is a live model call, so a transport blip or a rate limit on
-    // this fixture would otherwise discard every earlier fixture's paid render and skip
-    // `write_report` entirely. The fixture fails; the run still lands its evidence on disk.
+    // The judge now scores the SLOT PROSE, not the whole artifact. That follows the inversion: every
+    // figure in the document is Rust's and needs no scoring, so what is left to judge is the only
+    // thing a model wrote.
     let mut judge_error = None;
-    let verdict = match &markdown {
-        Ok(prose) => {
-            eprintln!("eval: {} -- judging", fixture.name);
-            match judge_artifact(cfg, &context, prose) {
+    let verdict = match (&artifact, &prose) {
+        (Some(_), Some(prose)) if !prose.is_empty() => {
+            eprintln!("eval: {} -- judging slot prose", fixture.name);
+            match judge_artifact(cfg, &context, &joined(prose)) {
                 Ok(verdict) => Some(verdict),
                 Err(e) => {
                     let reason = format!("{e:#}");
@@ -373,8 +376,12 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
                 }
             }
         }
-        Err(_) => {
-            eprintln!("eval: {} -- markdown render rejected, skipping the judge", fixture.name);
+        (Some(_), _) => {
+            eprintln!("eval: {} -- every slot degraded, nothing to judge", fixture.name);
+            None
+        }
+        _ => {
+            eprintln!("eval: {} -- render failed, skipping the judge", fixture.name);
             None
         }
     };
@@ -393,21 +400,10 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
         })
         .unwrap_or_default();
 
-    // The HTML render's own REJECTION is deliberately not a fixture failure, while a markdown
-    // rejection is. The asymmetry is the point: the markdown artifact is the eval's subject (it is
-    // what the judge scores and what the goldens are), so losing it means nothing was measured;
-    // the HTML render exists to exercise the geometry allowlist, whose stochastic pass rate is the
-    // pending decision this eval was asked to SIZE. Gating on it would make `otto eval` flake for
-    // exactly the reason it is measuring. Its mechanical findings, when it did render, are a
-    // failure like any other.
-    //
-    // A judge failure fails the fixture too: an unscored artifact is an unmeasured one, exactly like
-    // a markdown rejection.
-    let passed = markdown_ok
-        && judge_error.is_none()
-        && markdown_findings.is_empty()
-        && html_findings.is_empty()
-        && regressions.is_empty();
+    // A judge failure fails the fixture: an unscored artifact is an unmeasured one. A DEGRADED slot
+    // does not, because degradation is the designed worst case rather than a defect -- it is counted
+    // in `slots_degraded` and reported, not failed on.
+    let passed = markdown_ok && judge_error.is_none() && markdown_findings.is_empty() && regressions.is_empty();
     Ok(FixtureOutcome {
         name: fixture.name,
         summary: fixture.spec.summary,
@@ -416,9 +412,8 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
         markdown_ok,
         markdown_error,
         markdown_findings,
-        html_ok,
-        html_error,
-        html_findings,
+        slots_attempted,
+        slots_degraded,
         verdict,
         judge_error,
         load_error: None,
@@ -437,6 +432,40 @@ fn judge_artifact(cfg: &EvalConfig, context: &RenderContext, artifact: &str) -> 
         TransportKind::Api => judge::score(&ApiTransport::from_env()?, model, ceiling, artifact, &brief),
         TransportKind::Cli => judge::score(&CliTransport::resolve()?, model, ceiling, artifact, &brief),
     }
+}
+
+/// The view options a fixture renders under: its optional `--prior` and `--reconcile` inputs.
+///
+/// No `--reconcile-user` override: the fixture's own invented persona carries the email its
+/// synthesized export is scoped to, so the eval exercises the SAME operator-resolution path a real
+/// render takes (persona -> reconcile) rather than a bypass of it. Tradeoffs stay off, so the graded
+/// artifact is the shape a default render produces.
+fn eval_opts(fixture: &Fixture) -> crate::render::ViewOpts<'_> {
+    crate::render::ViewOpts {
+        include_tradeoffs: false,
+        prior: fixture.prior.as_deref(),
+        reconcile: fixture.analytics.as_deref(),
+        reconcile_user: None,
+    }
+}
+
+/// Overwrite a fixture's `golden.md`.
+///
+/// The artifact handed in is always a STUBBED render (see the `SlotSource` choice in `evaluate`),
+/// because a golden whose bytes move between runs is not a regression net. Live slot prose is not
+/// reproducible; the deterministic document is, and that is exactly what `otto ci` compares offline
+/// and for free.
+fn write_golden(fixture: &Fixture, artifact: &str) -> Result<()> {
+    let path = fixture.golden_path();
+    std::fs::write(&path, artifact).with_context(|| format!("failed to write the golden at {}", path.display()))?;
+    eprintln!("eval: wrote {} ({} bytes)", path.display(), artifact.len());
+    Ok(())
+}
+
+/// Every slot's prose, joined for the judge. One string, because the judge scores prose quality
+/// rather than per-slot structure, and its rubric is about the writing.
+fn joined(prose: &render::SlotProse) -> String {
+    prose.values().map(String::as_str).collect::<Vec<_>>().join("\n\n")
 }
 
 /// Build the render context for a fixture: the fixture's OWN invented persona, its optional
@@ -467,39 +496,6 @@ fn rate(part: usize, whole: usize) -> String {
         return "n/a".to_string();
     }
     format!("{:.1}%", 100.0 * part as f64 / whole as f64)
-}
-
-/// Land a fresh render under `--write-goldens`: as the GOLDEN when it passed its mechanical checks,
-/// as a gitignored `rejected.*` beside it when it did not.
-///
-/// A golden is a known-good artifact by definition, so a failing render can never become one --
-/// committing it would make `otto ci` green against a broken render. But it was a paid model call,
-/// and the old code simply dropped it, leaving the operator a finding ("6 x-axis labels against 7
-/// points") and nothing to look at: diagnosing cost another render of the same fixture. Parking it
-/// makes the next step a `diff` instead of a purchase.
-fn write_artifact(fixture: &Fixture, html: bool, artifact: &str, passed: bool) -> Result<()> {
-    let path = if passed {
-        fixture.golden_path(html)
-    } else {
-        fixture.rejected_path(html)
-    };
-    debug!(
-        "eval::write_artifact: path={} bytes={} passed={passed}",
-        path.display(),
-        artifact.len()
-    );
-    std::fs::write(&path, artifact).with_context(|| format!("failed to write the render at {}", path.display()))?;
-    if passed {
-        eprintln!("eval: wrote {} ({} bytes)", path.display(), artifact.len());
-    } else {
-        eprintln!(
-            "eval: {} FAILED its checks; the rejected render is at {} ({} bytes)",
-            fixture.name,
-            path.display(),
-            artifact.len()
-        );
-    }
-    Ok(())
 }
 
 fn write_report(report: &EvalReport, out: &Path) -> Result<()> {
@@ -537,7 +533,7 @@ fn print_summary(report: &EvalReport) {
             f.spend,
             verdict
         );
-        for finding in f.markdown_findings.iter().chain(&f.html_findings) {
+        for finding in &f.markdown_findings {
             eprintln!("        {} -- {}", finding.check, finding.detail);
         }
         for r in &f.regressions {
@@ -546,7 +542,7 @@ fn print_summary(report: &EvalReport) {
                 r.dimension, r.score, r.floor, r.reason
             );
         }
-        for (path, e) in [("markdown", &f.markdown_error), ("html", &f.html_error)] {
+        for (path, e) in [("render", &f.markdown_error)] {
             if let Some(e) = e {
                 eprintln!("        {path} render rejected -- {e}");
             }
@@ -560,13 +556,12 @@ fn print_summary(report: &EvalReport) {
     }
     let g = &report.guards;
     eprintln!(
-        "  guard rejections: markdown {} of {} ({}), html {} of {} ({})",
-        g.markdown_rejections,
-        g.markdown_renders,
-        g.markdown_rejection_rate,
-        g.html_rejections,
-        g.html_renders,
-        g.html_rejection_rate
+        "  renders: {} attempted, {} failed to produce an artifact",
+        g.markdown_renders, g.markdown_failures
+    );
+    eprintln!(
+        "  slot degradation: {} of {} shipped empty ({})",
+        g.slots_degraded, g.slots_attempted, g.slot_degradation_rate
     );
     eprintln!();
 }
