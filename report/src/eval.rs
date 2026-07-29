@@ -157,24 +157,18 @@ pub(crate) struct Regression {
     pub reason: String,
 }
 
-/// How often a FRESH render was rejected by its own guards across this run, per path.
+/// What DEGRADED across this run.
 ///
-/// This is a MEASUREMENT, not a gate, and it is the instrument the design asked for. Both guards
-/// are stochastic against a live model and both were observed failing on one invocation and passing
-/// on an identical retry:
+/// This is a MEASUREMENT, not a gate. It used to report how often a fresh render was REJECTED by its
+/// own guards, per path -- the metric the render inversion was built to drive to zero. It reached
+/// zero structurally: Rust authors the artifact, so no guard can refuse to publish one, and a rate
+/// that can only ever read `0.0%` is a lying field.
 ///
-/// - the HTML path's geometry allowlist (Phase 11). The rejection it measured at 37.5% across 24
-///   fresh renders was `preserveaspectratio`, every time; that attribute is now permitted (its
-///   value carries no digit, so it cannot smuggle geometry), which is exactly the kind of decision
-///   this instrument exists to inform. Everything else in the allowlist stands;
-/// - the prose path's quotable-facts guard (Phase 10), whose own notes record that a narrowed
-///   whitelist trades silent acceptance for loud rejection.
-///
-/// The rate is what says whether a guard is calibrated or merely strict, so it keeps being measured
-/// rather than assumed settled. A MARKDOWN rejection fails its fixture
-/// (there is no artifact left to judge); an HTML rejection does not, because gating on it would
-/// make `otto eval` flake for exactly the reason it exists to measure. Either way the RATE is what
-/// this report is for.
+/// What remains worth watching is slot degradation: a slot that violated its contract twice ships
+/// empty, which costs a paragraph rather than an artifact. That is the designed worst case, so it is
+/// counted and reported rather than failed on. `markdown_failures` covers the only way a render can
+/// now produce nothing at all -- an unreadable fixture, an unresolvable transport -- which is
+/// infrastructure, not a verdict on the artifact.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Guards {

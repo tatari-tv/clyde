@@ -697,9 +697,11 @@ struct SessionView<'a> {
     outcomes: Option<&'a crate::outcome::Outcomes>,
 }
 
-/// Build the model's context block AND the quotable-facts sets that bound what the artifact may say
-/// about it, serialized. The eval is the only consumer left: it reads the block to know what the
-/// artifact was built FROM, for the judge brief and the mechanical citation checks.
+/// Serialize the view block for the EVAL, which is its only consumer left.
+///
+/// It reads the block to know what the artifact was built FROM: the judge's brief and the mechanical
+/// citation checks both need the ground truth. Nothing is handed to a model wholesale any more --
+/// a slot receives a curated brief, never this.
 pub(crate) fn build_context_block(
     report: &Report,
     include_tradeoffs: bool,

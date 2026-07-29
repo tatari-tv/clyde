@@ -287,3 +287,42 @@ the whole-document path, so no boundary inside this phase could have been `otto 
 `report-html.pmt`, three `golden.html`), plus the guard flow, the HTML pipeline, and the SSE
 machinery excised from `render.rs`, `summarize.rs`, and `summarize/api.rs`. `render.rs` went from
 1,500 lines (exactly at the bloat cap) to well under it.
+
+## Phase 4: Docs, config example, statuses
+
+### Design decisions
+
+- **The README config example gained two paragraphs it did not have before**: why the slot ceiling is
+  small (Rust writes the report; the model fills a few sentences), and the degradation contract (a
+  render cannot fail because of the prose). Both are the operator-facing statement of the inversion's
+  two load-bearing properties, and neither was inferable from the key list alone.
+- **`markdown-model` is documented as pinning "the prose slots and the eval judge"**, which is what it
+  now does. See the open question below about its name.
+- **Both superseded docs carry a reasoned addendum, not just a status flip.** The repair-turn note
+  records the measurement that killed it (two releases of licensing expansion left the rejection rate
+  flat at 5/9 then 6/10) and what carried forward (the accepted residual class, and that its review
+  log's rejected alternatives stay rejected). The html-parser note records that comrak was adopted for
+  a much smaller job using that doc's OWN argument -- structure injection needs no leading `#`, so a
+  string scan cannot see a setext heading or a table.
+- **`Guards`'s doc comment was rewritten rather than trimmed.** It described two stochastic guards and
+  the rate that calibrated them; that whole paragraph is now false. It says instead why the rate
+  reached zero structurally and what replaced it.
+
+### Deviations
+
+- **None from the design.** The doc's Phase 4 success criteria are both met: the README grep exits 0,
+  and both superseded docs carry the specified status and addendum.
+
+### Tradeoffs
+
+- **The design doc's status flipped to `Implemented` while two SHAKEDOWN acceptance criteria remain
+  open.** That is the honest reading: those two gate the TAG, not the implementation, and the doc's
+  own Acceptance Criteria section separates them. The doc's header now records the Phase 0 outcome
+  verbatim, including what was NOT verified, so "Implemented" cannot be read as "fully proven live".
+
+### Open questions
+
+- **Rename `render.markdown-model` to `render.slot-model`?** With `Kind::Markdown` deleted, the key's
+  name no longer describes what it pins (prose slots and the judge). My read is that it should be
+  renamed -- "names tell the truth" -- but it is a user-visible config key, so the rename is Scott's
+  call, not a sweep-up. Left as-is and documented accurately in the meantime.
