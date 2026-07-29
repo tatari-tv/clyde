@@ -452,18 +452,39 @@ fn bare_small_integers_from_free_text_stay_verbatim_only() {
     assert_eq!(tokens(&facts.foreign_figures(quoted)), Vec::<String>::new());
 }
 
-/// A dotted version lexes as ONE token IN ITS EXACT FORM: citing `v0.5.4` licenses `v0.5.4` and
-/// nothing else -- not a standalone `4`, and not a reformatted `0.5.4` with the prefix dropped
-/// (the templates' copy rule, enforced mechanically).
+/// A dotted version lexes as ONE token and its `v` prefix is canonicalized away: citing `v0.5.4`
+/// licenses `v0.5.4` AND `0.5.4`, and never a standalone `4`. BITES: the 2026-07-28 measurement
+/// found 6 of 7 live rejections were prose writing the conventional `v0.6.5` against a summary
+/// carrying the bare `0.6.5`; make the prefix significant again and this fails.
 #[test]
-fn a_version_is_one_exact_token_and_licenses_no_other_form() {
+fn a_version_licenses_both_prefixed_and_bare_forms_but_no_bare_digit() {
     let facts = versioned_context();
     assert_eq!(tokens(&facts.foreign_figures("We made 4 attempts.")), vec!["4"]);
     assert_eq!(
         tokens(&facts.foreign_figures("We are on v0.5.4 now.")),
         Vec::<String>::new()
     );
-    assert_eq!(tokens(&facts.foreign_figures("We are on 0.5.4 now.")), vec!["0.5.4"]);
+    assert_eq!(
+        tokens(&facts.foreign_figures("We are on 0.5.4 now.")),
+        Vec::<String>::new()
+    );
+
+    // The live failure shape, exactly: bare source form, conventional v-form in prose.
+    let bare_source = QuotableFacts::from_context_json(
+        r#"{"sessions": [{"short-id": "1a2b3c4d", "title": "release review",
+             "summary": "reviewed a workspace version bump in Cargo.toml from 0.6.4 to 0.6.5",
+             "begin": "2026-07-20T09:00:00Z", "end": "2026-07-20T10:00:00Z"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        tokens(&bare_source.foreign_figures("The bump shipped as v0.6.5 (from v0.6.4).")),
+        Vec::<String>::new()
+    );
+    // A WRONG version is still foreign in every spelling.
+    assert_eq!(
+        tokens(&bare_source.foreign_figures("The bump shipped as v0.6.6.")),
+        vec!["0.6.6"]
+    );
 }
 
 /// Random-character identifiers (shas, short-ids, urls) never feed the cited set: a 3+ digit run

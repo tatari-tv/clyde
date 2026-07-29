@@ -556,10 +556,10 @@ fn pre_change_pattern() -> &'static Regex {
 ///
 /// A DOTTED VERSION is ONE token for the same reason: `v0.5.4` used to lex as `0.5` plus a bare
 /// `4`, so no licensing rule could ever make a real version from a commit message quotable without
-/// also handing the prose a standalone `4`. The `v`/`V` prefix is PART of the token when present,
-/// so the exact lexical form is what gets licensed: a source `v0.5.4` licenses `v0.5.4` and not a
-/// reformatted `0.5.4`, matching the templates' copy rule ("repeat one EXACTLY as the source
-/// writes it").
+/// also handing the prose a standalone `4`. The `v`/`V` prefix is captured INTO the token so it
+/// can never strand a bare `0.5.4` next to an unmatched `v`; [`normalize`] then canonicalizes the
+/// prefix away, so `v0.6.5` and `0.6.5` are one fact in either direction (measured live: models
+/// write the conventional `v` form even when the source is bare).
 fn numeric_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -580,8 +580,21 @@ fn cited_token_qualifies(token: &str) -> bool {
 }
 
 /// One canonical spelling per figure: `6,200` and `6200` are the same fact, so they compare equal.
+///
+/// A dotted version's `v`/`V` prefix is normalized away for the same reason. The 2026-07-28 rate
+/// measurement on the shipped guard found 6 of 7 rejections were the SAME true fact: a summary
+/// reading "bump ... from 0.6.4 to 0.6.5" (bare) against prose writing the conventional `v0.6.5`.
+/// The model normalizes version typography regardless of the prompt's copy rule, and a prefix
+/// carrying zero numeric information must not turn a sourced version into a fatal rejection. A
+/// WRONG version still rejects; only the spelling is canonicalized, exactly like the commas.
 fn normalize(token: &str) -> String {
-    token.replace(',', "")
+    let stripped = token.replace(',', "");
+    if let Some(rest) = stripped.strip_prefix(['v', 'V'])
+        && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
+    {
+        return rest.to_string();
+    }
+    stripped
 }
 
 #[cfg(test)]
