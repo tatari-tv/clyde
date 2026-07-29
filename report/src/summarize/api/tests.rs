@@ -1,9 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use common::config::{
-    DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, DEFAULT_MARKDOWN_MODEL as MARKDOWN_MODEL, DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
-};
+use common::config::{DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, DEFAULT_MODEL as MODEL, DEFAULT_SLOT_MAX_OUTPUT_TOKENS};
 
 use crate::ENV_LOCK;
 use crate::summarize::Kind;
@@ -33,9 +31,9 @@ fn expected_user_msg() -> String {
 fn default_job(kind: Kind) -> Job<'static> {
     let (model, max_output_tokens) = match kind {
         // A slot rides the markdown MODEL pin with its own, much smaller ceiling.
-        Kind::Slot => (MARKDOWN_MODEL, DEFAULT_SLOT_MAX_OUTPUT_TOKENS),
+        Kind::Slot => (MODEL, DEFAULT_SLOT_MAX_OUTPUT_TOKENS),
         // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
-        Kind::Judge => (MARKDOWN_MODEL, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS),
+        Kind::Judge => (MODEL, DEFAULT_JUDGE_MAX_OUTPUT_TOKENS),
     };
     Job {
         kind,
@@ -94,15 +92,15 @@ fn the_request_body_carries_no_stream_field() {
 fn the_default_ceilings_are_the_documented_pair() {
     // A silent change to either ceiling fails here. The slot ceiling is orders of magnitude below the
     // whole-document one it replaced, and that gap IS the cost argument for the inversion.
-    assert_eq!(DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, 32_000);
+    assert_eq!(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, 32_000);
     assert_eq!(DEFAULT_SLOT_MAX_OUTPUT_TOKENS, 1_500);
-    const { assert!(DEFAULT_SLOT_MAX_OUTPUT_TOKENS < DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS) };
+    const { assert!(DEFAULT_SLOT_MAX_OUTPUT_TOKENS < DEFAULT_JUDGE_MAX_OUTPUT_TOKENS) };
 }
 
 #[test]
 fn the_model_default_is_opus_4_8() {
     // Scott, 2026-07-24: "just use claude opus 4-8".
-    assert_eq!(MARKDOWN_MODEL, "claude-opus-4-8");
+    assert_eq!(MODEL, "claude-opus-4-8");
 }
 
 // ---- key resolution ---------------------------------------------------------------------------
@@ -164,7 +162,7 @@ fn from_env_error_names_both_remedies() {
 
 /// AC11's api half: a CONFIGURED model must reach the wire, not just the default.
 ///
-/// Every other body test passes `MARKDOWN_MODEL`, which EQUALS the literal
+/// Every other body test passes `MODEL`, which EQUALS the literal
 /// `"claude-opus-4-8"` those fixtures assert — so hardcoding the model inside `build_body` would
 /// leave them all green. A sentinel that could never be a default closes that hole.
 ///
@@ -192,7 +190,7 @@ fn a_configured_model_reaches_the_serialized_body() {
 fn a_configured_ceiling_reaches_the_serialized_body() {
     let job = Job {
         kind: Kind::Slot,
-        model: MARKDOWN_MODEL,
+        model: MODEL,
         max_output_tokens: 12_345,
     };
     let body = build_body(job.model, "sys", job.max_output_tokens, PROMPT, JSON_BODY);

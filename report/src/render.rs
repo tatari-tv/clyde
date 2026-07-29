@@ -113,7 +113,7 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
 /// is already complete, so an absent transport costs prose and nothing else. Monomorphized per
 /// transport arm, per the house generics-for-DI rule.
 fn slot_prose(cfg: &RenderConfig, reg: &facts::FactRegistry) -> document::SlotProse {
-    let model = &cfg.markdown_model;
+    let model = &cfg.model;
     let ceiling = cfg.slot_max_output_tokens;
     match resolve_selected_transport(cfg.llm, cfg.format) {
         Ok(TransportKind::Api) => match summarize::ApiTransport::from_env() {

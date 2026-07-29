@@ -170,7 +170,7 @@ pub fn brief(context_json: &str) -> Result<Brief> {
 }
 
 /// Score one artifact. `model` is `--judge`'s pin; `ceiling` is the shared markdown output ceiling
-/// (`render.markdown-max-output-tokens`), which is also the key the cli transport names if the
+/// (`render.judge-max-output-tokens`), which is also the key the cli transport names if the
 /// verdict ever exceeds it -- so the remedy it prints is the key that actually governs.
 pub fn score<T: Transport>(transport: &T, model: &str, ceiling: u32, artifact: &str, brief: &Brief) -> Result<Verdict> {
     let body = serde_json::to_string(&JudgeInput { artifact, brief }).context("failed to serialize the judge input")?;

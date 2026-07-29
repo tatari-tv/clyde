@@ -127,9 +127,9 @@ The `render:` defaults for `report render` (all optional; a missing section is a
 render:
   format: markdown                   # default --format when the flag is omitted
   llm: auto                          # auto | api | cli -- which transport makes the model calls
-  markdown-model: claude-opus-4-8    # model pin for the prose slots and the eval judge
-  markdown-max-output-tokens: 32000  # output ceiling for the eval judge
+  model: claude-opus-4-8             # model pin for the prose slots and the eval judge
   slot-max-output-tokens: 1500       # output ceiling for ONE prose slot
+  judge-max-output-tokens: 32000     # output ceiling for the eval judge
 ```
 
 Each ceiling bounds how much output its job may produce. Raise one if a job is refused for exceeding

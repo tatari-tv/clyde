@@ -112,10 +112,7 @@ fn render_ceilings_default_when_the_file_is_absent() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("clyde.yml");
     let cfg = load_from(&path).unwrap();
-    assert_eq!(
-        cfg.render_markdown_max_output_tokens(),
-        DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS
-    );
+    assert_eq!(cfg.render_judge_max_output_tokens(), DEFAULT_JUDGE_MAX_OUTPUT_TOKENS);
     assert_eq!(cfg.render_slot_max_output_tokens(), DEFAULT_SLOT_MAX_OUTPUT_TOKENS);
 }
 
@@ -127,11 +124,11 @@ fn render_ceilings_come_from_clyde_yml_when_set() {
     // pair or a hardcoded value fails here.
     std::fs::write(
         &path,
-        "render:\n  markdown-max-output-tokens: 12345\n  slot-max-output-tokens: 543\n",
+        "render:\n  judge-max-output-tokens: 12345\n  slot-max-output-tokens: 543\n",
     )
     .unwrap();
     let cfg = load_from(&path).unwrap();
-    assert_eq!(cfg.render_markdown_max_output_tokens(), 12_345);
+    assert_eq!(cfg.render_judge_max_output_tokens(), 12_345);
     assert_eq!(cfg.render_slot_max_output_tokens(), 543);
 }
 
@@ -143,8 +140,8 @@ fn render_ceilings_are_independent_of_each_other() {
     std::fs::write(&path, "render:\n  slot-max-output-tokens: 543\n").unwrap();
     let cfg = load_from(&path).unwrap();
     assert_eq!(
-        cfg.render_markdown_max_output_tokens(),
-        DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        cfg.render_judge_max_output_tokens(),
+        DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         "an unset ceiling keeps its default"
     );
     assert_eq!(cfg.render_slot_max_output_tokens(), 543);
@@ -159,15 +156,38 @@ fn render_ceilings_are_independent_of_each_other() {
 ///
 /// BITES: drop `deserialize_with` from the field and this fails (a 0 would load clean).
 #[test]
-fn render_rejects_a_zero_markdown_ceiling_by_name() {
+fn render_rejects_a_zero_judge_ceiling_by_name() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("clyde.yml");
-    std::fs::write(&path, "render:\n  markdown-max-output-tokens: 0\n").unwrap();
+    std::fs::write(&path, "render:\n  judge-max-output-tokens: 0\n").unwrap();
     let err = format!("{:#}", load_from(&path).unwrap_err());
     assert!(
-        err.contains("render.markdown-max-output-tokens"),
+        err.contains("render.judge-max-output-tokens"),
         "must name the key the user set: {err}"
     );
+}
+
+/// The keys retired with `Kind::Markdown` must FAIL, not be silently ignored.
+///
+/// `render.markdown-model` -> `render.model` and `render.markdown-max-output-tokens` ->
+/// `render.judge-max-output-tokens` (design "Render Inversion"). Without `deny_unknown_fields` on
+/// `RenderConfig` a stale `clyde.yml` would load clean and silently run the DEFAULT model, which is
+/// the worst outcome: the user set a pin, the pin did nothing, and nothing said so.
+///
+/// BITES: drop `#[serde(deny_unknown_fields)]` from `RenderConfig` and both halves fail.
+#[test]
+fn render_rejects_the_retired_markdown_keys_by_name() {
+    for retired in ["markdown-model: claude-opus-4-8", "markdown-max-output-tokens: 32000"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("clyde.yml");
+        std::fs::write(&path, format!("render:\n  {retired}\n")).unwrap();
+        let err = format!("{:#}", load_from(&path).unwrap_err());
+        let key = retired.split(':').next().unwrap();
+        assert!(
+            err.contains(key),
+            "a retired key must fail loudly and name itself, got: {err}"
+        );
+    }
 }
 
 /// The slot half of AC-C2. Separate because each key is named by its own validator, and a single

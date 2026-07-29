@@ -10,7 +10,7 @@ use super::*;
 #[test]
 fn each_kind_names_its_own_ceiling_key() {
     assert_eq!(Kind::Slot.max_output_tokens_key(), "render.slot-max-output-tokens");
-    assert_eq!(Kind::Judge.max_output_tokens_key(), "render.markdown-max-output-tokens");
+    assert_eq!(Kind::Judge.max_output_tokens_key(), "render.judge-max-output-tokens");
     assert_ne!(Kind::Judge.max_output_tokens_key(), Kind::Slot.max_output_tokens_key());
 }
 

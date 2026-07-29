@@ -65,12 +65,12 @@ pub struct RenderConfig {
     /// Which transport to use for the two model calls, as SELECTED (`auto` is not yet resolved).
     /// Resolve with [`resolve_transport`] at the point of use, where the environment can be probed.
     pub llm: crate::cli::Llm,
-    /// Model pin for the markdown job, from `render.markdown-model` (default
-    /// `common::config::DEFAULT_MARKDOWN_MODEL`).
-    pub markdown_model: String,
-    /// Output ceiling for the markdown job, from `render.markdown-max-output-tokens` (default
-    /// `common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS`).
-    pub markdown_max_output_tokens: u32,
+    /// Model pin for both LLM jobs (prose slots, eval judge), from `render.model` (default
+    /// `common::config::DEFAULT_MODEL`).
+    pub model: String,
+    /// Output ceiling for the eval judge, from `render.judge-max-output-tokens` (default
+    /// `common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS`).
+    pub judge_max_output_tokens: u32,
     /// Output ceiling for ONE prose slot, from `render.slot-max-output-tokens` (default
     /// `common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS`). Small on purpose: a slot is a few
     /// sentences, and a model that starts writing a document hits this instead of billing for one.
@@ -216,8 +216,8 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 pdf_engine: args.pdf_engine,
                 outliers: args.outliers,
                 llm,
-                markdown_model: file.render_markdown_model().to_string(),
-                markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
+                model: file.render_model().to_string(),
+                judge_max_output_tokens: file.render_judge_max_output_tokens(),
                 slot_max_output_tokens: file.render_slot_max_output_tokens(),
                 prior: args.prior,
                 reconcile: args.reconcile,
@@ -238,15 +238,15 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
             };
             ResolvedCommand::Eval(crate::eval::EvalConfig {
                 fixtures,
-                judge_model: args.judge.unwrap_or_else(|| file.render_markdown_model().to_string()),
+                judge_model: args.judge.unwrap_or_else(|| file.render_model().to_string()),
                 out: args.out.unwrap_or_else(|| PathBuf::from(crate::eval::DEFAULT_OUT)),
                 write_goldens: args.write_goldens,
                 llm: match args.llm {
                     Some(l) => l,
                     None => file.render_llm().into(),
                 },
-                markdown_model: file.render_markdown_model().to_string(),
-                markdown_max_output_tokens: file.render_markdown_max_output_tokens(),
+                model: file.render_model().to_string(),
+                judge_max_output_tokens: file.render_judge_max_output_tokens(),
                 slot_max_output_tokens: file.render_slot_max_output_tokens(),
             })
         }

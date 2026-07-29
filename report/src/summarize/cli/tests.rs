@@ -2,7 +2,7 @@
 
 use super::super::Kind;
 use super::*;
-use common::config::{DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, DEFAULT_SLOT_MAX_OUTPUT_TOKENS};
+use common::config::{DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, DEFAULT_SLOT_MAX_OUTPUT_TOKENS};
 
 const MODEL: &str = "claude-opus-4-8";
 
@@ -24,7 +24,7 @@ fn job(kind: Kind) -> Job<'static> {
     let max_output_tokens = match kind {
         Kind::Slot => DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
         // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
-        Kind::Judge => DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        Kind::Judge => DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
     };
     Job {
         kind,
@@ -762,11 +762,11 @@ fn guard_output_ceiling_enforces_the_configured_value_not_a_constant() {
 /// every other ceiling test stays green.
 #[test]
 fn guard_output_ceiling_names_the_judge_key_when_the_judge_job_is_over() {
-    let over = u64::from(DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS) + 1;
+    let over = u64::from(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS) + 1;
     let json = envelope_json(false, "success", "end_turn", "long prose", over, &real_model_usage());
     let err = check(&json, Kind::Judge).unwrap_err().to_string();
     assert!(
-        err.contains("render.markdown-max-output-tokens"),
+        err.contains("render.judge-max-output-tokens"),
         "the judge bail must name the key that governs it: {err}"
     );
     assert!(

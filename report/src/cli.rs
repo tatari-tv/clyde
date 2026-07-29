@@ -244,7 +244,7 @@ pub struct EvalArgs {
     #[arg(long, num_args = 1..)]
     pub fixture: Option<Vec<PathBuf>>,
 
-    /// Model pin for the judge. When omitted, falls back to `render.markdown-model` in `clyde.yml`,
+    /// Model pin for the judge. When omitted, falls back to `render.model` in `clyde.yml`,
     /// so the eval needs no config key of its own.
     #[arg(long)]
     pub judge: Option<String>,

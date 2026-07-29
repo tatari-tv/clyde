@@ -71,30 +71,29 @@ actually billed), not `list_amount`.
 
 ## Render output formats
 
-`report render` turns a collected JSON report into one of five output formats, selected with
-`--format` (case-insensitive). The formats split into two source families: `markdown`/`pdf`/
-`marquee-markdown` render the report as Markdown first (template or LLM); `html`/`marquee-html`
-skip Markdown entirely and have the model author a complete, self-contained HTML dashboard
-directly from the same report data. Pandoc is only ever invoked for `pdf`.
+`report render` turns a collected JSON report into one of three output formats, selected with
+`--format` (case-insensitive). All three share ONE source: Rust deterministically authors the
+Markdown document -- every table, every figure, every chart -- and the LLM fills a small fixed set of
+prose slots inside it. Pandoc is only ever invoked for `pdf`.
 
-| `--format`         | source   | what it does                                                             | `-o`     | pandoc |
-|--------------------|----------|---------------------------------------------------------------------------|----------|--------|
-| `markdown` (default) | markdown | writes Markdown to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.md` | yes | no |
-| `pdf`              | markdown | converts the Markdown to PDF via pandoc (`--pdf-engine`, default `wkhtmltopdf`) | yes | **yes** |
-| `marquee-markdown` | markdown | publishes the Markdown as `index.md` to [marquee](https://github.com/tatari-tv/marquee); marquee applies its house style | rejected | no |
-| `html`             | html     | writes a self-contained, model-authored HTML dashboard to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.html` | yes | no |
-| `marquee-html`     | html     | publishes the same model-authored HTML dashboard as `index.html` to marquee | rejected | no |
+| `--format`         | what it does                                                             | `-o`     | pandoc |
+|--------------------|---------------------------------------------------------------------------|----------|--------|
+| `markdown` (default) | writes Markdown to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.md` | yes | no |
+| `pdf`              | converts the Markdown to PDF via pandoc (`--pdf-engine`, default `wkhtmltopdf`) | yes | **yes** |
+| `marquee-markdown` | publishes the Markdown as `index.md` to [marquee](https://github.com/tatari-tv/marquee); marquee applies its house style | rejected | no |
 
-`pdf` requires `pandoc` on `PATH`; `marquee-*` require the `marquee` CLI with an authenticated
-session; `html`/`marquee-html` need an LLM transport but **not** an API key -- by default they shell
-out to the locally installed `claude` CLI and use the Claude Code login you already have (see
-[LLM transport](#llm-transport) below). There is no offline path for them, and `--template`
-is rejected for these two formats since it produces Markdown, not HTML.
+There is no HTML format and no HTML authorship anywhere in clyde: markdown to HTML is marquee's job.
+`pdf` requires `pandoc` on `PATH`; `marquee-markdown` requires the `marquee` CLI with an
+authenticated session.
+
+An LLM transport is **optional**. With none available the data sections render in full and the prose
+slots come out empty, with a WARN on stderr -- a render cannot fail whole-artifact. When a transport
+IS present it needs no API key by default, shelling out to the locally installed `claude` CLI and
+using the Claude Code login you already have (see [LLM transport](#llm-transport) below).
 
 ## LLM transport
 
-Both model-authored paths (the Markdown narrative and the HTML dashboard) go through one of two
-transports, selected with `--llm`:
+The prose slots and the `report eval` judge go through one of two transports, selected with `--llm`:
 
 | `--llm` | what it uses | credential |
 |---|---|---|
@@ -112,13 +111,18 @@ Configure the default, the model pins, and the output ceilings in `clyde.yml`:
 # ~/.config/clyde/clyde.yml
 render:
   llm: auto                        # auto | api | cli    (default auto, which prefers cli)
-  markdown-model: claude-opus-4-8  # model pin for the Markdown narrative
-  html-model: claude-opus-4-8      # model pin for the HTML dashboard
-  markdown-max-output-tokens: 32000  # output ceiling for the Markdown narrative
-  html-max-output-tokens: 64000      # output ceiling for the HTML dashboard
+  model: claude-opus-4-8           # model pin for the prose slots and the eval judge
+  slot-max-output-tokens: 1500     # output ceiling for ONE prose slot
+  judge-max-output-tokens: 32000   # output ceiling for the eval judge
 ```
 
 Precedence is the house convention: flag > config > default.
+
+One `model` pin covers both jobs. The key is deliberately not named `markdown-model`: that name
+belonged to the whole-document authoring job, which no longer exists.
+
+The slot ceiling is small on purpose. A slot is a few sentences of digit-free prose, so 1500 leaves
+generous headroom while still catching a model that starts writing a whole document instead.
 
 The ceilings are enforced differently by the two transports, and that is inherent rather than a gap: the
 api path puts the value on the wire as `max_tokens` and the model is cut off at it, while the cli path
@@ -145,25 +149,27 @@ binary but no usable login will now fail even with a valid `ANTHROPIC_API_KEY` s
 picks `cli` on presence alone. Any non-interactive caller should pass `--llm api` (or set
 `render.llm: api`) rather than trusting `auto`.
 
-**The cli transport bills your Claude Code plan, and costs more per render.** Measured on a real
-1,310-session month: the CLI bills the ~242K-token payload as a 1-hour cache write at $10/Mtok where
-the api path bills it as plain input at $5/Mtok, plus a small internal sub-call -- about **$2.93 via
-cli vs ~$1.53 via api** for a Markdown render. Renders also draw on your personal plan's rate limits
-rather than a service key's, so several parallel renders can hit a per-user limit. If you hold a key
-and render in bulk on one machine, set `render.llm: api`.
+**The cli transport bills your Claude Code plan, and costs more per token.** The CLI bills its
+payload as a 1-hour cache write at $10/Mtok where the api path bills it as plain input at $5/Mtok,
+plus a small internal sub-call. Renders also draw on your personal plan's rate limits rather than a
+service key's, so several parallel renders can hit a per-user limit. If you hold a key and render in
+bulk on one machine, set `render.llm: api`.
+
+The per-render figures that used to sit here (~$2.93 via cli vs ~$1.53 via api on a 1,310-session
+month) were measured on the pre-inversion render, which sent a ~242K-token context block in one call.
+That call no longer exists: a render is now several small per-slot calls over curated fact briefs. The
+rate difference above still holds; the totals have not been re-measured.
 
 ```bash
 clyde report render                              # Markdown (default)
 clyde report render --format pdf -o report.pdf
-clyde report render --format html                # writes ./<YYYY-MM>-claude-report.html
-clyde report render --format marquee-markdown    # prints the published URL to stdout
-url=$(clyde report render --format marquee-html --space eng)
+url=$(clyde report render --format marquee-markdown --space eng)   # prints the published URL
 ```
 
-- The `marquee-*` variants print the published **URL to stdout** (the status line goes to stderr),
-  so `url=$(clyde report render --format marquee-html)` captures it. Use `--space <space>` to
+- `marquee-markdown` prints the published **URL to stdout** (the status line goes to stderr), so
+  `url=$(clyde report render --format marquee-markdown)` captures it. Use `--space <space>` to
   target a marquee space other than your personal one.
-- `-o`/`--output` is rejected with a `marquee-*` format — the output is a URL, not a file.
+- `-o`/`--output` is rejected with `marquee-markdown` — the output is a URL, not a file.
 - **marquee auth:** render probes `marquee whoami`. If you are not logged in *and* you are on an
   interactive terminal, it runs `marquee login` once, then retries. In a non-TTY context (SSH
   without a tty, CI, an agent) it does **not** launch the interactive flow — it errors and tells
@@ -178,7 +184,7 @@ The default `--format` (used when the flag is omitted) can be set in
 ```yaml
 # ~/.config/clyde/clyde.yml
 render:
-  format: marquee-markdown   # markdown | pdf | html | marquee-html | marquee-markdown
+  format: marquee-markdown   # markdown | pdf | marquee-markdown
 ```
 
 With the above, a bare `clyde report render` publishes to marquee, while `--format markdown` still

@@ -850,8 +850,8 @@ fn render_run_rejects_yaml_input_extension() {
         log_level: "info".into(),
         command: ResolvedCommand::Render(RenderConfig {
             llm: crate::cli::Llm::Auto,
-            markdown_model: "claude-opus-4-8".into(),
-            markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+            model: "claude-opus-4-8".into(),
+            judge_max_output_tokens: common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
             input: yml,
             output: None,
@@ -912,8 +912,8 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
 
     let cfg = RenderConfig {
         llm: crate::cli::Llm::Auto,
-        markdown_model: "claude-opus-4-8".into(),
-        markdown_max_output_tokens: common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        model: "claude-opus-4-8".into(),
+        judge_max_output_tokens: common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
         input: input.clone(),
         output: Some(tmp.path().join("out.md")),

@@ -72,8 +72,8 @@ pub struct EvalConfig {
     /// definition, and committing a failing one would make `otto ci` green against a broken render.
     pub write_goldens: bool,
     pub llm: Llm,
-    pub markdown_model: String,
-    pub markdown_max_output_tokens: u32,
+    pub model: String,
+    pub judge_max_output_tokens: u32,
     /// Output ceiling for one prose slot, from `render.slot-max-output-tokens`.
     pub slot_max_output_tokens: u32,
 }
@@ -301,7 +301,7 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
         } else {
             render::SlotSource::Live {
                 llm: cfg.llm,
-                model: &cfg.markdown_model,
+                model: &cfg.model,
                 ceiling: cfg.slot_max_output_tokens,
             }
         },
@@ -421,7 +421,7 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
 fn judge_artifact(cfg: &EvalConfig, context: &RenderContext, artifact: &str) -> Result<Verdict> {
     let brief = judge::brief(&context.json)?;
     let model = &cfg.judge_model;
-    let ceiling = cfg.markdown_max_output_tokens;
+    let ceiling = cfg.judge_max_output_tokens;
     match render::resolve_selected_transport(cfg.llm, Format::Markdown)? {
         TransportKind::Api => judge::score(&ApiTransport::from_env()?, model, ceiling, artifact, &brief),
         TransportKind::Cli => judge::score(&CliTransport::resolve()?, model, ceiling, artifact, &brief),

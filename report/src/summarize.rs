@@ -39,14 +39,14 @@ impl Kind {
     /// purpose: naming a key that does not govern the failing job is a remedy that cannot remedy,
     /// which `cli.rs`'s module docs call worse than offering none.
     ///
-    /// [`Kind::Judge`] names the MARKDOWN key, and that is not a stand-in: the eval passes
-    /// `render.markdown-max-output-tokens` as the judge's ceiling, so the key this error names is
-    /// the key that actually governs it. The eval deliberately adds no ceiling key of its own -- a
-    /// four-object verdict cannot plausibly need a budget of its own.
+    /// Each arm now names a key named for ITS OWN job. That was not true before design "Render
+    /// Inversion": [`Kind::Judge`] used to name `render.markdown-max-output-tokens`, a key named for
+    /// the whole-document authoring job, and the doc comment here had to argue it was not a stand-in.
+    /// The key is `render.judge-max-output-tokens`, so there is no longer an argument to make.
     pub fn max_output_tokens_key(self) -> &'static str {
         match self {
             Kind::Slot => "render.slot-max-output-tokens",
-            Kind::Judge => "render.markdown-max-output-tokens",
+            Kind::Judge => "render.judge-max-output-tokens",
         }
     }
 }
@@ -61,9 +61,9 @@ impl Kind {
 #[derive(Clone, Copy, Debug)]
 pub struct Job<'a> {
     pub kind: Kind,
-    /// `render.markdown-model`, which pins both the slot job and the judge.
+    /// `render.model`, which pins both the slot job and the judge.
     pub model: &'a str,
-    /// `render.slot-max-output-tokens` for a slot, `render.markdown-max-output-tokens` for the judge.
+    /// `render.slot-max-output-tokens` for a slot, `render.judge-max-output-tokens` for the judge.
     ///
     /// SHARED by both transports: the api transport SETS it as `max_tokens` on the wire, and the cli
     /// transport -- which cannot set a ceiling at all -- CHECKS the returned `usage.output_tokens`

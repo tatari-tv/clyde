@@ -366,8 +366,8 @@ fn an_empty_fixture_set_fails() {
         out: PathBuf::from("/dev/null"),
         write_goldens: false,
         llm: Llm::Api,
-        markdown_model: "m".into(),
-        markdown_max_output_tokens: 1_024,
+        model: "m".into(),
+        judge_max_output_tokens: 1_024,
         slot_max_output_tokens: 512,
     };
     let err = run(&cfg, &Pricing::embedded()).unwrap_err().to_string();
@@ -407,8 +407,8 @@ fn a_render_missing_the_top_repo_scores_below_its_coverage_floor() {
     let brief = judge::brief(&context.json).unwrap();
     let verdict = judge::score(
         &ApiTransport::from_env().expect("ANTHROPIC_API_KEY must be set for this ignored test"),
-        common::config::DEFAULT_MARKDOWN_MODEL,
-        common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        common::config::DEFAULT_MODEL,
+        common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         &mutilated,
         &brief,
     )

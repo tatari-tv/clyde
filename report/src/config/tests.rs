@@ -474,14 +474,14 @@ fn config_api_beats_auto_even_with_claude_present() {
 #[test]
 fn model_pins_default_to_opus_4_8_without_config() {
     let cfg = resolved_render(render_args_llm(None), None);
-    assert_eq!(cfg.markdown_model, "claude-opus-4-8");
+    assert_eq!(cfg.model, "claude-opus-4-8");
 }
 
 #[test]
 fn model_pins_come_from_clyde_yml_when_set() {
-    let yml = "render:\n  markdown-model: claude-sonnet-5\n";
+    let yml = "render:\n  model: claude-sonnet-5\n";
     let cfg = resolved_render(render_args_llm(None), Some(yml));
-    assert_eq!(cfg.markdown_model, "claude-sonnet-5");
+    assert_eq!(cfg.model, "claude-sonnet-5");
 }
 
 /// The retired html keys must be REJECTED by name, not tolerated. `deny_unknown_fields` is what
@@ -507,8 +507,8 @@ fn the_retired_html_keys_are_rejected_by_name() {
 fn ceilings_default_without_config() {
     let cfg = resolved_render(render_args_llm(None), None);
     assert_eq!(
-        cfg.markdown_max_output_tokens,
-        common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS
+        cfg.judge_max_output_tokens,
+        common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS
     );
     assert_eq!(
         cfg.slot_max_output_tokens,
@@ -523,9 +523,9 @@ fn ceilings_default_without_config() {
 /// `resolve_command` fails here.
 #[test]
 fn ceilings_come_from_clyde_yml_when_set() {
-    let yml = "render:\n  markdown-max-output-tokens: 12345\n  slot-max-output-tokens: 543\n";
+    let yml = "render:\n  judge-max-output-tokens: 12345\n  slot-max-output-tokens: 543\n";
     let cfg = resolved_render(render_args_llm(None), Some(yml));
-    assert_eq!(cfg.markdown_max_output_tokens, 12_345);
+    assert_eq!(cfg.judge_max_output_tokens, 12_345);
     assert_eq!(cfg.slot_max_output_tokens, 543);
 }
 
@@ -535,9 +535,9 @@ fn ceilings_are_independent_of_each_other() {
     // render.
     let cfg = resolved_render(
         render_args_llm(None),
-        Some("render:\n  markdown-max-output-tokens: 12345\n"),
+        Some("render:\n  judge-max-output-tokens: 12345\n"),
     );
-    assert_eq!(cfg.markdown_max_output_tokens, 12_345);
+    assert_eq!(cfg.judge_max_output_tokens, 12_345);
     assert_eq!(
         cfg.slot_max_output_tokens,
         common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
