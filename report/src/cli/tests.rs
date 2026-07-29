@@ -10,18 +10,6 @@ struct TestCli {
     args: ReportArgs,
 }
 
-/// The six placeholders `render_custom` (report/src/render.rs) actually replaces.
-/// Kept here so a drift between the help text and the real implementation fails a test
-/// instead of shipping silently.
-const TEMPLATE_PLACEHOLDERS: &[&str] = &[
-    "{{host}}",
-    "{{since}}",
-    "{{until}}",
-    "{{session-count}}",
-    "{{total-tokens}}",
-    "{{total-spend}}",
-];
-
 fn render_arg_help(id: &str) -> String {
     let cmd = TestCli::command();
     let render = cmd
@@ -34,21 +22,6 @@ fn render_arg_help(id: &str) -> String {
         .and_then(|a| a.get_help())
         .map(|h| h.to_string())
         .unwrap_or_default()
-}
-
-#[test]
-fn template_help_enumerates_the_six_actual_placeholders() {
-    let help = render_arg_help("template");
-    for placeholder in TEMPLATE_PLACEHOLDERS {
-        assert!(
-            help.contains(placeholder),
-            "template help missing placeholder {placeholder}: {help}"
-        );
-    }
-    assert!(
-        !help.to_lowercase().contains("jinja") && !help.to_lowercase().contains("tera"),
-        "template help still claims a templating engine: {help}"
-    );
 }
 
 #[test]
@@ -108,11 +81,8 @@ fn format_flag_parses_all_variants_case_insensitively() {
         ("markdown", Format::Markdown),
         ("pdf", Format::Pdf),
         ("PDF", Format::Pdf),
-        ("html", Format::Html),
-        ("HTML", Format::Html),
-        ("marquee-html", Format::MarqueeHtml),
-        ("Marquee-Html", Format::MarqueeHtml),
         ("marquee-markdown", Format::MarqueeMarkdown),
+        ("Marquee-Markdown", Format::MarqueeMarkdown),
     ];
     for (input, expected) in cases {
         let cli = TestCli::try_parse_from(["report", "render", "--format", input])
@@ -134,6 +104,14 @@ fn format_flag_rejects_comma_separated_and_unknown_values() {
         TestCli::try_parse_from(["report", "render", "--format", "docx"]).is_err(),
         "unknown format must be rejected by ValueEnum"
     );
+    // The retired html formats must fail as UNKNOWN VALUES, not fall back silently to markdown: a
+    // caller with `--format html` in a script has to learn that clyde no longer emits HTML.
+    for retired in ["html", "marquee-html"] {
+        assert!(
+            TestCli::try_parse_from(["report", "render", "--format", retired]).is_err(),
+            "--format {retired} must be rejected as an unknown value"
+        );
+    }
 }
 
 #[test]
@@ -141,8 +119,6 @@ fn format_maps_from_every_config_variant() {
     use common::config::FormatConfig;
     assert_eq!(Format::from(FormatConfig::Markdown), Format::Markdown);
     assert_eq!(Format::from(FormatConfig::Pdf), Format::Pdf);
-    assert_eq!(Format::from(FormatConfig::Html), Format::Html);
-    assert_eq!(Format::from(FormatConfig::MarqueeHtml), Format::MarqueeHtml);
     assert_eq!(Format::from(FormatConfig::MarqueeMarkdown), Format::MarqueeMarkdown);
 }
 
@@ -150,16 +126,5 @@ fn format_maps_from_every_config_variant() {
 fn is_marquee_only_true_for_marquee_variants() {
     assert!(!Format::Markdown.is_marquee());
     assert!(!Format::Pdf.is_marquee());
-    assert!(!Format::Html.is_marquee());
-    assert!(Format::MarqueeHtml.is_marquee());
     assert!(Format::MarqueeMarkdown.is_marquee());
-}
-
-#[test]
-fn is_html_source_only_true_for_html_and_marquee_html() {
-    assert!(!Format::Markdown.is_html_source());
-    assert!(!Format::Pdf.is_html_source());
-    assert!(!Format::MarqueeMarkdown.is_html_source());
-    assert!(Format::Html.is_html_source());
-    assert!(Format::MarqueeHtml.is_html_source());
 }

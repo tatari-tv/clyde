@@ -1,18 +1,19 @@
 #![allow(clippy::unwrap_used)]
 
-use super::super::{HTML_SYSTEM_PROMPT, MARKDOWN_SYSTEM_PROMPT};
 use super::*;
-use common::config::{
-    DEFAULT_HTML_MAX_OUTPUT_TOKENS, DEFAULT_HTML_MODEL as HTML_MODEL, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
-    DEFAULT_MARKDOWN_MODEL as MARKDOWN_MODEL,
-};
+use common::config::{DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, DEFAULT_MODEL as MODEL, DEFAULT_SLOT_MAX_OUTPUT_TOKENS};
 
 use crate::ENV_LOCK;
+use crate::summarize::Kind;
 
 /// The prompt/facts pair every body test uses. Small on purpose: the assertion is about the
 /// envelope's exact shape, not about payload size.
 const PROMPT: &str = "Write the report.";
 const JSON_BODY: &str = "{\"a\":1}";
+
+/// A stand-in system prompt. `build_body` takes it as an argument, so its CONTENT is not this file's
+/// concern -- the assertion is that it is placed in the `system` field verbatim.
+const SYSTEM: &str = "You are a precise technical writer.";
 
 /// A ceiling for the tests where the number is INERT -- they assert stream omission, prompt joining, or
 /// model presence, and any value would do. Deliberately not either default: tracking a real default by
@@ -29,9 +30,10 @@ fn expected_user_msg() -> String {
 /// A `Job` at its DEFAULT pins, which is what the byte-identical baseline is a baseline of.
 fn default_job(kind: Kind) -> Job<'static> {
     let (model, max_output_tokens) = match kind {
+        // A slot rides the markdown MODEL pin with its own, much smaller ceiling.
+        Kind::Slot => (MODEL, DEFAULT_SLOT_MAX_OUTPUT_TOKENS),
         // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
-        Kind::Markdown | Kind::Judge => (MARKDOWN_MODEL, DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS),
-        Kind::Html => (HTML_MODEL, DEFAULT_HTML_MAX_OUTPUT_TOKENS),
+        Kind::Judge => (MODEL, DEFAULT_JUDGE_MAX_OUTPUT_TOKENS),
     };
     Job {
         kind,
@@ -40,76 +42,44 @@ fn default_job(kind: Kind) -> Job<'static> {
     }
 }
 
+/// The slot body, byte for byte.
+///
+/// `stream` is gone from the struct entirely rather than serialized as `false`, so the wire bytes are
+/// the SAME bytes the pre-inversion non-streaming path sent. Field order is declaration order, and
+/// `max_tokens` is the current declared slot default. Any unintended drift in field order, omission,
+/// or the default still fails here.
 #[test]
-fn markdown_body_is_byte_identical_to_baseline() {
-    let job = default_job(Kind::Markdown);
-    let body = build_body(
-        job.model,
-        MARKDOWN_SYSTEM_PROMPT,
-        job.max_output_tokens,
-        job.kind.streams(),
-        PROMPT,
-        JSON_BODY,
+fn slot_body_is_byte_identical_to_baseline() {
+    let job = default_job(Kind::Slot);
+    let body = build_body(job.model, SYSTEM, job.max_output_tokens, PROMPT, JSON_BODY);
+    let expected = format!(
+        r#"{{"model":"claude-opus-4-8","max_tokens":1500,"system":{},"messages":[{{"role":"user","content":{}}}]}}"#,
+        serde_json::to_string(SYSTEM).unwrap(),
+        serde_json::to_string(&expected_user_msg()).unwrap(),
     );
-    // Field order is the struct's declaration order, `stream` is OMITTED entirely when false, and
-    // `max_tokens` is the CURRENT declared markdown default. This no longer asserts "byte-identical to
-    // the pre-HTML behavior" -- that contract is retired, because the default is now a config value the
-    // user can move. It is an anti-rot assertion against the declared baseline: any unintended drift in
-    // field order, omission, or the default still fails here.
+    assert_eq!(serde_json::to_string(&body).unwrap(), expected);
+}
+
+/// The judge body, which differs from a slot's only in its ceiling.
+#[test]
+fn judge_body_is_byte_identical_to_baseline() {
+    let job = default_job(Kind::Judge);
+    let body = build_body(job.model, SYSTEM, job.max_output_tokens, PROMPT, JSON_BODY);
     let expected = format!(
         r#"{{"model":"claude-opus-4-8","max_tokens":32000,"system":{},"messages":[{{"role":"user","content":{}}}]}}"#,
-        serde_json::to_string(MARKDOWN_SYSTEM_PROMPT).unwrap(),
+        serde_json::to_string(SYSTEM).unwrap(),
         serde_json::to_string(&expected_user_msg()).unwrap(),
     );
     assert_eq!(serde_json::to_string(&body).unwrap(), expected);
 }
 
+/// `stream` must not appear on the wire at all. Streaming existed only for the long html generation;
+/// removing the field keeps the request bytes identical to what the non-streaming path always sent.
 #[test]
-fn html_body_is_byte_identical_to_baseline() {
-    let job = default_job(Kind::Html);
-    let body = build_body(
-        job.model,
-        HTML_SYSTEM_PROMPT,
-        job.max_output_tokens,
-        job.kind.streams(),
-        PROMPT,
-        JSON_BODY,
-    );
-    // Same shape as markdown but `stream: true` IS serialized, and the ceiling is 64K.
-    let expected = format!(
-        r#"{{"model":"claude-opus-4-8","max_tokens":64000,"stream":true,"system":{},"messages":[{{"role":"user","content":{}}}]}}"#,
-        serde_json::to_string(HTML_SYSTEM_PROMPT).unwrap(),
-        serde_json::to_string(&expected_user_msg()).unwrap(),
-    );
-    assert_eq!(serde_json::to_string(&body).unwrap(), expected);
-}
-
-#[test]
-fn stream_false_is_omitted_not_serialized_as_false() {
-    let body = build_body(MARKDOWN_MODEL, "sys", INERT_CEILING, false, PROMPT, JSON_BODY);
-    let json = serde_json::to_string(&body).unwrap();
-    // A `"stream":false` on the wire would be a behavior change from the pre-HTML baseline even
-    // though it is semantically equivalent. Assert the absence explicitly.
-    assert!(
-        !json.contains("stream"),
-        "stream must be omitted when false, got: {json}"
-    );
-}
-
-#[test]
-fn body_joins_prompt_and_facts_with_a_fenced_json_block() {
-    let body = build_body(
-        MARKDOWN_MODEL,
-        "sys",
-        INERT_CEILING,
-        false,
-        "  trailing space trimmed  ",
-        JSON_BODY,
-    );
-    let content = &body.messages.first().unwrap().content;
-    // The prompt is right-trimmed, then a blank line, then the fenced facts. The cli transport sends
-    // this same fenced block on stdin, so the model reads identical content on both transports.
-    assert_eq!(content, "  trailing space trimmed\n\n```json\n{\"a\":1}\n```\n");
+fn the_request_body_carries_no_stream_field() {
+    let job = default_job(Kind::Slot);
+    let body = build_body(job.model, SYSTEM, job.max_output_tokens, PROMPT, JSON_BODY);
+    assert!(!serde_json::to_string(&body).unwrap().contains("stream"));
 }
 
 // ---- the two api knobs, asserted SEPARATELY ----------------------------------------------------
@@ -119,27 +89,18 @@ fn body_joins_prompt_and_facts_with_a_fenced_json_block() {
 // they get one assertion each.
 
 #[test]
-fn streaming_is_derived_from_the_kind_not_from_a_threshold() {
-    // Markdown reads a single JSON body; html streams so the 300s idle wall never fires on a long
-    // generation. Derived from the KIND, never from a threshold over max_tokens.
-    assert!(!Kind::Markdown.streams());
-    assert!(Kind::Html.streams());
-}
-
-#[test]
 fn the_default_ceilings_are_the_documented_pair() {
-    // Mirrors how `both_jobs_default_to_opus_4_8` pins the model defaults: a silent change to either
-    // ceiling fails here.
-    assert_eq!(DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS, 32_000);
-    assert_eq!(DEFAULT_HTML_MAX_OUTPUT_TOKENS, 64_000);
+    // A silent change to either ceiling fails here. The slot ceiling is orders of magnitude below the
+    // whole-document one it replaced, and that gap IS the cost argument for the inversion.
+    assert_eq!(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, 32_000);
+    assert_eq!(DEFAULT_SLOT_MAX_OUTPUT_TOKENS, 1_500);
+    const { assert!(DEFAULT_SLOT_MAX_OUTPUT_TOKENS < DEFAULT_JUDGE_MAX_OUTPUT_TOKENS) };
 }
 
 #[test]
-fn both_jobs_default_to_opus_4_8() {
-    // Scott, 2026-07-24: "just use claude opus 4-8". The markdown job re-pinned off opus-4-7, so a
-    // silent revert to a split pin fails here.
-    assert_eq!(MARKDOWN_MODEL, "claude-opus-4-8");
-    assert_eq!(HTML_MODEL, "claude-opus-4-8");
+fn the_model_default_is_opus_4_8() {
+    // Scott, 2026-07-24: "just use claude opus 4-8".
+    assert_eq!(MODEL, "claude-opus-4-8");
 }
 
 // ---- key resolution ---------------------------------------------------------------------------
@@ -201,14 +162,14 @@ fn from_env_error_names_both_remedies() {
 
 /// AC11's api half: a CONFIGURED model must reach the wire, not just the default.
 ///
-/// Every other body test passes `MARKDOWN_MODEL`/`HTML_MODEL`, which EQUAL the literal
+/// Every other body test passes `MODEL`, which EQUALS the literal
 /// `"claude-opus-4-8"` those fixtures assert — so hardcoding the model inside `build_body` would
 /// leave them all green. A sentinel that could never be a default closes that hole.
 ///
 /// BITES: replace `model` with a literal in `build_body` and this fails.
 #[test]
 fn a_configured_model_reaches_the_serialized_body() {
-    let body = build_body("sentinel-model-xyz", "sys", INERT_CEILING, false, PROMPT, JSON_BODY);
+    let body = build_body("sentinel-model-xyz", "sys", INERT_CEILING, PROMPT, JSON_BODY);
     let json = serde_json::to_string(&body).unwrap();
     assert!(
         json.contains(r#""model":"sentinel-model-xyz""#),
@@ -228,18 +189,11 @@ fn a_configured_model_reaches_the_serialized_body() {
 #[test]
 fn a_configured_ceiling_reaches_the_serialized_body() {
     let job = Job {
-        kind: Kind::Markdown,
-        model: MARKDOWN_MODEL,
+        kind: Kind::Slot,
+        model: MODEL,
         max_output_tokens: 12_345,
     };
-    let body = build_body(
-        job.model,
-        "sys",
-        job.max_output_tokens,
-        job.kind.streams(),
-        PROMPT,
-        JSON_BODY,
-    );
+    let body = build_body(job.model, "sys", job.max_output_tokens, PROMPT, JSON_BODY);
     let json = serde_json::to_string(&body).unwrap();
     assert!(
         json.contains(r#""max_tokens":12345"#),

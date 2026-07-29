@@ -2,55 +2,36 @@
 
 use super::*;
 
-/// Wrap inner body markup in a minimal, valid self-contained document so a test can focus on the
-/// one thing it is probing (fences, doctype, closing tag, a single external reference).
-fn doc(inner: &str) -> String {
-    format!("<!doctype html><html><head></head><body>{inner}</body></html>")
+/// Each kind names its OWN ceiling key. A ceiling failure quotes this key as the remedy, so a shared
+/// or crossed value would send the reader to a line that does not govern the job that failed -- the
+/// "remedy that cannot remedy" `cli.rs`'s module docs reject.
+///
+/// BITES: return the same key from both arms and one assertion fails.
+#[test]
+fn each_kind_names_its_own_ceiling_key() {
+    assert_eq!(Kind::Slot.max_output_tokens_key(), "render.slot-max-output-tokens");
+    assert_eq!(Kind::Judge.max_output_tokens_key(), "render.judge-max-output-tokens");
+    assert_ne!(Kind::Judge.max_output_tokens_key(), Kind::Slot.max_output_tokens_key());
 }
 
-// ---- SSE parse + stop_reason ------------------------------------------------------------------
-
-fn sse(stop_reason: &str, deltas: &[&str]) -> String {
-    let mut out = String::new();
-    out.push_str("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}\n\n");
-    out.push_str("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0}\n\n");
-    for d in deltas {
-        out.push_str(&format!(
-            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{}}}}}\n\n",
-            serde_json::to_string(d).unwrap()
-        ));
+/// `end_turn` is the ONLY acceptable stop: any other value means the reply hit the output ceiling
+/// and is truncated, and a truncated artifact must never be published.
+#[test]
+fn only_end_turn_is_accepted() {
+    assert!(check_stop_reason(Some("end_turn")).is_ok());
+    for bad in ["max_tokens", "stop_sequence", "tool_use", "refusal"] {
+        assert!(check_stop_reason(Some(bad)).is_err(), "{bad} must not pass");
     }
-    out.push_str("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n");
-    out.push_str(&format!(
-        "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{stop_reason}\",\"stop_sequence\":null}},\"usage\":{{\"output_tokens\":42}}}}\n\n"
-    ));
-    out.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
-    out
 }
 
 #[test]
-fn parse_sse_accumulates_text_and_reads_end_turn() {
-    let body = sse("end_turn", &["<!doctype html>", "<html></html>"]);
-    let outcome = parse_sse_stream(&body).unwrap();
-    assert_eq!(outcome.text, "<!doctype html><html></html>");
-    assert_eq!(outcome.stop_reason.as_deref(), Some("end_turn"));
-    assert_eq!(outcome.output_tokens, Some(42));
-    check_stop_reason(outcome.stop_reason.as_deref()).expect("end_turn must not bail");
-}
-
-#[test]
-fn parse_sse_then_stop_reason_bails_on_max_tokens() {
-    let body = sse("max_tokens", &["<!doctype html><html>", "truncated..."]);
-    let outcome = parse_sse_stream(&body).unwrap();
-    assert_eq!(outcome.stop_reason.as_deref(), Some("max_tokens"));
-    // The pure SSE parse surfaces the truncation; check_stop_reason turns it into a loud, actionable
-    // exhaustion error naming the escape hatches.
-    let err = check_stop_reason(outcome.stop_reason.as_deref()).unwrap_err();
+fn a_truncation_error_names_the_stop_reason_and_a_remedy() {
+    let err = check_stop_reason(Some("max_tokens")).unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("max_tokens"), "err names the stop_reason: {msg}");
+    assert!(msg.contains("max_tokens"), "the error quotes the stop reason: {msg}");
     assert!(
-        msg.contains("--format markdown") && msg.contains("--since"),
-        "err directs to the named fallbacks: {msg}"
+        msg.contains("config key") || msg.contains("--since"),
+        "the error names a remedy: {msg}"
     );
 }
 
@@ -58,305 +39,4 @@ fn parse_sse_then_stop_reason_bails_on_max_tokens() {
 fn check_stop_reason_missing_bails() {
     let err = check_stop_reason(None).unwrap_err();
     assert!(format!("{err}").contains("<missing>"));
-}
-
-#[test]
-fn parse_sse_bails_on_malformed_data_line() {
-    let body = "event: content_block_delta\ndata: {not valid json}\n\n";
-    let err = parse_sse_stream(body).unwrap_err();
-    assert!(format!("{err}").contains("SSE data line"));
-}
-
-// ---- fence stripping --------------------------------------------------------------------------
-
-#[test]
-fn postprocess_strips_html_fence() {
-    let raw = format!("```html\n{}\n```", doc("<p>ok</p>"));
-    let out = postprocess_html(&raw).unwrap();
-    assert!(out.starts_with("<!doctype html>"), "fence removed: {out}");
-    assert!(out.ends_with("</html>"));
-}
-
-#[test]
-fn postprocess_strips_bare_fence() {
-    let raw = format!("```\n{}\n```", doc("<p>ok</p>"));
-    let out = postprocess_html(&raw).unwrap();
-    assert!(out.starts_with("<!doctype html>"));
-}
-
-#[test]
-fn postprocess_accepts_unfenced_document() {
-    let raw = doc("<p>ok</p>");
-    let out = postprocess_html(&raw).unwrap();
-    assert_eq!(out, raw);
-}
-
-#[test]
-fn postprocess_accepts_uppercase_doctype() {
-    let raw = "<!DOCTYPE HTML><HTML><body>ok</body></HTML>";
-    let out = postprocess_html(raw).unwrap();
-    assert_eq!(out, raw);
-}
-
-#[test]
-fn postprocess_accepts_html_tag_without_doctype() {
-    let raw = "<html lang=\"en\"><body>ok</body></html>";
-    let out = postprocess_html(raw).unwrap();
-    assert_eq!(out, raw);
-}
-
-// ---- doctype / closing-tag validation ---------------------------------------------------------
-
-#[test]
-fn postprocess_bails_on_leading_prose() {
-    let raw = format!("Here is your dashboard:\n\n{}", doc("<p>x</p>"));
-    let err = postprocess_html(&raw).unwrap_err();
-    let msg = format!("{err}");
-    assert!(msg.contains("does not begin with"), "{msg}");
-    assert!(msg.contains("Here is your dashboard"), "preview named: {msg}");
-}
-
-#[test]
-fn postprocess_bails_on_trailing_content_after_close() {
-    let raw = format!("{} and that's the report!", doc("<p>x</p>"));
-    let err = postprocess_html(&raw).unwrap_err();
-    assert!(format!("{err}").contains("does not end with </html>"));
-}
-
-#[test]
-fn postprocess_allows_trailing_whitespace_after_close() {
-    let raw = format!("{}\n  \n", doc("<p>x</p>"));
-    let out = postprocess_html(&raw).unwrap();
-    assert!(out.ends_with("</html>"));
-}
-
-// ---- external-resource static check -----------------------------------------------------------
-
-#[test]
-fn postprocess_rejects_external_src() {
-    let raw = doc("<img src=\"https://cdn.example.com/logo.png\">");
-    let err = postprocess_html(&raw).unwrap_err();
-    assert!(format!("{err}").contains("external resource"), "{err}");
-}
-
-#[test]
-fn postprocess_rejects_external_link_href() {
-    let raw = doc("<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css?family=Inter\">");
-    // <link href> loads a resource; only <a href> is exempt.
-    let err = postprocess_html(&raw).unwrap_err();
-    assert!(format!("{err}").contains("external resource"), "{err}");
-}
-
-#[test]
-fn postprocess_accepts_anchor_href_hyperlink() {
-    let raw = doc("<a href=\"https://github.com/tatari-tv/clyde/pull/42\">PR #42</a>");
-    let out = postprocess_html(&raw).expect("<a href> hyperlinks are exempt");
-    assert!(out.contains("github.com"));
-}
-
-#[test]
-fn postprocess_accepts_inline_and_local_references() {
-    // data: URIs, local anchors, and relative paths are self-contained / navigational — allowed.
-    let raw = doc("<img src=\"data:image/png;base64,AAAA\"><a href=\"#top\">top</a>\
-         <svg><rect fill=\"url(#grad)\"/></svg>");
-    let out = postprocess_html(&raw).expect("inline/local references must pass");
-    assert!(out.contains("data:image"));
-}
-
-#[test]
-fn postprocess_rejects_external_css_url() {
-    let raw = doc("<style>body{background:url(https://cdn.example.com/bg.png)}</style>");
-    let err = postprocess_html(&raw).unwrap_err();
-    assert!(format!("{err}").contains("url("), "{err}");
-}
-
-#[test]
-fn postprocess_rejects_external_import() {
-    let raw = doc("<style>@import \"https://cdn.example.com/theme.css\";</style>");
-    let err = postprocess_html(&raw).unwrap_err();
-    assert!(format!("{err}").contains("@import"), "{err}");
-}
-
-#[test]
-fn postprocess_rejects_fetch_call() {
-    let raw = doc("<script>fetch('https://api.example.com/data').then(r=>r.json())</script>");
-    let err = postprocess_html(&raw).unwrap_err();
-    assert!(format!("{err}").contains("network API"), "{err}");
-}
-
-#[test]
-fn postprocess_rejects_websocket() {
-    let raw = doc("<script>const s = new WebSocket('wss://x');</script>");
-    let err = postprocess_html(&raw).unwrap_err();
-    assert!(format!("{err}").contains("network API"), "{err}");
-}
-
-// ---- Transport port: fake-driven end-to-end over markdown/html ---------------------------------
-
-/// One recorded trip through the port. A named struct rather than a tuple so each assertion reads
-/// as the field it is checking.
-///
-/// The `Job` is DESTRUCTURED into owned fields rather than stored whole. A borrowing `Job<'_>` inside
-/// the `RefCell<Vec<Recorded>>` below does not compile: `RefCell` is invariant in its parameter, so
-/// pushing a `Job` carried in on the trait method's (shorter, fresh) lifetime is rejected. Recording
-/// owned data is the right shape for a recording fake anyway; the borrow was only ever incidental.
-#[derive(Clone, Debug)]
-struct Recorded {
-    kind: Kind,
-    model: String,
-    max_output_tokens: u32,
-    system: String,
-    prompt: String,
-    json_body: String,
-}
-
-/// Records what the port was handed and returns a canned reply. Mirrors how `sessions` and
-/// `efficiency` fake their `Completer`/`Narrator` ports: a fake that records, never a mock.
-struct FakeTransport {
-    reply: String,
-    seen: std::cell::RefCell<Vec<Recorded>>,
-}
-
-impl FakeTransport {
-    fn new(reply: impl Into<String>) -> Self {
-        Self {
-            reply: reply.into(),
-            seen: std::cell::RefCell::new(Vec::new()),
-        }
-    }
-
-    /// The single recorded call, or a panic if the count is not exactly one.
-    fn only_call(&self) -> Recorded {
-        let seen = self.seen.borrow();
-        assert_eq!(seen.len(), 1, "expected exactly one transport call, got {}", seen.len());
-        seen[0].clone()
-    }
-}
-
-impl Transport for FakeTransport {
-    fn complete(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<String> {
-        self.seen.borrow_mut().push(Recorded {
-            kind: job.kind,
-            model: job.model.to_string(),
-            max_output_tokens: job.max_output_tokens,
-            system: system.to_string(),
-            prompt: prompt.to_string(),
-            json_body: json_body.to_string(),
-        });
-        Ok(self.reply.clone())
-    }
-}
-
-/// A transport that always fails, to prove the error propagates rather than yielding an artifact.
-struct FailingTransport;
-
-impl Transport for FailingTransport {
-    fn complete(&self, _: Job<'_>, _: &str, _: &str, _: &str) -> Result<String> {
-        bail!("transport exploded")
-    }
-}
-
-/// An inert ceiling for the tests that are not about the ceiling. Deliberately not either default, so
-/// nothing here re-couples to a value that moves.
-const CEILING: u32 = 1_024;
-
-/// Each kind names its OWN ceiling key. A ceiling failure quotes this key as the remedy, so a shared or
-/// crossed value would send the reader to a line that does not govern the job that failed — the
-/// "remedy that cannot remedy" `cli.rs`'s module docs reject.
-///
-/// BITES: return the markdown key from both arms and the html assertion fails.
-#[test]
-fn each_kind_names_its_own_ceiling_key() {
-    assert_eq!(
-        Kind::Markdown.max_output_tokens_key(),
-        "render.markdown-max-output-tokens"
-    );
-    assert_eq!(Kind::Html.max_output_tokens_key(), "render.html-max-output-tokens");
-}
-
-#[test]
-fn markdown_passes_job_model_and_system_prompt_through() {
-    let t = FakeTransport::new("# Report\n\nprose");
-    let out = markdown(&t, "some-model", CEILING, "instruction", "{\"k\":1}").unwrap();
-    assert_eq!(out, "# Report\n\nprose");
-    let call = t.only_call();
-    assert_eq!(call.kind, Kind::Markdown);
-    assert_eq!(call.model, "some-model");
-    assert_eq!(call.system, MARKDOWN_SYSTEM_PROMPT);
-    // prompt and json_body stay SEPARATE across the port; joining is the transport's business.
-    assert_eq!(call.prompt, "instruction");
-    assert_eq!(call.json_body, "{\"k\":1}");
-}
-
-#[test]
-fn html_passes_job_model_and_system_prompt_through() {
-    let t = FakeTransport::new(doc("<h1>hi</h1>"));
-    let out = html(&t, "other-model", CEILING, "instruction", "{\"k\":1}").unwrap();
-    assert!(out.starts_with("<!doctype html>"));
-    let call = t.only_call();
-    assert_eq!(call.kind, Kind::Html);
-    assert_eq!(call.model, "other-model");
-    assert_eq!(call.system, HTML_SYSTEM_PROMPT);
-    assert_eq!(call.prompt, "instruction");
-    assert_eq!(call.json_body, "{\"k\":1}");
-}
-
-/// The `summarize` half of the two-sided plumbing probe: the CALLER's ceiling reaches the port, per
-/// job, unswapped. Sentinels that could never be a default, and different from each other, so a
-/// hardcoded value or a crossed pair fails here.
-///
-/// BITES: build the `Job` in `markdown`/`html` with a literal, or swap the two, and this fails.
-#[test]
-fn the_resolved_ceiling_reaches_the_port_per_job() {
-    let md = FakeTransport::new("# Report");
-    markdown(&md, "m", 12_345, "p", "{}").unwrap();
-    assert_eq!(md.only_call().max_output_tokens, 12_345);
-
-    let ht = FakeTransport::new(doc("<h1>hi</h1>"));
-    html(&ht, "m", 54_321, "p", "{}").unwrap();
-    assert_eq!(ht.only_call().max_output_tokens, 54_321);
-}
-
-#[test]
-fn html_postprocesses_whatever_the_transport_returns() {
-    // The guard runs AFTER the transport, so it is transport-agnostic: a fenced reply is stripped
-    // no matter which transport produced it. This is the safety argument for a second transport.
-    let t = FakeTransport::new(format!("```html\n{}\n```", doc("<p>x</p>")));
-    let out = html(&t, "m", CEILING, "p", "{}").unwrap();
-    assert!(out.starts_with("<!doctype html>"), "fence should be stripped: {out}");
-    assert!(out.trim_end().ends_with("</html>"));
-}
-
-#[test]
-fn html_bails_when_the_transport_returns_a_non_document() {
-    // Proven to bite: swap this reply for a valid document and the test fails.
-    let t = FakeTransport::new("Here is your dashboard!");
-    let err = html(&t, "m", CEILING, "p", "{}").unwrap_err().to_string();
-    assert!(
-        err.contains("<!doctype html>"),
-        "should name the doctype requirement: {err}"
-    );
-}
-
-#[test]
-fn html_bails_when_the_transport_returns_an_externally_dependent_document() {
-    let t = FakeTransport::new(doc("<script src=\"https://cdn.example.com/x.js\"></script>"));
-    let err = html(&t, "m", CEILING, "p", "{}").unwrap_err().to_string();
-    assert!(err.contains("self-contained"), "should name self-containment: {err}");
-}
-
-#[test]
-fn markdown_propagates_a_transport_failure() {
-    let err = markdown(&FailingTransport, "m", CEILING, "p", "{}")
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("transport exploded"), "got: {err}");
-}
-
-#[test]
-fn html_propagates_a_transport_failure() {
-    let err = html(&FailingTransport, "m", CEILING, "p", "{}")
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("transport exploded"), "got: {err}");
 }

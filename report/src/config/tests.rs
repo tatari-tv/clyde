@@ -45,8 +45,6 @@ fn render_args(format: Option<crate::cli::Format>, output: Option<PathBuf>) -> c
         output,
         format,
         space: None,
-        template: None,
-        prompt: None,
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
@@ -240,8 +238,6 @@ fn resolve_command_render_threads_outliers_into_config() {
         output: None,
         format: Some(crate::cli::Format::Markdown),
         space: None,
-        template: None,
-        prompt: None,
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: 3,
@@ -263,10 +259,8 @@ fn resolve_command_render_threads_format_and_space_into_config() {
         llm: None,
         input: None,
         output: None,
-        format: Some(crate::cli::Format::MarqueeHtml),
+        format: Some(crate::cli::Format::MarqueeMarkdown),
         space: Some("eng".into()),
-        template: None,
-        prompt: None,
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
@@ -277,7 +271,7 @@ fn resolve_command_render_threads_format_and_space_into_config() {
     let resolved = with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(args)).unwrap());
     match resolved {
         ResolvedCommand::Render(cfg) => {
-            assert_eq!(cfg.format, crate::cli::Format::MarqueeHtml);
+            assert_eq!(cfg.format, crate::cli::Format::MarqueeMarkdown);
             assert_eq!(cfg.space.as_deref(), Some("eng"));
         }
         other => panic!("expected Render, got {other:?}"),
@@ -294,8 +288,6 @@ fn resolve_command_render_rejects_output_with_marquee_format() {
         output: Some(std::path::PathBuf::from("out.md")),
         format: Some(crate::cli::Format::MarqueeMarkdown),
         space: None,
-        template: None,
-        prompt: None,
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
@@ -320,8 +312,6 @@ fn resolve_command_render_allows_output_with_local_format() {
         output: Some(std::path::PathBuf::from("out.pdf")),
         format: Some(crate::cli::Format::Pdf),
         space: None,
-        template: None,
-        prompt: None,
         include_tradeoffs: false,
         pdf_engine: "wkhtmltopdf".into(),
         outliers: crate::aggregate::DEFAULT_OUTLIERS,
@@ -333,66 +323,6 @@ fn resolve_command_render_allows_output_with_local_format() {
         args
     ))
     .is_ok()));
-}
-
-/// `-o` is meaningful for the new local `html` format (it writes a file, like markdown/pdf), so it
-/// must be accepted, unlike the marquee-* formats.
-#[test]
-fn resolve_command_render_allows_output_with_html_format() {
-    let args = render_args(Some(crate::cli::Format::Html), Some(PathBuf::from("out.html")));
-    assert!(with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(
-        args
-    ))
-    .is_ok()));
-}
-
-/// `--template` produces markdown and has no meaning as an html-source input; it must be rejected
-/// for both html-source formats (`html` and `marquee-html`), naming the flag and the format.
-#[test]
-fn resolve_command_render_rejects_template_with_html_source_formats() {
-    for format in [crate::cli::Format::Html, crate::cli::Format::MarqueeHtml] {
-        let mut args = render_args(Some(format), None);
-        args.template = Some(PathBuf::from("custom.md"));
-        let err = with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(args)).unwrap_err());
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("--template") && msg.to_lowercase().contains("html"),
-            "rejection for --format {format:?} must mention --template and html: {msg}"
-        );
-    }
-}
-
-/// `--template` is still valid for the markdown-source formats (unchanged behavior).
-#[test]
-fn resolve_command_render_allows_template_with_markdown_source_formats() {
-    for format in [
-        crate::cli::Format::Markdown,
-        crate::cli::Format::Pdf,
-        crate::cli::Format::MarqueeMarkdown,
-    ] {
-        let mut args = render_args(Some(format), None);
-        args.template = Some(PathBuf::from("custom.md"));
-        assert!(
-            with_clyde_yml(None, || resolve_command(crate::cli::Command::Render(args)).is_ok()),
-            "--format {format:?} with --template should still resolve"
-        );
-    }
-}
-
-/// A config-set html-source default combined with a CLI `--template` still bails, mirroring the
-/// existing config-set marquee + `-o` rejection.
-#[test]
-fn config_set_html_default_plus_template_is_rejected() {
-    let err = with_clyde_yml(Some("render:\n  format: html\n"), || {
-        let mut args = render_args(None, None);
-        args.template = Some(PathBuf::from("custom.md"));
-        resolve_command(crate::cli::Command::Render(args)).unwrap_err()
-    });
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("--template") && msg.to_lowercase().contains("html"),
-        "config-default html + --template must be rejected: {msg}"
-    );
 }
 
 /// Phase 5: `resolve_command` must thread `--no-outcomes` from `CollectArgs` into
@@ -447,7 +377,7 @@ fn auto_prefers_cli_when_claude_is_present() {
 /// that has no `claude` binary at all.
 #[test]
 fn auto_falls_back_to_api_when_claude_is_absent() {
-    let got = resolve_transport(Llm::Auto, false, true, Format::Html).unwrap();
+    let got = resolve_transport(Llm::Auto, false, true, Format::Markdown).unwrap();
     assert_eq!(got, TransportKind::Api);
 }
 
@@ -468,7 +398,7 @@ fn auto_picks_cli_even_when_a_key_is_also_available() {
 /// api key, which is the dead end that started this design.
 #[test]
 fn auto_with_neither_credential_errors_naming_both_remedies() {
-    let err = resolve_transport(Llm::Auto, false, false, Format::Html)
+    let err = resolve_transport(Llm::Auto, false, false, Format::Markdown)
         .unwrap_err()
         .to_string();
     assert!(err.contains("ANTHROPIC_API_KEY"), "must name the key: {err}");
@@ -476,15 +406,19 @@ fn auto_with_neither_credential_errors_naming_both_remedies() {
     assert!(err.contains("claude"), "must name the cli remedy: {err}");
     assert!(err.contains("--llm cli"), "must name the cli flag: {err}");
     // And it names the format the user actually asked for.
-    assert!(err.contains("html"), "must name the requested format: {err}");
+    assert!(err.contains("markdown"), "must name the requested format: {err}");
 }
 
 #[test]
 fn neither_credential_error_names_the_requested_format_not_a_generic_one() {
-    let err = resolve_transport(Llm::Auto, false, false, Format::MarqueeHtml)
+    let err = resolve_transport(Llm::Auto, false, false, Format::MarqueeMarkdown)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("marquee-html"), "got: {err}");
+    assert!(err.contains("marquee-markdown"), "got: {err}");
+    assert!(
+        !err.contains("--format markdown:"),
+        "the generic name must not stand in: {err}"
+    );
 }
 
 // ---- --llm precedence: flag > config > default --------------------------------------------------
@@ -540,24 +474,31 @@ fn config_api_beats_auto_even_with_claude_present() {
 #[test]
 fn model_pins_default_to_opus_4_8_without_config() {
     let cfg = resolved_render(render_args_llm(None), None);
-    assert_eq!(cfg.markdown_model, "claude-opus-4-8");
-    assert_eq!(cfg.html_model, "claude-opus-4-8");
+    assert_eq!(cfg.model, "claude-opus-4-8");
 }
 
 #[test]
 fn model_pins_come_from_clyde_yml_when_set() {
-    let yml = "render:\n  markdown-model: claude-sonnet-5\n  html-model: claude-opus-4-7\n";
+    let yml = "render:\n  model: claude-sonnet-5\n";
     let cfg = resolved_render(render_args_llm(None), Some(yml));
-    assert_eq!(cfg.markdown_model, "claude-sonnet-5");
-    assert_eq!(cfg.html_model, "claude-opus-4-7");
+    assert_eq!(cfg.model, "claude-sonnet-5");
 }
 
+/// The retired html keys must be REJECTED by name, not tolerated. `deny_unknown_fields` is what
+/// turns a stale `clyde.yml` into a loud error instead of a silently-ignored line, and an operator
+/// upgrading past this change has to learn that the key is gone.
 #[test]
-fn model_pins_are_independent_of_each_other() {
-    // Setting only one must leave the other at its default, not blank it.
-    let cfg = resolved_render(render_args_llm(None), Some("render:\n  html-model: claude-sonnet-5\n"));
-    assert_eq!(cfg.markdown_model, "claude-opus-4-8", "unset pin keeps its default");
-    assert_eq!(cfg.html_model, "claude-sonnet-5");
+fn the_retired_html_keys_are_rejected_by_name() {
+    for key in ["html-model: claude-opus-4-7", "html-max-output-tokens: 64000"] {
+        let err = with_clyde_yml(Some(&format!("render:\n  {key}\n")), || {
+            resolve_command(crate::cli::Command::Render(render_args_llm(None))).unwrap_err()
+        });
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("unknown field") && msg.contains("html"),
+            "a retired key must be named as unknown: {msg}"
+        );
+    }
 }
 
 // ---- AC-C1: the output ceilings are configurable and plumbed ------------------------------------
@@ -566,12 +507,12 @@ fn model_pins_are_independent_of_each_other() {
 fn ceilings_default_without_config() {
     let cfg = resolved_render(render_args_llm(None), None);
     assert_eq!(
-        cfg.markdown_max_output_tokens,
-        common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS
+        cfg.judge_max_output_tokens,
+        common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS
     );
     assert_eq!(
-        cfg.html_max_output_tokens,
-        common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS
+        cfg.slot_max_output_tokens,
+        common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS
     );
 }
 
@@ -582,10 +523,10 @@ fn ceilings_default_without_config() {
 /// `resolve_command` fails here.
 #[test]
 fn ceilings_come_from_clyde_yml_when_set() {
-    let yml = "render:\n  markdown-max-output-tokens: 12345\n  html-max-output-tokens: 54321\n";
+    let yml = "render:\n  judge-max-output-tokens: 12345\n  slot-max-output-tokens: 543\n";
     let cfg = resolved_render(render_args_llm(None), Some(yml));
-    assert_eq!(cfg.markdown_max_output_tokens, 12_345);
-    assert_eq!(cfg.html_max_output_tokens, 54_321);
+    assert_eq!(cfg.judge_max_output_tokens, 12_345);
+    assert_eq!(cfg.slot_max_output_tokens, 543);
 }
 
 #[test]
@@ -594,12 +535,12 @@ fn ceilings_are_independent_of_each_other() {
     // render.
     let cfg = resolved_render(
         render_args_llm(None),
-        Some("render:\n  markdown-max-output-tokens: 12345\n"),
+        Some("render:\n  judge-max-output-tokens: 12345\n"),
     );
-    assert_eq!(cfg.markdown_max_output_tokens, 12_345);
+    assert_eq!(cfg.judge_max_output_tokens, 12_345);
     assert_eq!(
-        cfg.html_max_output_tokens,
-        common::config::DEFAULT_HTML_MAX_OUTPUT_TOKENS,
+        cfg.slot_max_output_tokens,
+        common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
         "unset ceiling keeps its default"
     );
 }
@@ -612,7 +553,7 @@ fn ceilings_are_independent_of_each_other() {
 /// silently defaulting.
 #[test]
 fn malformed_config_fails_loudly_even_with_format_and_llm_both_present() {
-    let mut args = render_args(Some(Format::Html), None);
+    let mut args = render_args(Some(Format::Markdown), None);
     args.llm = Some(Llm::Cli);
     let err = with_clyde_yml(Some("render:\n  format: [not, a, string\n"), || {
         resolve_command(crate::cli::Command::Render(args)).unwrap_err()

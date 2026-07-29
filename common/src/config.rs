@@ -45,8 +45,6 @@ pub enum FormatConfig {
     #[default]
     Markdown,
     Pdf,
-    Html,
-    MarqueeHtml,
     MarqueeMarkdown,
 }
 
@@ -65,65 +63,71 @@ pub enum LlmConfig {
     Cli,
 }
 
-/// Default pin for the markdown job (`render.markdown-model`).
+/// Default model pin for every LLM job `report` runs (`render.model`).
 ///
-/// Both jobs default to `claude-opus-4-8` (Scott, 2026-07-24: "just use claude opus 4-8"), which is
-/// the model the keyless spike verified on both jobs. This is the ONE home for the default: the
-/// `report` crate reads it from here rather than carrying its own copy, so the two cannot drift.
-pub const DEFAULT_MARKDOWN_MODEL: &str = "claude-opus-4-8";
-/// Default pin for the html job (`render.html-model`). See [`DEFAULT_MARKDOWN_MODEL`].
-pub const DEFAULT_HTML_MODEL: &str = "claude-opus-4-8";
-
-/// Default output ceiling for the markdown job (`render.markdown-max-output-tokens`).
+/// ONE pin covers both jobs -- the prose slots and the eval judge -- because both default to
+/// `claude-opus-4-8` (Scott, 2026-07-24: "just use claude opus 4-8"), which is the model the keyless
+/// spike verified on both. Named `model`, not `markdown-model`: the key was originally named for
+/// `Kind::Markdown`, the whole-document authoring job that design "Render Inversion" deleted, and a
+/// key named after a job that no longer exists is the cognitive-dissonance case the house rules
+/// forbid. This is the ONE home for the default: the `report` crate reads it from here rather than
+/// carrying its own copy, so the two cannot drift.
+pub const DEFAULT_MODEL: &str = "claude-opus-4-8";
+/// Default output ceiling for the eval judge (`render.judge-max-output-tokens`).
 ///
-/// 32,000: twice the largest markdown output ever measured (16,117 tokens on the 1,310-session
-/// 2026-07 month, the render that surfaced this problem), and half of what the `claude` CLI grants
-/// `claude-opus-4-8` (64,000), so the cli path can deliver a document at this ceiling untruncated.
-/// Raised from the pre-config ceiling, which that same month exceeded by 117 tokens.
-pub const DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS: u32 = 32_000;
+/// 32,000, inherited unchanged from the deleted whole-document markdown job it was sized for (twice
+/// the largest markdown output ever measured: 16,117 tokens on the 1,310-session 2026-07 month), and
+/// half of what the `claude` CLI grants `claude-opus-4-8` (64,000).
+///
+/// This is now GENEROUS to the point of being nominal: the judge emits a four-object JSON verdict,
+/// nowhere near 32,000 tokens. It is left at the inherited value deliberately -- retiring the
+/// misleading NAME is this change's scope, and re-deriving the number is a separate decision with
+/// its own measurement. The ceiling still bites if a judge ever runs away, which is all it is for.
+pub const DEFAULT_JUDGE_MAX_OUTPUT_TOKENS: u32 = 32_000;
 
-/// Default output ceiling for the html job (`render.html-max-output-tokens`). Exactly what the
-/// `claude` CLI grants `claude-opus-4-8` (64,000), against a largest observed html output of 19,574
-/// tokens (3.2x headroom). Nothing measured argues for moving it.
-pub const DEFAULT_HTML_MAX_OUTPUT_TOKENS: u32 = 64_000;
+/// Default output ceiling for a prose SLOT (`render.slot-max-output-tokens`).
+///
+/// 1,500: a slot is three to six sentences of digit-free prose with `{{fact:key}}` placeholders
+/// where the figures go. The Phase 0 verification of the `executive-summary` slot returned 217
+/// output tokens, so this is nearly 7x the measured shape while staying small enough that a model
+/// that starts writing a whole document hits the ceiling instead of billing for one. Deliberately
+/// orders of magnitude below the whole-document ceilings above: that gap IS the cost argument for
+/// the inversion.
+pub const DEFAULT_SLOT_MAX_OUTPUT_TOKENS: u32 = 1_500;
 
-fn default_markdown_model() -> String {
-    DEFAULT_MARKDOWN_MODEL.to_string()
+fn default_model() -> String {
+    DEFAULT_MODEL.to_string()
 }
 
-fn default_html_model() -> String {
-    DEFAULT_HTML_MODEL.to_string()
+fn default_judge_max_output_tokens() -> u32 {
+    DEFAULT_JUDGE_MAX_OUTPUT_TOKENS
 }
 
-fn default_markdown_max_output_tokens() -> u32 {
-    DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS
+fn default_slot_max_output_tokens() -> u32 {
+    DEFAULT_SLOT_MAX_OUTPUT_TOKENS
 }
 
-fn default_html_max_output_tokens() -> u32 {
-    DEFAULT_HTML_MAX_OUTPUT_TOKENS
-}
-
-/// Deserialize `render.markdown-max-output-tokens`, rejecting `0` loudly and BY NAME.
+/// Deserialize `render.judge-max-output-tokens`, rejecting `0` loudly and BY NAME.
 ///
 /// There are TWO of these rather than one shared `de_nonzero` for a mechanical reason: serde_yaml
 /// renders a [`serde::de::Error::custom`] with the enclosing SECTION and the source location but
 /// never the field name (`render: <msg> at line 2 column 3`), so a shared validator naming no key
 /// would leave the reader guessing which of the two ceilings they broke. The key is therefore
 /// hardcoded per call. The shared body still lives in one place ([`nonzero_ceiling`]).
-fn de_markdown_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+fn de_judge_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    nonzero_ceiling(deserializer, "render.markdown-max-output-tokens")
+    nonzero_ceiling(deserializer, "render.judge-max-output-tokens")
 }
 
-/// Deserialize `render.html-max-output-tokens`. See [`de_markdown_max_output_tokens`] for why the
+/// Deserialize `render.slot-max-output-tokens`. See [`de_judge_max_output_tokens`] for why the
 /// two keys get one function each.
-fn de_html_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+fn de_slot_max_output_tokens<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    nonzero_ceiling(deserializer, "render.html-max-output-tokens")
+    nonzero_ceiling(deserializer, "render.slot-max-output-tokens")
 }
 
 /// Reject a zero output ceiling, naming the key the caller passed.
@@ -167,26 +171,24 @@ pub struct RenderConfig {
     /// Which transport performs the two model calls when `--llm` is omitted. Defaults to `auto`.
     #[serde(default)]
     llm: LlmConfig,
-    /// Model pin for the markdown job. Defaults to [`DEFAULT_MARKDOWN_MODEL`].
-    #[serde(default = "default_markdown_model")]
-    markdown_model: String,
-    /// Model pin for the html job. Defaults to [`DEFAULT_HTML_MODEL`].
-    #[serde(default = "default_html_model")]
-    html_model: String,
-    /// Output ceiling for the markdown job. Defaults to
-    /// [`DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS`]. `0` is rejected loudly.
+    /// Model pin for both LLM jobs, the prose slots and the eval judge. Defaults to
+    /// [`DEFAULT_MODEL`].
+    #[serde(default = "default_model")]
+    model: String,
+    /// Output ceiling for the eval judge. Defaults to
+    /// [`DEFAULT_JUDGE_MAX_OUTPUT_TOKENS`]. `0` is rejected loudly.
     #[serde(
-        default = "default_markdown_max_output_tokens",
-        deserialize_with = "de_markdown_max_output_tokens"
+        default = "default_judge_max_output_tokens",
+        deserialize_with = "de_judge_max_output_tokens"
     )]
-    markdown_max_output_tokens: u32,
-    /// Output ceiling for the html job. Defaults to [`DEFAULT_HTML_MAX_OUTPUT_TOKENS`]. `0` is
+    judge_max_output_tokens: u32,
+    /// Output ceiling for one prose slot. Defaults to [`DEFAULT_SLOT_MAX_OUTPUT_TOKENS`]. `0` is
     /// rejected loudly.
     #[serde(
-        default = "default_html_max_output_tokens",
-        deserialize_with = "de_html_max_output_tokens"
+        default = "default_slot_max_output_tokens",
+        deserialize_with = "de_slot_max_output_tokens"
     )]
-    html_max_output_tokens: u32,
+    slot_max_output_tokens: u32,
 }
 
 impl Default for RenderConfig {
@@ -194,10 +196,9 @@ impl Default for RenderConfig {
         Self {
             format: FormatConfig::default(),
             llm: LlmConfig::default(),
-            markdown_model: default_markdown_model(),
-            html_model: default_html_model(),
-            markdown_max_output_tokens: default_markdown_max_output_tokens(),
-            html_max_output_tokens: default_html_max_output_tokens(),
+            model: default_model(),
+            judge_max_output_tokens: default_judge_max_output_tokens(),
+            slot_max_output_tokens: default_slot_max_output_tokens(),
         }
     }
 }
@@ -485,26 +486,21 @@ impl Config {
         self.render.llm
     }
 
-    /// The configured model pin for the markdown job ([`DEFAULT_MARKDOWN_MODEL`] when unset).
-    pub fn render_markdown_model(&self) -> &str {
-        &self.render.markdown_model
+    /// The configured model pin for every `report` LLM job ([`DEFAULT_MODEL`] when unset).
+    pub fn render_model(&self) -> &str {
+        &self.render.model
     }
 
-    /// The configured model pin for the html job ([`DEFAULT_HTML_MODEL`] when unset).
-    pub fn render_html_model(&self) -> &str {
-        &self.render.html_model
+    /// The configured output ceiling for the eval judge
+    /// ([`DEFAULT_JUDGE_MAX_OUTPUT_TOKENS`] when unset).
+    pub fn render_judge_max_output_tokens(&self) -> u32 {
+        self.render.judge_max_output_tokens
     }
 
-    /// The configured output ceiling for the markdown job
-    /// ([`DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS`] when unset).
-    pub fn render_markdown_max_output_tokens(&self) -> u32 {
-        self.render.markdown_max_output_tokens
-    }
-
-    /// The configured output ceiling for the html job ([`DEFAULT_HTML_MAX_OUTPUT_TOKENS`] when
+    /// The configured output ceiling for one prose slot ([`DEFAULT_SLOT_MAX_OUTPUT_TOKENS`] when
     /// unset).
-    pub fn render_html_max_output_tokens(&self) -> u32 {
-        self.render.html_max_output_tokens
+    pub fn render_slot_max_output_tokens(&self) -> u32 {
+        self.render.slot_max_output_tokens
     }
 
     /// The resolved projects root for `clyde mcp serve`: the configured `projects-dir`, else the

@@ -1,0 +1,9 @@
+Write the `tradeoffs` slot.
+
+Intent: three to five sentences on where this period's spend was less effective. Ground every
+observation in a figure you were given: a low cache-read share means context was being re-read
+fresh, a high tool-error rate means calls were failing and being retried, interrupts and
+compactions mean sessions were being steered or were outgrowing their context.
+
+Be specific and frank about what the figures show. Do not invent friction the facts do not support,
+and do not pad this with generic complaints about AI tooling.

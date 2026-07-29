@@ -23,12 +23,15 @@ require-sections:
 forbid-sections:
   - Tradeoffs
 
-# Design Phase 10's success criterion 3, re-run here against a real golden: an untitled session
-# cited by short-id and a prose PR reference are the two citations a narrowed quotable-facts
-# whitelist breaks first, so the fixture that carries both must PROVE its render exercises them.
+# An untitled session must still be identified by its `short-id` -- that is the Outlier Sessions
+# table's own fallback rule, and a render that dropped it would leave a nameless row.
+#
+# `pr-reference` was required here to prove the (now deleted) quotable-facts whitelist did not
+# false-positive on a prose `#118`. The document layer states observed PRs as COUNTS ("16 PRs
+# opened") and never writes a bare `#N`, so the requirement is both moot and unsatisfiable: the
+# whitelist it protected no longer exists.
 require-citations:
   - untitled-short-id
-  - pr-reference
 
 floors:
   # Calibrated against observed judge scores, not aspiration. `citation-accuracy: 3` demands a

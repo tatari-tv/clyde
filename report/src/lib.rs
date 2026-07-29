@@ -6,17 +6,14 @@
 pub mod aggregate;
 pub(crate) mod cents;
 pub mod chart;
-pub(crate) mod claim;
 pub mod cli;
 pub mod config;
 pub mod eval;
 pub mod fmt;
-pub(crate) mod geometry;
 pub mod merge;
 pub mod outcome;
 pub mod persona;
 pub mod proc;
-pub(crate) mod quotable;
 pub(crate) mod reconcile;
 pub mod render;
 pub mod report;

@@ -1,13 +1,10 @@
-use crate::aggregate::{self, Aggregates, Attribution, OrgRow, RepoRow, UnitCosts};
-use crate::claim;
+use crate::aggregate::{self, Aggregates, Attribution, UnitCosts};
 use crate::cli::Format;
 use crate::config::{RenderConfig, TransportKind};
 use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
-use crate::geometry;
 use crate::outcome::OutcomeTotals;
 use crate::persona::{self, PersonaBlock};
 use crate::proc::run_bounded;
-use crate::quotable::{QuotableFacts, RenderContext};
 use crate::reconcile::Reconciliation;
 use crate::report::{Report, SCHEMA_VERSION, SessionEntry};
 use crate::summarize;
@@ -23,28 +20,35 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+mod document;
+pub(crate) mod facts;
 mod reconciliation;
+mod slots;
 use reconciliation::{build_reconciliation_view, no_reconcile_warning};
-mod rejected;
-use rejected::{generate_then_route, guarded};
-mod template;
 mod workload;
-use template::{load_template, to_markdown};
+use document::{Artifact, ChartMode, PriorView};
+use facts::RenderContext;
 use workload::build_efficiency_view;
 
+/// The view-assembly inputs that are neither the report, the persona, nor the pricing feed: the
+/// three optional file/identity arguments plus the tradeoffs flag. A struct so
+/// [`document::build_views`] and its callers cannot transpose four same-shaped optionals.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ViewOpts<'a> {
+    pub(crate) include_tradeoffs: bool,
+    pub(crate) prior: Option<&'a Path>,
+    pub(crate) reconcile: Option<&'a Path>,
+    pub(crate) reconcile_user: Option<&'a str>,
+}
+
 const STDOUT_SIGIL: &str = "-";
-pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
-const WORKSPACE_PROMPT_PATH: &str = "templates/report.pmt";
-pub const DEFAULT_HTML_PROMPT: &str = include_str!("../templates/report-html.pmt");
-const WORKSPACE_HTML_PROMPT_PATH: &str = "templates/report-html.pmt";
 
 pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
-        "render::run: input={} format={:?} space={:?} prompt={:?} outliers={} reconcile={:?} prior={:?} llm={:?}",
+        "render::run: input={} format={:?} space={:?} outliers={} reconcile={:?} prior={:?} llm={:?}",
         cfg.input.display(),
         cfg.format,
         cfg.space,
-        cfg.prompt,
         cfg.outliers,
         cfg.reconcile,
         cfg.prior,
@@ -68,22 +72,8 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
 
     let report = load_report(&cfg.input, "report")?;
 
-    // Branch once at the source: the html-source family (`Html`, `MarqueeHtml`) never touches
-    // pandoc; the markdown-source family is the unchanged template-or-opus pipeline. Generation
-    // and routing are separated so routing is unit-testable with injected strings -- see
-    // `route_html_artifact`/`route_markdown_artifact` -- and both go through `generate_then_route`,
-    // which owns the "a rejected render writes nothing to the output path" contract (Phase 2, AC3).
-    let dest = if cfg.format.is_html_source() {
-        generate_then_route(
-            || generate_html(cfg, &report, pricing),
-            |html| route_html_artifact(html, &report, cfg),
-        )?
-    } else {
-        generate_then_route(
-            || generate_markdown(cfg, &report, pricing),
-            |markdown| route_markdown_artifact(markdown, &report, cfg),
-        )?
-    };
+    let artifact = generate_markdown(cfg, &report, pricing)?;
+    let dest = route_document_artifact(&artifact, &report, cfg)?;
 
     Ok(RunResult {
         sessions_emitted: report.totals.sessions,
@@ -91,82 +81,197 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     })
 }
 
-/// Produce the markdown-source artifact: the offline `--template` path, or the `report.pmt` -> opus
-/// path. Unchanged from the pre-HTML pipeline (only extracted out of `run` for the source-family
-/// branch and the generation/routing split).
-fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<String> {
-    if let Some(template_path) = cfg.template.as_deref() {
-        let template = load_template(Some(template_path))?;
-        Ok(to_markdown(report, &template, pricing))
-    } else {
-        let prompt = resolve_prompt(cfg.prompt.as_deref(), Path::new("."))?;
-        let persona_block = persona::whoami();
-        let context = build_context_block(
-            report,
-            cfg.include_tradeoffs,
-            persona_block.as_ref(),
-            pricing,
-            cfg.outliers,
-            cfg.prior.as_deref(),
-            cfg.reconcile.as_deref(),
-            cfg.reconcile_user.as_deref(),
-        )?;
-        render_via_opus_markdown(&context, &prompt, cfg)
-    }
-}
-
-/// Produce the html-source artifact: context block -> `report-html.pmt` -> opus (streaming) -> a
-/// validated, self-contained HTML document. Pandoc is never invoked; there is no offline path.
-fn generate_html(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<String> {
-    let prompt = resolve_html_prompt(cfg.prompt.as_deref(), Path::new("."))?;
-    let persona_block = persona::whoami();
-    let context = build_context_block(
+/// Produce the artifact: the deterministic document, plus whatever prose the slots returned.
+///
+/// There is exactly one renderer now. Rust authors every table, number, and chart
+/// (`document::render`); the slots contribute digit-free prose (`slots::generate`) that cannot fail
+/// the render. Nothing here can reject an artifact, because nothing here is authored by a model.
+fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<Artifact> {
+    let default_persona = PersonaBlock::default();
+    let resolved = persona::whoami();
+    let aggregates = aggregate::compute(report, cfg.outliers, pricing);
+    let block = document::build_views(
         report,
-        cfg.include_tradeoffs,
-        persona_block.as_ref(),
+        &aggregates,
+        resolved.as_ref().unwrap_or(&default_persona),
         pricing,
-        cfg.outliers,
-        cfg.prior.as_deref(),
-        cfg.reconcile.as_deref(),
-        cfg.reconcile_user.as_deref(),
+        ViewOpts {
+            include_tradeoffs: cfg.include_tradeoffs,
+            prior: cfg.prior.as_deref(),
+            reconcile: cfg.reconcile.as_deref(),
+            reconcile_user: cfg.reconcile_user.as_deref(),
+        },
     )?;
-    render_via_opus_html(&context, &prompt, cfg)
+    let prose = slot_prose(cfg, &document::registry(&block));
+    Ok(document::render(&block, &prose, chart_mode(cfg)))
 }
 
-/// Route an already-generated markdown artifact to its destination (local file / stdout / PDF /
-/// marquee). Takes the artifact string so it is unit-testable without the live API.
-fn route_markdown_artifact(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
-    debug!(
-        "render::route_markdown_artifact: format={:?} bytes={}",
-        cfg.format,
-        markdown.len()
-    );
-    match cfg.format {
-        Format::Markdown => write_local_markdown(markdown, report, cfg),
-        Format::Pdf => write_local_pdf(markdown, report, cfg),
-        Format::MarqueeMarkdown => publish_marquee_markdown(markdown, report, cfg),
-        other => bail!("route_markdown_artifact called with a non-markdown-source format: {other:?}"),
+/// Generate the prose slots for this render, or an empty set.
+///
+/// This is the top of the degradation ladder and it CANNOT fail. A host with no transport at all
+/// (no `claude` on PATH, no API key) is the offline story, not an error: the deterministic document
+/// is already complete, so an absent transport costs prose and nothing else. Monomorphized per
+/// transport arm, per the house generics-for-DI rule.
+fn slot_prose(cfg: &RenderConfig, reg: &facts::FactRegistry) -> document::SlotProse {
+    let model = &cfg.model;
+    let ceiling = cfg.slot_max_output_tokens;
+    match resolve_selected_transport(cfg.llm, cfg.format) {
+        Ok(TransportKind::Api) => match summarize::ApiTransport::from_env() {
+            Ok(t) => slots::generate(&t, reg, model, ceiling, cfg.include_tradeoffs),
+            Err(e) => no_transport(e),
+        },
+        Ok(TransportKind::Cli) => match summarize::CliTransport::resolve() {
+            Ok(t) => slots::generate(&t, reg, model, ceiling, cfg.include_tradeoffs),
+            Err(e) => no_transport(e),
+        },
+        Err(e) => no_transport(e),
     }
 }
 
-/// Route an already-generated, validated HTML artifact to its destination (local file / stdout, or
-/// marquee publish). Takes the artifact string so it is unit-testable without the live API.
-fn route_html_artifact(html: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+/// Degrade to a prose-free artifact, loudly. Never silent: an operator reading stderr must be able
+/// to tell a thin report from a broken one.
+fn no_transport(e: eyre::Report) -> document::SlotProse {
+    let warning = format!(
+        "no LLM transport available, so the report's prose sections will be empty; the data \
+         sections are unaffected: {e:#}"
+    );
+    log::warn!("render::slot_prose: {warning}");
+    eprintln!("{warning}");
+    document::SlotProse::new()
+}
+
+/// Where the eval's prose comes from.
+///
+/// `Stubbed` renders with NO transport, which makes the artifact fully deterministic -- that is what
+/// a golden is, and it is why the golden layer runs offline and free in `otto ci`. `Live` generates
+/// real slots, which is what `otto eval` pays for and what the judge scores.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SlotSource<'a> {
+    Stubbed,
+    Live {
+        llm: crate::cli::Llm,
+        model: &'a str,
+        ceiling: u32,
+    },
+}
+
+/// The prose slots one render produced, keyed by slot name.
+pub(crate) type SlotProse = document::SlotProse;
+
+/// One eval render: the artifact and the raw slot prose behind it.
+///
+/// The serialized context block is NOT returned: the eval builds it through
+/// [`build_context_block`], which routes through the same `document::build_views` this does, so a
+/// second copy here would be two sources for one value.
+pub(crate) struct EvalRender {
+    pub(crate) markdown: String,
+    /// The slots' prose BEFORE interpolation, which is the form the digit contract applies to.
+    pub(crate) prose: document::SlotProse,
+    /// How many slots were attempted, so a caller can report how many degraded.
+    pub(crate) attempted: usize,
+}
+
+/// Render an artifact for the eval, through the SAME document layer users get.
+///
+/// The eval must not have a second pipeline: a fresh eval render is the user's render or it measures
+/// nothing. This shares `document::build_views`, `slots::generate`, and `document::render` with
+/// [`run`]; only the prose SOURCE differs, and only so goldens can be deterministic.
+pub(crate) fn for_eval(
+    report: &Report,
+    pricing: &Pricing,
+    persona: Option<&PersonaBlock>,
+    opts: ViewOpts<'_>,
+    outliers: usize,
+    slots_from: SlotSource<'_>,
+) -> Result<EvalRender> {
+    let default_persona = PersonaBlock::default();
+    let aggregates = aggregate::compute(report, outliers, pricing);
+    let block = document::build_views(report, &aggregates, persona.unwrap_or(&default_persona), pricing, opts)?;
+    let reg = document::registry(&block);
+    let (prose, attempted) = match slots_from {
+        SlotSource::Stubbed => (document::SlotProse::new(), 0),
+        SlotSource::Live { llm, model, ceiling } => {
+            let prose = match resolve_selected_transport(llm, Format::Markdown)? {
+                TransportKind::Api => slots::generate(
+                    &summarize::ApiTransport::from_env()?,
+                    &reg,
+                    model,
+                    ceiling,
+                    opts.include_tradeoffs,
+                ),
+                TransportKind::Cli => slots::generate(
+                    &summarize::CliTransport::resolve()?,
+                    &reg,
+                    model,
+                    ceiling,
+                    opts.include_tradeoffs,
+                ),
+            };
+            (prose, slots::count(opts.include_tradeoffs))
+        }
+    };
+    // `ChartMode::Table` so a golden is one self-contained file: a golden that referenced sibling
+    // SVGs would need those committed and diffed too, and the chart DATA is identical either way.
+    let artifact = document::render(&block, &prose, ChartMode::Table);
     debug!(
-        "render::route_html_artifact: format={:?} bytes={}",
+        "render::for_eval: artifact bytes={} slots filled={}/{attempted}",
+        artifact.markdown.len(),
+        prose.len()
+    );
+    Ok(EvalRender {
+        markdown: artifact.markdown,
+        prose,
+        attempted,
+    })
+}
+
+/// Whether charts ship as sibling SVG assets or as inline markdown tables.
+///
+/// PDF and stdout can only ever be `Table`: pandoc runs on a tempfile and stdout has no directory,
+/// so a sibling file cannot exist on either path. The data is identical in both forms.
+fn chart_mode(cfg: &RenderConfig) -> ChartMode {
+    let to_stdout = cfg.output.as_deref().is_some_and(|p| p.as_os_str() == STDOUT_SIGIL);
+    if matches!(cfg.format, Format::Pdf) || to_stdout {
+        ChartMode::Table
+    } else {
+        ChartMode::Svg
+    }
+}
+
+/// Route an already-rendered document artifact, sibling assets included.
+fn route_document_artifact(artifact: &Artifact, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!(
+        "render::route_document_artifact: format={:?} bytes={} assets={}",
         cfg.format,
-        html.len()
+        artifact.markdown.len(),
+        artifact.assets.len()
     );
     match cfg.format {
-        Format::Html => write_local_html(html, report, cfg),
-        Format::MarqueeHtml => publish_marquee_html(html, report, cfg),
-        other => bail!("route_html_artifact called with a non-html-source format: {other:?}"),
+        Format::Markdown => write_local_markdown(artifact, report, cfg),
+        Format::Pdf => write_local_pdf(&artifact.markdown, report, cfg),
+        Format::MarqueeMarkdown => publish_marquee_markdown(artifact, report, cfg),
     }
+}
+
+/// Write a document artifact's sibling assets into `dir`. Called for every destination that HAS a
+/// directory; the two that do not (stdout, pandoc's tempfile) render charts as tables and arrive
+/// here with an empty asset list.
+fn write_assets(artifact: &Artifact, dir: &Path) -> Result<()> {
+    for asset in &artifact.assets {
+        let path = dir.join(&asset.filename);
+        debug!(
+            "render::write_assets: path={} bytes={}",
+            path.display(),
+            asset.body.len()
+        );
+        fs::write(&path, &asset.body).with_context(|| format!("failed to write asset {}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Write the rendered markdown to `-o <path>`, to stdout (`-o -`), or to the default
 /// `./<YYYY-MM>-claude-report.md` beside the input when `-o` is omitted.
-fn write_local_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+fn write_local_markdown(artifact: &Artifact, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
     let output = match cfg.output.as_deref() {
         Some(p) => p.to_path_buf(),
         None => default_output_path(report, Format::Markdown),
@@ -175,7 +280,7 @@ fn write_local_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> 
 
     if output.as_os_str() == STDOUT_SIGIL {
         std::io::stdout()
-            .write_all(markdown.as_bytes())
+            .write_all(artifact.markdown.as_bytes())
             .context("failed to write markdown to stdout")?;
         return Ok(OutputDest::Stdout);
     }
@@ -184,37 +289,9 @@ fn write_local_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> 
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
-    fs::write(&output, markdown).with_context(|| format!("failed to write markdown to {}", output.display()))?;
-    Ok(OutputDest::File(output))
-}
-
-/// Write the validated HTML document to `-o <path>`, to stdout (`-o -`), or to the default
-/// `./<YYYY-MM>-claude-report.html` when `-o` is omitted. Mirrors [`write_local_markdown`]
-/// (including the `-o -` stdout sigil); the html artifact is text, so stdout is legal here (unlike
-/// the binary PDF path).
-fn write_local_html(html: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
-    let output = match cfg.output.as_deref() {
-        Some(p) => p.to_path_buf(),
-        None => default_output_path(report, Format::Html),
-    };
-    debug!(
-        "render::write_local_html: output={} bytes={}",
-        output.display(),
-        html.len()
-    );
-
-    if output.as_os_str() == STDOUT_SIGIL {
-        std::io::stdout()
-            .write_all(html.as_bytes())
-            .context("failed to write HTML to stdout")?;
-        return Ok(OutputDest::Stdout);
-    }
-    let dir = output
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
-    fs::write(&output, html).with_context(|| format!("failed to write HTML to {}", output.display()))?;
+    fs::write(&output, &artifact.markdown)
+        .with_context(|| format!("failed to write markdown to {}", output.display()))?;
+    write_assets(artifact, dir)?;
     Ok(OutputDest::File(output))
 }
 
@@ -240,11 +317,7 @@ fn write_local_pdf(markdown: &str, report: &Report, cfg: &RenderConfig) -> Resul
 
 pub(crate) fn default_output_path(report: &Report, format: Format) -> std::path::PathBuf {
     let prefix = report.since.format("%Y-%m");
-    let ext = match format {
-        Format::Pdf => "pdf",
-        Format::Html => "html",
-        _ => "md",
-    };
+    let ext = if matches!(format, Format::Pdf) { "pdf" } else { "md" };
     std::path::PathBuf::from(format!("./{}-claude-report.{}", prefix, ext))
 }
 
@@ -269,116 +342,6 @@ pub(crate) fn resolve_selected_transport(llm: crate::cli::Llm, format: Format) -
     // and version in `CliTransport::resolve`.
     log::info!("render: llm transport selected={resolved:?} (requested={llm:?}) format={format:?}");
     Ok(resolved)
-}
-
-fn render_via_opus_markdown(context: &RenderContext, prompt: &str, cfg: &RenderConfig) -> Result<String> {
-    markdown_from_context(
-        context,
-        prompt,
-        Pins {
-            llm: cfg.llm,
-            format: cfg.format,
-            model: &cfg.markdown_model,
-            ceiling: cfg.markdown_max_output_tokens,
-        },
-    )
-}
-
-/// Everything a model call needs beyond the context and the prompt: which transport, which format
-/// (for the no-transport error's remedy), which model, and the output ceiling. A struct rather than
-/// four positional arguments, so the two render entry points and the eval cannot transpose them.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Pins<'a> {
-    pub(crate) llm: crate::cli::Llm,
-    pub(crate) format: Format,
-    pub(crate) model: &'a str,
-    pub(crate) ceiling: u32,
-}
-
-/// The markdown render, over a context block and its [`Pins`] rather than a whole
-/// [`RenderConfig`]. `pub(crate)` because the eval renders through THIS function -- guards included
-/// -- so a fresh eval render can never be a different pipeline from the one users get.
-pub(crate) fn markdown_from_context(context: &RenderContext, prompt: &str, pins: Pins<'_>) -> Result<String> {
-    let json_body = &context.json;
-    let Pins { model, ceiling, .. } = pins;
-    debug!(
-        "render::markdown_from_context: context bytes={} prompt bytes={} model={model} max_output_tokens={ceiling}",
-        json_body.len(),
-        prompt.len()
-    );
-    // Monomorphized per transport; no Box<dyn Transport>, per the house generics-for-DI rule.
-    let prose = match resolve_selected_transport(pins.llm, pins.format)? {
-        TransportKind::Api => {
-            summarize::markdown(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, json_body)?
-        }
-        TransportKind::Cli => {
-            summarize::markdown(&summarize::CliTransport::resolve()?, model, ceiling, prompt, json_body)?
-        }
-    };
-    // Render invents nothing: the whole markdown document is prose over the string-only facts, so
-    // every figure in it must be licensed by a QUOTABLE FACT -- a display figure the binary
-    // formatted, or the digits inside an identifier the prose cites verbatim. Not "any numeric token
-    // anywhere in the serialized block", which pre-approved every small integer that happened to
-    // fall inside a session id or a sha (design "Guard weakness (10)").
-    guarded("markdown", "md", &prose, || {
-        reject_foreign_numbers("markdown", &prose, &context.facts)?;
-        // ...and the class the VALUE guard structurally cannot reach: a fabricated unit on a
-        // licensed number ("14 hours of engineering time", where 14 is a real session count
-        // somewhere in the window). Claim-shaped, not value-shaped.
-        claim::reject_fabricated_claims("markdown", &prose, &context.facts)
-    })?;
-    Ok(prose)
-}
-
-/// The html-source counterpart to [`render_via_opus_markdown`]. There is NO offline HTML path, so
-/// the missing-key error deliberately does NOT recommend `--template` (which produces markdown and
-/// is rejected for html-source formats).
-fn render_via_opus_html(context: &RenderContext, prompt: &str, cfg: &RenderConfig) -> Result<String> {
-    html_from_context(
-        context,
-        prompt,
-        Pins {
-            llm: cfg.llm,
-            format: cfg.format,
-            model: &cfg.html_model,
-            ceiling: cfg.html_max_output_tokens,
-        },
-    )
-}
-
-/// The html render over its [`Pins`], the counterpart to [`markdown_from_context`] and the function
-/// the eval's html pass calls, so the geometry allowlist it measures is the one users hit.
-pub(crate) fn html_from_context(context: &RenderContext, prompt: &str, pins: Pins<'_>) -> Result<String> {
-    let json_body = &context.json;
-    let Pins { model, ceiling, .. } = pins;
-    debug!(
-        "render::html_from_context: context bytes={} prompt bytes={} model={model} max_output_tokens={ceiling}",
-        json_body.len(),
-        prompt.len()
-    );
-    let html = match resolve_selected_transport(pins.llm, pins.format)? {
-        TransportKind::Api => {
-            summarize::html(&summarize::ApiTransport::from_env()?, model, ceiling, prompt, json_body)?
-        }
-        TransportKind::Cli => summarize::html(&summarize::CliTransport::resolve()?, model, ceiling, prompt, json_body)?,
-    };
-    // Render invents nothing (html): CSS/JS geometry is legitimate authored markup full of numbers
-    // that are NOT data (px, breakpoints, colors), so the guard runs over the VISIBLE TEXT only
-    // (style/script blocks and tag markup stripped). Every data figure a reader sees must be
-    // licensed by a quotable fact; a fabricated figure is rejected.
-    let visible = visible_text(&html);
-    guarded("html", "html", &html, || {
-        reject_foreign_numbers("html", &visible, &context.facts)?;
-        // The claim-shaped half, over the same visible text: a fabricated unit rides on a licensed
-        // number, so the value guard passes it and only the claim guard sees it.
-        claim::reject_fabricated_claims("html", &visible, &context.facts)?;
-        // ...and the numbers `visible_text` throws away are exactly the ones Phase 11 unlocked. The
-        // prose guard has never seen an ATTRIBUTE, so the chart unlock gets its own allowlist over
-        // the SVG subtree: permitted elements, permitted attributes, and every digit-bearing value
-        // matched verbatim against the geometry the binary computed.
-        geometry::reject_foreign_geometry("html", &html, &context.facts)
-    })?;
-    Ok(html)
 }
 
 /// Read, schema-gate, and parse a collected artifact. ONE path for every reader of one: the primary
@@ -432,299 +395,6 @@ fn check_schema_version(body: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Reject generated prose that stated a figure no quotable fact licenses. This is the RUNTIME half
-/// of the render-invents-nothing guard: the prompt-level "no arithmetic" rule is advisory, so a
-/// poisoned narrative is caught here and never escapes. `kind` names the path (markdown / html) for
-/// the operator-facing error and WARN. Fail closed.
-///
-/// `facts` is the [`QuotableFacts`] set built beside the context block, NOT the serialized block
-/// itself: the block's session ids, timestamps and shas used to pre-approve effectively every
-/// small integer (design "Guard weakness (10)"), which is why a fabricated "14 hours of engineering
-/// time" passed. A false positive here is a hard render failure, so the identifier half of the fact
-/// set exists to keep legitimate citations (an untitled session by `short-id`, a prose PR reference)
-/// passing.
-fn reject_foreign_numbers(kind: &str, prose: &str, facts: &QuotableFacts) -> Result<()> {
-    debug!(
-        "render::reject_foreign_numbers: kind={kind} prose_chars={} quotable_figures={}",
-        prose.chars().count(),
-        facts.figure_count()
-    );
-    let foreign = facts.foreign_figures(prose);
-    if !foreign.is_empty() {
-        // Each token WITH the sentence it appeared in. A bare token list names the number and not
-        // the claim, so the operator has to re-run a paid render just to see where it was written;
-        // the excerpt is what makes "fix this" actionable on the first read. `excerpt_at` quotes the
-        // SPAN this fact's own regex match landed on, never a fresh substring search over the whole
-        // document (which is how `500` used to quote a line carrying the licensed `$1,500.08`).
-        //
-        // `group_by_label` collapses repeats of the SAME token to one cited excerpt: the old
-        // deduped `BTreeSet` cited a repeated fabrication once, and per-occurrence spans must not
-        // regress that to one near-identical line per hit. `cite` caps how many DISTINCT tokens get
-        // a full excerpt, naming whatever it elides rather than dropping it silently.
-        let groups = group_by_label(&foreign, |f| f.token.as_str(), |f| (f.start, f.end), |_| ());
-        let cited = cite(&groups, prose, |g, excerpt| format!("{:?} in {excerpt:?}", g.label));
-        log::warn!(
-            "render::reject_foreign_numbers: {kind} path REJECTED -- generated prose stated \
-             figure(s) no quotable fact licenses: {cited}"
-        );
-        bail!(
-            "{kind} rendering introduced number(s) absent from the computed facts: {cited} -- the \
-             render-invents-nothing contract was violated; refusing to emit the artifact"
-        );
-    }
-    debug!("render::reject_foreign_numbers: kind={kind} clean");
-    Ok(())
-}
-
-/// Distinct labels (a foreign figure's token, a claim guard's matched text) quoted in full in one
-/// rejection message. Grouping by label already collapses repeats of the SAME fabrication to one
-/// excerpt each; this bounds the OTHER axis -- a render that invents many DIFFERENT numbers -- so the
-/// message stays a legible list rather than a wall of text when a single rejection carries dozens of
-/// distinct tokens. A real rejection on the `pathological` fixture (`report.log`, 2026-07-27T09:21:16Z)
-/// carried four distinct tokens in one message; 8 leaves headroom above the widest rejection this
-/// crate has actually logged without inviting unbounded growth. [`cite`] never drops what it elides
-/// silently, so a genuinely wide fabrication still tells the operator how wide.
-const MAX_CITED: usize = 8;
-
-/// One label's occurrences collapsed: the label itself, how many times it recurred, the span of its
-/// FIRST occurrence (what a citation quotes), and whatever else the caller needs per label (a claim's
-/// broken rule; `()` when there is nothing to carry, as the value guard has).
-pub(crate) struct Occurrence<'a, E> {
-    pub(crate) label: &'a str,
-    pub(crate) count: usize,
-    start: usize,
-    end: usize,
-    pub(crate) extra: E,
-}
-
-/// Collapse `items` (in scan order) into one [`Occurrence`] per distinct label, first-seen order,
-/// counting repeats. `label_of` extracts the grouping key, `span_of` the first occurrence's excerpt
-/// span, `extra_of` whatever per-label data the caller's citation format needs.
-///
-/// Shared by [`reject_foreign_numbers`] (over [`crate::quotable::ForeignFigure`]) and
-/// `claim::reject_fabricated_claims` (over `claim::Violation`), which otherwise duplicate the exact
-/// same "many entries but legible" tradeoff over two different violation shapes.
-///
-/// O(items * distinct labels): linear search per item against the groups seen so far, not a hash map.
-/// This crate has never carried a violation list long enough for that to matter, and a hash map would
-/// sacrifice the deterministic, scan-order output every rejection message relies on for "the first
-/// thing the model said" ordering.
-pub(crate) fn group_by_label<'a, T, E>(
-    items: &'a [T],
-    label_of: impl Fn(&'a T) -> &'a str,
-    span_of: impl Fn(&'a T) -> (usize, usize),
-    extra_of: impl Fn(&'a T) -> E,
-) -> Vec<Occurrence<'a, E>> {
-    let mut groups: Vec<Occurrence<'a, E>> = Vec::new();
-    for item in items {
-        let label = label_of(item);
-        if let Some(existing) = groups.iter_mut().find(|g| g.label == label) {
-            existing.count += 1;
-            continue;
-        }
-        let (start, end) = span_of(item);
-        groups.push(Occurrence {
-            label,
-            count: 1,
-            start,
-            end,
-            extra: extra_of(item),
-        });
-    }
-    groups
-}
-
-/// Render `groups` into the semicolon-joined citation list a rejection message quotes: one entry per
-/// label, up to [`MAX_CITED`], each formatted by the caller's `line` closure over the label's excerpt
-/// and `extra`. A label that recurred gets an "(and N more occurrences)" tail; when [`MAX_CITED`]
-/// elides whole labels, a trailing "and N more citations not shown" says so. Never a silent cap: what
-/// is elided is always named, the same principle `excerpt_at` exists to serve for the span itself.
-pub(crate) fn cite<E>(
-    groups: &[Occurrence<'_, E>],
-    prose: &str,
-    mut line: impl FnMut(&Occurrence<'_, E>, &str) -> String,
-) -> String {
-    let shown = groups.len().min(MAX_CITED);
-    let mut cited: Vec<String> = groups[..shown]
-        .iter()
-        .map(|g| {
-            let excerpt = excerpt_at(prose, g.start, g.end);
-            let mut entry = line(g, &excerpt);
-            if g.count > 1 {
-                let more = g.count - 1;
-                entry.push_str(&format!(
-                    " (and {more} more occurrence{})",
-                    if more == 1 { "" } else { "s" }
-                ));
-            }
-            entry
-        })
-        .collect();
-    if groups.len() > shown {
-        let elided = groups.len() - shown;
-        cited.push(format!(
-            "and {elided} more citation{} not shown",
-            if elided == 1 { "" } else { "s" }
-        ));
-    }
-    cited.join("; ")
-}
-
-/// Chars of prose kept on each side of a rejected figure, so the excerpt reads as a claim rather
-/// than a fragment.
-const EXCERPT_RADIUS: usize = 60;
-
-/// The prose around the BYTE span `start..end`, whitespace-collapsed so a wrapped markdown
-/// paragraph reads as one line in the error. `start`/`end` arrive from a regex match on `prose`
-/// (both quotable-facts and the claim guard hand back the span their own scan found), so they are
-/// BYTE offsets on a valid char boundary; the radius is then applied in CHARS, never bytes, per the
-/// crate's no-string-slice lint.
-///
-/// This replaces a prior `excerpt(prose, needle)` that re-searched the WHOLE document for `needle`'s
-/// first `starts_with` match, with no word-boundary check and no connection to the span the guard
-/// actually rejected -- which is how `500` quoted a line carrying the licensed `$1,500.08`, and `100`
-/// quoted an unrelated model id. Taking the span directly removes the re-search, and with it the bug
-/// class: there is no longer a second, independent place in the prose the excerpt could land on.
-///
-/// `pub(crate)` for the claim guard, whose rejection is the same kind of hard render failure and so
-/// owes the operator the same "here is the sentence" excerpt.
-pub(crate) fn excerpt_at(prose: &str, start: usize, end: usize) -> String {
-    // Map the BYTE span onto CHAR positions in one `char_indices` pass -- never a byte slice on
-    // `prose` itself, including for the matched span, so a multibyte character anywhere before the
-    // match can never misalign the window (the exact bug `eval/mechanical.rs`'s `em_dash` comment
-    // documents: `char_indices` yields byte offsets, and treating them as char offsets slides the
-    // window forward on any non-ASCII text ahead of the match).
-    let mut chars: Vec<char> = Vec::new();
-    let mut start_char = None;
-    let mut end_char = None;
-    for (byte_at, ch) in prose.char_indices() {
-        if byte_at == start {
-            start_char = Some(chars.len());
-        }
-        if byte_at == end {
-            end_char = Some(chars.len());
-        }
-        chars.push(ch);
-    }
-    // `end` lands past the last char when the match runs to the end of `prose`.
-    let start_char = start_char.unwrap_or(chars.len());
-    let end_char = end_char.unwrap_or(chars.len());
-
-    let window_start = start_char.saturating_sub(EXCERPT_RADIUS);
-    let window_end = (end_char + EXCERPT_RADIUS).min(chars.len());
-    chars[window_start..window_end]
-        .iter()
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// The reader-visible text of an HTML document: `<style>`/`<script>` block CONTENTS and all tag
-/// markup (attributes included) removed, leaving only text nodes. The foreign-number guard runs
-/// over THIS, not the raw HTML, because CSS/JS are legitimately full of authored numbers (px,
-/// breakpoints, hex colors, bar-width percentages in `style=`) that are geometry, not data. A
-/// fabricated DATA figure always surfaces in visible text (a headline, a label, a table cell); the
-/// pre-formatted display strings the model may quote also live there. Byte-slice-free (char-based)
-/// per the crate lint.
-///
-/// `pub(crate)` for the eval's mechanical layer, which must scan an HTML artifact exactly the way
-/// this path does or it would grade a different document than the guard checked.
-pub(crate) fn visible_text(html: &str) -> String {
-    let stripped = strip_blocks(&strip_blocks(html, "script"), "style");
-    let mut out = String::with_capacity(stripped.len());
-    let mut in_tag = false;
-    for ch in stripped.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
-                out.push(' ');
-            }
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Remove every `<tag>...</tag>` block (contents included), case-insensitively, for a single tag
-/// name (`style` / `script`). A missing closing tag drops the rest of the document from that opener
-/// (fail closed: unmatched markup never leaks unchecked into the visible-text scan). Char-based, no
-/// byte slicing.
-///
-/// `pub(crate)` for the geometry allowlist, which strips the same two blocks for the same reason
-/// before scanning tags: their numbers are authored CSS/JS, not data.
-pub(crate) fn strip_blocks(html: &str, tag: &str) -> String {
-    let lower = html.to_ascii_lowercase();
-    let open = format!("<{tag}");
-    let close = format!("</{tag}>");
-    let chars: Vec<char> = html.chars().collect();
-    let lower_chars: Vec<char> = lower.chars().collect();
-    let open_pat: Vec<char> = open.chars().collect();
-    let close_pat: Vec<char> = close.chars().collect();
-    let mut out = String::with_capacity(html.len());
-    let mut i = 0usize;
-    while i < chars.len() {
-        if matches_at(&lower_chars, i, &open_pat) {
-            match find_from(&lower_chars, i + open_pat.len(), &close_pat) {
-                Some(end) => i = end + close_pat.len(),
-                None => break, // no closing tag: drop the remainder
-            }
-        } else {
-            out.push(chars[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
-/// True when `pat` occurs in `hay` starting exactly at index `i`.
-fn matches_at(hay: &[char], i: usize, pat: &[char]) -> bool {
-    i + pat.len() <= hay.len() && hay[i..i + pat.len()] == *pat
-}
-
-/// The index in `hay` at or after `start` where `pat` begins, if any.
-fn find_from(hay: &[char], start: usize, pat: &[char]) -> Option<usize> {
-    if pat.is_empty() || start > hay.len() {
-        return None;
-    }
-    (start..=hay.len().saturating_sub(pat.len())).find(|&i| hay[i..i + pat.len()] == *pat)
-}
-
-pub(crate) fn resolve_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> Result<String> {
-    if let Some(path) = explicit {
-        return fs::read_to_string(path)
-            .with_context(|| format!("failed to read prompt template at {}", path.display()));
-    }
-    let workspace_pmt = workspace_dir.join(WORKSPACE_PROMPT_PATH);
-    if workspace_pmt.exists() {
-        return fs::read_to_string(&workspace_pmt)
-            .with_context(|| format!("failed to read workspace prompt at {}", workspace_pmt.display()));
-    }
-    Ok(DEFAULT_PROMPT.to_string())
-}
-
-/// Resolve the html-source prompt with the identical 3-tier precedence as [`resolve_prompt`]:
-/// `--prompt` path > workspace `templates/report-html.pmt` > baked-in [`DEFAULT_HTML_PROMPT`].
-/// `--prompt` is one flag dispatched by the resolved format's source family.
-pub(crate) fn resolve_html_prompt(explicit: Option<&Path>, workspace_dir: &Path) -> Result<String> {
-    if let Some(path) = explicit {
-        return fs::read_to_string(path)
-            .with_context(|| format!("failed to read prompt template at {}", path.display()));
-    }
-    let workspace_pmt = workspace_dir.join(WORKSPACE_HTML_PROMPT_PATH);
-    if workspace_pmt.exists() {
-        return fs::read_to_string(&workspace_pmt)
-            .with_context(|| format!("failed to read workspace prompt at {}", workspace_pmt.display()));
-    }
-    Ok(DEFAULT_HTML_PROMPT.to_string())
-}
-
-/// Slim render context sent to Opus: `{persona, options, period, totals, aggregates, outcomes,
-/// sessions}`. Deliberately NOT the whole [`Report`] (that leaked `jsonl-paths`, 44.8% of context
-/// bytes with zero model signal, plus full per-model token detail per session). `Report` itself
-/// is unchanged; these are render-only view structs (design "API Design" section).
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct ContextBlock<'a> {
@@ -1027,9 +697,11 @@ struct SessionView<'a> {
     outcomes: Option<&'a crate::outcome::Outcomes>,
 }
 
-/// Build the model's context block AND the quotable-facts sets that bound what the artifact may say
-/// about it. The two are returned together ([`RenderContext`]) so the guard can never be run against
-/// a different block than the one the model was handed.
+/// Serialize the view block for the EVAL, which is its only consumer left.
+///
+/// It reads the block to know what the artifact was built FROM: the judge's brief and the mechanical
+/// citation checks both need the ground truth. Nothing is handed to a model wholesale any more --
+/// a slot receives a curated brief, never this.
 pub(crate) fn build_context_block(
     report: &Report,
     include_tradeoffs: bool,
@@ -1052,44 +724,16 @@ pub(crate) fn build_context_block(
     );
     let default_persona = PersonaBlock::default();
     let aggregates = aggregate::compute(report, outliers_n, pricing);
-    let period = build_period_view(report, &aggregates);
-    let prior = build_prior_view(prior_path, period.days, pricing)?;
-    // Who the reconciliation is scoped to: `--reconcile-user` when the operator named one,
-    // otherwise the SAME identity the report's persona block already resolved
-    // (`persona whoami`'s work email) -- one mechanism for "who is this report about", never two
-    // that can disagree.
-    let operator = reconcile_user.or_else(|| persona.and_then(|p| p.email.as_deref()));
-    let (reconciliation, reconciliation_status) = build_reconciliation_view(reconcile_path, operator, report)?;
-    let block = ContextBlock {
-        persona: persona.unwrap_or(&default_persona),
-        options: ContextOptions { include_tradeoffs },
-        basis: build_basis(pricing),
-        notes: build_notes(report),
-        period,
-        totals: build_totals_view(report),
-        attribution: aggregate::compute_attribution(report),
-        enrichment_coverage: build_enrichment_coverage(report),
-        reconciliation,
-        reconciliation_status,
-        unit_costs: aggregate::compute_unit_costs(report, &aggregates.by_day),
-        aggregates: &aggregates,
-        efficiency: build_efficiency_view(report),
-        outcomes: build_outcomes_view(report),
-        sessions: report
-            .sessions
-            .iter()
-            .map(|(sid, entry)| build_session_view(sid, entry))
-            .collect(),
-        prior,
+    let opts = ViewOpts {
+        include_tradeoffs,
+        prior: prior_path,
+        reconcile: reconcile_path,
+        reconcile_user,
     };
+    let block = document::build_views(report, &aggregates, persona.unwrap_or(&default_persona), pricing, opts)?;
     let json = serde_json::to_string(&block).context("failed to serialize context block to JSON")?;
-    let facts = QuotableFacts::from_context_json(&json)?;
-    debug!(
-        "render::build_context_block: context_bytes={} quotable_figures={}",
-        json.len(),
-        facts.figure_count()
-    );
-    Ok(RenderContext { json, facts })
+    debug!("render::build_context_block: context_bytes={}", json.len());
+    Ok(RenderContext { json })
 }
 
 /// The artifact's production notes, borrowed as-is: [`Report::notes`] is already a list of
@@ -1225,99 +869,6 @@ fn outcome_totals_view(totals: &OutcomeTotals) -> OutcomeTotalsView {
     }
 }
 
-/// The prior period's aggregates (design Phase 8, `--prior`): lights up the Month over Month
-/// section both templates already document but had no backing field for. Aggregated through the
-/// SAME [`aggregate::compute`] as the current period, from a schema-gated report file, so the two
-/// sides of the comparison are computed identically rather than by two code paths that could
-/// drift. Absent entirely (never emitted with empty/zeroed fields) when `--prior` was not supplied.
-#[derive(Serialize)]
-#[serde(rename_all = "kebab-case")]
-struct PriorView {
-    since: String,
-    until: String,
-    days: i64,
-    /// `false` when `days` differs from the current period's `period.days`, so the prompt states
-    /// the length mismatch rather than comparing e.g. a 30-day window against a 14-day one as if
-    /// they covered equal ground.
-    comparable: bool,
-    /// Present only when this prior artifact predates repo-source provenance and the outcome
-    /// counters added by this design (see [`predates_fidelity_fields`]). When present, `outcomes`
-    /// below is deliberately omitted: a `0` from a build that never measured the field is not the
-    /// same fact as an observed zero, and both templates must quote this sentence instead of citing
-    /// `outcomes` as if it were a real measurement.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    predates_fields: Option<String>,
-    totals: TotalsView,
-    by_repo: Vec<RepoRow>,
-    by_org: Vec<OrgRow>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    outcomes: Option<OutcomeTotalsView>,
-}
-
-/// Verbatim caveat both templates quote in place of `prior.outcomes` when [`predates_fidelity_fields`]
-/// fires. Stated once here so the two templates and any future caller never restate it differently.
-const PRIOR_PREDATES_NOTE: &str = "the prior period was collected before this clyde build tracked \
-     repo-source provenance and several outcome counters (lines written, lines replaced); its \
-     per-session outcome figures are not comparable and are omitted here.";
-
-/// `true` when `report` predates repo-source provenance (design Phase 1-3 of this doc): at least
-/// one session carries a `repo` but none carries a `repo_source`. Phase 3 is the first phase that
-/// persists `repo_source` alongside `repo`, so this is a reliable signal already present in the
-/// artifact that `report` was collected before every fidelity fix in this design landed --
-/// including the Phase 7 `lines-written`/`lines-replaced` counters, which default to `0` under
-/// `#[serde(default)]` and would otherwise read as a real zero measurement rather than "not
-/// measured yet" for a session this old.
-fn predates_fidelity_fields(report: &Report) -> bool {
-    let has_repo = report.sessions.values().any(|s| s.repo.is_some());
-    let has_repo_source = report.sessions.values().any(|s| s.repo_source.is_some());
-    has_repo && !has_repo_source
-}
-
-/// Load, schema-gate, and aggregate a `--prior <report.json>` file into a [`PriorView`]. `None`
-/// when `--prior` was not supplied. `current_days` is the CURRENT period's already-computed
-/// `period.days`, used only to set [`PriorView::comparable`].
-fn build_prior_view(prior_path: Option<&Path>, current_days: i64, pricing: &Pricing) -> Result<Option<PriorView>> {
-    let Some(path) = prior_path else {
-        debug!("render::build_prior_view: no --prior supplied");
-        return Ok(None);
-    };
-    debug!("render::build_prior_view: path={}", path.display());
-    let report = load_report(path, "--prior report")?;
-
-    let days = (report.until.date_naive() - report.since.date_naive()).num_days() + 1;
-    let comparable = days == current_days;
-    let predates_fields = predates_fidelity_fields(&report).then(|| PRIOR_PREDATES_NOTE.to_string());
-    // Aggregated through the SAME `aggregate::compute` as the current period (design Phase 8), so
-    // both sides of the comparison are computed identically rather than by two drifting code paths.
-    // `outliers_n` is 0: the prior period's outlier table is not part of this design's scope.
-    let aggregates = aggregate::compute(&report, 0, pricing);
-    let outcomes = if predates_fields.is_none() {
-        report.totals.outcomes.as_ref().map(outcome_totals_view)
-    } else {
-        None
-    };
-    debug!(
-        "render::build_prior_view: sessions={} days={} comparable={} predates-fields={} by-repo={} by-org={}",
-        report.sessions.len(),
-        days,
-        comparable,
-        predates_fields.is_some(),
-        aggregates.by_repo.len(),
-        aggregates.by_org.len()
-    );
-    Ok(Some(PriorView {
-        since: report.since.format("%Y-%m-%d").to_string(),
-        until: report.until.format("%Y-%m-%d").to_string(),
-        days,
-        comparable,
-        predates_fields,
-        totals: build_totals_view(&report),
-        by_repo: aggregates.by_repo,
-        by_org: aggregates.by_org,
-        outcomes,
-    }))
-}
-
 fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a> {
     SessionView {
         short_id: short_id(sid).to_string(),
@@ -1375,32 +926,20 @@ fn marquee_title(report: &Report) -> String {
 
 /// Write the rendered markdown as `index.md` in a temp dir and publish it to marquee, letting the
 /// marquee server apply its house style. Returns the published URL.
-fn publish_marquee_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+fn publish_marquee_markdown(artifact: &Artifact, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
     debug!("render::publish_marquee_markdown: space={:?}", cfg.space);
     let dir = tempfile::tempdir().context("failed to create temp dir for marquee publish")?;
     let index = dir.path().join("index.md");
-    fs::write(&index, markdown).with_context(|| format!("failed to write {}", index.display()))?;
+    fs::write(&index, &artifact.markdown).with_context(|| format!("failed to write {}", index.display()))?;
+    // The chart SVGs ride the SAME bundle as `index.md`, so marquee picks them up as post assets
+    // and `![](chart-N.svg)` has something to resolve to.
+    write_assets(artifact, dir.path())?;
     let url = marquee_publish(dir.path(), report, cfg)?;
     Ok(OutputDest::Marquee(url))
 }
 
-/// Write the model-authored, validated HTML document as `index.html` in a temp dir and publish it
-/// to marquee (which hosts our HTML as-is under its Okta-gated HTML lane). Pandoc is NOT involved:
-/// the artifact arrives already complete and self-contained from `summarize::html`. Returns the URL.
-fn publish_marquee_html(html: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
-    debug!(
-        "render::publish_marquee_html: space={:?} bytes={}",
-        cfg.space,
-        html.len()
-    );
-    let dir = tempfile::tempdir().context("failed to create temp dir for marquee publish")?;
-    let index = dir.path().join("index.html");
-    fs::write(&index, html).with_context(|| format!("failed to write {}", index.display()))?;
-    let url = marquee_publish(dir.path(), report, cfg)?;
-    Ok(OutputDest::Marquee(url))
-}
-
-/// Publish a prepared directory (containing `index.md` or `index.html`) to marquee, ensuring an
+/// Publish a prepared directory (containing `index.md` and any sibling assets) to marquee,
+/// ensuring an
 /// authenticated session first. Returns the published URL parsed from marquee's stdout.
 fn marquee_publish(dir: &Path, report: &Report, cfg: &RenderConfig) -> Result<String> {
     debug!("render::marquee_publish: dir={} space={:?}", dir.display(), cfg.space);
@@ -1489,7 +1028,7 @@ fn marquee_whoami() -> Result<Output> {
 fn marquee_spawn_err(e: std::io::Error) -> eyre::Report {
     if e.kind() == std::io::ErrorKind::NotFound {
         eyre::eyre!(
-            "the `marquee` CLI is required for --format marquee-html / marquee-markdown but was not found on PATH; install it and try again"
+            "the `marquee` CLI is required for --format marquee-markdown but was not found on PATH; install it and try again"
         )
     } else {
         eyre::eyre!("failed to invoke marquee: {}", e)

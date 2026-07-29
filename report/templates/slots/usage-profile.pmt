@@ -1,0 +1,10 @@
+Write the `usage-profile` slot.
+
+Intent: two to four sentences on the shape of the window -- how the activity distributed across the
+calendar, how much of the window was active, and what that says about how the work ran. The
+by-day charts and the outlier-session table follow you in the document, so introduce the shape
+rather than reading the series out.
+
+State facts about distribution. No trend verdicts ("usage is improving"), no predictions about
+what happens after the window, and nothing about a reporting cadence: whether this report recurs is
+not something you know.

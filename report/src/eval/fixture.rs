@@ -36,9 +36,6 @@ const SPEC_FILE: &str = "eval.yml";
 const PRIOR_FILE: &str = "prior.json";
 const ANALYTICS_FILE: &str = "analytics.json";
 const GOLDEN_MARKDOWN: &str = "golden.md";
-const GOLDEN_HTML: &str = "golden.html";
-const REJECTED_MARKDOWN: &str = "rejected.md";
-const REJECTED_HTML: &str = "rejected.html";
 
 /// A citation shape a fixture's golden must actually exercise. These are the two false positives a
 /// narrowed quotable-facts whitelist causes first (design Phase 10's success criterion 3), so at
@@ -158,10 +155,8 @@ pub struct Fixture {
     pub report: PathBuf,
     pub prior: Option<PathBuf>,
     pub analytics: Option<PathBuf>,
-    /// The committed markdown golden, when the directory carries one.
+    /// The committed golden, when the directory carries one.
     pub golden_markdown: Option<String>,
-    /// The committed html golden, when the directory carries one.
-    pub golden_html: Option<String>,
 }
 
 impl Fixture {
@@ -197,36 +192,25 @@ impl Fixture {
             prior: optional(dir, PRIOR_FILE),
             analytics: optional(dir, ANALYTICS_FILE),
             golden_markdown: read_optional(dir, GOLDEN_MARKDOWN)?,
-            golden_html: read_optional(dir, GOLDEN_HTML)?,
         };
         debug!(
-            "fixture::load: name={} prior={} analytics={} golden-md={} golden-html={}",
+            "fixture::load: name={} prior={} analytics={} golden={}",
             fixture.name,
             fixture.prior.is_some(),
             fixture.analytics.is_some(),
-            fixture.golden_markdown.is_some(),
-            fixture.golden_html.is_some()
+            fixture.golden_markdown.is_some()
         );
         Ok(fixture)
     }
 
-    /// Where a golden is written by `report eval --write-goldens`. The goldens are model-authored,
-    /// so this is the ONLY way to regenerate one against the fixture's own persona and the eval's
-    /// pinned pricing -- a hand-run `report render` would splice in the operator's real identity
-    /// and price against the live feed.
-    pub fn golden_path(&self, html: bool) -> PathBuf {
-        self.dir.join(if html { GOLDEN_HTML } else { GOLDEN_MARKDOWN })
-    }
-
-    /// Where a render that FAILED its mechanical checks is parked under `--write-goldens`.
+    /// Where the golden is written by `report eval --write-goldens`.
     ///
-    /// A golden is a known-good artifact, so a failing render must never become one -- but it was a
-    /// paid model call, and discarding it left the operator with a finding like "6 x-axis labels
-    /// against 7 points" and no artifact to look at. Diagnosing then costs another render of the
-    /// same fixture. Parking it beside the golden makes the next step a `diff` instead of a
-    /// purchase. Gitignored: it is scratch evidence, never committed.
-    pub fn rejected_path(&self, html: bool) -> PathBuf {
-        self.dir.join(if html { REJECTED_HTML } else { REJECTED_MARKDOWN })
+    /// This is the ONLY way to regenerate one against the fixture's own persona and the eval's
+    /// pinned pricing -- a hand-run `report render` would splice in the operator's real identity and
+    /// price against the live feed. The written artifact is a STUBBED render (no slot prose), which
+    /// is what makes a golden byte-stable and its comparison free.
+    pub fn golden_path(&self) -> PathBuf {
+        self.dir.join(GOLDEN_MARKDOWN)
     }
 }
 

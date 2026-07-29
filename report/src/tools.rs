@@ -19,7 +19,7 @@ pub fn tool_validation_help() -> String {
         },
         Tool {
             name: "marquee",
-            purpose: "report render --format marquee-html / marquee-markdown",
+            purpose: "report render --format marquee-markdown",
         },
         Tool {
             name: "git",

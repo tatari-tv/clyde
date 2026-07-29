@@ -3,30 +3,21 @@ use clap::{Args, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// Output format for `report render`, selected via `--format` (case-insensitive, kebab-case).
-/// `markdown`, `pdf`, and `html` write locally (see `-o`); the two `marquee-*` variants publish
-/// to marquee and print the resulting URL instead of writing a file.
+/// `markdown` and `pdf` write locally (see `-o`); `marquee-markdown` publishes
+/// to marquee and prints the resulting URL instead of writing a file.
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[clap(rename_all = "kebab-case")]
 pub enum Format {
     #[default]
     Markdown,
     Pdf,
-    Html,
-    MarqueeHtml,
     MarqueeMarkdown,
 }
 
 impl Format {
-    /// The two publishing variants, whose output is a marquee URL rather than a local path.
+    /// The publishing variant, whose output is a marquee URL rather than a local path.
     pub fn is_marquee(self) -> bool {
-        matches!(self, Format::MarqueeHtml | Format::MarqueeMarkdown)
-    }
-
-    /// The two model-authored-HTML variants, which share the html-source render pipeline (context
-    /// block -> `report-html.pmt` -> opus -> a complete HTML document; no pandoc) rather than the
-    /// markdown-source pipeline every other format uses.
-    pub fn is_html_source(self) -> bool {
-        matches!(self, Format::Html | Format::MarqueeHtml)
+        matches!(self, Format::MarqueeMarkdown)
     }
 }
 
@@ -63,8 +54,6 @@ impl From<common::config::FormatConfig> for Format {
         match value {
             common::config::FormatConfig::Markdown => Format::Markdown,
             common::config::FormatConfig::Pdf => Format::Pdf,
-            common::config::FormatConfig::Html => Format::Html,
-            common::config::FormatConfig::MarqueeHtml => Format::MarqueeHtml,
             common::config::FormatConfig::MarqueeMarkdown => Format::MarqueeMarkdown,
         }
     }
@@ -90,13 +79,12 @@ pub enum Command {
     /// Fails (writing nothing) if any session in the window has not been indexed — run
     /// `clyde session reindex` first.
     Collect(CollectArgs),
-    /// Render a collected JSON report into Markdown, PDF, HTML, or a published marquee post
+    /// Render a collected JSON report into Markdown, PDF, or a published marquee post
     /// (`--format`).
     ///
     /// Reads the JSON produced by `collect` (default: `./claude-report.json`) and writes a
     /// human-readable Markdown summary. `--format pdf` converts it with the configured
-    /// `--pdf-engine`; `--format html` writes a self-contained HTML file locally; `--format
-    /// marquee-markdown` / `marquee-html` publish it to marquee and print the resulting URL.
+    /// `--pdf-engine`; `--format marquee-markdown` publishes it to marquee and prints the URL.
     Render(RenderArgs),
     /// Merge two or more collected JSON reports into one.
     ///
@@ -167,21 +155,23 @@ pub struct RenderArgs {
     #[arg(short, long)]
     pub input: Option<PathBuf>,
 
-    /// Write rendered Markdown, PDF, or HTML to this path. When omitted, the output defaults to
-    /// `./<YYYY-MM>-claude-report.{md,pdf,html}` in the current directory (month derived from the
-    /// report's `since`). Not valid with the `marquee-*` formats, whose output is a published URL.
+    /// Write the rendered Markdown or PDF to this path. When omitted, the output defaults to
+    /// `./<YYYY-MM>-claude-report.{md,pdf}` in the current directory (month derived from the
+    /// report's `since`). Not valid with `marquee-markdown`, whose output is a published URL.
+    ///
+    /// `-o -` streams the markdown to stdout. Charts render as markdown tables there rather than as
+    /// sibling `chart-N.svg` files, because stdout has no directory to put a sibling file in.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Output format: `markdown`, `pdf`, `html`, `marquee-markdown`, or `marquee-html`. When
-    /// omitted, falls back to the `render.format` value in `clyde.yml`, and to `markdown` if that
-    /// too is unset. `markdown`/`pdf`/`html` write locally (see `-o`); the `marquee-*` variants
-    /// publish to marquee and print the URL. `pdf` requires `pandoc`; the `marquee-*` variants
-    /// require the `marquee` CLI with an authenticated session. `html`/`marquee-html` are
-    /// model-authored (no pandoc involved), so they need an LLM transport but NOT an API key: by
-    /// default they use the locally installed `claude` CLI and the Claude Code login you already
-    /// have (see `--llm`). There is no offline path for them, and `--template` is not valid with
-    /// `html`/`marquee-html` (the offline template produces markdown).
+    /// Output format: `markdown`, `pdf`, or `marquee-markdown`. When omitted, falls back to the
+    /// `render.format` value in `clyde.yml`, and to `markdown` if that too is unset.
+    /// `markdown`/`pdf` write locally (see `-o`); `marquee-markdown` publishes to marquee and
+    /// prints the URL. `pdf` requires `pandoc`; `marquee-markdown` requires the `marquee` CLI with
+    /// an authenticated session.
+    ///
+    /// clyde emits no HTML. The artifact is markdown plus sibling SVG chart assets, and marquee owns
+    /// turning that into a page.
     #[arg(long, value_enum, ignore_case = true)]
     pub format: Option<Format>,
 
@@ -197,23 +187,10 @@ pub struct RenderArgs {
     #[arg(long, value_enum, ignore_case = true)]
     pub llm: Option<Llm>,
 
-    /// Target marquee space for the `marquee-*` formats (defaults to your personal ~space).
+    /// Target marquee space for `marquee-markdown` (defaults to your personal ~space).
     /// Ignored by `markdown`/`pdf`.
     #[arg(long)]
     pub space: Option<String>,
-
-    /// Path to a template that overrides the built-in Markdown template. Rendering is
-    /// plain `{{token}}` string replacement over exactly six placeholders: `{{host}}`,
-    /// `{{since}}`, `{{until}}`, `{{session-count}}`, `{{total-tokens}}`,
-    /// `{{total-spend}}`. No other tokens, loops, or conditionals are supported.
-    #[arg(long)]
-    pub template: Option<PathBuf>,
-
-    /// Path to a file overriding the built-in LLM prompt. Dispatched by the resolved format's
-    /// source family: `markdown`/`pdf`/`marquee-markdown` get the markdown report prompt;
-    /// `html`/`marquee-html` get the HTML dashboard prompt.
-    #[arg(long)]
-    pub prompt: Option<PathBuf>,
 
     /// Include the "Tradeoffs" section in each session summary (omitted by default to
     /// keep reports concise).
@@ -267,7 +244,7 @@ pub struct EvalArgs {
     #[arg(long, num_args = 1..)]
     pub fixture: Option<Vec<PathBuf>>,
 
-    /// Model pin for the judge. When omitted, falls back to `render.markdown-model` in `clyde.yml`,
+    /// Model pin for the judge. When omitted, falls back to `render.model` in `clyde.yml`,
     /// so the eval needs no config key of its own.
     #[arg(long)]
     pub judge: Option<String>,
@@ -276,7 +253,7 @@ pub struct EvalArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Overwrite each fixture's committed `golden.md` / `golden.html` with this run's fresh render.
+    /// Overwrite each fixture's committed `golden.md` with a fresh deterministic render.
     /// The goldens are model-authored, so this is how they are regenerated; a hand-run `report
     /// render` would splice in the machine's real persona and price against the live feed instead
     /// of the fixture's invented persona and the eval's pinned embedded pricing. A render that

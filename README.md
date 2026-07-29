@@ -125,21 +125,29 @@ The `render:` defaults for `report render` (all optional; a missing section is a
 ```yaml
 # ~/.config/clyde/clyde.yml
 render:
-  format: markdown                 # default --format when the flag is omitted
-  llm: auto                        # auto | api | cli — which transport makes the model calls
-  markdown-model: claude-opus-4-8  # model pin for the Markdown narrative
-  html-model: claude-opus-4-8      # model pin for the HTML dashboard
-  markdown-max-output-tokens: 32000  # output ceiling for the Markdown narrative
-  html-max-output-tokens: 64000      # output ceiling for the HTML dashboard
+  format: markdown                   # default --format when the flag is omitted
+  llm: auto                          # auto | api | cli -- which transport makes the model calls
+  model: claude-opus-4-8             # model pin for the prose slots and the eval judge
+  slot-max-output-tokens: 1500       # output ceiling for ONE prose slot
+  judge-max-output-tokens: 32000     # output ceiling for the eval judge
 ```
 
-The two ceilings bound how much output a render may produce. Raise one if a large month is refused for
-exceeding its budget; the error names the key. `0` is rejected at load.
+Each ceiling bounds how much output its job may produce. Raise one if a job is refused for exceeding
+its budget; the error names the key that governs it. `0` is rejected at load.
 
-`report render`'s model-authored formats need **no API key** by default: `llm: auto` prefers the
-locally installed `claude` CLI and uses the Claude Code login you already have. Set `llm: api` (or
-pass `--llm api`) to use `ANTHROPIC_API_KEY` instead — which is also what any automated caller
-should pin, since `auto` selects the CLI on presence alone and will not silently fall back.
+The slot ceiling is small on purpose. **Rust writes the entire report** -- every table, every figure,
+every chart -- and the model only fills a handful of short prose sections, referencing figures as
+placeholders the binary substitutes. A slot is a few sentences, so a model that starts writing a whole
+document hits this ceiling instead of billing for one.
+
+`report render`'s prose needs **no API key** by default: `llm: auto` prefers the locally installed
+`claude` CLI and uses the Claude Code login you already have. Set `llm: api` (or pass `--llm api`) to
+use `ANTHROPIC_API_KEY` instead -- which is also what any automated caller should pin, since `auto`
+selects the CLI on presence alone and will not silently fall back.
+
+A render **cannot fail because of the prose**. With no transport at all, or with every slot
+misbehaving, the prose sections come out empty, a WARN says so, and the full data report is still
+written. That is also the offline story: the deterministic half needs no model.
 See [`report/README.md`](report/README.md) for the full transport rules, the rollback line, and the
 per-render cost difference.
 

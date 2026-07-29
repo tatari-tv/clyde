@@ -19,6 +19,7 @@ clap = { workspace = true, features = ["derive"] }
 claude-pricing = { path = "../pricing", features = ["fetch"] }
 colored = { workspace = true }
 common = { path = "../common" }
+comrak = { version = "0.54.0", default-features = false }
 dirs = { workspace = true }
 efficiency = { path = "../efficiency" }
 env_logger = { workspace = true }

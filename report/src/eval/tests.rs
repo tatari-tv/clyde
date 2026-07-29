@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::eval::fixture::{Citation, Dimension};
-use crate::eval::mechanical::{self, Ground, Kind};
+use crate::eval::mechanical::{self, Ground};
 use std::collections::BTreeSet;
 
 /// The workspace root, resolved from the crate rather than from the process CWD (which is the crate
@@ -32,37 +32,24 @@ fn loaded(fixture: &Fixture) -> (Report, RenderContext, Ground) {
     (report, context, ground)
 }
 
-/// **Design Phase 13, success criterion 1:** the mechanical layer runs on all three goldens, both
-/// formats, offline and green.
+/// **Design Phase 13, success criterion 1:** the mechanical layer runs on all three goldens,
+/// offline and green.
 ///
-/// Accumulates across EVERY fixture and format before asserting, rather than panicking on the first
-/// failure: a stale golden usually has siblings, and regenerating them one `otto ci` run at a time
-/// costs a paid render per cycle to learn what one run could have said outright.
+/// Accumulates across EVERY fixture before asserting, rather than panicking on the first failure: a
+/// stale golden usually has siblings, and regenerating them one `otto ci` run at a time costs a
+/// render per cycle to learn what one run could have said outright.
 #[test]
 fn every_committed_golden_passes_the_mechanical_layer() {
     let mut failures: Vec<String> = Vec::new();
     for fixture in fixtures() {
         let (_, context, ground) = loaded(&fixture);
-        for (kind, artifact) in [
-            (
-                Kind::Markdown,
-                fixture
-                    .golden_markdown
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("fixture {} must commit a markdown golden", fixture.name)),
-            ),
-            (
-                Kind::Html,
-                fixture
-                    .golden_html
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("fixture {} must commit an html golden", fixture.name)),
-            ),
-        ] {
-            let findings = mechanical::check(kind, artifact, &context, &ground, &fixture.spec);
-            if !findings.is_empty() {
-                failures.push(format!("{} {} golden: {findings:#?}", fixture.name, kind.as_str()));
-            }
+        let artifact = fixture
+            .golden_markdown
+            .as_ref()
+            .unwrap_or_else(|| panic!("fixture {} must commit a golden", fixture.name));
+        let findings = mechanical::check(artifact, &context, &ground, &fixture.spec);
+        if !findings.is_empty() {
+            failures.push(format!("{} golden: {findings:#?}", fixture.name));
         }
     }
     assert!(
@@ -71,6 +58,92 @@ fn every_committed_golden_passes_the_mechanical_layer() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// The strongest regression net this feature has: a STUBBED render of each fixture must equal its
+/// committed `golden.md` BYTE FOR BYTE.
+///
+/// This is what the inversion bought. The artifact is Rust-authored, so it is reproducible, so a
+/// golden is a real fixture rather than a sample of one stochastic render -- and this check runs
+/// offline, for free, in `otto ci`. Any change to the document layer that moves a byte shows up
+/// here as a diff instead of as a paid render three weeks later.
+///
+/// Regenerate with `cargo run -p clyde -- report eval --write-goldens` (which needs no transport for
+/// the golden itself), then read the diff before committing it.
+#[test]
+fn a_stubbed_render_reproduces_every_committed_golden_byte_for_byte() {
+    let pricing = Pricing::embedded();
+    let mut stale: Vec<String> = Vec::new();
+    for fixture in fixtures() {
+        let report = render::load_report(&fixture.report, "fixture report").unwrap();
+        let rendered = render::for_eval(
+            &report,
+            &pricing,
+            fixture.spec.persona.as_ref(),
+            eval_opts(&fixture),
+            DEFAULT_OUTLIERS,
+            render::SlotSource::Stubbed,
+        )
+        .unwrap();
+        let golden = fixture
+            .golden_markdown
+            .as_ref()
+            .unwrap_or_else(|| panic!("fixture {} must commit a golden", fixture.name));
+        if &rendered.markdown != golden {
+            stale.push(format!(
+                "{}: rendered {} bytes, golden {} bytes; first difference at byte {}",
+                fixture.name,
+                rendered.markdown.len(),
+                golden.len(),
+                rendered
+                    .markdown
+                    .bytes()
+                    .zip(golden.bytes())
+                    .position(|(a, b)| a != b)
+                    .map_or_else(
+                        || "the end (one is a prefix of the other)".to_string(),
+                        |n| n.to_string()
+                    ),
+            ));
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "{} golden(s) no longer match a stubbed render:\n{}\nRegenerate with `report eval --write-goldens`.",
+        stale.len(),
+        stale.join("\n")
+    );
+}
+
+/// A stubbed render is DETERMINISTIC: two of them are identical. Without this, the byte-exact golden
+/// check above could pass by luck on one run and fail on the next.
+#[test]
+fn two_stubbed_renders_of_one_fixture_are_identical() {
+    let pricing = Pricing::embedded();
+    for fixture in fixtures() {
+        let report = render::load_report(&fixture.report, "fixture report").unwrap();
+        let once = render::for_eval(
+            &report,
+            &pricing,
+            fixture.spec.persona.as_ref(),
+            eval_opts(&fixture),
+            DEFAULT_OUTLIERS,
+            render::SlotSource::Stubbed,
+        )
+        .unwrap();
+        let twice = render::for_eval(
+            &report,
+            &pricing,
+            fixture.spec.persona.as_ref(),
+            eval_opts(&fixture),
+            DEFAULT_OUTLIERS,
+            render::SlotSource::Stubbed,
+        )
+        .unwrap();
+        assert_eq!(once.markdown, twice.markdown, "{} is not deterministic", fixture.name);
+        assert!(once.prose.is_empty(), "a stubbed render calls no model");
+        assert_eq!(once.attempted, 0, "a stubbed render attempts no slot");
+    }
 }
 
 /// **Design Phase 13, success criterion 3:** deliberately corrupting a golden's narrative (swap a
@@ -95,86 +168,12 @@ fn corrupting_a_golden_repo_name_fails_the_citation_check() {
             fixture.name
         );
         let corrupted = markdown.replace(&format!("{org}/{name}"), &format!("{org}/lighthouse"));
-        let findings = mechanical::check(Kind::Markdown, &corrupted, &context, &ground, &fixture.spec);
+        let findings = mechanical::check(&corrupted, &context, &ground, &fixture.spec);
         assert!(
             findings.iter().any(|f| f.check == "cited-repos"),
             "the corrupted {} golden must fail cited-repos, got {findings:#?}",
             fixture.name
         );
-    }
-}
-
-/// **Design Phase 10, success criterion 3, re-run against the real goldens.** Phase 10 met this
-/// against three artifacts it built for itself, because Phase 13's goldens did not exist yet, and
-/// wrote the re-run requirement into its own test's doc comment. This is that re-run: every figure
-/// in all three committed goldens passes the quotable-facts guard, and the corpus provably includes
-/// an untitled session cited by `short-id` and a prose PR reference.
-#[test]
-fn phase_ten_criterion_three_holds_against_the_committed_goldens() {
-    let mut saw_untitled = false;
-    let mut saw_pr = false;
-    for fixture in fixtures() {
-        let (_, context, ground) = loaded(&fixture);
-        for (kind, artifact) in [
-            (Kind::Markdown, fixture.golden_markdown.as_ref().unwrap()),
-            (Kind::Html, fixture.golden_html.as_ref().unwrap()),
-        ] {
-            let prose = match kind {
-                Kind::Markdown => artifact.clone(),
-                Kind::Html => crate::render::visible_text(artifact),
-            };
-            let foreign = context.facts.foreign_figures(&prose);
-            assert!(
-                foreign.is_empty(),
-                "{} {} golden states figures no quotable fact licenses: {foreign:?}",
-                fixture.name,
-                kind.as_str()
-            );
-        }
-        let markdown = fixture.golden_markdown.as_ref().unwrap();
-        saw_untitled |= ground.untitled_short_ids.iter().any(|sid| markdown.contains(sid));
-        // The SAME matcher `Citation::PrReference` runs, not an approximation of it. The earlier
-        // `markdown.contains('#')` was satisfied by every `##` heading in every golden, so `saw_pr`
-        // was true unconditionally and the assertion below could not fail -- a criterion-3
-        // guarantee that proved nothing.
-        saw_pr |= mechanical::pr_pattern().is_match(markdown);
-    }
-    assert!(
-        saw_untitled,
-        "no golden cites an untitled session by short-id; the whitelist's first false positive is unproven"
-    );
-    assert!(
-        saw_pr,
-        "no golden carries a prose PR reference; the whitelist's second false positive is unproven"
-    );
-}
-
-/// The claim-shaped guard's false-positive proof, over the same corpus. Its rejection is a HARD
-/// render failure, and the units it polices (`days`, and `hour` inside the cache-tier names) appear
-/// in legitimate prose in these very artifacts, so "does not fire on a correct render" has to be
-/// asserted against every committed golden rather than argued from the pattern.
-#[test]
-fn no_committed_golden_trips_the_claim_guard() {
-    for fixture in fixtures() {
-        // The fixture's OWN context, because the guard now takes the identifier exemption from it:
-        // a quoted enrich summary is a licensed citation on both the value and the claim side.
-        let (_, context, _) = loaded(&fixture);
-        for (kind, artifact) in [
-            (Kind::Markdown, fixture.golden_markdown.as_ref().unwrap()),
-            (Kind::Html, fixture.golden_html.as_ref().unwrap()),
-        ] {
-            let prose = match kind {
-                Kind::Markdown => artifact.clone(),
-                Kind::Html => crate::render::visible_text(artifact),
-            };
-            let claims = crate::claim::fabricated_claims(&prose, &context.facts);
-            assert!(
-                claims.is_empty(),
-                "{} {} golden trips the duration/multiplier guard: {claims:?}",
-                fixture.name,
-                kind.as_str()
-            );
-        }
     }
 }
 
@@ -202,17 +201,26 @@ fn the_fixtures_contain_the_untitled_and_pr_cases() {
     assert!(with_prs >= 1, "at least one fixture must carry PRs");
 }
 
-/// At least one committed fixture must REQUIRE both citation shapes, or the requirement is a field
-/// nobody sets and the criterion is met by accident rather than by contract.
+/// At least one committed fixture must REQUIRE the untitled-short-id shape, or the requirement is a
+/// field nobody sets and the rule is met by accident rather than by contract.
+///
+/// `pr-reference` is deliberately NOT required any more. It existed to prove the quotable-facts
+/// whitelist did not false-positive on a prose `#118`; that whitelist is deleted, and the document
+/// layer states observed PRs as counts rather than as `#N`, so requiring it would be requiring
+/// something the renderer structurally cannot emit. The MATCHER is still exercised directly by
+/// `the_pr_reference_matcher_accepts_the_documented_shapes`.
 #[test]
-fn a_committed_fixture_requires_both_citation_shapes() {
+fn a_committed_fixture_requires_the_untitled_short_id_shape() {
     let required: BTreeSet<&str> = fixtures()
         .iter()
         .flat_map(|f| f.spec.require_citations.clone())
         .map(Citation::as_str)
         .collect();
     assert!(required.contains(Citation::UntitledShortId.as_str()));
-    assert!(required.contains(Citation::PrReference.as_str()));
+    assert!(
+        !required.contains(Citation::PrReference.as_str()),
+        "a fixture requiring a prose PR reference can never pass: the document layer writes counts"
+    );
 }
 
 /// Every committed fixture must commit a floor for every judged dimension. A dimension with no
@@ -310,9 +318,8 @@ fn the_scored_report_serializes() {
             markdown_ok: true,
             markdown_error: None,
             markdown_findings: Vec::new(),
-            html_ok: false,
-            html_error: Some("stroke-dasharray is not permitted".into()),
-            html_findings: Vec::new(),
+            slots_attempted: 4,
+            slots_degraded: 1,
             verdict: None,
             judge_error: None,
             load_error: None,
@@ -326,12 +333,11 @@ fn the_scored_report_serializes() {
         }],
         guards: Guards {
             markdown_renders: 3,
-            markdown_rejections: 0,
-            markdown_rejection_rate: "0.0%".into(),
-            html_renders: 3,
-            html_rejections: 1,
-            html_rejection_rate: "33.3%".into(),
-            reasons: vec!["small (html): stroke-dasharray".into()],
+            markdown_failures: 0,
+            slots_attempted: 12,
+            slots_degraded: 4,
+            slot_degradation_rate: "33.3%".into(),
+            reasons: vec!["small: 1 slot(s) shipped empty".into()],
         },
         passed: false,
     };
@@ -339,12 +345,13 @@ fn the_scored_report_serializes() {
     let out = dir.path().join("eval-report.json");
     write_report(&report, &out).unwrap();
     let body = std::fs::read_to_string(&out).unwrap();
-    assert!(body.contains("\"html-rejection-rate\": \"33.3%\""), "{body}");
+    assert!(body.contains("\"slot-degradation-rate\": \"33.3%\""), "{body}");
+    assert!(body.contains("\"slots-degraded\": 1"), "{body}");
     assert!(body.contains("\"passed\": false"), "{body}");
 }
 
 #[test]
-fn the_rejection_rate_reads_as_a_percent_and_never_divides_by_zero() {
+fn the_degradation_rate_reads_as_a_percent_and_never_divides_by_zero() {
     assert_eq!(rate(0, 0), "n/a");
     assert_eq!(rate(1, 3), "33.3%");
     assert_eq!(rate(0, 3), "0.0%");
@@ -359,10 +366,9 @@ fn an_empty_fixture_set_fails() {
         out: PathBuf::from("/dev/null"),
         write_goldens: false,
         llm: Llm::Api,
-        markdown_model: "m".into(),
-        html_model: "h".into(),
-        markdown_max_output_tokens: 1_024,
-        html_max_output_tokens: 1_024,
+        model: "m".into(),
+        judge_max_output_tokens: 1_024,
+        slot_max_output_tokens: 512,
     };
     let err = run(&cfg, &Pricing::embedded()).unwrap_err().to_string();
     assert!(err.contains("--fixture"), "{err}");
@@ -401,8 +407,8 @@ fn a_render_missing_the_top_repo_scores_below_its_coverage_floor() {
     let brief = judge::brief(&context.json).unwrap();
     let verdict = judge::score(
         &ApiTransport::from_env().expect("ANTHROPIC_API_KEY must be set for this ignored test"),
-        common::config::DEFAULT_MARKDOWN_MODEL,
-        common::config::DEFAULT_MARKDOWN_MAX_OUTPUT_TOKENS,
+        common::config::DEFAULT_MODEL,
+        common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         &mutilated,
         &brief,
     )
@@ -483,9 +489,8 @@ fn a_recorded_judge_error_fails_the_fixture_and_serializes() {
         markdown_ok: true,
         markdown_error: None,
         markdown_findings: Vec::new(),
-        html_ok: true,
-        html_error: None,
-        html_findings: Vec::new(),
+        slots_attempted: 4,
+        slots_degraded: 0,
         verdict: None,
         judge_error: Some("transport: 529 overloaded".into()),
         load_error: None,
