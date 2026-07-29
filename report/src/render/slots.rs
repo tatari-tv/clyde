@@ -316,6 +316,8 @@ enum Violation {
     OffAllowlist(String),
     /// A markdown node other than paragraph prose.
     Structure(String),
+    /// An em dash, which rule 6 of the contract forbids.
+    EmDash,
     /// Nothing usable came back.
     Empty,
 }
@@ -343,6 +345,11 @@ impl std::fmt::Display for Violation {
                 "the prose contained a {node} node. Output paragraph prose only: no headings, \
                  tables, lists, blockquotes, code, or raw HTML"
             ),
+            Violation::EmDash => write!(
+                f,
+                "the prose contained an em dash. Use \"--\", a colon, parentheses, or split the \
+                 sentence"
+            ),
             Violation::Empty => write!(f, "the reply was empty"),
         }
     }
@@ -369,7 +376,15 @@ fn validate(raw: &str, allow: &[&str]) -> Result<String, Violation> {
     if remainder.contains("{{") || remainder.contains("}}") {
         return Err(Violation::StrayBraces);
     }
-    // (c) Paragraph prose only, per the parser marquee renders with.
+    // (c) No em dash. Rule 6 of the contract called itself non-negotiable while nothing enforced
+    // it, so a reply carrying one shipped unchecked -- and an em dash in a generated report is
+    // exactly the house-style violation that is hardest to notice after the fact. Checked on the
+    // REMAINDER for symmetry with the rules above; a registry value cannot carry one, since every
+    // fact is a Rust-formatted figure.
+    if remainder.contains('\u{2014}') {
+        return Err(Violation::EmDash);
+    }
+    // (d) Paragraph prose only, per the parser marquee renders with.
     structure_ok(text)?;
 
     Ok(text.to_string())

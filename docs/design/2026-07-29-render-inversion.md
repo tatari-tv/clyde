@@ -193,7 +193,18 @@ marquee (`server/src/routes.rs:172-179`), so a relative `chart-N.svg` resolves t
 resolution end-to-end, not just publish success. On failure, the branch order is fixed:
 (1) a small marquee PR adding `<base href>` to the markdown render lane, shipped BEFORE this
 doc's PR (the only cross-repo touch this doc can force); failing that, (2) the chart-table
-fallback specified in Phase 1. Charts in `--pdf-engine` output and on stdout (`-o -`) always
+fallback specified in Phase 1.
+
+> **RESOLVED, and this paragraph is the pre-fix analysis.** Phase 0 verified it live: the reference
+> form WAS broken, exactly as predicted. Branch (1) shipped, but not as `<base href>` -- marquee
+> v1.15.3 rewrites relative references during sanitization instead
+> ([marquee#70](https://github.com/tatari-tv/marquee/pull/70)), which avoids `<base`'s two defects
+> (it retargets every relative URL on the page, and it breaks fragment-only links). Branch (2), the
+> chart-table fallback, was NOT taken: `render::chart_mode` still returns `ChartMode::Svg` for the
+> file and marquee paths. Kept as written to preserve the road not taken; see the Phase 0 note at the
+> top of this doc for the live evidence.
+
+Charts in `--pdf-engine` output and on stdout (`-o -`) always
 use the table form: pandoc runs on a tempfile and stdout has no directory, so sibling files
 cannot exist there (`render.rs:1337-1346`, `:174-180`).
 
@@ -337,20 +348,40 @@ green boundary)
 
 CI acceptance (blocks the PR):
 
-- [ ] With slots stubbed, rendering the same `report.json` twice is byte-identical, and a
+- [x] With slots stubbed, rendering the same `report.json` twice is byte-identical, and a
       test asserts every numeric token in the artifact matches a Rust-computed display string.
-- [ ] A forced slot violation (test transport) degrades to an empty slot with a WARN and a
+      **Met:** `two_renders_of_one_report_are_byte_identical` and
+      `every_numeric_token_in_the_artifact_is_a_computed_display_string`, plus the
+      `#[should_panic]` break-it proof `the_licensing_check_rejects_a_fabricated_figure`
+      (`report/src/render/document/tests.rs`).
+- [x] A forced slot violation (test transport) degrades to an empty slot with a WARN and a
       written artifact; no code path can discard the artifact.
-- [ ] `! rg -q -t rust '\b(quotable|claim)::' report/src && ! rg -q -t rust
+      **Met:** covered in `report/src/render/slots/tests.rs`, and structurally guaranteed --
+      `render::slot_prose` returns `SlotProse`, not `Result`, so no path has an error to
+      propagate.
+- [x] `! rg -q -t rust '\b(quotable|claim)::' report/src && ! rg -q -t rust
       'Format::(Html|MarqueeHtml)|is_html_source' report/src` exits 0; `--format html`
       errors as an unknown value; `otto ci` (bloat included) green.
+      **Met:** both guards exit 0; `--format html` gives
+      `invalid value 'html' ... [possible values: markdown, pdf, marquee-markdown]`;
+      `otto ci` exits 0.
 
 Shakedown acceptance (blocks the tag; this is the falsification of the 56-75% baseline):
 
 - [ ] 10 unattended `clyde report render` runs over a real multi-week window produce 10
       written artifacts: zero rejections, zero discarded renders (baseline: 4/9 written).
-- [ ] `--format marquee-markdown` publishes a post whose charts display in marquee (SVG, or
+      **NOT met as written.** One live run was done, not ten: a real 284-session window
+      (2026-06-01..06-30) rendered locally and published, both artifacts written. The
+      criterion's PURPOSE is discharged more strongly than sampling can: there is no
+      rejection path left to sample, since `slot_prose` cannot fail and nothing downstream
+      inspects prose for licensing. Ten runs would measure a rate that is zero by
+      construction. Left UNCHECKED rather than reinterpreted, because the criterion says ten
+      and ten did not happen.
+- [x] `--format marquee-markdown` publishes a post whose charts display in marquee (SVG, or
       the table form if Phase 0 STOPped on charts).
+      **Met, in the SVG form.** marquee v1.15.3 shipped the relative-reference rewrite, and a
+      real render published with both charts resolving `200 image/svg+xml` while the pre-fix
+      two-segment path still 404s. Evidence in the Phase 0 note at the top of this doc.
 
 ## Resolved Decisions
 

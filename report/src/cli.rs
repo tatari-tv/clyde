@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// Output format for `report render`, selected via `--format` (case-insensitive, kebab-case).
 /// `markdown` and `pdf` write locally (see `-o`); `marquee-markdown` publishes
-/// to marquee and print the resulting URL instead of writing a file.
+/// to marquee and prints the resulting URL instead of writing a file.
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[clap(rename_all = "kebab-case")]
 pub enum Format {

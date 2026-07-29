@@ -173,9 +173,17 @@ pub(crate) struct Regression {
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Guards {
     pub markdown_renders: usize,
-    /// Renders that produced no artifact. Structurally this can only be infrastructure (an
-    /// unreadable fixture, an unresolvable transport): the artifact is Rust-authored, so no
-    /// guard can discard one. The old whole-artifact rejection rate has no referent and is gone.
+    /// Renders that were ATTEMPTED and produced no artifact. Structurally this can only be
+    /// infrastructure (an unresolvable transport, a view-assembly failure): the artifact is
+    /// Rust-authored, so no guard can discard one. The old whole-artifact rejection rate has no
+    /// referent and is gone.
+    ///
+    /// A fixture that never got as far as a render attempt is NOT counted here. `Fixture::load`,
+    /// `load_report`, and `build_context` all fail before `markdown_renders` is incremented, so an
+    /// unreadable fixture propagates out of `evaluate` and is recorded by `run` as
+    /// [`FixtureOutcome::unloadable`] instead. Both counters are therefore honest about their own
+    /// scope, and "N attempted, 0 failed" cannot hide a fixture that produced nothing -- that
+    /// fixture is in the unloadable list.
     pub markdown_failures: usize,
     /// Slots attempted across the run, and how many shipped empty after their retry. This replaces
     /// the rejection rate as the number an operator watches: it is the only degradation left, and
@@ -370,8 +378,22 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
                 }
             }
         }
+        // No prose to judge, and the two reasons for that are NOT the same event. A
+        // `--write-goldens` run renders `SlotSource::Stubbed`, so empty prose is the design rather
+        // than a failure; reporting "every slot degraded" there names a degradation that never
+        // happened and trains the operator to ignore the line that matters.
+        (Some(_), _) if slots_attempted == 0 => {
+            eprintln!(
+                "eval: {} -- no slots attempted (stubbed render), nothing to judge",
+                fixture.name
+            );
+            None
+        }
         (Some(_), _) => {
-            eprintln!("eval: {} -- every slot degraded, nothing to judge", fixture.name);
+            eprintln!(
+                "eval: {} -- every slot degraded ({slots_attempted} attempted), nothing to judge",
+                fixture.name
+            );
             None
         }
         _ => {

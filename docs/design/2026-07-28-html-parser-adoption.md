@@ -2,8 +2,9 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-28
-**Status:** In Review. NOT ready to build: two Open Questions await Scott. Two panel rounds run, 8 Critical
-and 9 Major folded. Record: `2026-07-28-html-parser-adoption-review-log.md`.
+**Status:** Superseded by `2026-07-29-render-inversion.md` (2026-07-29). Never built.
+**Status when superseded:** In Review, NOT ready to build: two Open Questions awaited Scott. Two panel
+rounds run, 8 Critical and 9 Major folded. Record: `2026-07-28-html-parser-adoption-review-log.md`.
 **Review Passes Completed:** 5/5
 
 > **OBSOLETED by `2026-07-29-render-inversion.md` (2026-07-29), never built.**

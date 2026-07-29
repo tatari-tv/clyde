@@ -4,8 +4,10 @@
 **Date:** 2026-07-28
 
 This is the record, not a live document. It exists so no future agent re-derives a rejected
-alternative or reopens a settled question. Three rounds ran, 58 findings, all resolved. The design doc
-is closed to further review.
+alternative or reopens a settled question. Four rounds ran, 40 findings, all resolved: Round 1 (6),
+Round 2 (19), Round 3 (14), Round 4 (1). The design doc is closed to further review. The header
+previously read "Three rounds ran, 58 findings"; both numbers were wrong and neither matched the round
+sections below.
 
 ## Panel composition, and its limitation
 

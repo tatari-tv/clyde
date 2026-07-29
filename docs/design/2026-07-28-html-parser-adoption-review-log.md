@@ -93,10 +93,15 @@ harvest-source diff is a standing review obligation, not a one-off.
 
 ## Consensus
 
-Reached 2026-07-28, one round. All 14 findings dispositioned: 13 folded as raised, 1 pushback (M1's
-stronger form) sustained and accepted by the panel, which re-verified the revert against the tree rather
-than taking it on report. Two findings rejected with reasons recorded above. No open disputes from any
-seat. Open Questions in the design doc is empty.
+Reached 2026-07-28 on Round 1's 14 findings (5 Critical, 5 Major, 4 minor): 13 folded as raised, 1
+pushback (M1's stronger form) sustained and accepted by the panel, which re-verified the revert against
+the tree rather than taking it on report. The two entries under "Rejected findings, with reasons" are
+counted in that 14, not additional to it. No open disputes from any seat, and Open Questions in the
+design doc was empty at that point.
+
+**Round 2 ran after this consensus** (the surface-F scope change below), adding 9 findings for 23 in
+total across two rounds. This section is Round 1's record; it is not the whole log's summary. The design
+was never built either way -- see the design doc's `Superseded` status.
 
 The panel also agreed the structural fix (Phase 0's spike must live outside the workspace) is the right
 resolution for M1 rather than its own "revert and restate" recommendation, on the grounds that it kills the

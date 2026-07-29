@@ -151,6 +151,38 @@ fn stray_braces_are_rejected() {
     }
 }
 
+/// Rule 6 of the contract ("No em dashes") must be ENFORCED, not merely declared.
+///
+/// It sat in the system prompt calling itself non-negotiable while `validate` checked only digits,
+/// braces, and structure, so a reply carrying an em dash shipped unchecked. Em dashes are a
+/// well-known LLM habit and a house-style violation that is hard to spot after publication.
+#[test]
+fn em_dashes_are_rejected() {
+    let allow = Slot::ExecutiveSummary.allowlist();
+    for text in [
+        "The window ran long \u{2014} and cost more than the last one.",
+        "Spend of {{fact:totals.spend}} \u{2014} concentrated in one repo.",
+    ] {
+        let err = validate(text, allow).unwrap_err();
+        assert!(matches!(err, Violation::EmDash), "{text:?} gave {err:?}");
+    }
+}
+
+/// The forms Scott's house style prescribes INSTEAD of an em dash must still pass, or the check
+/// above would just push the model toward a different violation.
+#[test]
+fn the_em_dash_substitutes_are_accepted() {
+    let allow = Slot::ExecutiveSummary.allowlist();
+    for text in [
+        "The window ran long -- and cost more than the last one.",
+        "The window ran long: it cost more than the last one.",
+        "The window ran long (and cost more than the last one).",
+        "An en dash \u{2013} is not an em dash.",
+    ] {
+        assert!(validate(text, allow).is_ok(), "{text:?} must be accepted");
+    }
+}
+
 /// Block-structure injection needs no leading `#`. Each of these parses as a non-paragraph node
 /// under the same grammar marquee renders with, and each must be rejected.
 #[test]
