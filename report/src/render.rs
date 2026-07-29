@@ -1,4 +1,4 @@
-use crate::aggregate::{self, Aggregates, Attribution, OrgRow, RepoRow, UnitCosts};
+use crate::aggregate::{self, Aggregates, Attribution, UnitCosts};
 use crate::claim;
 use crate::cli::Format;
 use crate::config::{RenderConfig, TransportKind};
@@ -23,14 +23,28 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+mod document;
+mod facts;
 mod reconciliation;
 use reconciliation::{build_reconciliation_view, no_reconcile_warning};
 mod rejected;
 use rejected::{generate_then_route, guarded};
 mod template;
 mod workload;
+use document::{Artifact, ChartMode, PriorView};
 use template::{load_template, to_markdown};
 use workload::build_efficiency_view;
+
+/// The view-assembly inputs that are neither the report, the persona, nor the pricing feed: the
+/// three optional file/identity arguments plus the tradeoffs flag. A struct so
+/// [`document::build_views`] and its callers cannot transpose four same-shaped optionals.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ViewOpts<'a> {
+    pub(crate) include_tradeoffs: bool,
+    pub(crate) prior: Option<&'a Path>,
+    pub(crate) reconcile: Option<&'a Path>,
+    pub(crate) reconcile_user: Option<&'a str>,
+}
 
 const STDOUT_SIGIL: &str = "-";
 pub const DEFAULT_PROMPT: &str = include_str!("../templates/report.pmt");
@@ -73,16 +87,18 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     // and routing are separated so routing is unit-testable with injected strings -- see
     // `route_html_artifact`/`route_markdown_artifact` -- and both go through `generate_then_route`,
     // which owns the "a rejected render writes nothing to the output path" contract (Phase 2, AC3).
+    // The html-source family is still the model-authored, guard-policed pipeline (Phase 3 deletes
+    // it). The markdown-source family is now Rust-authored end to end, so there is no verdict to
+    // wire and nothing that can reject a whole artifact -- `generate_then_route`'s "a rejected
+    // render writes nothing" contract has no referent on this side any more.
     let dest = if cfg.format.is_html_source() {
         generate_then_route(
             || generate_html(cfg, &report, pricing),
             |html| route_html_artifact(html, &report, cfg),
         )?
     } else {
-        generate_then_route(
-            || generate_markdown(cfg, &report, pricing),
-            |markdown| route_markdown_artifact(markdown, &report, cfg),
-        )?
+        let artifact = generate_markdown(cfg, &report, pricing)?;
+        route_document_artifact(&artifact, &report, cfg)?
     };
 
     Ok(RunResult {
@@ -91,28 +107,83 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     })
 }
 
-/// Produce the markdown-source artifact: the offline `--template` path, or the `report.pmt` -> opus
-/// path. Unchanged from the pre-HTML pipeline (only extracted out of `run` for the source-family
-/// branch and the generation/routing split).
-fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<String> {
+/// Produce the markdown-source artifact.
+///
+/// The DETERMINISTIC document layer owns this path now: Rust authors every table, number, and chart
+/// (`document::render`), and the prose slots the LLM contributes carry no digits. The offline
+/// `--template` path still short-circuits ahead of it until Phase 3 retires it.
+fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<Artifact> {
     if let Some(template_path) = cfg.template.as_deref() {
         let template = load_template(Some(template_path))?;
-        Ok(to_markdown(report, &template, pricing))
-    } else {
-        let prompt = resolve_prompt(cfg.prompt.as_deref(), Path::new("."))?;
-        let persona_block = persona::whoami();
-        let context = build_context_block(
-            report,
-            cfg.include_tradeoffs,
-            persona_block.as_ref(),
-            pricing,
-            cfg.outliers,
-            cfg.prior.as_deref(),
-            cfg.reconcile.as_deref(),
-            cfg.reconcile_user.as_deref(),
-        )?;
-        render_via_opus_markdown(&context, &prompt, cfg)
+        return Ok(Artifact {
+            markdown: to_markdown(report, &template, pricing),
+            assets: Vec::new(),
+        });
     }
+    let default_persona = PersonaBlock::default();
+    let resolved = persona::whoami();
+    let aggregates = aggregate::compute(report, cfg.outliers, pricing);
+    let block = document::build_views(
+        report,
+        &aggregates,
+        resolved.as_ref().unwrap_or(&default_persona),
+        pricing,
+        ViewOpts {
+            include_tradeoffs: cfg.include_tradeoffs,
+            prior: cfg.prior.as_deref(),
+            reconcile: cfg.reconcile.as_deref(),
+            reconcile_user: cfg.reconcile_user.as_deref(),
+        },
+    )?;
+    // Phase 1 renders the document with every slot empty; Phase 2 fills them. An empty slot is a
+    // section header with no body, which is also the permanent degradation contract.
+    let prose = document::SlotProse::new();
+    Ok(document::render(&block, &prose, chart_mode(cfg)))
+}
+
+/// Whether charts ship as sibling SVG assets or as inline markdown tables.
+///
+/// PDF and stdout can only ever be `Table`: pandoc runs on a tempfile and stdout has no directory,
+/// so a sibling file cannot exist on either path. The data is identical in both forms.
+fn chart_mode(cfg: &RenderConfig) -> ChartMode {
+    let to_stdout = cfg.output.as_deref().is_some_and(|p| p.as_os_str() == STDOUT_SIGIL);
+    if matches!(cfg.format, Format::Pdf) || to_stdout {
+        ChartMode::Table
+    } else {
+        ChartMode::Svg
+    }
+}
+
+/// Route an already-rendered document artifact, sibling assets included.
+fn route_document_artifact(artifact: &Artifact, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!(
+        "render::route_document_artifact: format={:?} bytes={} assets={}",
+        cfg.format,
+        artifact.markdown.len(),
+        artifact.assets.len()
+    );
+    match cfg.format {
+        Format::Markdown => write_local_markdown(artifact, report, cfg),
+        Format::Pdf => write_local_pdf(&artifact.markdown, report, cfg),
+        Format::MarqueeMarkdown => publish_marquee_markdown(artifact, report, cfg),
+        other => bail!("route_document_artifact called with a non-markdown-source format: {other:?}"),
+    }
+}
+
+/// Write a document artifact's sibling assets into `dir`. Called for every destination that HAS a
+/// directory; the two that do not (stdout, pandoc's tempfile) render charts as tables and arrive
+/// here with an empty asset list.
+fn write_assets(artifact: &Artifact, dir: &Path) -> Result<()> {
+    for asset in &artifact.assets {
+        let path = dir.join(&asset.filename);
+        debug!(
+            "render::write_assets: path={} bytes={}",
+            path.display(),
+            asset.body.len()
+        );
+        fs::write(&path, &asset.body).with_context(|| format!("failed to write asset {}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Produce the html-source artifact: context block -> `report-html.pmt` -> opus (streaming) -> a
@@ -133,22 +204,6 @@ fn generate_html(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Resu
     render_via_opus_html(&context, &prompt, cfg)
 }
 
-/// Route an already-generated markdown artifact to its destination (local file / stdout / PDF /
-/// marquee). Takes the artifact string so it is unit-testable without the live API.
-fn route_markdown_artifact(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
-    debug!(
-        "render::route_markdown_artifact: format={:?} bytes={}",
-        cfg.format,
-        markdown.len()
-    );
-    match cfg.format {
-        Format::Markdown => write_local_markdown(markdown, report, cfg),
-        Format::Pdf => write_local_pdf(markdown, report, cfg),
-        Format::MarqueeMarkdown => publish_marquee_markdown(markdown, report, cfg),
-        other => bail!("route_markdown_artifact called with a non-markdown-source format: {other:?}"),
-    }
-}
-
 /// Route an already-generated, validated HTML artifact to its destination (local file / stdout, or
 /// marquee publish). Takes the artifact string so it is unit-testable without the live API.
 fn route_html_artifact(html: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
@@ -166,7 +221,7 @@ fn route_html_artifact(html: &str, report: &Report, cfg: &RenderConfig) -> Resul
 
 /// Write the rendered markdown to `-o <path>`, to stdout (`-o -`), or to the default
 /// `./<YYYY-MM>-claude-report.md` beside the input when `-o` is omitted.
-fn write_local_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+fn write_local_markdown(artifact: &Artifact, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
     let output = match cfg.output.as_deref() {
         Some(p) => p.to_path_buf(),
         None => default_output_path(report, Format::Markdown),
@@ -175,7 +230,7 @@ fn write_local_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> 
 
     if output.as_os_str() == STDOUT_SIGIL {
         std::io::stdout()
-            .write_all(markdown.as_bytes())
+            .write_all(artifact.markdown.as_bytes())
             .context("failed to write markdown to stdout")?;
         return Ok(OutputDest::Stdout);
     }
@@ -184,7 +239,9 @@ fn write_local_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> 
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
-    fs::write(&output, markdown).with_context(|| format!("failed to write markdown to {}", output.display()))?;
+    fs::write(&output, &artifact.markdown)
+        .with_context(|| format!("failed to write markdown to {}", output.display()))?;
+    write_assets(artifact, dir)?;
     Ok(OutputDest::File(output))
 }
 
@@ -269,19 +326,6 @@ pub(crate) fn resolve_selected_transport(llm: crate::cli::Llm, format: Format) -
     // and version in `CliTransport::resolve`.
     log::info!("render: llm transport selected={resolved:?} (requested={llm:?}) format={format:?}");
     Ok(resolved)
-}
-
-fn render_via_opus_markdown(context: &RenderContext, prompt: &str, cfg: &RenderConfig) -> Result<String> {
-    markdown_from_context(
-        context,
-        prompt,
-        Pins {
-            llm: cfg.llm,
-            format: cfg.format,
-            model: &cfg.markdown_model,
-            ceiling: cfg.markdown_max_output_tokens,
-        },
-    )
 }
 
 /// Everything a model call needs beyond the context and the prompt: which transport, which format
@@ -1052,36 +1096,13 @@ pub(crate) fn build_context_block(
     );
     let default_persona = PersonaBlock::default();
     let aggregates = aggregate::compute(report, outliers_n, pricing);
-    let period = build_period_view(report, &aggregates);
-    let prior = build_prior_view(prior_path, period.days, pricing)?;
-    // Who the reconciliation is scoped to: `--reconcile-user` when the operator named one,
-    // otherwise the SAME identity the report's persona block already resolved
-    // (`persona whoami`'s work email) -- one mechanism for "who is this report about", never two
-    // that can disagree.
-    let operator = reconcile_user.or_else(|| persona.and_then(|p| p.email.as_deref()));
-    let (reconciliation, reconciliation_status) = build_reconciliation_view(reconcile_path, operator, report)?;
-    let block = ContextBlock {
-        persona: persona.unwrap_or(&default_persona),
-        options: ContextOptions { include_tradeoffs },
-        basis: build_basis(pricing),
-        notes: build_notes(report),
-        period,
-        totals: build_totals_view(report),
-        attribution: aggregate::compute_attribution(report),
-        enrichment_coverage: build_enrichment_coverage(report),
-        reconciliation,
-        reconciliation_status,
-        unit_costs: aggregate::compute_unit_costs(report, &aggregates.by_day),
-        aggregates: &aggregates,
-        efficiency: build_efficiency_view(report),
-        outcomes: build_outcomes_view(report),
-        sessions: report
-            .sessions
-            .iter()
-            .map(|(sid, entry)| build_session_view(sid, entry))
-            .collect(),
-        prior,
+    let opts = ViewOpts {
+        include_tradeoffs,
+        prior: prior_path,
+        reconcile: reconcile_path,
+        reconcile_user,
     };
+    let block = document::build_views(report, &aggregates, persona.unwrap_or(&default_persona), pricing, opts)?;
     let json = serde_json::to_string(&block).context("failed to serialize context block to JSON")?;
     let facts = QuotableFacts::from_context_json(&json)?;
     debug!(
@@ -1225,99 +1246,6 @@ fn outcome_totals_view(totals: &OutcomeTotals) -> OutcomeTotalsView {
     }
 }
 
-/// The prior period's aggregates (design Phase 8, `--prior`): lights up the Month over Month
-/// section both templates already document but had no backing field for. Aggregated through the
-/// SAME [`aggregate::compute`] as the current period, from a schema-gated report file, so the two
-/// sides of the comparison are computed identically rather than by two code paths that could
-/// drift. Absent entirely (never emitted with empty/zeroed fields) when `--prior` was not supplied.
-#[derive(Serialize)]
-#[serde(rename_all = "kebab-case")]
-struct PriorView {
-    since: String,
-    until: String,
-    days: i64,
-    /// `false` when `days` differs from the current period's `period.days`, so the prompt states
-    /// the length mismatch rather than comparing e.g. a 30-day window against a 14-day one as if
-    /// they covered equal ground.
-    comparable: bool,
-    /// Present only when this prior artifact predates repo-source provenance and the outcome
-    /// counters added by this design (see [`predates_fidelity_fields`]). When present, `outcomes`
-    /// below is deliberately omitted: a `0` from a build that never measured the field is not the
-    /// same fact as an observed zero, and both templates must quote this sentence instead of citing
-    /// `outcomes` as if it were a real measurement.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    predates_fields: Option<String>,
-    totals: TotalsView,
-    by_repo: Vec<RepoRow>,
-    by_org: Vec<OrgRow>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    outcomes: Option<OutcomeTotalsView>,
-}
-
-/// Verbatim caveat both templates quote in place of `prior.outcomes` when [`predates_fidelity_fields`]
-/// fires. Stated once here so the two templates and any future caller never restate it differently.
-const PRIOR_PREDATES_NOTE: &str = "the prior period was collected before this clyde build tracked \
-     repo-source provenance and several outcome counters (lines written, lines replaced); its \
-     per-session outcome figures are not comparable and are omitted here.";
-
-/// `true` when `report` predates repo-source provenance (design Phase 1-3 of this doc): at least
-/// one session carries a `repo` but none carries a `repo_source`. Phase 3 is the first phase that
-/// persists `repo_source` alongside `repo`, so this is a reliable signal already present in the
-/// artifact that `report` was collected before every fidelity fix in this design landed --
-/// including the Phase 7 `lines-written`/`lines-replaced` counters, which default to `0` under
-/// `#[serde(default)]` and would otherwise read as a real zero measurement rather than "not
-/// measured yet" for a session this old.
-fn predates_fidelity_fields(report: &Report) -> bool {
-    let has_repo = report.sessions.values().any(|s| s.repo.is_some());
-    let has_repo_source = report.sessions.values().any(|s| s.repo_source.is_some());
-    has_repo && !has_repo_source
-}
-
-/// Load, schema-gate, and aggregate a `--prior <report.json>` file into a [`PriorView`]. `None`
-/// when `--prior` was not supplied. `current_days` is the CURRENT period's already-computed
-/// `period.days`, used only to set [`PriorView::comparable`].
-fn build_prior_view(prior_path: Option<&Path>, current_days: i64, pricing: &Pricing) -> Result<Option<PriorView>> {
-    let Some(path) = prior_path else {
-        debug!("render::build_prior_view: no --prior supplied");
-        return Ok(None);
-    };
-    debug!("render::build_prior_view: path={}", path.display());
-    let report = load_report(path, "--prior report")?;
-
-    let days = (report.until.date_naive() - report.since.date_naive()).num_days() + 1;
-    let comparable = days == current_days;
-    let predates_fields = predates_fidelity_fields(&report).then(|| PRIOR_PREDATES_NOTE.to_string());
-    // Aggregated through the SAME `aggregate::compute` as the current period (design Phase 8), so
-    // both sides of the comparison are computed identically rather than by two drifting code paths.
-    // `outliers_n` is 0: the prior period's outlier table is not part of this design's scope.
-    let aggregates = aggregate::compute(&report, 0, pricing);
-    let outcomes = if predates_fields.is_none() {
-        report.totals.outcomes.as_ref().map(outcome_totals_view)
-    } else {
-        None
-    };
-    debug!(
-        "render::build_prior_view: sessions={} days={} comparable={} predates-fields={} by-repo={} by-org={}",
-        report.sessions.len(),
-        days,
-        comparable,
-        predates_fields.is_some(),
-        aggregates.by_repo.len(),
-        aggregates.by_org.len()
-    );
-    Ok(Some(PriorView {
-        since: report.since.format("%Y-%m-%d").to_string(),
-        until: report.until.format("%Y-%m-%d").to_string(),
-        days,
-        comparable,
-        predates_fields,
-        totals: build_totals_view(&report),
-        by_repo: aggregates.by_repo,
-        by_org: aggregates.by_org,
-        outcomes,
-    }))
-}
-
 fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a> {
     SessionView {
         short_id: short_id(sid).to_string(),
@@ -1375,11 +1303,14 @@ fn marquee_title(report: &Report) -> String {
 
 /// Write the rendered markdown as `index.md` in a temp dir and publish it to marquee, letting the
 /// marquee server apply its house style. Returns the published URL.
-fn publish_marquee_markdown(markdown: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+fn publish_marquee_markdown(artifact: &Artifact, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
     debug!("render::publish_marquee_markdown: space={:?}", cfg.space);
     let dir = tempfile::tempdir().context("failed to create temp dir for marquee publish")?;
     let index = dir.path().join("index.md");
-    fs::write(&index, markdown).with_context(|| format!("failed to write {}", index.display()))?;
+    fs::write(&index, &artifact.markdown).with_context(|| format!("failed to write {}", index.display()))?;
+    // The chart SVGs ride the SAME bundle as `index.md`, so marquee picks them up as post assets
+    // and `![](chart-N.svg)` has something to resolve to.
+    write_assets(artifact, dir.path())?;
     let url = marquee_publish(dir.path(), report, cfg)?;
     Ok(OutputDest::Marquee(url))
 }

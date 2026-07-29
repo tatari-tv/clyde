@@ -11,11 +11,11 @@ use efficiency::{RawCounters, SessionEfficiency, WorkloadCost, finalize};
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 
-fn ts(s: &str) -> DateTime<Utc> {
+pub(super) fn ts(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
 }
 
-fn pricing() -> Pricing {
+pub(super) fn pricing() -> Pricing {
     Pricing::embedded()
 }
 
@@ -122,7 +122,7 @@ fn sonnet_tokens() -> ModelTokens {
     }
 }
 
-fn sample_report() -> Report {
+pub(super) fn sample_report() -> Report {
     let mut sessions = BTreeMap::new();
     let mut s1_models = BTreeMap::new();
     s1_models.insert("claude-opus-4-7".into(), opus_tokens());
@@ -839,7 +839,7 @@ fn baked_in_html_default_matches_workspace_template() {
 /// Phase 6: `outcomes.totals` in the context re-exposes the persisted rollup with fields
 /// present-if-nonzero, per-session `outcomes` rides the slim session view, and outlier rows
 /// carry the session's outcome fields when available.
-fn report_with_outcomes() -> Report {
+pub(super) fn report_with_outcomes() -> Report {
     use crate::outcome::{OutcomeTotals, Outcomes, PrRef};
     let mut report = sample_report();
     report.totals.outcomes = Some(OutcomeTotals {
@@ -991,7 +991,7 @@ fn context_block_carries_no_raw_numeric_operands() {
 
 /// A v2 report carrying efficiency signals: report-wide ratios on `totals`, plus per-session
 /// curated buckets/counts that `build_efficiency_view` rolls up.
-fn report_with_efficiency() -> Report {
+pub(super) fn report_with_efficiency() -> Report {
     let mut report = sample_report();
     report.totals.cache_read_share = Some(0.96);
     report.totals.tool_error_rate = Some(0.024);

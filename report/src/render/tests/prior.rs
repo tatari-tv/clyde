@@ -1,5 +1,6 @@
 //! Phase 8 (`--prior` and Month over Month): tests split out per the file-size limit.
 use super::*;
+use crate::render::document::predates_fidelity_fields;
 
 /// Serialize `report` to `<dir>/<name>` and return the path, so a `--prior` fixture is a real
 /// schema-gated file on disk rather than an in-memory shortcut.
