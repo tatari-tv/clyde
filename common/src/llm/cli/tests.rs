@@ -113,6 +113,37 @@ fn argv_carries_every_isolation_flag_by_name() {
 }
 
 #[test]
+fn argv_carries_the_prompt_slot_verbatim_for_every_kind() {
+    // The slot `sessions::llm::ENRICH_REASSERT` rides in. It must land as the value of `-p` for every
+    // kind, and an EMPTY prompt must still occupy the slot rather than being dropped -- a dropped arg
+    // would shift every following flag by one and silently misalign the whole argv.
+    for kind in ALL_KINDS {
+        let spawn = transport().build_spawn(job(kind), "SYS", "REASSERT-SENTINEL");
+        let args = &spawn.args;
+        let p = args.iter().position(|a| a == "-p").expect("missing -p");
+        assert_eq!(
+            args[p + 1],
+            "REASSERT-SENTINEL",
+            "the prompt must be the value of -p for {kind:?}: {args:?}"
+        );
+
+        let empty = transport().build_spawn(job(kind), "SYS", "");
+        let pe = empty.args.iter().position(|a| a == "-p").expect("missing -p");
+        assert_eq!(
+            empty.args[pe + 1],
+            "",
+            "an empty prompt must still occupy the slot for {kind:?}: {:?}",
+            empty.args
+        );
+        assert_eq!(
+            empty.args.len(),
+            args.len(),
+            "an empty prompt must not change the argv length for {kind:?}"
+        );
+    }
+}
+
+#[test]
 fn argv_never_passes_a_fallback_model() {
     let spawn = transport().build_spawn(job(Kind::Judge), "SYS", "INSTRUCTION");
     // A fallback model would let the CLI silently swap models, defeating the canonicalModel guard.

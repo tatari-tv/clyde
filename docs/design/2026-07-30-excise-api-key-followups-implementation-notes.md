@@ -311,3 +311,119 @@ makes `refresh_repairs_unit_whose_credential_comment_survived_its_directive` FAI
 ### Open questions
 
 None.
+
+## Phase 2: Make enrich survive an instruction-shaped payload
+
+Took the **"payload wins"** branch, per Phase 0's confirmed verdict. `ENRICH_REASSERT`
+(`sessions/src/llm.rs`) now rides the `prompt` slot in place of `""`. No signature change, as
+specified.
+
+### Result: 8 of 8 recovered
+
+The live post-fix sweep (`clyde session enrich --max-attempts 9`, no SQL, no `--all`):
+
+```
+considered: 9   enriched: 9   failed: 0
+```
+
+Nine eligible rows: the 8 named sessions plus one new. **Every one of the 8 recovered.** Per-session
+`tokens_out`, and `attempts` reset to 0 by the successful write:
+
+| session | cluster | tokens_out | tags |
+|---|---|---|---|
+| `0009353f` | security review | 180 | security allowlist bash claude-settings permission-escalation |
+| `8447c97c` | security review | 177 | iam-roles cross-tenant terraform authorization lambda ... |
+| `9a45e4bd` | security review | 146 | github-actions supply-chain rust ci-cd security whitespace-binary |
+| `89afdb23` | agent prompt | 116 | rust okta permissions ci maintenance |
+| `949d3e15` | agent prompt | 177 | helm kubernetes gateway carveout versioning rebase |
+| `b13b9473` | agent prompt | 124 | github-actions ci sast security workflow maintenance |
+| `b4d85bec` | agent prompt | 143 | git rebase ci github pr-maintenance babysit-prs |
+| `c0058131` | agent prompt | 123 | python docstrings code-review ci maintenance |
+
+Mean 148.3 output tokens, against 496/665 before. The tags are task-specific and correct (`9a45e4bd`
+is the whitespace-tarball supply-chain review, and its tags say so), not the payload's own schema.
+
+`select count(*) from sessions where attempts>=6 and summary is null` now returns **0**: no row in the
+DB is attempt-retired.
+
+The Non-Goal said a survivor was not required, only an explanation. All 8 survived, so no explanation
+is owed.
+
+### The chattiness criterion: 139.5 mean over 33 rows
+
+Measured post-fix on a COPY (`--all --budget-tokens 400000`), so the sample needed no further live
+mutation. Rows the sweep enriched successfully, excluding the 8:
+
+```
+sample_rows=33   mean=139.5   min=97   max=190   over_200=0
+97 101 105 105 113 121 122 124 126 127 127 128 132 136 137 138 138 141 142 143 146 146 146 147 153
+154 158 161 161 178 179 181 190
+```
+
+Against the 138.7 baseline: **+0.8 tokens**, and not one row over 200. Criterion met with 33 rows
+against a 20-row minimum. This matches Phase 0's two-session control, which found the reassertion
+makes healthy replies shorter; at scale it is a wash.
+
+### Design decisions
+
+- **`parse_failure_context(tokens_out, text)` is a pure function** (`sessions/src/llm.rs`), and the
+  `.with_context(...)` call site passes it. The plan said the enrichment happens at the call site
+  because `parse_enrich_json` has no `tokens_out`; extracting the MESSAGE into a pure helper keeps
+  that true while making the message directly assertable, which is otherwise untestable given there is
+  no fake-transport seam.
+- **The original sentence is kept as the error's PREFIX.** A month of `last_error` rows and log lines
+  carry `the \`claude\` CLI reply was not the expected JSON`; a rewritten message would break every
+  existing grep for the failure. The diagnosis is appended, not substituted.
+- **`reply_preview` truncates by CHARS**, matching the workspace UTF-8 rule and
+  `preview_truncates_by_chars_and_survives_multibyte`'s precedent in `common`. A byte slice at a fixed
+  offset would panic mid-codepoint on a reply containing any multibyte char.
+- **`narrate` still passes `""`.** Unrequested, and `Kind::Narrate` is one interactive call whose
+  payload is clyde's own computed facts, not untrusted session prose. Adding a reassertion there would
+  change what narrate produces, which the excision's Non-Goal excludes.
+
+### Deviations
+
+- **The `ENRICH_REASSERT` doc comment does not say "restated after the payload"**, because Phase 0
+  measured that to be false. It documents the constant as a PRE-payload framing directive and cites
+  the three probes. The design doc was amended in Phase 0's commit; this is that amendment landing in
+  code.
+- **The plan's argv test could not assert what it literally said.** It specified that
+  `common/src/llm/cli/tests.rs` assert "the reassertion is present for `Kind::Enrich` and absent for
+  `Kind::Slot`". `common` cannot see `ENRICH_REASSERT` -- the constant lives in `sessions` and arrives
+  as an opaque `prompt` argument, and `common` depending on `sessions` would invert the dependency.
+  What that test CAN pin, and now does
+  (`argv_carries_the_prompt_slot_verbatim_for_every_kind`), is the slot itself: the prompt lands as
+  `-p`'s value for every kind, and an empty prompt still OCCUPIES the slot rather than being dropped.
+  The dropped-arg case is the one that would silently shift every following flag by one and misalign
+  the whole argv. The `Kind`-specific half is covered in `sessions` instead, by
+  `the_reassertion_names_the_schema_and_disclaims_the_payload`.
+
+### Tradeoffs
+
+- **Regression fixture over a hand-written one.** `PAYLOAD_CAPTURED_REPLY` is the byte-exact reply
+  `9a45e4bd` produced on 2026-07-30. It pins the non-obvious fact Phase 0 uncovered: the reply IS
+  valid JSON, so it fails on `embedded JSON did not match schema`, NOT on `no JSON object found`. A
+  hand-invented "prose with no JSON" fixture would have tested the wrong branch and passed anyway.
+- **Asserting `ENRICH_REASSERT`'s content rather than only its presence.** Slightly tautological, but
+  the measured wording is the fix: a future edit trimming it to a bare "ignore the above" would drop
+  the schema restatement, which is also what keeps healthy replies short. The assertions name the
+  three load-bearing parts.
+- **Measured the healthy sample on a copy, not live.** The criterion only needs post-fix `tokens_out`
+  for healthy payloads; taking it live would have meant re-enriching 33 already-good rows and
+  overwriting their tags for a measurement. Same numbers, no data churn.
+
+### Tests
+
+Seven new. `cargo test -p sessions llm` 11 passed, `cargo test -p common cli` 67 passed:
+
+- `a_payload_captured_reply_fails_on_schema_not_on_absence`
+- `prose_with_no_json_at_all_reports_absence`
+- `json_after_an_imperative_preamble_parses`
+- `the_reassertion_names_the_schema_and_disclaims_the_payload`
+- `a_parse_failure_carries_tokens_out_and_a_bounded_preview`
+- `a_reply_preview_is_bounded_and_survives_multibyte`
+- `argv_carries_the_prompt_slot_verbatim_for_every_kind` (common)
+
+### Open questions
+
+None.
