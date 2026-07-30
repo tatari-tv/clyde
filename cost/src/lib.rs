@@ -48,7 +48,7 @@ const LIVE_SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
 ///
 /// Order:
 /// 1. If `CLAUDE_CODE_SESSION_ID` (see [`LIVE_SESSION_ENV`]) is set AND a scanned session has that
-///    id, return it — this is the actual session the user is sitting in.
+///    id, return it -- this is the actual session the user is sitting in.
 /// 2. Otherwise fall back to the most-recently-*active-by-content* session (`max_by_key(last_active)`).
 ///
 /// The env var is read via the injected `env_session_id` so the resolution is unit-testable without

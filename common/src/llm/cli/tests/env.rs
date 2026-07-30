@@ -187,7 +187,7 @@ fn child_env_survives_a_secret_being_present_in_the_parent() {
 /// This spawns `/usr/bin/env` in place of `claude` and reads what the child actually received. An
 /// earlier version of this test asserted `Command::get_envs().len()`, which does NOT work: that
 /// getter reports only the explicit OVERRIDES, so deleting `cmd.env_clear()` left the assertion
-/// passing while the child silently inherited the parent's entire environment — including the three
+/// passing while the child silently inherited the parent's entire environment -- including the three
 /// measured secrets below. The test was green and the security property was gone.
 ///
 /// Nothing about this needs the `claude` binary, so the scope boundary ("no test shells out to the
@@ -224,7 +224,7 @@ fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
     }
     // `child_env` READS the environment (`dirs::home_dir()`, `PATH`), so it must be called while
     // the lock is still held. Reading the environ block concurrently with another test's `set_var` is
-    // the same unsafety window that makes `set_var` itself unsafe in edition 2024 — it can tear or
+    // the same unsafety window that makes `set_var` itself unsafe in edition 2024 -- it can tear or
     // crash rather than fail cleanly. The assertion below cannot go WRONG (the allowlist can never
     // contain a planted secret), so this is purely about not reading a block mid-mutation.
     let allowlist = child_env(Kind::Slot);
@@ -248,7 +248,7 @@ fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
     }
     // And the child's whole environment is the allowlist, nothing more. Both sides of this move
     // together if the allowlist changes, which is why the sibling
-    // `child_env_is_an_allowlist_and_leaks_no_secret` pins the allowlist to its literal three names —
+    // `child_env_is_an_allowlist_and_leaks_no_secret` pins the allowlist to its literal three names --
     // keep the pair together if either is ever refactored.
     let mut got = names.clone();
     got.sort_unstable();

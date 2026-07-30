@@ -182,7 +182,7 @@ mod tests {
 
     /// Build a `SessionFile` for the cache-hash tests. Only `path`, `mtime`, and `size` feed
     /// `compute_mtime_hash` (grouping is irrelevant to cache invalidation), so `group_id`/`kind`
-    /// carry fixed placeholder values — this keeps the unified 5-field type from bloating every
+    /// carry fixed placeholder values -- this keeps the unified 5-field type from bloating every
     /// literal in this module.
     fn sf(path: &str, mtime: SystemTime, size: u64) -> SessionFile {
         SessionFile {

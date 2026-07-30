@@ -1,4 +1,4 @@
-//! Work/personal scope classification — the load-bearing control for Phase 2 enrichment.
+//! Work/personal scope classification -- the load-bearing control for Phase 2 enrichment.
 //!
 //! Phase 2 is the first clyde phase to send session content off-machine, to the **work** Anthropic
 //! account. The routing invariant is absolute: *no `personal`-scoped session content is ever sent
@@ -8,14 +8,14 @@
 //!
 //! The repo-identity convention (`~/repos/<org>/<repo>`, per `~/repos/CLAUDE.md`): the **org**
 //! is the component immediately under `repos/`. A session is `work` iff its org slot is a work
-//! org (`tatari-tv`); everything else — a personal org, a path with no `repos/` anchor, an
-//! unclassifiable path, or a missing `cwd` — is `personal`. The default is **fail-safe**: an
+//! org (`tatari-tv`); everything else -- a personal org, a path with no `repos/` anchor, an
+//! unclassifiable path, or a missing `cwd` -- is `personal`. The default is **fail-safe**: an
 //! unknown session is never assumed shippable to the work account.
 //!
 //! Classification keys off the org *slot*, not any matching component anywhere in the path. That
 //! is deliberately stricter than a "contains `tatari-tv`" test: a personal repo merely *named*
 //! `tatari-tv` (`~/repos/scottidler/tatari-tv`) or a scratchpad under `/tmp/tatari-tv/` is
-//! **personal** — the safe direction. The cost is that a genuine work session run outside a
+//! **personal** -- the safe direction. The cost is that a genuine work session run outside a
 //! `~/repos/tatari-tv/` path is classified personal and skipped (un-enriched), which is the
 //! acceptable failure direction (never the reverse).
 
@@ -47,14 +47,14 @@ impl Scope {
         }
     }
 
-    /// True only for [`Scope::Work`] — the single gate the enrich send path consults.
+    /// True only for [`Scope::Work`] -- the single gate the enrich send path consults.
     pub fn is_work(self) -> bool {
         matches!(self, Scope::Work)
     }
 }
 
 /// Classify a session from its working directory. `None` (no recorded `cwd`) and any path that
-/// does not sit under a recognized work org classify as [`Scope::Personal`] — the fail-safe
+/// does not sit under a recognized work org classify as [`Scope::Personal`] -- the fail-safe
 /// direction that keeps personal content off the work account.
 pub fn classify(cwd: Option<&Path>) -> Scope {
     let scope = match cwd {
@@ -65,7 +65,7 @@ pub fn classify(cwd: Option<&Path>) -> Scope {
     scope
 }
 
-/// True iff the path's org slot — the component immediately after a `repos` component — is a work
+/// True iff the path's org slot -- the component immediately after a `repos` component -- is a work
 /// org. Requires the `repos/<org>` adjacency, so an org name appearing anywhere else (a repo named
 /// `tatari-tv`, a `/tmp/tatari-tv/` scratch dir) does not classify as work.
 fn has_work_org(path: &Path) -> bool {

@@ -111,7 +111,7 @@ fn envelope_round_trips_losslessly_through_serde() {
 
 #[test]
 fn metadata_record_omits_all_body_keys() {
-    // A metadata record (body = None) must NOT emit `body` / `body-truncated` / `body-error` — the
+    // A metadata record (body = None) must NOT emit `body` / `body-truncated` / `body-error` -- the
     // metadata fixtures have no such keys.
     let v = serde_json::to_value(metadata_record()).unwrap();
     let obj = v.as_object().unwrap();

@@ -202,7 +202,7 @@ impl ModelTokens {
     }
 }
 
-/// One session's fully-parsed catalog data — the input to [`build_report`]. `run_collect`
+/// One session's fully-parsed catalog data -- the input to [`build_report`]. `run_collect`
 /// (`lib.rs`) builds these from `sessions::CatalogEntry` rows (parsing the raw `efficiency_json` /
 /// `outcome_json` blobs with `efficiency`'s types). Keeping the builder over this struct rather than
 /// over SQLite rows keeps `report.rs` pure and unit-testable.
@@ -290,7 +290,7 @@ pub fn write_json(
         .unwrap_or(Path::new("."));
     fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
 
-    // Atomic write: temp in the target's own dir, flush, rename over — a torn write never leaves a
+    // Atomic write: temp in the target's own dir, flush, rename over -- a torn write never leaves a
     // truncated report, and (Phase 4 fail-closed) collect only reaches here on a fully-built report.
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
@@ -349,7 +349,7 @@ pub fn build_report(
     }
 
     // Totals.models + spend: price LAST over the unioned per-model `TokenTotals` (ratio/price of the
-    // sum, never a sum of priced values — the Aggregation invariant applied to money). Zero-token
+    // sum, never a sum of priced values -- the Aggregation invariant applied to money). Zero-token
     // models are dropped here too ([`has_tokens`]), so a model absent from every session's `models`
     // never resurfaces in the report-wide union either.
     let totals_model_entries: BTreeMap<String, ModelTokens> = grand
@@ -404,7 +404,7 @@ pub fn build_report(
 /// subagent's raw counters from the aggregate. The parts sum to the aggregate on tokens/cost/models,
 /// so downstream by-org/by-repo/by-day/totals never double-count. The residual's turn-duration and
 /// compaction SAMPLES are not recoverable (the aggregate concatenated them), so the residual row's
-/// percentile/compaction signals are absent — documented in the implementation notes.
+/// percentile/compaction signals are absent -- documented in the implementation notes.
 fn expand_entries(
     s: &CollectedSession,
     pricing: &Pricing,

@@ -11,7 +11,7 @@
 //! handle).
 //!
 //! **stdout is the protocol channel.** Once `mcp serve` runs nothing may be written to stdout
-//! except JSON-RPC frames — `mcp-io` routes the `log` facade to a file before serving, so the
+//! except JSON-RPC frames -- `mcp-io` routes the `log` facade to a file before serving, so the
 //! host's `log::*` records never corrupt the framing. (rmcp/tokio's internal `tracing` events are
 //! not captured to that file; they never reach stdout either, so protocol safety holds.)
 //!
@@ -21,7 +21,7 @@
 //! coordination is WAL + `busy_timeout`. A query that still loses the race after the timeout
 //! surfaces as a retryable `internal_error` (`SQLITE_BUSY`), not a crash. rusqlite is synchronous
 //! and `Connection` is `!Sync`, so every tool runs its query inside `block_in_place_compat` and
-//! releases the lock before serializing — never holding it across `.await`.
+//! releases the lock before serializing -- never holding it across `.await`.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -445,7 +445,7 @@ impl SessionsMcpServer {
                 return Ok(EfficiencyResult::NotComputed { record: Box::new(rec) });
             };
             // Fail LOUDLY (fail closed) on a corrupt/non-JSON blob rather than emitting a silent null,
-            // exactly as the export contract's `build_export_record` does — a non-JSON value must never
+            // exactly as the export contract's `build_export_record` does -- a non-JSON value must never
             // reach the wire.
             let efficiency: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
                 Self::err(format!(

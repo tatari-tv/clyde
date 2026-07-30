@@ -105,7 +105,7 @@ fn staged_copy_survives_ttl_reap() {
 
     let rec = db.get(UUID_A).unwrap().unwrap();
     assert!(rec.archived, "reaped transcript flags archived");
-    // The staged copy is still on disk and still recorded — open/trace can resolve it.
+    // The staged copy is still on disk and still recorded -- open/trace can resolve it.
     let staged = rec.staged_path.unwrap();
     assert!(staged.join(format!("{UUID_A}.jsonl")).exists());
 }

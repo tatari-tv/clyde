@@ -1,14 +1,14 @@
 //! The Phase 3 bulk catalog read ([`Db::catalog`]): a window-scoped SELECT joining session rows
 //! with their RAW `efficiency_json` / `outcome_json` blobs and the three indexed scalars, in ONE
 //! query. `report` (Phase 4) parses the blobs with its own imported `efficiency`/`outcome` types;
-//! `sessions` never depends on `efficiency` — that dependency already runs the other way
+//! `sessions` never depends on `efficiency` -- that dependency already runs the other way
 //! (`efficiency -> sessions`, to persist), so a parsed return here would be a cycle (design doc,
 //! Resolved Decisions: "Bulk read returns RAW `efficiency_json`, not parsed types").
 //!
 //! Shares [`Filters`] and the window/repo/tag/model/archived predicate ([`super::append_filters`])
 //! with [`Db::list`] so the filtering logic lives in exactly one place; this query additionally
 //! selects the efficiency/outcome/scalar columns [`Db::list`] omits. `report` (Phase 4) subsumes the
-//! JSONL scan's session selection into `Filters{since, until}` — session-level windowing (M2).
+//! JSONL scan's session selection into `Filters{since, until}` -- session-level windowing (M2).
 
 use eyre::Result;
 use log::debug;
@@ -18,7 +18,7 @@ use crate::model::{CatalogEntry, Filters};
 
 impl Db {
     /// Window-scoped bulk read: every non-excluded session matching `filters`, most-recent first,
-    /// each carrying its RAW `efficiency_json` / `outcome_json` (opaque strings — `None` when the
+    /// each carrying its RAW `efficiency_json` / `outcome_json` (opaque strings -- `None` when the
     /// session has not yet been reindexed) plus the three indexed scalars. Per row, this is
     /// byte-identical to what [`Db::get_efficiency_json`] / [`Db::get_outcome_json`] return for that
     /// same session id (both reads pull the same stored columns; there is exactly one write path,

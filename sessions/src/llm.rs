@@ -102,7 +102,7 @@ pub trait Completer {
 /// enrichment (one integration, no second credential, no second billing path).
 pub trait Narrator {
     /// Complete `user` under `system`, returning the model's prose reply (trimmed, non-empty).
-    /// Implementations must never log `user`/`system` in full — previews only, per the logging rule.
+    /// Implementations must never log `user`/`system` in full -- previews only, per the logging rule.
     fn narrate(&self, system: &str, user: &str) -> Result<String>;
 }
 

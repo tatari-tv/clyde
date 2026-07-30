@@ -53,7 +53,7 @@ fn from_session_scalars_match_the_serialized_json() {
     let value: serde_json::Value = serde_json::from_str(&owned.efficiency_json).unwrap();
     let agg = &value["aggregate"];
 
-    // cache-read-share: Option<f64> — None serializes to JSON null.
+    // cache-read-share: Option<f64> -- None serializes to JSON null.
     match owned.cache_read_share {
         Some(share) => assert_eq!(
             agg["cache-read-share"].as_f64().unwrap(),
@@ -79,7 +79,7 @@ fn from_session_scalars_match_the_serialized_json() {
 
 /// End-to-end backfill: an EXISTING catalog row with `efficiency_json IS NULL` (the exact state a v6
 /// migration leaves every old session in) gets POPULATED by `reindex_efficiency`, and its
-/// `updated_at` revision is UNCHANGED — writing a derived annotation must not move the export cursor.
+/// `updated_at` revision is UNCHANGED -- writing a derived annotation must not move the export cursor.
 /// BITES: drop the trigger-suppression in `set_efficiency_many` and `updated_at` advances; skip the
 /// `efficiency IS NULL` recompute and the row stays null.
 #[test]

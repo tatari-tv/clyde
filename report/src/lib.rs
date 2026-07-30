@@ -40,7 +40,7 @@ pub use tools::tool_validation_help;
 /// ONE process-wide lock for every test that reads or mutates the process environment.
 ///
 /// Deliberately crate-level rather than per-test-module. `set_var`/`remove_var` are process-global,
-/// so two modules each holding their OWN mutex do not serialize against each other at all — which is
+/// so two modules each holding their OWN mutex do not serialize against each other at all -- which is
 /// exactly the intermittent failure that showed up once `summarize::cli`'s tests began reading the
 /// full environment while `summarize::api`'s tests were mutating `ANTHROPIC_API_KEY` under a
 /// different lock. Every env-touching test in this crate must take THIS lock.
@@ -92,7 +92,7 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     let config = Config {
         // clyde.yml is loaded inside `resolve_command`, per subcommand: `collect` needs the
         // bare-date `--since` tz convention, and `render` needs the `llm` selection plus the two
-        // model pins. Render's load is UNCONDITIONAL — no flag opts out of needing a model pin — so a
+        // model pins. Render's load is UNCONDITIONAL -- no flag opts out of needing a model pin -- so a
         // malformed clyde.yml breaks both, loudly and naming the file. Only `merge` reads no config.
         command: config::resolve_command(args.command)?,
         log_level,
@@ -101,7 +101,7 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     if let ResolvedCommand::Collect(_) = config.command
         && which::which("jq").is_err()
     {
-        // Advisory, NON-FATAL: collect produces its JSON regardless — `jq` is never used
+        // Advisory, NON-FATAL: collect produces its JSON regardless -- `jq` is never used
         // internally, only by the user to query the output. Don't refuse to run (that broke
         // `collect` on any host/CI without jq). The note goes to stderr so it can't corrupt the
         // JSON streamed to stdout.
@@ -117,7 +117,7 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     // corrupt the JSON stream that `... | jq` consumes.
     eprintln!("wrote {} sessions to {}", result.sessions_emitted, result.output);
     // A published marquee post's whole value is a shareable URL, so ALSO emit the bare URL to
-    // stdout — that is the machine-readable result (`url=$(clyde report render --format ...)`),
+    // stdout -- that is the machine-readable result (`url=$(clyde report render --format ...)`),
     // matching the collect convention of "payload on stdout, status on stderr". Other destinations
     // (file/stdout-markdown) have no separate machine result: the file path is in the status line
     // and markdown was already written to stdout by render.
@@ -183,7 +183,7 @@ pub(crate) fn run_with_pricing(config: &Config, pricing: &Pricing) -> Result<Run
 
 /// Collect-once, from the canonical catalog. Reads the `[since, until]` window from `sessions.db`
 /// (session rows + the RAW `efficiency_json` / `outcome_json` blobs, one query), parses the blobs
-/// with `efficiency`'s types, and shapes a schema-v2 report. NO JSONL is scanned — tokens, cost,
+/// with `efficiency`'s types, and shapes a schema-v2 report. NO JSONL is scanned -- tokens, cost,
 /// cache/tool/agent-type signals and outcomes are all catalog-sourced.
 ///
 /// Fails closed on an incomplete catalog: if any session in the window has a NULL `efficiency_json`
@@ -311,7 +311,7 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
                 outcomes_enabled,
                 cfg.no_rollup,
             )?;
-            // Stream the JSON to stdout (and only the JSON — the "wrote N" note is on stderr).
+            // Stream the JSON to stdout (and only the JSON -- the "wrote N" note is on stderr).
             use std::io::Write;
             let mut out = std::io::stdout().lock();
             out.write_all(json.as_bytes())
@@ -360,7 +360,7 @@ fn enrichment_warning(entries: &[CatalogEntry], floor: f64) -> Option<String> {
 /// present here (the NULL fail-closed guard already returned), so a NULL past this point is an
 /// internal invariant break, and an unparseable blob is a LOUD error (bad data ≠ no data). Titles,
 /// `summary`/`tags` (design Phase 9, narrative evidence), repo, and the window timestamps all come
-/// from the catalog row — no JSONL is read and no resolver runs. The repo was resolved at INDEX
+/// from the catalog row -- no JSONL is read and no resolver runs. The repo was resolved at INDEX
 /// time, when the filesystem could still answer for it.
 fn to_collected(entry: &CatalogEntry, outcomes_enabled: bool) -> Result<report::CollectedSession> {
     let rec = &entry.record;
@@ -393,7 +393,7 @@ fn to_collected(entry: &CatalogEntry, outcomes_enabled: bool) -> Result<report::
     };
 
     // The catalog writes `repo` and `repo_source` in one statement, so a slug with no provenance is
-    // an invariant break, not a legacy shape — fail LOUDLY rather than laundering an unknown-origin
+    // an invariant break, not a legacy shape -- fail LOUDLY rather than laundering an unknown-origin
     // slug into `by-repo` as if it were observed. An unrecognized spelling is likewise loud
     // (`RepoSource::from_str` names the legal set).
     let repo = rec.repo.clone();

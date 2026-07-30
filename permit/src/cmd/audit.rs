@@ -107,7 +107,7 @@ pub fn format_table(entries: &[AuditEntry]) -> String {
 
     let mut out = String::new();
 
-    // Header — Rule is last so it needs no padding
+    // Header -- Rule is last so it needs no padding
     out.push_str(&format!(
         "{:<source_width$}  {:<risk_width$}  {:<action_width$}  {:<list_width$}  {}\n",
         "Source", "Risk", "Action", "List", "Rule"
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn redundant_when_broader_rule_exists() {
         let dir = TempDir::new().expect("temp");
-        // Edit(**) is broader than Edit(**/*.rs) — the specific one should be redundant
+        // Edit(**) is broader than Edit(**/*.rs) -- the specific one should be redundant
         let (gp, lp) = write_settings(
             dir.path(),
             r#"{"permissions":{"allow":["Edit(**)", "Edit(**/*.rs)", "Bash(git:*)", "Bash(git status:*)"]}}"#,

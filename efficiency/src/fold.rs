@@ -30,7 +30,7 @@ pub struct SubagentEfficiency {
 /// A flagged efficiency breach, scored on the whole-session aggregate against the configured
 /// `efficiency:` thresholds ([`crate::score`]). Each variant names the breached signal AND carries
 /// the observed value alongside the threshold it crossed, so a flag is self-describing and legible
-/// (fail loudly, per the house rule) — a consumer never has to re-derive why the session tripped.
+/// (fail loudly, per the house rule) -- a consumer never has to re-derive why the session tripped.
 ///
 /// The serde shape is the internally-tagged `{ "kind": "...", ... }` form. This same type is
 /// serialized by BOTH the persisted `efficiency_json` catalog column and the live `clyde efficiency`
@@ -135,14 +135,14 @@ pub fn fold(session_id: &str, files: &[FileEfficiency]) -> SessionEfficiency {
 
 /// Resolve a subagent's TYPE with a four-tier fallback chain:
 ///
-/// 1. an `attributionAgent` observed on the subagent's own records — authoritative, and how a
+/// 1. an `attributionAgent` observed on the subagent's own records -- authoritative, and how a
 ///    classic inline subagent (e.g. `phase-implementer`) is already labeled;
 /// 2. else the `subagent_type` of the matching NAMED spawn, keyed by the name embedded in the
-///    `agentId` (`a<name>-<hash>`) — recovers herdr / workflow / `Agent`-with-a-`name` subagents
+///    `agentId` (`a<name>-<hash>`) -- recovers herdr / workflow / `Agent`-with-a-`name` subagents
 ///    whose sidecar records never carry `attributionAgent`;
 /// 3. else the bare spawn name as a name-only label, when the spawn tool_use is not in the group
 ///    (e.g. a teammate launched outside the `Agent` tool, so no `subagent_type` was ever recorded);
-/// 4. else `None` — a hash-only `agentId` (`a<hex>`) with no recoverable name stays `unknown`.
+/// 4. else `None` -- a hash-only `agentId` (`a<hex>`) with no recoverable name stays `unknown`.
 fn resolve_agent_type(
     agent_id: &str,
     attribution: Option<&str>,

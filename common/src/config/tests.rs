@@ -148,7 +148,7 @@ fn render_ceilings_are_independent_of_each_other() {
 ///
 /// The hand-written `RenderConfig::default` only protects the ABSENT case, so this is the explicit-zero
 /// half. Naming the key matters because serde_yaml renders a `de::Error::custom` with the enclosing
-/// SECTION and the source location but never the field — `render: <msg> at line 2 column 3` — which is
+/// SECTION and the source location but never the field -- `render: <msg> at line 2 column 3` -- which is
 /// why there are two validators rather than one shared one.
 ///
 /// BITES: drop `deserialize_with` from the field and this fails (a 0 would load clean).

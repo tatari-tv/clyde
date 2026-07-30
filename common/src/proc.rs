@@ -45,7 +45,7 @@ pub const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 /// ([`SUBPROCESS_TIMEOUT`]); on timeout, kill and reap the child rather than blocking forever
 /// (per the repo's subprocess-hygiene rule; mirrors `persona::whoami_via`). `spawn_err` maps a
 /// spawn failure (e.g. binary-not-found) to a caller-specific message. Only for commands whose
-/// combined output stays well under the OS pipe buffer (URLs, short stderr) — large stdout must go
+/// combined output stays well under the OS pipe buffer (URLs, short stderr) -- large stdout must go
 /// to a file, not a pipe, to avoid a fill-the-buffer deadlock.
 pub fn run_bounded(
     label: &str,
@@ -74,7 +74,7 @@ pub fn run_bounded(
         }
     };
     // `wait_timeout` has already reaped the child, so `wait_with_output()` (a second wait on the
-    // same PID) would fail with ECHILD. Read the piped handles directly instead — the process has
+    // same PID) would fail with ECHILD. Read the piped handles directly instead -- the process has
     // exited, and callers only route commands whose output stays well under the pipe buffer here
     // (large output, e.g. the pandoc PDF, goes to a file), so a post-exit drain cannot deadlock.
     // Mirrors `persona::whoami_via`.
@@ -102,7 +102,7 @@ pub fn run_bounded(
 /// and no drain can deadlock. For large payloads and large output (the `claude -p` LLM call).
 ///
 /// [`run_bounded`] cannot be reused here and the reason is a deadlock, not a preference. It sets
-/// `stdin(Stdio::null())` — there is nowhere to put a 500KB payload — and it drains stdout only
+/// `stdin(Stdio::null())` -- there is nowhere to put a 500KB payload -- and it drains stdout only
 /// AFTER the child exits. Writing a large payload into a pipe while not draining stdout deadlocks
 /// (child blocks writing output, parent blocks writing input), and a post-exit drain deadlocks the
 /// moment the child fills the ~64KB stdout pipe. This extends the pattern `write_pdf` already uses

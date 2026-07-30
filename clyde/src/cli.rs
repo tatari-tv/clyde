@@ -297,7 +297,7 @@ pub struct EnrichArgs {
 /// `["session","search","report"]` (which matches no tool-bearing subcommand) rather than
 /// `["report"]`.
 ///
-/// Used to decide whether — and which — REQUIRED TOOLS `after_help` to attach. Those blocks spawn
+/// Used to decide whether -- and which -- REQUIRED TOOLS `after_help` to attach. Those blocks spawn
 /// a `--version` probe per tool, so they must be built only when that specific help is requested,
 /// never on a normal run.
 pub(crate) fn help_target(argv: &[String]) -> Option<Vec<String>> {
@@ -312,7 +312,7 @@ pub(crate) fn help_target(argv: &[String]) -> Option<Vec<String>> {
         }
         if arg == "-h" || arg == "--help" {
             // `--help` is an early-exit flag: clap renders help for the command parsed SO FAR and
-            // ignores anything after it. So stop here — `clyde --help report` targets root help
+            // ignores anything after it. So stop here -- `clyde --help report` targets root help
             // (no positionals yet), not report.
             saw_help_flag = true;
             break;
@@ -324,12 +324,12 @@ pub(crate) fn help_target(argv: &[String]) -> Option<Vec<String>> {
         }
         i += 1;
     }
-    // `clyde help <path...>` — the help subcommand names its target explicitly.
+    // `clyde help <path...>` -- the help subcommand names its target explicitly.
     if positionals.first().map(String::as_str) == Some("help") {
         let path = positionals[1..].to_vec();
         return (!path.is_empty()).then_some(path);
     }
-    // `clyde <path...> --help` — the positionals ARE the target path.
+    // `clyde <path...> --help` -- the positionals ARE the target path.
     (saw_help_flag && !positionals.is_empty()).then_some(positionals)
 }
 

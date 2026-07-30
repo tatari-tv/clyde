@@ -12,13 +12,13 @@ use super::*;
 #[test]
 fn credential_and_model_failures_carry_the_escape_hatch() {
     let cases = [
-        // is_error: an expired token — checking the install and login would actually help here.
+        // is_error: an expired token -- checking the install and login would actually help here.
         r#"{"is_error":true,"error":{"message":"OAuth token has expired"}}"#.to_string(),
         // subtype not success.
         envelope_json(false, "error_during_execution", "end_turn", "x", 1, &real_model_usage()),
         // empty result.
         envelope_json(false, "success", "end_turn", "  ", 1, &real_model_usage()),
-        // a substituted model — a fresh login might select the right one.
+        // a substituted model -- a fresh login might select the right one.
         envelope_json(
             false,
             "success",

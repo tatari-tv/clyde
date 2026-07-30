@@ -40,7 +40,7 @@ fn parsed(sid: &str, modified: &str) -> ParsedSession {
     }
 }
 
-/// A serialized `SessionEfficiency` blob for one model's usage, plus the three indexed scalars — the
+/// A serialized `SessionEfficiency` blob for one model's usage, plus the three indexed scalars -- the
 /// exact shape `reindex_efficiency` persists, so collect parses it back with `efficiency`'s types.
 fn efficiency_blob(model: &str, usage: TokenUsage) -> (String, Option<f64>, i64, f64) {
     let mut raw = RawCounters::default();
@@ -266,7 +266,7 @@ fn collect_fails_closed_on_null_efficiency_and_writes_no_artifact() {
     assert!(!output.exists(), "no artifact may be written on the fail-closed path");
 }
 
-/// An empty window (zero sessions) is a VALID empty v2 artifact, exit 0 — distinct from the
+/// An empty window (zero sessions) is a VALID empty v2 artifact, exit 0 -- distinct from the
 /// fail-closed "bad/missing data" path above.
 #[test]
 fn collect_empty_window_writes_valid_empty_artifact() {

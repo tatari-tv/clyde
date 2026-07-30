@@ -29,7 +29,7 @@ fn model_tokens(input: u64, spend: Option<f64>) -> ModelTokens {
     }
 }
 
-/// A v2 `SessionEfficiency` passthrough whose aggregate raw counters mirror `mt` for one model — the
+/// A v2 `SessionEfficiency` passthrough whose aggregate raw counters mirror `mt` for one model -- the
 /// merge seam unions THIS across sessions to recompute the report-wide ratios, so it must carry the
 /// same token split the entry's `models` table shows.
 fn efficiency_for(model: &str, mt: &ModelTokens) -> SessionEfficiency {
@@ -520,7 +520,7 @@ fn v1_report_json_does_not_deserialize_as_v2() {
 }
 
 /// And merge REFUSES a v1 input (it fails to parse in `read_reports`), rather than silently
-/// producing a degraded report — a v1+v2 mix cannot merge; re-collect to v2 first.
+/// producing a degraded report -- a v1+v2 mix cannot merge; re-collect to v2 first.
 #[test]
 fn v1_report_json_is_refused_by_merge() {
     let tmp = TempDir::new().unwrap();

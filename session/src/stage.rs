@@ -1,7 +1,7 @@
 //! Durable transcript staging (Phase 1.5): copy a session's live transcripts into a clyde-owned
 //! location to beat Claude's 30-day TTL, decoupled from any knowledge-layer distillation.
 //!
-//! This reads only local files and writes only local files — no LLM, no vault, no work/personal
+//! This reads only local files and writes only local files -- no LLM, no vault, no work/personal
 //! crossing. Copies are atomic (temp-in-dest + rename) and idempotent (a destination at least as
 //! new as its source is left untouched), so re-staging a sweep is cheap and self-healing.
 

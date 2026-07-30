@@ -126,7 +126,7 @@ fn format_name(format: crate::cli::Format) -> &'static str {
 pub struct MergeConfig {
     pub inputs: Vec<PathBuf>,
     /// Where the merged report's JSON goes. `-o <path>` selects [`Output::File`]; omitting `-o`
-    /// streams it to stdout — the same convention `collect` uses, so `report merge a.json b.json
+    /// streams it to stdout -- the same convention `collect` uses, so `report merge a.json b.json
     /// | jq` works.
     pub output: Output,
 }
@@ -143,7 +143,7 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
     let resolved = match command {
         crate::cli::Command::Collect(args) => {
             // Collect reads clyde.yml for the date-tz convention and the enrichment floor. This load
-            // is NOT what protects `merge` — `render` below loads config unconditionally now (the
+            // is NOT what protects `merge` -- `render` below loads config unconditionally now (the
             // model pins live there), so only `merge` is still config-independent.
             let file = common::config::load()?;
             ResolvedCommand::Collect(collect_config_from_args(args, file.date_tz(), file.min_enrichment())?)

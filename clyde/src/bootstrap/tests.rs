@@ -7,7 +7,7 @@ use tempfile::TempDir;
 
 /// Counting [`Systemd`] fake: records how many times each shell-out WOULD have been invoked,
 /// without ever spawning `systemctl` (which CI cannot run). Lets a test PROVE the outer `run()`
-/// gate is honored — zero calls under dry-run/skip-systemd, the real calls otherwise.
+/// gate is honored -- zero calls under dry-run/skip-systemd, the real calls otherwise.
 #[derive(Default)]
 struct CountingSystemd {
     daemon_reloads: Cell<usize>,
@@ -128,7 +128,7 @@ fn events_db_merges_legacy_into_clyde_when_both_present() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     // Content-DISJOINT rows (distinct session_id tags), so the content-dedup merge inserts all of
-    // them — modelling the real disjoint-time-range case.
+    // them -- modelling the real disjoint-time-range case.
     seed_events_db_tagged(&paths.legacy_events_db(), 2, "legacy");
     seed_events_db_tagged(&paths.clyde_events_db(), 9, "clyde");
 
@@ -277,7 +277,7 @@ fn events_db_checkpoint_busy_fails_closed_and_leaves_legacy_intact() {
     // The KEY fail-closed test. A second "holder" connection holds a WRITE lock on the legacy DB so
     // the TRUNCATE checkpoint cannot complete: SQLite reports this as SQLITE_OK with busy=1 (NOT an
     // error). `checkpoint_truncate` reads that busy column and returns Err, which must propagate via
-    // `?` BEFORE the legacy DB is moved — leaving everything intact for a retry.
+    // `?` BEFORE the legacy DB is moved -- leaving everything intact for a retry.
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     let legacy = paths.legacy_events_db();
@@ -476,7 +476,7 @@ fn repair_rewrites_clyde_unit_with_a_stale_subcommand() {
 #[test]
 fn repoint_rewrites_clyde_unit_that_still_carries_environment_file() {
     // Phase 5, G6: a clyde unit already on the correct subcommand spelling but STILL carrying the
-    // retired EnvironmentFile directive must be rewritten too — refresh_clyde_unit's trigger is not
+    // retired EnvironmentFile directive must be rewritten too -- refresh_clyde_unit's trigger is not
     // just the stale subcommand spelling. This is exactly the live desk.lan state: `session enrich`
     // (already migrated) plus `EnvironmentFile=` (not yet excised).
     let dir = TempDir::new().unwrap();
@@ -589,7 +589,7 @@ fn install_timer_creates_service_timer_and_symlink() {
 #[test]
 fn install_clyde_timer_writes_no_environment_file() {
     // Phase 5 success criterion: the unit body `install_clyde_timer` generates must contain no
-    // `EnvironmentFile` line — clyde installs no credential file. Break-it check: restoring the old
+    // `EnvironmentFile` line -- clyde installs no credential file. Break-it check: restoring the old
     // `EnvironmentFile=%h/.config/clyde/enrich.env` line in `install_clyde_timer`'s template makes
     // this assertion fail.
     let dir = TempDir::new().unwrap();
@@ -803,7 +803,7 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
     );
 
     // The events DB was never opened in a writing mode: no clyde DB was created, the legacy DB is
-    // exactly where it was, and (the load-bearing checkpoint guard) its row count is unchanged —
+    // exactly where it was, and (the load-bearing checkpoint guard) its row count is unchanged --
     // a `PRAGMA wal_checkpoint(TRUNCATE)` would have collapsed/rewritten the file.
     assert!(
         !paths.clyde_events_db().exists(),
@@ -847,7 +847,7 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
 #[test]
 fn run_dry_run_does_not_shell_out_to_systemctl() {
     // Exercise the OUTER run() over a temp fixture in dry-run with a counting Systemd fake. The
-    // migration must mutate nothing AND the two systemctl shell-outs must NOT be taken — proving
+    // migration must mutate nothing AND the two systemctl shell-outs must NOT be taken -- proving
     // the `!args.dry_run && ...` gate in run() is honored, not merely inspected.
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());

@@ -307,7 +307,7 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
 /// source of a named subagent's type, because that subagent's own sidecar records never carry
 /// `attributionAgent`. Keyed by `name` so `fold` can match it to the subagent's `agentId`
 /// (`a<name>-<hash>`). First value for a name wins (mirrors the `attributionAgent` first-wins rule).
-/// A `Task`/`Agent` spawn WITHOUT a `name` (a classic inline subagent) contributes nothing here —
+/// A `Task`/`Agent` spawn WITHOUT a `name` (a classic inline subagent) contributes nothing here --
 /// its type already rides `attributionAgent`.
 fn collect_spawn_types(record: &Record, spawn_types: &mut BTreeMap<String, String>) {
     let Some(blocks) = record

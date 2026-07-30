@@ -1,6 +1,6 @@
 //! Reindex: scan `~/.claude/projects`, parse, and upsert into `sessions.db`.
 //!
-//! Incremental by parent-transcript mtime — unchanged sessions are skipped. After upserting,
+//! Incremental by parent-transcript mtime -- unchanged sessions are skipped. After upserting,
 //! a reconcile pass flags rows whose transcripts have been TTL-reaped as `archived`.
 //!
 //! Repo attribution (schema v10, `docs/design/2026-07-26-report-story-fidelity.md`) resolves on
@@ -30,7 +30,7 @@ use crate::model::ReindexStats;
 const FILES_TOUCHED_RANK: i64 = RepoSource::FilesTouched.rank();
 
 /// Run a full incremental reindex against `projects_dir`, writing into `db`. `repo_root` is the
-/// configured clone root rule 4 (`common::repo::from_path_guess`) matches against — `clyde.yml`'s
+/// configured clone root rule 4 (`common::repo::from_path_guess`) matches against -- `clyde.yml`'s
 /// `repo-root`, default `<home>/repos`.
 pub fn reindex(db: &Db, projects_dir: &Path, repo_root: &Path) -> Result<ReindexStats> {
     debug!(
@@ -74,7 +74,7 @@ pub fn reindex(db: &Db, projects_dir: &Path, repo_root: &Path) -> Result<Reindex
 /// both columns. Scoped to `repo_rank > files-touched`, so a session already resolved by rule 1 or 2
 /// is not re-evaluated for an answer that could not win anyway.
 ///
-/// Call this AFTER `efficiency::reindex_efficiency`. Calling it before is harmless but pointless —
+/// Call this AFTER `efficiency::reindex_efficiency`. Calling it before is harmless but pointless --
 /// every `repos_touched` would still be empty and rule 3 would abstain everywhere.
 pub fn resolve_repos(db: &Db, repo_root: &Path) -> Result<usize> {
     debug!("index::resolve_repos: repo_root={}", repo_root.display());
@@ -101,7 +101,7 @@ pub fn resolve_repos(db: &Db, repo_root: &Path) -> Result<usize> {
 /// `sessions.repo` write, plus the learned-path record on a rule-1 hit.
 ///
 /// Shared by [`reindex`] and [`resolve_repos`] so the two passes can never diverge on WHICH rules
-/// run or on what a hit records — the only difference between them is where `repos_touched` and the
+/// run or on what a hit records -- the only difference between them is where `repos_touched` and the
 /// cwd came from.
 fn apply_chain(
     db: &Db,

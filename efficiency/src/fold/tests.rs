@@ -21,7 +21,7 @@ fn ex(path: &str) -> crate::extract::FileEfficiency {
 }
 
 /// End-to-end recovery: extract the named-subagents fixture, fold it, and assert every tier of the
-/// `resolve_agent_type` chain resolves as documented. This is the regression that pins the fix — a
+/// `resolve_agent_type` chain resolves as documented. This is the regression that pins the fix -- a
 /// named subagent whose sidecar lacks `attributionAgent` recovers its type from the spawn map, and
 /// `attributionAgent` still wins over a decoy spawn-map entry.
 #[test]

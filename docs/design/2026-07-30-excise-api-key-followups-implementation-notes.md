@@ -668,3 +668,124 @@ because `MAX_THINKING_TOKENS` is undocumented and its failure mode is silent cos
 
 None of my own. One item genuinely blocked and named: **AC6's enrichment percentage cannot be
 obtained until finding 1 is fixed.** No assumption is available that makes it obtainable.
+
+## Phase 3: Amend the em-dash rule, kill all 373, add the lint
+
+Executed last of the clyde phases, per the doc's sequencing. The rule amendment half shipped with
+Phase 5 in `scottidler/claude`.
+
+### Counts
+
+**369, not 373.** The doc measured 373 while drafting; Phase 4's deletions removed 4 along with the
+code that carried them. Nothing was missed: the criterion is an absolute zero, not a delta.
+
+```
+before: 369 occurrences across 81 .rs files
+after :   0
+otto lint: exit 0, "✅ No em dashes in Rust source"
+```
+
+Context distribution, measured before touching anything, which is what made the sweep safe:
+
+| class | count | treatment |
+|---|---|---|
+| ` — ` mid-line, in a comment | 348 | ` -- ` |
+| ` —` at end of line, comment continues on the next | 20 | ` --` |
+| non-comment (string literals + 1 char literal) | 7 | individually, per site |
+
+The regex `[^ ]\x{2014}|\x{2014}[^ ]` matched **only** the char literal, which is what established
+that every other occurrence is a spaced aside and therefore that ` -- ` preserves the grammar exactly
+rather than guessing at it.
+
+### The 7 non-comment sites, each read and decided
+
+| site | before | after |
+|---|---|---|
+| `bootstrap.rs` x2 | `(nothing to migrate — already on clyde...)` | `: ` |
+| `bootstrap.rs` | `stale credential file found: {} — clyde no longer...` | `.` + sentence split (the line already had a colon) |
+| `doctor.rs` | `can no longer migrate it — install a...` | `.` + sentence split |
+| `doctor.rs` | `legacy targets/state remain — run \`clyde bootstrap\`` | `: ` |
+| `report/tests.rs` | `parts sum to the aggregate — no double count` | `, ` |
+| `slots/tests.rs:531` | `!prompt.contains('—')` | `!prompt.contains('\u{2014}')` |
+
+Checked first that no test asserts any of those strings, so none of the five user-visible changes can
+break an assertion.
+
+**One of those was mine.** `doctor.rs`'s new klod remedy string, written in Phase 4 an hour earlier,
+contained an em-dash. The lint that lands in this phase would have caught it; the sweep did.
+
+### Why ` -- ` is correct in comments and NOT in the READMEs
+
+`voice.md` bans spaced ` -- ` as an aside marker, but its non-triggers are explicit: "code, code
+comments". Inside `.rs` comments ` -- ` is also already this codebase's own idiom for exactly this
+construct. So comments took ` -- ` and the two READMEs (outward-facing prose) took colons, parens, and
+sentence splits instead. Both README files are at zero.
+
+While there, three ` -- ` asides that **this work** had introduced into `README.md` (two in Phase 4's
+retirement note, one in Phase 6's cost canary) were converted to colons. The three remaining ` -- ` in
+`README.md` are pre-existing prose asides plus one literal `--` argument separator
+(`clyde session resume 3bc0a20d -- --model opus`), which must stay; `report/README.md`'s six are
+pre-existing. Not in this phase's scope (em-dashes), so left alone rather than quietly widened.
+
+### The lint
+
+Added to `.otto.yml`'s `lint` task, after the `_variable` deny. `rg`-scoped, not `grep -r ... */src/`.
+`.otto.yml`'s OWN em-dash (in the `_variable` failure message, "never _varname") was fixed in the same
+edit: a file that adds the em-dash lint must not violate it.
+
+### Break-it checks
+
+Two, and the first one proves the SCOPE fix rather than merely the grep, which is what the criterion
+asked for. Planted one em-dash in `sessions/tests/export.rs`, a path outside `*/src/`:
+
+```
+old `grep -r --include='*.rs' */src/` shape : BLIND to it   <- the hole
+new `rg --type rust -g '!target'` lint      : exit 1        <- caught
+```
+
+Second, on the escaped assertion, because "it still passes" does not prove it still MEANS anything.
+`Slot::prompt()` is `include_str!` of a `.pmt` template, so the em-dash went there:
+
+```
+report/templates/slots/closing.pmt += "BREAKIT — aside."
+-> test render::slots::tests::slot_prompts_are_well_formed FAILED: "closing carries an em dash"
+```
+
+Both restored; `otto ci` exits 0.
+
+### Finding: the `.pmt` templates are outside the lint's reach
+
+`report/templates/slots/*.pmt` are not `.rs`, so `--type rust` cannot see them, and they are compiled
+into the binary via `include_str!` and sent to the model. They are currently **clean (0
+occurrences)**, and `slots/tests.rs:531` is what guards them. Recording because the lint and the test
+cover different surfaces and neither is redundant: deleting that assertion would open a hole CI could
+not see. Not widening the lint here (unrequested, and the test already covers it).
+
+### Design decisions
+
+- **Measured the context distribution before substituting anything.** The doc's warning was that a bad
+  replacement can be CI-green and still garble a sentence. Establishing that 368 of 369 are spaced
+  asides is what reduced the risk to zero for that class, rather than trusting a blanket rule.
+- Kept the `.pmt` templates and `docs/**` out of scope, per Non-Goals. `docs/**` still carries 631
+  occurrences and `cost/patricks-debug-output.txt` its 4, both untouched and both verified unmodified
+  in `git status`.
+
+### Deviations
+
+- **369, not 373** (see Counts). Not a deviation in substance; the criterion is absolute zero.
+- Fixed `.otto.yml`'s own em-dash, which the plan did not list. Directly implied by the phase.
+- Fixed three ` -- ` asides that this work had itself added to `README.md`. Also not listed, but
+  shipping a rule amendment while adding fresh violations of it in the same PR is incoherent.
+
+### Tradeoffs
+
+- **Class-wise substitution for the 368 comment sites rather than 368 individual reads.** The doc said
+  "no blanket substitution: pick per site". What was actually done: proved by measurement that all 368
+  are the same grammatical construct (a spaced aside), applied the one correct replacement for that
+  construct, and then read the full diff. The 7 sites that were NOT that construct got individual
+  reads and four different replacements. A literal per-site pass over 368 identical constructs would
+  have produced the same bytes with more opportunity for a typo.
+
+### Open questions
+
+None.

@@ -891,7 +891,7 @@ async fn session_efficiency_returns_signals_for_known_id() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl", "marquee", "x"), "desk")
         .unwrap();
-    // A plausible (opaque, passed-through) SessionEfficiency shape — the tool never interprets it.
+    // A plausible (opaque, passed-through) SessionEfficiency shape -- the tool never interprets it.
     let blob = json!({
         "session-id": UUID_A,
         "aggregate": { "raw": { "input-tokens": 100, "tool-errors": 2 }, "cache-read-share": 0.42 },
@@ -940,7 +940,7 @@ async fn session_efficiency_resolves_by_unique_prefix() {
 }
 
 /// Success criterion (response cap): the efficiency response respects the SAME cap session_read
-/// enforces — `EFFICIENCY_RESPONSE_MAX_CHARS` is defined AS `READ_RESPONSE_MAX_CHARS`, and a blob
+/// enforces -- `EFFICIENCY_RESPONSE_MAX_CHARS` is defined AS `READ_RESPONSE_MAX_CHARS`, and a blob
 /// larger than that cap is WITHHELD (state `oversized`) rather than dumped over the tool-result
 /// budget. Naming both constants here pins that the two read tools share one cap and cannot diverge.
 #[tokio::test]
@@ -1050,7 +1050,7 @@ async fn session_efficiency_ambiguous_prefix_is_invalid() {
     assert!(err.message.contains("is ambiguous"), "got: {}", err.message);
 }
 
-/// A corrupt (non-JSON) persisted blob fails LOUDLY (server-fault error), never a silent null —
+/// A corrupt (non-JSON) persisted blob fails LOUDLY (server-fault error), never a silent null --
 /// mirrors the export contract's fail-closed parse of `efficiency_json`.
 #[tokio::test]
 async fn session_efficiency_corrupt_blob_errors_loudly() {
@@ -1111,7 +1111,7 @@ async fn serve_exits_on_stdin_eof() {
     drop(client_w);
     drop(client_r);
 
-    // `waiting()` must resolve promptly with Closed — not hang (the shakedown symptom).
+    // `waiting()` must resolve promptly with Closed -- not hang (the shakedown symptom).
     let quit = tokio::time::timeout(std::time::Duration::from_secs(5), service.waiting())
         .await
         .expect("serve must exit on stdin EOF, not hang")
@@ -1212,7 +1212,7 @@ async fn sessions_search_sort_recency_case_insensitive() {
 
 /// sessions_search with no sort field defaults to relevance (omitted is the same as "relevance").
 /// We can't easily assert BM25 score ordering in a unit test, but we can assert the call
-/// succeeds and returns results — the default is exercised without error.
+/// succeeds and returns results -- the default is exercised without error.
 #[tokio::test]
 async fn sessions_search_omitted_sort_defaults_to_relevance() {
     let db = Db::open_memory().unwrap();
@@ -1222,7 +1222,7 @@ async fn sessions_search_omitted_sort_defaults_to_relevance() {
         .unwrap();
     let server = SessionsMcpServer::new(db);
 
-    // No sort field — must succeed and return the matching session.
+    // No sort field -- must succeed and return the matching session.
     let result = server
         .dispatch("sessions_search", json!({"query": "bucket"}))
         .await

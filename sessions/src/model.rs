@@ -38,7 +38,7 @@ pub struct SessionRecord {
     pub model: Option<String>,
     pub n_msgs: i64,
     pub created: Option<DateTime<Utc>>,
-    /// Parent transcript mtime — the incremental-reindex skip key.
+    /// Parent transcript mtime -- the incremental-reindex skip key.
     pub modified: DateTime<Utc>,
     /// Phase 4 (cr migration) populates cost; `None` for now.
     pub cost: Option<f64>,
@@ -62,7 +62,7 @@ pub enum MatchSource {
 
 /// Result ordering for `search`. Default is relevance (BM25).
 ///
-/// No clap derive — the `sessions` crate stays clap-free (shell/core split). The CLI defines its
+/// No clap derive -- the `sessions` crate stays clap-free (shell/core split). The CLI defines its
 /// own `ValueEnum` and maps it into this domain enum via `From`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortBy {
@@ -169,7 +169,7 @@ pub struct Filters {
 
 /// One session's catalog row plus its RAW `efficiency_json` / `outcome_json` blobs and the three
 /// indexed scalars, as returned by the Phase 3 bulk read ([`crate::db::Db::catalog`]). The blobs are
-/// opaque strings — `sessions` never depends on `efficiency` (would be a cycle: `efficiency` already
+/// opaque strings -- `sessions` never depends on `efficiency` (would be a cycle: `efficiency` already
 /// depends on `sessions` to persist), so the caller (`report`, Phase 4) parses them with its own
 /// imported types. `None` on either blob means the session has not yet been reindexed; a reindexed
 /// session with no observed outcome stores an all-empty `outcome_json` object, distinct from `None`.
@@ -199,13 +199,13 @@ pub struct ReindexStats {
     pub archived: usize,
 }
 
-/// Per-session outcome from an enrichment pass — also the per-session row `--dry-run` prints so
+/// Per-session outcome from an enrichment pass -- also the per-session row `--dry-run` prints so
 /// the operator can inspect the gate's decisions before the first off-machine call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct EnrichDetail {
     pub session_id: String,
-    /// `work` / `personal` — the routing classification.
+    /// `work` / `personal` -- the routing classification.
     pub scope: String,
     /// Whether this session's content would be (dry-run) / was (live) sent off-machine.
     pub would_send: bool,

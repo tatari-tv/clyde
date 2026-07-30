@@ -2,7 +2,7 @@
 //!
 //! This is the FIRST file-backed config clyde reads (nothing read `clyde.yml` before). It is
 //! intentionally minimal: one field today (`date-tz`), strict schema (`deny_unknown_fields`), and
-//! a missing file is NOT an error — it yields defaults. The CLI layer loads this once and threads
+//! a missing file is NOT an error -- it yields defaults. The CLI layer loads this once and threads
 //! the resolved [`DateTz`](crate::DateTz) into [`parse_since`](crate::parse_since), keeping the
 //! parser pure.
 
@@ -122,8 +122,8 @@ where
 /// needs this.
 ///
 /// No UPPER bound is enforced, deliberately. Both transports already fail loudly on a ceiling the
-/// model cannot honor — the api path returns a 400, and the cli path is cut at the granted ceiling and
-/// bails on `stop_reason: max_tokens` before the after-the-fact budget check is ever reached — and
+/// model cannot honor -- the api path returns a 400, and the cli path is cut at the granted ceiling and
+/// bails on `stop_reason: max_tokens` before the after-the-fact budget check is ever reached -- and
 /// bounding it here would require a per-model capability table, i.e. fast-changing data baked into
 /// slow-changing logic.
 fn nonzero_ceiling<'de, D>(deserializer: D, key: &str) -> std::result::Result<u32, D::Error>
@@ -143,7 +143,7 @@ where
 /// absent section is all-defaults.
 ///
 /// `Default` is HAND-WRITTEN (not derived): the two model pins have meaningful non-empty defaults,
-/// and a derived `Default` would substitute `String::new()` — an empty `--model` argument, which is
+/// and a derived `Default` would substitute `String::new()` -- an empty `--model` argument, which is
 /// not a valid model and would fail at the transport instead of resolving to the documented pin.
 /// Hand-writing keeps `RenderConfig::default()` and a from-scratch deserialize in lock step.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -191,14 +191,14 @@ impl Default for RenderConfig {
 /// scope, per the house config rule). Every field defaults, so an absent `efficiency:` section is
 /// all-defaults. `Default` is HAND-WRITTEN (not derived): the numeric thresholds have meaningful
 /// non-zero defaults, and a derived `Default` would silently substitute the type's zero value
-/// (`0.0` floor / `0.0` ceiling / `false` flag / `0` gates) — a floor of 0.0 flags nothing and a
+/// (`0.0` floor / `0.0` ceiling / `false` flag / `0` gates) -- a floor of 0.0 flags nothing and a
 /// ceiling of 0.0 flags everything, both of which diverge from what a missing file must resolve to.
 /// Hand-writing keeps `EfficiencyConfig::default()` and a from-scratch deserialize in lock step.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[serde(deny_unknown_fields)]
 pub struct EfficiencyConfig {
-    /// `cache-read-share` below this fraction flags the session as cache-wasteful — but ONLY when
+    /// `cache-read-share` below this fraction flags the session as cache-wasteful -- but ONLY when
     /// the session is eligible (see the two gates below). Default `0.6`.
     #[serde(default = "default_cache_read_share_floor", deserialize_with = "de_fraction")]
     cache_read_share_floor: f64,

@@ -15,13 +15,13 @@ const MULTI_SUBAGENT: &str = concat!(
 );
 
 /// Default `efficiency:` thresholds (floor 0.6, ceiling 0.05, auto-compaction on, gates
-/// 20000 tokens / 3 turns) — the values a missing config resolves to.
+/// 20000 tokens / 3 turns) -- the values a missing config resolves to.
 fn default_config() -> EfficiencyConfig {
     EfficiencyConfig::default()
 }
 
 /// Build aggregate signals through the real `finalize` path so the derived metrics (cache share,
-/// tool-error rate) are computed exactly as production computes them — not hand-set.
+/// tool-error rate) are computed exactly as production computes them -- not hand-set.
 fn signals(raw: RawCounters) -> EfficiencySignals {
     finalize(raw)
 }
@@ -91,7 +91,7 @@ fn healthy_eligible_session_flags_nothing() {
 #[test]
 fn ineligible_short_below_floor_does_not_flag_cache_waste() {
     // The eligibility gate proven: cache share ~0.09 is WELL below the 0.6 floor, but the session
-    // is ~110 tokens / 2 turns — under BOTH gates — so cache-waste must NOT flag (false-positive
+    // is ~110 tokens / 2 turns -- under BOTH gates -- so cache-waste must NOT flag (false-positive
     // suppression on a short one-shot). No errors, no compaction -> zero flags total.
     let raw = RawCounters {
         input_tokens: 100,

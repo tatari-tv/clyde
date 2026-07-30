@@ -84,7 +84,7 @@ fn has_permit_hook(root: &Map<String, Value>) -> bool {
 }
 
 /// Insert the claude-permit PreToolUse hook entry, preserving existing hooks. Returns an error
-/// (rather than panicking) when the settings file is hand-malformed — e.g. `hooks` is not an
+/// (rather than panicking) when the settings file is hand-malformed -- e.g. `hooks` is not an
 /// object or `hooks.PreToolUse` is not an array.
 fn insert_hook(root: &mut Map<String, Value>) -> Result<()> {
     // Fresh installs emit the clyde umbrella form. `clyde bootstrap` repoints any existing

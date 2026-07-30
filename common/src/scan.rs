@@ -7,8 +7,8 @@
 //! crates consume, so the divergence class cannot recur.
 //!
 //! The unified [`SessionFile`] carries the UNION of what both crates need:
-//! - `group_id` + `kind` — `report`'s parent/subagent grouping;
-//! - `mtime` + `size` — `cost`'s [`filter_by_date_range`] date prefilter and cache-invalidation
+//! - `group_id` + `kind` -- `report`'s parent/subagent grouping;
+//! - `mtime` + `size` -- `cost`'s [`filter_by_date_range`] date prefilter and cache-invalidation
 //!   hash.
 //!
 //! Both `mtime` and `size` are read from the SAME `fs::metadata` call the empty-file check already

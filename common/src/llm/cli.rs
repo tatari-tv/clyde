@@ -1,12 +1,12 @@
 //! The keyless transport: shell out to the locally installed `claude` CLI in headless print mode.
 //!
-//! Every clyde user already has a logged-in Claude Code — that login is WHY they have sessions to
+//! Every clyde user already has a logged-in Claude Code -- that login is WHY they have sessions to
 //! report on. This transport piggy-backs it, so clyde reads, stores, refreshes, and transmits NO
 //! credential: the `claude` binary owns auth end to end. Same shape as the existing shell-outs to
 //! `pandoc` and to `marquee` (which owns its own Okta tokens).
 //!
 //! Fail loud, never retry. This is the ONE LLM transport in the workspace (design
-//! `2026-07-29-excise-api-key.md` Phase 4 deleted the api-key path), so EVERY failure is terminal —
+//! `2026-07-29-excise-api-key.md` Phase 4 deleted the api-key path), so EVERY failure is terminal --
 //! logged out, non-zero exit, malformed envelope, non-`end_turn` stop, model mismatch, timeout.
 //! Nothing retries and nothing falls back, because there is nowhere left to fall back to: a broken
 //! login must surface, not hide behind a second credentialed path.
@@ -36,7 +36,7 @@ const CLAUDE_BINARY: &str = "claude";
 /// version is logged on every render and named in every failure, so an unsupported-flag exit reads as
 /// "your claude is older than the floor" instead of as a mystery. The floor exists because the argv
 /// depends on `--tools`, `--safe-mode`, `--strict-mcp-config`, `--no-session-persistence`, and
-/// `--max-turns` — and `--max-turns` is accepted but UNDOCUMENTED in 2.1.219, so it is exactly the
+/// `--max-turns` -- and `--max-turns` is accepted but UNDOCUMENTED in 2.1.219, so it is exactly the
 /// kind of flag that could vanish without a deprecation notice.
 const MIN_CLAUDE_VERSION: &str = "2.1.219";
 
@@ -115,8 +115,8 @@ impl CliTransport {
                 "--tools".into(),
                 String::new(),
                 // No CLAUDE.md, skills, plugins, hooks, MCP, or agents; auth preserved. This is the
-                // isolation mechanism. A temp cwd only ever defeated PROJECT CLAUDE.md discovery —
-                // user and global customizations still loaded — so cwd is hygiene, not the control.
+                // isolation mechanism. A temp cwd only ever defeated PROJECT CLAUDE.md discovery --
+                // user and global customizations still loaded -- so cwd is hygiene, not the control.
                 "--safe-mode".into(),
                 // No MCP servers from any config file.
                 "--strict-mcp-config".into(),
@@ -287,7 +287,7 @@ fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Resul
             //
             // The bail NAMES THE KEY. Now that the ceiling is a budget the user set rather than a mirror
             // of an api limit, "you are over by N" without the one line that raises it is the
-            // remedy-less error this file's own doctrine rejects — and on the cli path those tokens are
+            // remedy-less error this file's own doctrine rejects -- and on the cli path those tokens are
             // already generated and already billed, so the error is the only thing left that can be
             // made useful.
             bail!(
@@ -390,14 +390,14 @@ impl CliTransport {
 }
 
 /// The fully-specified child process. Built as DATA so the argv and the complete env can be asserted
-/// in a unit test without spawning anything — `Command` exposes no getter for "was env_clear called",
+/// in a unit test without spawning anything -- `Command` exposes no getter for "was env_clear called",
 /// so testing the built `Command` directly could not prove the child inherits nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Spawn {
     program: PathBuf,
     args: Vec<String>,
     /// The COMPLETE environment. `env_clear()` is always applied, so this is exactly what the child
-    /// gets — not a set of overrides layered onto the parent's env.
+    /// gets -- not a set of overrides layered onto the parent's env.
     env: Vec<(String, String)>,
 }
 
@@ -418,14 +418,14 @@ impl Spawn {
 ///
 /// A denylist is the wrong shape here and the reason is a measured secret-exposure bug, not
 /// tidiness. A live agent session on this host carries 13 `CLAUDE*` variables, three of which are
-/// SECRETS — `CLAUDE_COST_ANTHROPIC_API_ADMIN_KEY`, `CLAUDE_COST_SLACK_APP_TOKEN`,
+/// SECRETS -- `CLAUDE_COST_ANTHROPIC_API_ADMIN_KEY`, `CLAUDE_COST_SLACK_APP_TOKEN`,
 /// `CLAUDE_COST_SLACK_BOT_TOKEN`. An inherit-by-default child would receive an Anthropic ADMIN key
 /// and two Slack tokens on every render, and a denylist would leak whatever secret-bearing variable
 /// someone adds next. Fail closed: enumerate what the child gets.
 ///
 /// Also excluded by construction: `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`,
-/// `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`, `CLAUDE_TMPDIR`, `CLAUDE_EFFORT` — an
-/// agent-invoked render must not present itself to the child as a nested session of the caller — and
+/// `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`, `CLAUDE_TMPDIR`, `CLAUDE_EFFORT` -- an
+/// agent-invoked render must not present itself to the child as a nested session of the caller -- and
 /// `ANTHROPIC_API_KEY`, because clyde handles no key at all and must never forward one to the child.
 ///
 /// The proxy variables ([`PROXY_VARS`]) are the one addition, and they are enumerated by name for
@@ -438,7 +438,7 @@ fn child_env(kind: Kind) -> Vec<(String, String)> {
     let mut env = Vec::new();
     // Measured 2026-07-24: an `env -i` child with NO env at all still authenticates, because the
     // runtime falls back to `getpwuid` for the home directory. HOME is passed anyway so the transport
-    // never depends on that fallback — if it changed, the failure would present as "logged out",
+    // never depends on that fallback -- if it changed, the failure would present as "logged out",
     // which is the exact misdiagnosis this design fights.
     if let Some(home) = dirs::home_dir() {
         env.push(("HOME".into(), home.display().to_string()));
@@ -677,8 +677,8 @@ fn preview(bytes: &[u8]) -> String {
 /// The `claude -p --output-format json` envelope.
 ///
 /// Deliberately NOT `deny_unknown_fields`. This is a wire frame owned by another tool that will grow
-/// fields — the real envelope already carries a dozen we ignore (`session_id`, `duration_ms`,
-/// `ttft_ms`, `permission_denials`, ...) — so it is the documented forward-compatible-envelope
+/// fields -- the real envelope already carries a dozen we ignore (`session_id`, `duration_ms`,
+/// `ttft_ms`, `permission_denials`, ...) -- so it is the documented forward-compatible-envelope
 /// carve-out to the strict-serde house rule, not an oversight.
 #[derive(Debug, Deserialize)]
 struct Envelope {

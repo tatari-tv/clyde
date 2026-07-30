@@ -201,7 +201,7 @@ fn clyde_service_with_klod_execstart_is_legacy() {
         .join("user")
         .join("clyde-enrich.service");
     fs::create_dir_all(svc.parent().unwrap()).unwrap();
-    // Right name, but ExecStart still invokes klod — a half-rewritten unit must read as legacy.
+    // Right name, but ExecStart still invokes klod -- a half-rewritten unit must read as legacy.
     fs::write(
         &svc,
         "[Service]\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
@@ -225,7 +225,7 @@ fn clyde_service_with_stale_sessions_subcommand_is_legacy() {
         .join("user")
         .join("clyde-enrich.service");
     fs::create_dir_all(svc.parent().unwrap()).unwrap();
-    // Right name and clyde binary, but the pre-rename `sessions enrich` subcommand spelling — the
+    // Right name and clyde binary, but the pre-rename `sessions enrich` subcommand spelling -- the
     // timer would fire `clyde ... sessions enrich`, which now errors. Must read as unhealthy so
     // `clyde bootstrap` is prompted.
     fs::write(
@@ -242,7 +242,7 @@ fn clyde_service_with_stale_sessions_subcommand_is_legacy() {
 
 #[test]
 fn log_locations_always_report_the_unified_clyde_logs_dir() {
-    // Populated even when nothing has been written yet — doctor is a one-stop answer to
+    // Populated even when nothing has been written yet -- doctor is a one-stop answer to
     // "where are the logs" regardless of whether a tool has run since bootstrap.
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
@@ -263,7 +263,7 @@ fn log_locations_always_report_the_unified_clyde_logs_dir() {
 
 #[test]
 fn legacy_log_dirs_are_listed_but_do_not_affect_healthy() {
-    // Phase 8 (D3): legacy log dirs are disposable diagnostics, not migration state — their
+    // Phase 8 (D3): legacy log dirs are disposable diagnostics, not migration state -- their
     // presence must be surfaced informationally but must NOT flip healthy() to false.
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());

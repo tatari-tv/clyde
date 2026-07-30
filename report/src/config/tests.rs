@@ -333,7 +333,7 @@ fn resolve_command_collect_threads_no_outcomes_into_config() {
         no_outcomes: true,
         min_enrichment: None,
     };
-    // `collect` also loads clyde.yml (for the date-tz convention), so this must hold ENV_LOCK too —
+    // `collect` also loads clyde.yml (for the date-tz convention), so this must hold ENV_LOCK too --
     // same race as the render tests, just via the other branch of `resolve_command`.
     let resolved = with_clyde_yml(None, || resolve_command(crate::cli::Command::Collect(args)).unwrap());
     match resolved {
@@ -457,7 +457,7 @@ fn ceilings_come_from_clyde_yml_when_set() {
 
 #[test]
 fn ceilings_are_independent_of_each_other() {
-    // Setting only one must leave the other at its default, not zero it — a ceiling of 0 fails every
+    // Setting only one must leave the other at its default, not zero it -- a ceiling of 0 fails every
     // render.
     let cfg = resolved_render(render_args_base(), Some("render:\n  judge-max-output-tokens: 12345\n"));
     assert_eq!(cfg.judge_max_output_tokens, 12_345);
@@ -472,7 +472,7 @@ fn ceilings_are_independent_of_each_other() {
 
 /// The behavior change this design accepted: render now loads `clyde.yml` UNCONDITIONALLY, because
 /// the model pin lives there and no flag opts out of needing one. So a malformed config breaks a
-/// fully-flagged invocation that previously worked — and it must fail LOUDLY, naming the file, never
+/// fully-flagged invocation that previously worked -- and it must fail LOUDLY, naming the file, never
 /// silently defaulting.
 #[test]
 fn malformed_config_fails_loudly_even_with_format_present() {

@@ -125,7 +125,7 @@ pub struct RepoRow {
     pub models: Vec<String>,
     /// The STRONGEST evidence any session in this row has for the slug existing at all
     /// (`git-origin` beats `known-path` beats `files-touched` beats `path-guess`), so a row whose
-    /// value is `path-guess` is one that NO session ever observed — the fabricated-sibling case
+    /// value is `path-guess` is one that NO session ever observed -- the fabricated-sibling case
     /// (`<root>/tatari-tv/clyde-ft` guessing `tatari-tv/clyde-ft`) rule 4 can produce.
     ///
     /// Strongest, not weakest, because the question this answers is "is this repo real?", not "was

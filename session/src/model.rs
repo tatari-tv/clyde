@@ -8,9 +8,9 @@ use chrono::{DateTime, Utc};
 /// Whether a discovered JSONL is a top-level parent session or a subagent transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionFileKind {
-    /// `<project>/<uuid>.jsonl` — a real top-level session.
+    /// `<project>/<uuid>.jsonl` -- a real top-level session.
     Parent,
-    /// `<project>/<uuid>/subagents/*.jsonl` — a subagent transcript that rolls up into the
+    /// `<project>/<uuid>/subagents/*.jsonl` -- a subagent transcript that rolls up into the
     /// parent session identified by `<uuid>`. Mirrors `cr`'s rollup contract.
     Subagent,
 }
@@ -50,7 +50,7 @@ pub struct ParsedSession {
     pub n_msgs: usize,
     /// Earliest message timestamp in the transcript.
     pub created: Option<DateTime<Utc>>,
-    /// Parent transcript file mtime — the incremental-reindex skip key.
+    /// Parent transcript file mtime -- the incremental-reindex skip key.
     pub modified: DateTime<Utc>,
     /// Concatenated user + assistant text, for the body-FTS content-recall index.
     pub body: String,

@@ -192,7 +192,7 @@ fn guard_output_ceiling_allows_the_same_output_for_the_larger_job() {
 }
 
 /// AC-C1's cli half: the ceiling Guard 6 enforces is the one on the `Job`, i.e. the one config
-/// resolved — not a compile-time constant.
+/// resolved -- not a compile-time constant.
 ///
 /// The sentinel could never be a default, so a Guard 6 that reads a const instead of `job` fails here.
 /// The api half (`a_configured_ceiling_reaches_the_serialized_body`) proves the same value goes on the

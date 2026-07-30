@@ -36,7 +36,7 @@ impl Db {
     /// `filters`, ordered by ascending `updated_at` (the opaque v5 revision) so consecutive
     /// `--limit` pages concatenate with no gap and no overlap. `cursor` echoes the max `updated_at`
     /// across the result, or the request cursor when the result is empty (so a consumer always
-    /// persists a monotonic cursor). Bodies are NOT included here — that is the per-id
+    /// persists a monotonic cursor). Bodies are NOT included here -- that is the per-id
     /// [`Self::export_one`] path.
     pub fn export(&self, filters: &ExportFilters, ctx: &ExportContext) -> Result<ExportEnvelope> {
         debug!(
@@ -124,7 +124,7 @@ impl Db {
     /// Single-session export by id, optionally with the parsed transcript body. Returns `None` when
     /// no such session exists (the CLI maps that to a nonzero exit in Phase 3). With `with_body`, the
     /// body is read from the live transcript, falling back to the staged copy when the live one has
-    /// been reaped (finding B1); `body: null` + `body-error` degrades visibly — `"transcript missing"`
+    /// been reaped (finding B1); `body: null` + `body-error` degrades visibly -- `"transcript missing"`
     /// when BOTH sources are gone, `"parsed empty"` when a layout exists but yields no messages. The
     /// read is bounded by `max_body_bytes` (streamed, never buffered whole); `body-truncated` marks a
     /// cap-driven drop of trailing messages.
@@ -303,13 +303,13 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
         (Some(created), Some(modified)) => (modified - created).num_seconds().max(0),
         _ => 0,
     };
-    // Fail-safe: an unparseable `modified` (never expected — it is NOT NULL, canonical rfc3339) is
+    // Fail-safe: an unparseable `modified` (never expected -- it is NOT NULL, canonical rfc3339) is
     // treated as NOT dormant rather than silently "dormant".
     let dormant = modified_dt.map(|m| now - m > dormant_after).unwrap_or(false);
     let tags: Vec<String> = raw.tags.split_whitespace().map(str::to_string).collect();
     // Parse the stored efficiency blob into an opaque JSON value (the `efficiency` crate owns the
     // shape). Fail LOUDLY (fail closed) on a corrupt/non-JSON blob rather than silently emitting a
-    // `null` efficiency for an annotated row — a non-JSON value must never reach the wire. `NULL`
+    // `null` efficiency for an annotated row -- a non-JSON value must never reach the wire. `NULL`
     // (un-annotated) maps to `None`.
     let efficiency = raw
         .efficiency_json

@@ -4,8 +4,8 @@
 //! This closes the gap the review panel caught: `sessions::Db::upsert_session` skips a row whose
 //! transcript mtime is unchanged, so a bare v6 migration would leave every EXISTING session's
 //! efficiency `NULL` forever. [`reindex_efficiency`] instead drives off the DB's own
-//! `efficiency IS NULL` predicate ([`sessions::Db::sessions_missing_efficiency`]) — independent of
-//! the mtime skip-key — recomputes exactly those sessions from disk, and writes them through
+//! `efficiency IS NULL` predicate ([`sessions::Db::sessions_missing_efficiency`]) -- independent of
+//! the mtime skip-key -- recomputes exactly those sessions from disk, and writes them through
 //! [`sessions::Db::set_efficiency_many`] (which suppresses the revision trigger so writing a derived
 //! annotation never bumps `updated_at`).
 //!
@@ -52,7 +52,7 @@ struct OwnedEfficiency {
 
 impl OwnedEfficiency {
     /// Serialize the whole nested [`SessionEfficiency`] AND the per-session [`Outcomes`] to JSON, and
-    /// pull the three ranking scalars from the SAME aggregate — the single computation path that keeps
+    /// pull the three ranking scalars from the SAME aggregate -- the single computation path that keeps
     /// the indexed scalars and the efficiency JSON in lock step. `outcome_json` is always a concrete
     /// object (the all-empty default for a session with no observed outcome), never NULL, so a
     /// reindexed row is distinguishable from a not-yet-reindexed one.

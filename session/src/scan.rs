@@ -3,7 +3,7 @@
 //! The layout (and the rollup contract) mirrors `cr`: each project dir holds top-level
 //! `<uuid>.jsonl` parent sessions, and a sibling `<uuid>/subagents/*.jsonl` tree of subagent
 //! transcripts that roll up into the parent `<uuid>`. Unlike `cr`, a non-UUID stem here is
-//! warned-and-skipped rather than fatal — the design contract is "skip-and-log, never crash
+//! warned-and-skipped rather than fatal -- the design contract is "skip-and-log, never crash
 //! the reindex" so one malformed directory can't abort a whole scan.
 
 use std::fs;

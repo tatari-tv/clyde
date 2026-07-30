@@ -7,7 +7,7 @@
 //! Two differences from `report::outcome`, both consequences of the catalog being the whole-session
 //! truth store (M2: the report WINDOW is applied session-level at read time, not per-record here):
 //! - **No period filter.** [`extract`] takes no `since`/`until`; it mines ALL outcomes for a session.
-//!   Report's per-record window (`report::outcome::in_window`) is gone — collect (Phase 4) selects
+//!   Report's per-record window (`report::outcome::in_window`) is gone -- collect (Phase 4) selects
 //!   whole sessions whose row falls in `[since,until]`, so the stored per-session outcomes are
 //!   window-agnostic. The Phase 2 parity fixture proves this equals `report::outcome::extract` run
 //!   over an unbounded window for the same session.
@@ -142,12 +142,12 @@ struct Pending {
 /// commits deduped by sha, PRs deduped by url, edited file paths deduped then counted, and the MCP
 /// counts summed (no cross-file identity to dedupe on). Unlike `report::session::union_outcomes` this
 /// always returns a concrete [`Outcomes`] (an all-empty default for a session with no observed
-/// outcome), because the catalog stores a non-NULL `outcome_json` for every reindexed session — a
+/// outcome), because the catalog stores a non-NULL `outcome_json` for every reindexed session -- a
 /// stored empty object means "reindexed, no outcomes", distinct from a NULL "not yet reindexed".
 ///
 /// `repo_root` is the configured clone root ([`common::config::Config::repo_root`]), and it is the
 /// ONLY extra input: [`Outcomes::repos_touched`] is built by PURE path parsing of the edited-file
-/// set against the `<root>/<org>/<repo>` shape. No cwd, no catalog lookup, no `repo_paths` — rule 2's
+/// set against the `<root>/<org>/<repo>` shape. No cwd, no catalog lookup, no `repo_paths` -- rule 2's
 /// learned map lives in SQLite and dragging it in here would make this function unusable without a
 /// database.
 pub fn union(files: &[FileOutcomes], repo_root: &Path) -> Outcomes {

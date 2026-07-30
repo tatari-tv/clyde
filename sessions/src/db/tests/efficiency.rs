@@ -23,7 +23,7 @@ fn efficiency_of(db: &Db, session_id: &str) -> (Option<String>, Option<f64>, Opt
 }
 
 /// `set_efficiency_many` stores all four columns, keeps the indexed scalars in lock step with the
-/// stored JSON, and — the load-bearing invariant — does NOT advance `updated_at` (efficiency is a
+/// stored JSON, and -- the load-bearing invariant -- does NOT advance `updated_at` (efficiency is a
 /// derived read-side annotation, not a content change). BITES: drop the trigger suppression in
 /// `set_efficiency_many` and the cursor advances, failing the `updated_at`/counter assertions.
 #[test]
@@ -188,7 +188,7 @@ fn v6_sessions_missing_efficiency_excludes_annotated_and_archived() {
 
 /// The exact `sessions` schema clyde shipped at v5: the v4 columns PLUS `updated_at`, WITHOUT the v6
 /// efficiency columns. Used to build a real v5 DB so the v5 -> v6 migration path is exercised end to
-/// end — and, critically, so the v5 revision backfill does NOT re-run and rewind live cursors.
+/// end -- and, critically, so the v5 revision backfill does NOT re-run and rewind live cursors.
 const V5_SESSIONS_SQL: &str = "\
 CREATE TABLE sessions (
     id              INTEGER PRIMARY KEY,
@@ -226,7 +226,7 @@ CREATE TABLE sessions (
 ";
 
 /// Build a genuine v5 DB on disk: the v5 schema, the `export_meta` counter, two rows carrying
-/// NON-rowid-order revisions (10, 20), the counter seeded to 20, and the v5 triggers — then
+/// NON-rowid-order revisions (10, 20), the counter seeded to 20, and the v5 triggers -- then
 /// `user_version = 5`. The rows are inserted BEFORE the triggers exist so their explicit revisions
 /// stick (exactly how a post-v5-migration DB looks).
 fn build_v5_db(path: &Path) {
@@ -257,7 +257,7 @@ fn build_v5_db(path: &Path) {
     conn.pragma_update(None, "user_version", 5i64).unwrap();
 }
 
-/// v5 -> v6 migration: adds the efficiency columns AND — the migration hazard this phase must audit —
+/// v5 -> v6 migration: adds the efficiency columns AND -- the migration hazard this phase must audit --
 /// PRESERVES every live `updated_at` revision and the counter (the v5 backfill is gated on
 /// `from_version < 5`, so it does not re-run and rewind the cursor). BITES: remove the `from_version`
 /// guard on the v5 backfill and reopening rewrites revisions to rowid order (1, 2) and reseeds the
@@ -269,7 +269,7 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
     build_v5_db(&path);
 
     // Reopen: migrate v5 forward to the current schema (v10). from_version=5 (< 6), so the v7, v8,
-    // and v9 efficiency resets are all skipped — there was never any v6 efficiency to invalidate —
+    // and v9 efficiency resets are all skipped -- there was never any v6 efficiency to invalidate --
     // and the v5 cursor backfill stays gated off, so revisions are preserved exactly as below. v10's
     // repo-attribution columns/table are idempotent DDL only; they touch no cursor.
     let db = Db::open_at(&path).unwrap();
@@ -395,7 +395,7 @@ fn build_v6_db_with_efficiency(path: &Path) {
 /// recomputes with the corrected named-subagent type recovery, WITHOUT advancing the export cursor
 /// (efficiency is a derived read-side annotation). BITES: drop the trigger suppression in
 /// `migrate_v7_reset_efficiency` and NULLing every row fires the revision trigger, advancing
-/// `updated_at` and the counter — failing the preservation assertions below.
+/// `updated_at` and the counter -- failing the preservation assertions below.
 #[test]
 fn v7_migration_from_v6_invalidates_efficiency_without_advancing_cursor() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -474,7 +474,7 @@ fn has_column(db: &Db, column: &str) -> bool {
 
 /// Build a genuine v7 DB on disk: the v6 shape (rows A rev 10, B rev 20, counter 20, triggers, row A's
 /// efficiency populated) with `user_version = 7`. v7 added NO columns (it only invalidated stale
-/// efficiency), so a v7 DB is structurally a v6 DB whose efficiency was recomputed — for the v8
+/// efficiency), so a v7 DB is structurally a v6 DB whose efficiency was recomputed -- for the v8
 /// migration test we only need populated efficiency, NO `outcome_json` column, and version 7.
 fn build_v7_db_with_efficiency(path: &Path) {
     build_v6_db_with_efficiency(path);
@@ -484,7 +484,7 @@ fn build_v7_db_with_efficiency(path: &Path) {
 
 /// v7 -> v8 migration: ADDS the `outcome_json` column and INVALIDATES the existing efficiency
 /// annotation (NULLs `efficiency_json` + the three scalars + the new `outcome_json`) so the next
-/// `reindex_efficiency` repopulates BOTH per-model tokens and outcomes — WITHOUT advancing the export
+/// `reindex_efficiency` repopulates BOTH per-model tokens and outcomes -- WITHOUT advancing the export
 /// cursor (both are derived read-side annotations). BITES: drop the trigger suppression in
 /// `migrate_v8_extend_efficiency` and NULLing every row fires the revision trigger, advancing
 /// `updated_at` and the counter; drop the reset and the stale (per-model-less, outcome-less) blob

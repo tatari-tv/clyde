@@ -2,7 +2,7 @@
 //! clyde data/config/cache locations, what each integration currently points at, and the permit
 //! events-DB presence + row count. Exits NON-ZERO while any integration still resolves to an old
 //! binary name (`klod`/`ccu`/`claude-permit`) or any tool's state still lives only at a legacy
-//! path — so a missed `bootstrap` step fails loud.
+//! path -- so a missed `bootstrap` step fails loud.
 
 use std::path::{Path, PathBuf};
 
@@ -29,7 +29,7 @@ pub enum Target {
     Clyde,
     /// Still points at the old standalone binary (unhealthy).
     Legacy(&'static str),
-    /// Not present at all (not an error — nothing to repoint).
+    /// Not present at all (not an error -- nothing to repoint).
     Absent,
 }
 
@@ -139,7 +139,7 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
     // An enrich unit still REFERRING to a credential clyde no longer reads. Reported through
     // `legacy_state` rather than as its own `Report` field because that channel already feeds
     // `healthy()` and already prints one line per item with the correct `run \`clyde bootstrap\``
-    // remedy — and `bootstrap` genuinely repairs this one (`refresh_clyde_unit` converges the unit on
+    // remedy -- and `bootstrap` genuinely repairs this one (`refresh_clyde_unit` converges the unit on
     // the canonical body). Cosmetic on its face, but the file states a falsehood about a credential,
     // which is exactly the class that must fail loud rather than sit unnoticed.
     let clyde_svc = paths.clyde_unit();
@@ -169,7 +169,7 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
 }
 
 /// Per-tool log locations under the unified `clyde/logs/` dir (Phase 8, D3), plus any legacy
-/// per-tool log dirs still present. Informational only — legacy logs are disposable diagnostics,
+/// per-tool log dirs still present. Informational only -- legacy logs are disposable diagnostics,
 /// not migration state, so callers must NOT fold `legacy_log_dirs` into [`Report::healthy`].
 fn log_state(paths: &Paths) -> (Vec<(&'static str, PathBuf)>, Vec<PathBuf>) {
     let unified_dir = paths.xdg_data.join("clyde").join("logs");
@@ -358,7 +358,7 @@ fn print_report(paths: &Paths, report: &Report) {
     }
     // When the clyde DB exists the line above reads green, but a legacy events DB alongside it still
     // makes the report unhealthy (`events_db_at_legacy`). Surface it explicitly so the `✗` footer
-    // isn't a mystery — `clyde bootstrap` now merges it in and removes it.
+    // isn't a mystery -- `clyde bootstrap` now merges it in and removes it.
     if report.events_db_at_clyde && report.events_db_at_legacy {
         println!(
             "  {} legacy claude-permit events DB also present (run `clyde bootstrap` to merge)",
@@ -391,12 +391,12 @@ fn print_report(paths: &Paths, report: &Report) {
         // keeping the detection after deleting the machinery.
         println!(
             "{}",
-            "✗ pre-rename `klod` state remains, and this clyde can no longer migrate it — install a \
+            "✗ pre-rename `klod` state remains, and this clyde can no longer migrate it. Install a \
              pre-retirement clyde (<= v0.18.0), run `clyde bootstrap`, then upgrade again"
                 .red()
         );
     } else {
-        println!("{}", "✗ legacy targets/state remain — run `clyde bootstrap`".red());
+        println!("{}", "✗ legacy targets/state remain: run `clyde bootstrap`".red());
     }
 }
 

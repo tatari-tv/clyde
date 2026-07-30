@@ -1,8 +1,8 @@
 //! Enrichment sweep (Phase 2): fill `tags` and `summary` for dormant sessions via a cheap LLM
-//! pass — the first clyde path that ships session content off-machine.
+//! pass -- the first clyde path that ships session content off-machine.
 //!
 //! The order is the gate: classify scope, **skip personal before any payload is built** (the
-//! routing invariant — no personal content reaches the work account), parse the high-signal body
+//! routing invariant -- no personal content reaches the work account), parse the high-signal body
 //! (live or from the staged copy), scrub secrets, then send. Failures are recorded with a bounded
 //! `attempts` count so a bad session retries later but never forever. `--dry-run` walks the exact
 //! same gate but stops before the send, reporting decisions and metrics.
@@ -155,7 +155,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
             }
         };
 
-        // --- Cap, then scrub secrets — the chokepoint every off-machine payload passes. ---
+        // --- Cap, then scrub secrets -- the chokepoint every off-machine payload passes. ---
         let (capped, truncated) = head_tail(&body, SEND_CAP_CHARS);
         if truncated {
             warn!(

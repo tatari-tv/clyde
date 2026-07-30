@@ -9,12 +9,12 @@
 //! On-disk layout (resolved at runtime):
 //!
 //! ```text
-//! $XDG_DATA_HOME/clyde/       # ~/.local/share/clyde/  — authoritative
+//! $XDG_DATA_HOME/clyde/       # ~/.local/share/clyde/  -- authoritative
 //!     sessions.db             #   the navigational index (integration contract)
 //!     reports/                #   cr output lands here (Phase 4)
 //!     staged/                 #   durable transcript copies (Phase 1.5)
-//! $XDG_CONFIG_HOME/clyde/     # ~/.config/clyde/        — shared config
-//! $XDG_CACHE_HOME/clyde/      # ~/.cache/clyde/         — regenerable caches (rm-safe)
+//! $XDG_CONFIG_HOME/clyde/     # ~/.config/clyde/        -- shared config
+//! $XDG_CACHE_HOME/clyde/      # ~/.cache/clyde/         -- regenerable caches (rm-safe)
 //! ```
 
 use std::path::PathBuf;

@@ -462,7 +462,7 @@ fn export_one_reports_transcript_missing_when_staged_dir_lacks_the_jsonl() {
 #[test]
 fn export_one_with_body_reports_transcript_missing_when_live_path_is_a_directory() {
     // Regression: a DIRECTORY named `<id>.jsonl` at the live transcript path (no staged copy) must
-    // resolve to no readable transcript, so the export reports `body-error: "transcript missing"` —
+    // resolve to no readable transcript, so the export reports `body-error: "transcript missing"` --
     // not a layout that parses to zero messages and misreports `"parsed empty"`.
     let db = Db::open_memory().unwrap();
     let tmp = TempDir::new().unwrap();

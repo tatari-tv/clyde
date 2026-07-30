@@ -1,7 +1,7 @@
 //! Integration tests for `clyde session search`'s piped JSON shape.
 //!
 //! Phase 2 (AND->OR fallback) changed the piped JSON output from a bare `Vec<SearchHit>` array to
-//! the `SearchResults` object (`count`, `results`, `fallback`, `unenriched`) — a disclosed
+//! the `SearchResults` object (`count`, `results`, `fallback`, `unenriched`) -- a disclosed
 //! breaking change for scripted consumers (design doc, Resolved Decisions). Driven through the
 //! real `clyde` binary so the JSON asserted here is exactly what a piped consumer receives.
 

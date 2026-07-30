@@ -371,7 +371,7 @@ fn search_relevance_breaks_ties_by_recency() {
     let db = Db::open_memory().unwrap();
 
     // Both sessions have "loopr" in their title only (high-signal). The titles differ only in the
-    // final word ("one"/"two"), so they have identical token counts and field lengths — BM25
+    // final word ("one"/"two"), so they have identical token counts and field lengths -- BM25
     // scores them equally; the `assert_eq!` on the two scores below confirms the tie is real, so
     // the ordering under test is genuinely the recency tiebreak and not an incidental score gap.
     let mut older = parsed(UUID_A, "/tmp/a.jsonl");
@@ -454,7 +454,7 @@ fn search_recency_orders_globally_by_modified() {
 fn search_recency_limit_keeps_most_recent() {
     let db = Db::open_memory().unwrap();
 
-    // Insert 4 sessions all matching "workspace" (in body only) — we'll use limit=2 so only 2 survive.
+    // Insert 4 sessions all matching "workspace" (in body only) -- we'll use limit=2 so only 2 survive.
     // Sessions D and E are the most recent; A and B are older.
     let sessions = [
         (UUID_A, "2026-01-01T00:00:00Z"), // oldest
@@ -471,7 +471,7 @@ fn search_recency_limit_keeps_most_recent() {
         // (more negative) than the recent rows (D, E), which mention "workspace" once. This is
         // what makes the test a real LIMIT-trap guard: if the recency per-table query were
         // (wrongly) ordered `score, modified DESC, ...`, it would preselect the better-scoring
-        // A/B and drop D/E before the global recency re-sort ever runs — and the assertions below
+        // A/B and drop D/E before the global recency re-sort ever runs -- and the assertions below
         // would fail. With the correct `s.modified DESC, score, s.id DESC` per-table order, each
         // table contributes its most-recent `limit` rows regardless of score.
         s.body = if uuid == UUID_A || uuid == UUID_B {
@@ -711,7 +711,7 @@ fn seed_ranking_fixture(db: &Db, fillers: usize) {
 }
 
 /// Phase 3 POSITIVE fixture (candidate-pool proof). The long all-terms deep dive ranks FIRST under
-/// the body-tier weighted RRF even though its raw bm25 puts it OUTSIDE the raw-bm25 top-`limit` — so
+/// the body-tier weighted RRF even though its raw bm25 puts it OUTSIDE the raw-bm25 top-`limit` -- so
 /// only the overfetched candidate pool could have surfaced it. Break the overfetch (revert the body
 /// tier to `LIMIT limit`) or the RRF (fall back to raw bm25 order) and the `limit=1` assertion
 /// below fails: raw bm25 at `LIMIT 1` returns the short repeater, never the deep dive.
@@ -766,7 +766,7 @@ fn body_rerank_promotes_long_all_terms_session_from_outside_bm25_top_limit() {
 /// Phase 3 NEGATIVE fixture (anti-popularity proof). A concise all-terms session is NOT outranked by
 /// a long, weakly-matching session that has a vastly larger message count. Because the fusion is
 /// scale-free (n_msgs contributes a RANK, not a magnitude) and relevance carries the largest weight,
-/// the concise better match wins. A value blend on the raw n_msgs magnitude would invert this — that
+/// the concise better match wins. A value blend on the raw n_msgs magnitude would invert this -- that
 /// is exactly the regression this pins.
 #[test]
 fn body_rerank_does_not_let_message_count_swamp_relevance() {
@@ -811,7 +811,7 @@ fn body_rerank_does_not_let_message_count_swamp_relevance() {
 /// Phase 3: under OR fallback the body tier is ordered coverage-first (distinct query terms matched)
 /// and fusion second, and every body hit carries `terms-matched`/`terms-total`. The broader match
 /// (2 of 3 terms) ranks above the narrower one (1 of 3) even though the narrow hit has the stronger
-/// bm25, higher message count, and more recent mtime — so coverage, not fusion, decides here.
+/// bm25, higher message count, and more recent mtime -- so coverage, not fusion, decides here.
 #[test]
 fn or_fallback_orders_body_by_distinct_term_coverage_first() {
     let db = Db::open_memory().unwrap();
@@ -1042,12 +1042,12 @@ fn coverage_counts_distinct_terms_only() {
 // Phase 1: schema v5 `updated_at` revision cursor.
 //
 // The cursor is an opaque monotonic revision assigned by DB triggers from the one-row `export_meta`
-// counter — never a timestamp. These tests pin the invariant structurally: EVERY write to a
+// counter -- never a timestamp. These tests pin the invariant structurally: EVERY write to a
 // `sessions` row advances the cursor by exactly 1 and stamps the affected row with the new revision,
 // no matter which code path (or which binary) issued the write.
 // ---------------------------------------------------------------------------
 
-/// The one-row `export_meta` revision counter — the source every trigger draws the next value from.
+/// The one-row `export_meta` revision counter -- the source every trigger draws the next value from.
 fn revision_counter(db: &Db) -> i64 {
     db.conn
         .query_row("SELECT revision FROM export_meta WHERE id = 0", [], |r| r.get(0))
@@ -1065,14 +1065,14 @@ fn updated_at_of(db: &Db, session_id: &str) -> i64 {
         .unwrap()
 }
 
-/// The max `updated_at` across all rows — the envelope cursor a consumer would persist. 0 when empty.
+/// The max `updated_at` across all rows -- the envelope cursor a consumer would persist. 0 when empty.
 fn max_revision(db: &Db) -> i64 {
     db.conn
         .query_row("SELECT COALESCE(MAX(updated_at), 0) FROM sessions", [], |r| r.get(0))
         .unwrap()
 }
 
-/// Matrix case 1 — INSERT. A fresh DB seeds the counter at 0; the first insert advances it to 1 and
+/// Matrix case 1 -- INSERT. A fresh DB seeds the counter at 0; the first insert advances it to 1 and
 /// stamps the new row.
 #[test]
 fn v5_insert_advances_cursor_once() {
@@ -1093,7 +1093,7 @@ fn v5_insert_advances_cursor_once() {
     assert_eq!(max_revision(&db), 1);
 }
 
-/// Matrix case 2 — normal UPDATE (a re-upsert with a newer mtime).
+/// Matrix case 2 -- normal UPDATE (a re-upsert with a newer mtime).
 #[test]
 fn v5_normal_update_advances_cursor_once() {
     let db = Db::open_memory().unwrap();
@@ -1116,7 +1116,7 @@ fn v5_normal_update_advances_cursor_once() {
 }
 
 /// A skipped-unchanged upsert writes nothing, so it must NOT advance the cursor (correct by
-/// construction: no write, no bump — the cursor only moves on real changes).
+/// construction: no write, no bump -- the cursor only moves on real changes).
 #[test]
 fn v5_skipped_unchanged_does_not_advance_cursor() {
     let db = Db::open_memory().unwrap();
@@ -1132,7 +1132,7 @@ fn v5_skipped_unchanged_does_not_advance_cursor() {
     );
 }
 
-/// Matrix case 3 — enrich-SKIP write (`record_enrich_skip`, db.rs write site).
+/// Matrix case 3 -- enrich-SKIP write (`record_enrich_skip`, db.rs write site).
 #[test]
 fn v5_enrich_skip_write_advances_cursor_once() {
     let db = Db::open_memory().unwrap();
@@ -1151,7 +1151,7 @@ fn v5_enrich_skip_write_advances_cursor_once() {
     assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
 }
 
-/// Matrix case 4 — enrich-FAILURE write (`record_enrich_failure`, db.rs write site).
+/// Matrix case 4 -- enrich-FAILURE write (`record_enrich_failure`, db.rs write site).
 #[test]
 fn v5_enrich_failure_write_advances_cursor_once() {
     let db = Db::open_memory().unwrap();
@@ -1172,7 +1172,7 @@ fn v5_enrich_failure_write_advances_cursor_once() {
 
 /// A successful enrichment write happens inside a transaction that also rebuilds the high-signal FTS
 /// row; the trigger must still fire exactly once (not once per statement in the tx). This is the
-/// write site the whole cursor exists for — an enrichment that leaves the session row otherwise
+/// write site the whole cursor exists for -- an enrichment that leaves the session row otherwise
 /// "unchanged since X" must still move the cursor.
 #[test]
 fn v5_set_enrichment_advances_cursor_once() {
@@ -1206,7 +1206,7 @@ fn v5_set_enrichment_advances_cursor_once() {
     assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
 }
 
-/// Matrix case 5 — raw-SQL stale-binary write. A direct `UPDATE sessions` (as a stale v4 binary, or
+/// Matrix case 5 -- raw-SQL stale-binary write. A direct `UPDATE sessions` (as a stale v4 binary, or
 /// any other writer, would issue) still fires the trigger: the invariant lives in the DB file, not
 /// in clyde's write code. This is the rollback-hazard mitigation from the design doc.
 #[test]
@@ -1229,7 +1229,7 @@ fn v5_raw_sql_write_advances_cursor_once() {
     assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
 }
 
-/// Matrix case 6 — `ON CONFLICT DO UPDATE`. An upsert that resolves to the DO UPDATE branch (the row
+/// Matrix case 6 -- `ON CONFLICT DO UPDATE`. An upsert that resolves to the DO UPDATE branch (the row
 /// already exists) fires the AFTER UPDATE trigger exactly once.
 #[test]
 fn v5_on_conflict_do_update_advances_cursor_once() {
@@ -1253,7 +1253,7 @@ fn v5_on_conflict_do_update_advances_cursor_once() {
     assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
 }
 
-/// Matrix case 7 — no-recursion assertion. With `recursive_triggers` turned ON, the UPDATE trigger's
+/// Matrix case 7 -- no-recursion assertion. With `recursive_triggers` turned ON, the UPDATE trigger's
 /// OWN write would re-fire it (unbounded recursion / hard error) WITHOUT the
 /// `WHEN NEW.updated_at IS OLD.updated_at` guard. The guard must make both an INSERT and an UPDATE
 /// advance the cursor by EXACTLY 1 and never error, so the behavior is correct under either PRAGMA
@@ -1272,7 +1272,7 @@ fn v5_update_trigger_does_not_recurse_even_with_recursive_triggers_on() {
     );
     assert_eq!(updated_at_of(&db, UUID_A), 1);
 
-    // UPDATE: exactly one more bump, no error, no double-bump — the guard blocks the self-re-fire.
+    // UPDATE: exactly one more bump, no error, no double-bump -- the guard blocks the self-re-fire.
     let before = revision_counter(&db);
     db.conn
         .execute(
@@ -1288,7 +1288,7 @@ fn v5_update_trigger_does_not_recurse_even_with_recursive_triggers_on() {
     assert_eq!(updated_at_of(&db, UUID_A), revision_counter(&db));
 }
 
-/// The exact `sessions` schema clyde shipped at v4 — every column through `tags_source`, and NO
+/// The exact `sessions` schema clyde shipped at v4 -- every column through `tags_source`, and NO
 /// `updated_at`. Used to build a real v4 DB on disk so the v4 -> v5 migration path (column add,
 /// rowid-order backfill, counter seed, triggers-last) is exercised end to end.
 const V4_SESSIONS_SQL: &str = "\
@@ -1428,7 +1428,7 @@ fn v9_migration_from_v8_nulls_pre_dedup_efficiency() {
 
 /// The migration is idempotent on reopen: `migrate` is version-gated and its whole body (column add,
 /// backfill, seed, triggers) plus the `user_version` bump commit in ONE transaction, so a fresh open
-/// of an already-migrated DB re-runs nothing — the counter and every row's revision are stable.
+/// of an already-migrated DB re-runs nothing -- the counter and every row's revision are stable.
 #[test]
 fn v5_migration_is_idempotent_on_reopen() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1455,7 +1455,7 @@ fn v5_migration_is_idempotent_on_reopen() {
         revision_counter(&db)
     };
 
-    // Third open: still stable, and the schema still functions — a fresh write advances normally.
+    // Third open: still stable, and the schema still functions -- a fresh write advances normally.
     let db = Db::open_at(&path).unwrap();
     assert_eq!(revision_counter(&db), rev_after_reopen);
     let before = revision_counter(&db);

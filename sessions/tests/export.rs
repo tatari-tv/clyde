@@ -5,7 +5,7 @@
 //! deserialize→reserialize→compare against each fixture's `serde_json::Value` is an exact field
 //! pin: renaming a field makes the fixture's key unknown (dropped) or a required field missing;
 //! dropping a field makes the reserialized value lack it; adding a field to a fixture makes the
-//! reserialized value differ. Any of these fails this test — the "fails if any field is renamed or
+//! reserialized value differ. Any of these fails this test -- the "fails if any field is renamed or
 //! dropped" success criterion.
 
 #![allow(clippy::unwrap_used)]
@@ -29,7 +29,7 @@ fn assert_fixture_round_trips(name: &str) {
     let path = fixture_dir().join(name);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
 
-    // The fixture as raw JSON — the frozen contract shape.
+    // The fixture as raw JSON -- the frozen contract shape.
     let fixture: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {name}: {e}"));
 
     // Deserialize into the contract types (proves they consume the frozen fixture) …
@@ -98,7 +98,7 @@ fn with_efficiency_block_carries_the_nested_session_efficiency_shape() {
     );
 }
 
-/// Schema v6: `EXPORT_SCHEMA_VERSION` stays 1 — the efficiency block is ADDITIVE within the frozen
+/// Schema v6: `EXPORT_SCHEMA_VERSION` stays 1 -- the efficiency block is ADDITIVE within the frozen
 /// envelope, not a breaking change (design: keep the version at 1). BITES: bump it to 2 and this fails.
 #[test]
 fn export_schema_version_stays_one_after_efficiency_block() {
@@ -110,7 +110,7 @@ fn export_schema_version_stays_one_after_efficiency_block() {
 }
 
 /// The four `enrich-status` non-null values plus `null` are contract; each must deserialize. This is
-/// the structural half of "removing an enrich-status value breaks a named test" — the value set is
+/// the structural half of "removing an enrich-status value breaks a named test" -- the value set is
 /// exercised as strings the contract type accepts.
 #[test]
 fn enrich_status_contract_values_all_deserialize() {
@@ -139,7 +139,7 @@ fn dt(s: &str) -> DateTime<Utc> {
 }
 
 /// A deterministic completer that never touches the network. `fail` drives the failure path; the
-/// success reply is fixed. The status mapping is NOT stubbed — only the model call is — so the real
+/// success reply is fixed. The status mapping is NOT stubbed -- only the model call is -- so the real
 /// `enrich.rs` gate and the real db write helpers decide the status (that is what makes this bite).
 struct Fake {
     fail: bool,
@@ -221,7 +221,7 @@ fn enrich_one(db: &Db, id: &str, completer: &Fake) {
     enrich(db, Some(completer), &opts).unwrap();
 }
 
-/// The behavioral half — and the one that actually BITES (CodeRabbit finding). The prior version
+/// The behavioral half -- and the one that actually BITES (CodeRabbit finding). The prior version
 /// injected the expected statuses via the db write helpers directly, so it passed even if
 /// `enrich.rs` changed which status it writes. This drives the ACTUAL production enrichment gate
 /// (personal-skip, empty-skip, failure, success) through the real writer, then exports and asserts

@@ -16,10 +16,25 @@ tasks:
       if grep -rn --include='*.rs' -P '(\blet\s+(mut\s+)?|[(,]\s*|\|\s*|\bfor\s+)_[a-zA-Z]' */src/; then
         echo ""
         echo "❌ Found _variable binding pattern."
-        echo "   Use _ to discard or use the variable — never _varname."
+        echo "   Use _ to discard or use the variable, never _varname."
         exit 1
       fi
       echo "✅ No _variable patterns found"
+      echo ""
+      echo "=== Deny em dash in Rust source ==="
+      # `rg`, not `grep -r ... */src/`: 17 of the 373 occurrences this lint was written to kill lived
+      # in */tests/ integration files, which a */src/ walk never reaches. A lint narrower than the rule
+      # is a hole the tree drifts back through where CI cannot see it. Using rg also makes this command
+      # and the design's acceptance criterion literally the same one, so they cannot diverge.
+      # `\x{2014}` (not the character) keeps this file em-dash-free too.
+      if rg -n --type rust -g '!target' '\x{2014}' .; then
+        echo ""
+        echo "❌ Found em dash in Rust source."
+        echo "   Use --, a colon, parens, or split the sentence (rules/voice.md)."
+        echo "   To assert an em dash is ABSENT, write '\\u{2014}' rather than the literal."
+        exit 1
+      fi
+      echo "✅ No em dashes in Rust source"
 
   bloat:
     help: "Fail if any source file exceeds BLOAT_MAX_LINES (default 1500)"
