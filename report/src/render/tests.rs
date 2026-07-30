@@ -849,7 +849,6 @@ fn render_run_rejects_yaml_input_extension() {
     let cfg = Config {
         log_level: "info".into(),
         command: ResolvedCommand::Render(RenderConfig {
-            llm: crate::cli::Llm::Auto,
             model: "claude-opus-4-8".into(),
             judge_max_output_tokens: common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
@@ -911,7 +910,6 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
     .unwrap();
 
     let cfg = RenderConfig {
-        llm: crate::cli::Llm::Auto,
         model: "claude-opus-4-8".into(),
         judge_max_output_tokens: common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,

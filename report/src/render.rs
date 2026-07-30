@@ -4,13 +4,13 @@ use crate::config::{RenderConfig, TransportKind};
 use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::outcome::OutcomeTotals;
 use crate::persona::{self, PersonaBlock};
-use crate::proc::run_bounded;
 use crate::reconcile::Reconciliation;
 use crate::report::{Report, SCHEMA_VERSION, SessionEntry};
 use crate::summarize;
 use crate::{OutputDest, RunResult};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
+use common::proc::run_bounded;
 use eyre::{Context, Result, bail};
 use log::debug;
 use serde::Serialize;
@@ -45,14 +45,13 @@ const STDOUT_SIGIL: &str = "-";
 
 pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
-        "render::run: input={} format={:?} space={:?} outliers={} reconcile={:?} prior={:?} llm={:?}",
+        "render::run: input={} format={:?} space={:?} outliers={} reconcile={:?} prior={:?}",
         cfg.input.display(),
         cfg.format,
         cfg.space,
         cfg.outliers,
         cfg.reconcile,
-        cfg.prior,
-        cfg.llm
+        cfg.prior
     );
 
     // Design Phase 12, "Absence is never silent" -- stderr half; the artifact's half is
@@ -108,18 +107,14 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
 
 /// Generate the prose slots for this render, or an empty set.
 ///
-/// This is the top of the degradation ladder and it CANNOT fail. A host with no transport at all
-/// (no `claude` on PATH, no API key) is the offline story, not an error: the deterministic document
-/// is already complete, so an absent transport costs prose and nothing else. Monomorphized per
-/// transport arm, per the house generics-for-DI rule.
+/// This is the top of the degradation ladder and it CANNOT fail. A host with no `claude` on PATH is
+/// the offline story, not an error: the deterministic document is already complete, so an absent
+/// transport costs prose and nothing else. Monomorphized per transport arm, per the house
+/// generics-for-DI rule.
 fn slot_prose(cfg: &RenderConfig, reg: &facts::FactRegistry) -> document::SlotProse {
     let model = &cfg.model;
     let ceiling = cfg.slot_max_output_tokens;
-    match resolve_selected_transport(cfg.llm, cfg.format) {
-        Ok(TransportKind::Api) => match summarize::ApiTransport::from_env() {
-            Ok(t) => slots::generate(&t, reg, model, ceiling, cfg.include_tradeoffs),
-            Err(e) => no_transport(e),
-        },
+    match resolve_selected_transport(cfg.format) {
         Ok(TransportKind::Cli) => match summarize::CliTransport::resolve() {
             Ok(t) => slots::generate(&t, reg, model, ceiling, cfg.include_tradeoffs),
             Err(e) => no_transport(e),
@@ -148,11 +143,7 @@ fn no_transport(e: eyre::Report) -> document::SlotProse {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SlotSource<'a> {
     Stubbed,
-    Live {
-        llm: crate::cli::Llm,
-        model: &'a str,
-        ceiling: u32,
-    },
+    Live { model: &'a str, ceiling: u32 },
 }
 
 /// The prose slots one render produced, keyed by slot name.
@@ -190,15 +181,8 @@ pub(crate) fn for_eval(
     let reg = document::registry(&block);
     let (prose, attempted) = match slots_from {
         SlotSource::Stubbed => (document::SlotProse::new(), 0),
-        SlotSource::Live { llm, model, ceiling } => {
-            let prose = match resolve_selected_transport(llm, Format::Markdown)? {
-                TransportKind::Api => slots::generate(
-                    &summarize::ApiTransport::from_env()?,
-                    &reg,
-                    model,
-                    ceiling,
-                    opts.include_tradeoffs,
-                ),
+        SlotSource::Live { model, ceiling } => {
+            let prose = match resolve_selected_transport(Format::Markdown)? {
                 TransportKind::Cli => slots::generate(
                     &summarize::CliTransport::resolve()?,
                     &reg,
@@ -321,26 +305,18 @@ pub(crate) fn default_output_path(report: &Report, format: Format) -> std::path:
     std::path::PathBuf::from(format!("./{}-claude-report.{}", prefix, ext))
 }
 
-/// Resolve the configured transport selection against this host: is `claude` on PATH, and is a key
-/// set? The impure half of the decision, kept to one line each so `config::resolve_transport` stays
-/// pure and its whole precedence matrix is unit-testable.
+/// Resolve the transport against this host: is `claude` on PATH? The impure half of the decision,
+/// kept to one line so `config::resolve_transport` stays pure and testable without touching PATH.
 ///
 /// `which::which` mirrors `clyde::resolve_claude`, which already canonicalizes a relative PATH hit.
 ///
-/// Takes the two values it needs rather than a whole [`RenderConfig`], so a caller that has a
-/// selection and a format but no config (the eval) resolves through the SAME precedence matrix
-/// rather than a second copy of it.
-pub(crate) fn resolve_selected_transport(llm: crate::cli::Llm, format: Format) -> Result<TransportKind> {
-    let resolved = crate::config::resolve_transport(
-        llm,
-        which::which("claude").is_ok(),
-        summarize::api_key_from_env().is_some(),
-        format,
-    )?;
-    // Log the SELECTION for both transports, not just cli: an operator reading a log must be able to
-    // tell what paid for an artifact without rerunning it. The cli path adds the resolved binary path
-    // and version in `CliTransport::resolve`.
-    log::info!("render: llm transport selected={resolved:?} (requested={llm:?}) format={format:?}");
+/// Takes the format it needs rather than a whole [`RenderConfig`], so a caller with a format but no
+/// config (the eval) resolves through the SAME check rather than a second copy of it.
+pub(crate) fn resolve_selected_transport(format: Format) -> Result<TransportKind> {
+    let resolved = crate::config::resolve_transport(which::which("claude").is_ok(), format)?;
+    // An operator reading a log must be able to tell what paid for an artifact without rerunning it.
+    // The resolved binary path and version are added by `CliTransport::resolve`.
+    log::info!("render: llm transport selected={resolved:?} format={format:?}");
     Ok(resolved)
 }
 

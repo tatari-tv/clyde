@@ -35,7 +35,6 @@ session = { path = "../session" }
 sessions = { path = "../sessions" }
 tempfile = { workspace = true }
 thiserror.workspace = true
-ureq = { workspace = true, features = ["json"] }
 wait-timeout = "0.2.1"
 which = { workspace = true }
 

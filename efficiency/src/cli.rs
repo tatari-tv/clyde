@@ -44,8 +44,8 @@ pub enum Command {
         by_subagent: bool,
 
         /// Add an LLM prose verdict on the session's efficiency, alongside the numbers. Runs one
-        /// LLM call, and only when the id resolves to exactly one session. Needs `ANTHROPIC_API_KEY`;
-        /// off by default (no network without it).
+        /// LLM call, and only when the id resolves to exactly one session. Needs a logged-in `claude`
+        /// on PATH (no API key); off by default (no network without it).
         #[arg(long)]
         narrate: bool,
     },

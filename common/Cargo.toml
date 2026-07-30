@@ -20,6 +20,9 @@ eyre.workspace = true
 log.workspace = true
 regex = "1.12.4"
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 serde_yaml.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
 wait-timeout = "0.2.1"
+which.workspace = true

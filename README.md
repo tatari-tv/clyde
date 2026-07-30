@@ -126,7 +126,6 @@ The `render:` defaults for `report render` (all optional; a missing section is a
 # ~/.config/clyde/clyde.yml
 render:
   format: markdown                   # default --format when the flag is omitted
-  llm: auto                          # auto | api | cli -- which transport makes the model calls
   model: claude-opus-4-8             # model pin for the prose slots and the eval judge
   slot-max-output-tokens: 1500       # output ceiling for ONE prose slot
   judge-max-output-tokens: 32000     # output ceiling for the eval judge
@@ -140,16 +139,15 @@ every chart -- and the model only fills a handful of short prose sections, refer
 placeholders the binary substitutes. A slot is a few sentences, so a model that starts writing a whole
 document hits this ceiling instead of billing for one.
 
-`report render`'s prose needs **no API key** by default: `llm: auto` prefers the locally installed
-`claude` CLI and uses the Claude Code login you already have. Set `llm: api` (or pass `--llm api`) to
-use `ANTHROPIC_API_KEY` instead -- which is also what any automated caller should pin, since `auto`
-selects the CLI on presence alone and will not silently fall back.
+`report render`'s prose needs **no credential at all**: it shells out to the locally installed
+`claude` CLI and uses the Claude Code login you already have. There is no other transport to fall
+back to, so a missing or logged-out `claude` fails loudly naming the install-and-login remedy rather
+than silently degrading.
 
 A render **cannot fail because of the prose**. With no transport at all, or with every slot
 misbehaving, the prose sections come out empty, a WARN says so, and the full data report is still
 written. That is also the offline story: the deterministic half needs no model.
-See [`report/README.md`](report/README.md) for the full transport rules, the rollback line, and the
-per-render cost difference.
+See [`report/README.md`](report/README.md) for the full transport rules.
 
 The `efficiency:` thresholds (all optional; a missing section is all-defaults):
 
@@ -168,10 +166,10 @@ never ranked as "worst," since a structurally-low cache-read share there is expe
 
 `clyde efficiency session <id> --narrate` adds a one-paragraph LLM prose verdict on *why* the
 session was (in)efficient, alongside the numbers (nothing is removed; JSON gains a `narrative`
-field, the human/YAML view gets a `narrative:` block). It needs `ANTHROPIC_API_KEY` and makes one
-LLM call; without the flag nothing touches the network. The model only phrases the Rust-computed
-facts — it is handed pre-formatted display strings, not raw numbers, and any prose that introduces
-a figure absent from those facts is rejected.
+field, the human/YAML view gets a `narrative:` block). It needs a logged-in `claude` on PATH and
+makes one LLM call; without the flag nothing touches the network. The model only phrases the
+Rust-computed facts — it is handed pre-formatted display strings, not raw numbers, and any prose
+that introduces a figure absent from those facts is rejected.
 
 Config readers prefer the clyde location and fall back to the legacy path until `bootstrap`
 migrates, so a tool invoked before bootstrap still finds its existing state. Raw transcripts are

@@ -13,7 +13,6 @@ pub mod fmt;
 pub mod merge;
 pub mod outcome;
 pub mod persona;
-pub mod proc;
 pub(crate) mod reconcile;
 pub mod render;
 pub mod report;
@@ -45,6 +44,13 @@ pub use tools::tool_validation_help;
 /// exactly the intermittent failure that showed up once `summarize::cli`'s tests began reading the
 /// full environment while `summarize::api`'s tests were mutating `ANTHROPIC_API_KEY` under a
 /// different lock. Every env-touching test in this crate must take THIS lock.
+///
+/// `summarize::cli` itself moved to `common::llm::cli` (design `2026-07-29-excise-api-key.md`
+/// Phase 1), taking its env-touching tests with it, and `summarize::api` was deleted outright in
+/// Phase 4 -- the original two-module race that motivated this lock is gone. It stays anyway:
+/// `config::tests` (`XDG_CONFIG_HOME`) and `tests` (`XDG_DATA_HOME`) still mutate the same
+/// process-wide environ block from two different test modules, and `common` grew the identical lock
+/// for the same reason (`common::ENV_LOCK`).
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

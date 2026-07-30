@@ -87,30 +87,22 @@ There is no HTML format and no HTML authorship anywhere in clyde: markdown to HT
 authenticated session.
 
 An LLM transport is **optional**. With none available the data sections render in full and the prose
-slots come out empty, with a WARN on stderr -- a render cannot fail whole-artifact. When a transport
-IS present it needs no API key by default, shelling out to the locally installed `claude` CLI and
-using the Claude Code login you already have (see [LLM transport](#llm-transport) below).
+slots come out empty, with a WARN on stderr -- a render cannot fail whole-artifact. When it IS
+present it needs no credential at all, shelling out to the locally installed `claude` CLI and using
+the Claude Code login you already have (see [LLM transport](#llm-transport) below).
 
 ## LLM transport
 
-The prose slots and the `report eval` judge go through one of two transports, selected with `--llm`:
+The prose slots and the `report eval` judge go through the one LLM transport clyde has: it shells
+out to the local `claude` CLI in headless print mode, using the Claude Code login you already have.
+clyde never reads, stores, refreshes, or transmits a credential: the `claude` binary owns auth end to
+end, the same way `marquee` owns its own Okta tokens.
 
-| `--llm` | what it uses | credential |
-|---|---|---|
-| `cli` | shells out to the local `claude` CLI in headless print mode | the Claude Code login you already have |
-| `api` | posts to `api.anthropic.com` directly | `ANTHROPIC_API_KEY` |
-| `auto` (default) | `cli` when `claude` is on `PATH`, else `api` when a key is set | whichever it picked |
-
-`auto` prefers `cli`, so a render works out of the box for anyone with a working Claude Code and
-requires no second credential. clyde never reads, stores, refreshes, or transmits a token: the
-`claude` binary owns auth end to end, the same way `marquee` owns its own Okta tokens.
-
-Configure the default, the model pins, and the output ceilings in `clyde.yml`:
+Configure the model pins and the output ceilings in `clyde.yml`:
 
 ```yaml
 # ~/.config/clyde/clyde.yml
 render:
-  llm: auto                        # auto | api | cli    (default auto, which prefers cli)
   model: claude-opus-4-8           # model pin for the prose slots and the eval judge
   slot-max-output-tokens: 1500     # output ceiling for ONE prose slot
   judge-max-output-tokens: 32000   # output ceiling for the eval judge
@@ -124,41 +116,22 @@ belonged to the whole-document authoring job, which no longer exists.
 The slot ceiling is small on purpose. A slot is a few sentences of digit-free prose, so 1500 leaves
 generous headroom while still catching a model that starts writing a whole document instead.
 
-The ceilings are enforced differently by the two transports, and that is inherent rather than a gap: the
-api path puts the value on the wire as `max_tokens` and the model is cut off at it, while the cli path
-cannot set a ceiling at all and instead compares the reported `usage.output_tokens` after the fact. On
-the cli path the artifact is therefore complete when it is refused, and the tokens are already billed --
-so raise the key the error names rather than re-running. `0` is rejected at config load.
+The ceiling cannot be put on the wire as a hard cap: the transport instead compares the reported
+`usage.output_tokens` against it after the fact. The artifact is therefore complete when it is
+refused, and the tokens are already billed -- so raise the key the error names rather than
+re-running. `0` is rejected at config load.
 
-### Three things to know before you rely on it
+### Two things to know before you rely on it
 
-**There is no fallback once a transport is chosen.** Selection is a presence check on the `claude`
-binary, never a success check. If the CLI is present but fails -- logged out, stale install, rate
-limited, plan cap -- the render **fails loudly** naming `--llm api`, rather than silently switching
-to your key. That is deliberate: a silent fallback would make one command nondeterministic across
-two transports and two billing paths, and would hide a broken login indefinitely. To roll back to
-the api path, it is one line:
+**There is no fallback if `claude` is missing or broken.** Resolving `claude` on PATH is a presence
+check, never a success check. If the CLI is present but fails -- logged out, stale install, rate
+limited, plan cap -- the render **fails loudly** naming the install-and-login remedy. There is no
+second transport to fall back to and none is silently picked, so a broken login surfaces immediately
+instead of hiding behind a billing switch.
 
-```yaml
-render:
-  llm: api        # or --llm api per invocation
-```
-
-**Automated callers must pin the transport explicitly.** A CI image or cron host that has a `claude`
-binary but no usable login will now fail even with a valid `ANTHROPIC_API_KEY` set, because `auto`
-picks `cli` on presence alone. Any non-interactive caller should pass `--llm api` (or set
-`render.llm: api`) rather than trusting `auto`.
-
-**The cli transport bills your Claude Code plan, and costs more per token.** The CLI bills its
-payload as a 1-hour cache write at $10/Mtok where the api path bills it as plain input at $5/Mtok,
-plus a small internal sub-call. Renders also draw on your personal plan's rate limits rather than a
-service key's, so several parallel renders can hit a per-user limit. If you hold a key and render in
-bulk on one machine, set `render.llm: api`.
-
-The per-render figures that used to sit here (~$2.93 via cli vs ~$1.53 via api on a 1,310-session
-month) were measured on the pre-inversion render, which sent a ~242K-token context block in one call.
-That call no longer exists: a render is now several small per-slot calls over curated fact briefs. The
-rate difference above still holds; the totals have not been re-measured.
+**The transport bills your Claude Code plan.** Renders draw on your personal plan's rate limits, so
+several parallel renders can hit a per-user limit. There is no service-credential path to route
+around that.
 
 ```bash
 clyde report render                              # Markdown (default)
@@ -209,7 +182,6 @@ floor committed in that fixture's `eval.yml` exits non-zero.
 
 ```bash
 otto eval                                              # the three committed fixtures, judged
-clyde report eval --llm cli                            # same, over the keyless transport
 clyde report eval --fixture fixtures/report/local      # a real month, locally, never committed
 clyde report eval --write-goldens                      # regenerate the committed goldens
 ```

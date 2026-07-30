@@ -19,7 +19,7 @@ The real-data eval stays local:
 
 ```bash
 clyde report collect --since 2026-06-01 --until 2026-06-30 -o fixtures/report/local/report.json
-clyde report eval --fixture fixtures/report/local --llm api
+clyde report eval --fixture fixtures/report/local
 ```
 
 `fixtures/report/local/` is gitignored.
@@ -58,7 +58,7 @@ citation accuracy, coverage, prohibition compliance and readability; a score bel
 
 ```bash
 cargo run -p report --bin fixtures -- fixtures/report        # report.json / prior.json / analytics.json
-clyde report eval --llm api --write-goldens                  # golden.md / golden.html
+clyde report eval --write-goldens                             # golden.md / golden.html
 otto ci                                                      # the mechanical layer, against the new goldens
 ```
 

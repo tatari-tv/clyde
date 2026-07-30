@@ -119,8 +119,8 @@ fn run_session(
             // single network call made. Without the flag, nothing touches the network. The math-free
             // guard is enforced inside `narrate` itself (it rejects prose inventing a number).
             let narrative = if want_narrate {
-                let client = sessions::llm::AnthropicClient::from_env()
-                    .context("run_session: failed to initialize the Anthropic client for --narrate")?;
+                let client = sessions::llm::ClaudeCli::resolve()
+                    .context("run_session: failed to resolve the `claude` CLI for --narrate")?;
                 let input = crate::narrate::narration_input(&matches[0].efficiency);
                 Some(crate::narrate::narrate(&client, &input).context("run_session: narration failed")?)
             } else {

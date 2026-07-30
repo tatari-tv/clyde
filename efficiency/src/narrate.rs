@@ -13,7 +13,7 @@
 //!
 //! The LLM-client seam is the `sessions` enrichment path reused verbatim: [`narrate`] is generic
 //! over [`sessions::Narrator`] (the prose-completion sibling of the enrichment `Completer`,
-//! implemented by the real `AnthropicClient` over the same key/timeout/retry HTTP path). Per the
+//! implemented by the real `ClaudeCli` over the same keyless `claude -p` transport). Per the
 //! workspace DI convention this keeps the network out of tests (they inject a deterministic fake)
 //! and adds no new LLM dependency. The `efficiency -> sessions` dependency direction (Phase 6) makes
 //! this reuse direct; no new integration is invented.
@@ -82,7 +82,7 @@ pub struct NarrationInput {
 }
 
 /// Narrate one session's efficiency into a prose verdict. Generic over the [`Narrator`] port so the
-/// real `AnthropicClient` runs in production and tests inject a deterministic fake (no network).
+/// real `ClaudeCli` runs in production and tests inject a deterministic fake (no network).
 ///
 /// The LLM does ZERO math: it receives only `input`'s pre-formatted strings and is instructed to
 /// introduce no number absent from them. The instruction is advisory, so this ENFORCES the contract

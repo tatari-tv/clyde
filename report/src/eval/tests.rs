@@ -365,7 +365,6 @@ fn an_empty_fixture_set_fails() {
         judge_model: "test-model".into(),
         out: PathBuf::from("/dev/null"),
         write_goldens: false,
-        llm: Llm::Api,
         model: "m".into(),
         judge_max_output_tokens: 1_024,
         slot_max_output_tokens: 512,
@@ -377,9 +376,9 @@ fn an_empty_fixture_set_fails() {
 /// **Design Phase 13, success criterion 4:** a judged fresh render that misses the top `by-repo`
 /// row drops below its coverage floor and exits non-zero.
 ///
-/// Ignored by default because it is PAID: it judges a deliberately mutilated golden against the
-/// live api. Run it with
-/// `ANTHROPIC_API_KEY=... cargo test -p report -- --ignored --nocapture coverage_floor`.
+/// Ignored by default because it is PAID: it judges a deliberately mutilated golden against a real
+/// `claude` invocation. Run it with a logged-in `claude` on PATH:
+/// `cargo test -p report -- --ignored --nocapture coverage_floor`.
 ///
 /// The mutilation is the criterion's own: every line naming the top `by-repo` row is deleted from a
 /// golden that scored 3 on coverage, and nothing else changes. The offline half of this criterion
@@ -387,7 +386,7 @@ fn an_empty_fixture_set_fails() {
 /// `judge::tests::a_coverage_score_below_the_floor_is_a_regression` and `run`'s own `bail!`; this is
 /// the half only a real judge can answer.
 #[test]
-#[ignore = "paid: judges a mutilated golden against the live api; needs ANTHROPIC_API_KEY"]
+#[ignore = "paid: judges a mutilated golden against a real claude invocation; needs a logged-in claude"]
 fn a_render_missing_the_top_repo_scores_below_its_coverage_floor() {
     let fixture = Fixture::load(&workspace().join(fixture::FIXTURE_ROOT).join("medium")).unwrap();
     let (_, context, ground) = loaded(&fixture);
@@ -406,7 +405,7 @@ fn a_render_missing_the_top_repo_scores_below_its_coverage_floor() {
 
     let brief = judge::brief(&context.json).unwrap();
     let verdict = judge::score(
-        &ApiTransport::from_env().expect("ANTHROPIC_API_KEY must be set for this ignored test"),
+        &CliTransport::resolve().expect("a logged-in `claude` must be on PATH for this ignored test"),
         common::config::DEFAULT_MODEL,
         common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         &mutilated,

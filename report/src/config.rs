@@ -62,9 +62,6 @@ pub struct RenderConfig {
     /// Number of top-spend sessions in the outlier table (`--outliers <N>`, default
     /// `aggregate::DEFAULT_OUTLIERS`).
     pub outliers: usize,
-    /// Which transport to use for the two model calls, as SELECTED (`auto` is not yet resolved).
-    /// Resolve with [`resolve_transport`] at the point of use, where the environment can be probed.
-    pub llm: crate::cli::Llm,
     /// Model pin for both LLM jobs (prose slots, eval judge), from `render.model` (default
     /// `common::config::DEFAULT_MODEL`).
     pub model: String,
@@ -90,53 +87,29 @@ pub struct RenderConfig {
 
 /// The RESOLVED transport: which backend actually performs the call.
 ///
-/// Distinct from [`crate::cli::Llm`] because `auto` is a request, not an answer. Keeping them
-/// separate types means a resolved value can never still be `Auto`, so no call site has to handle a
-/// case that cannot happen.
+/// One variant today. Kept as an enum (not collapsed to `()`) so `report::render` and `report::eval`
+/// keep matching on the RESULT of resolution rather than assuming success, and so a second transport
+/// added later is a variant, not a signature change at every call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportKind {
-    Api,
     Cli,
 }
 
-/// Resolve a transport SELECTION against the environment.
+/// Resolve a transport against the environment: is `claude` on PATH?
 ///
-/// Pure: the two environment facts are passed in, so the whole precedence matrix is unit-testable
-/// without touching PATH or the process env.
-///
-/// `auto` asks exactly ONE question -- does a `claude` binary exist? -- and commits. It is a PRESENCE
-/// check, never a success check (Scott, 2026-07-24: "fail loud"). A host with a stale or logged-out
-/// `claude` on PATH AND a valid key will therefore FAIL rather than quietly rendering via the api.
-/// That is deliberate: a silent fallback would make one command nondeterministic across two
-/// transports and two billing paths, and would mask a broken login indefinitely instead of surfacing
-/// it once. Automated callers must pin `--llm api` rather than trust `auto`.
-///
-/// An explicit `--llm cli` or `--llm api` is honored as given, including when the corresponding
-/// credential is missing -- the transport itself then produces the loud, specific error.
-pub fn resolve_transport(
-    selection: crate::cli::Llm,
-    claude_present: bool,
-    key_present: bool,
-    format: crate::cli::Format,
-) -> Result<TransportKind> {
-    use crate::cli::Llm;
-    let resolved = match selection {
-        Llm::Cli => TransportKind::Cli,
-        Llm::Api => TransportKind::Api,
-        Llm::Auto if claude_present => TransportKind::Cli,
-        Llm::Auto if key_present => TransportKind::Api,
-        // Neither door is open. Name BOTH remedies, because there are two now — the pre-flip error
-        // named only the api key, which is exactly the dead end that started this design.
-        Llm::Auto => bail!(
-            "no LLM transport available for --format {}: set ANTHROPIC_API_KEY (--llm api), or install \
-             the `claude` CLI and log in once (--llm cli)",
+/// Pure: the one environment fact is passed in, so this is unit-testable without touching PATH. A
+/// PRESENCE check, never a success check (Scott, 2026-07-24: "fail loud"): a stale or logged-out
+/// `claude` on PATH still resolves here and fails loudly at the transport instead of here.
+pub fn resolve_transport(claude_present: bool, format: crate::cli::Format) -> Result<TransportKind> {
+    let resolved = if claude_present {
+        TransportKind::Cli
+    } else {
+        bail!(
+            "no LLM transport available for --format {}: install the `claude` CLI and log in once",
             format_name(format)
-        ),
+        );
     };
-    log::debug!(
-        "config::resolve_transport: selection={selection:?} claude_present={claude_present} \
-         key_present={key_present} -> {resolved:?}"
-    );
+    log::debug!("config::resolve_transport: claude_present={claude_present} -> {resolved:?}");
     Ok(resolved)
 }
 
@@ -179,18 +152,14 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
             // Config is now loaded UNCONDITIONALLY, which is a deliberate behavior change from the
             // previous "only when --format is absent" laziness. The model pins live in `clyde.yml`
             // and render always needs one, so there is no flag that opts out of reading config. The
-            // consequence, accepted and tested: a malformed `clyde.yml` now breaks a `--format html
-            // --llm cli` invocation that previously worked. A config key that is not read is not
-            // config, so the load moves rather than the keys.
+            // consequence, accepted and tested: a malformed `clyde.yml` now breaks a `--format html`
+            // invocation that previously worked. A config key that is not read is not config, so the
+            // load moves rather than the keys.
             let file = common::config::load()?;
             // Precedence, house convention: flag > config > default.
             let format = match args.format {
                 Some(f) => f,
                 None => file.render_format().into(),
-            };
-            let llm = match args.llm {
-                Some(l) => l,
-                None => file.render_llm().into(),
             };
             // A marquee post's output is a published URL, not a path; `-o` has no meaning there.
             // Reject against the RESOLVED format (so a config-set marquee default is caught too).
@@ -215,7 +184,6 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 include_tradeoffs: args.include_tradeoffs,
                 pdf_engine: args.pdf_engine,
                 outliers: args.outliers,
-                llm,
                 model: file.render_model().to_string(),
                 judge_max_output_tokens: file.render_judge_max_output_tokens(),
                 slot_max_output_tokens: file.render_slot_max_output_tokens(),
@@ -241,10 +209,6 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 judge_model: args.judge.unwrap_or_else(|| file.render_model().to_string()),
                 out: args.out.unwrap_or_else(|| PathBuf::from(crate::eval::DEFAULT_OUT)),
                 write_goldens: args.write_goldens,
-                llm: match args.llm {
-                    Some(l) => l,
-                    None => file.render_llm().into(),
-                },
                 model: file.render_model().to_string(),
                 judge_max_output_tokens: file.render_judge_max_output_tokens(),
                 slot_max_output_tokens: file.render_slot_max_output_tokens(),

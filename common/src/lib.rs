@@ -9,7 +9,9 @@
 
 pub mod atomic;
 pub mod config;
+pub mod llm;
 pub mod metrics;
+pub mod proc;
 pub mod repo;
 pub mod scan;
 pub mod since;
@@ -22,6 +24,18 @@ pub use repo::{PathMap, RepoSource, Resolved, Resolver};
 pub use scan::{SessionFile, SessionFileKind};
 pub use since::{DateTz, parse_since};
 pub use tools::{Tool, required_tools_help};
+
+/// ONE process-wide lock for every test in this crate that reads or mutates the process
+/// environment. Deliberately crate-level rather than per-module: `set_var`/`remove_var` mutate the
+/// whole environ block, so two modules each holding their OWN mutex do not serialize against each
+/// other at all -- reading the block in one module while another mutates it under a different lock
+/// is the exact unsafety window edition 2024 marks `set_var`/`remove_var` `unsafe` for. This is the
+/// same hazard `report::ENV_LOCK` was added to close (`report/src/lib.rs`) when `summarize::cli`'s
+/// env-reading tests and `summarize::api`'s env-mutating tests first shared a crate. Moving
+/// `llm::cli`'s tests here (design `2026-07-29-excise-api-key.md` Phase 1) recreates the same
+/// shared-crate situation alongside `config`'s own env tests, so it gets the same fix.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Common globals shared across every clyde subcommand.
 ///

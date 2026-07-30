@@ -8,7 +8,7 @@ use common::config::DEFAULT_MIN_ENRICHMENT;
 // It is crate-wide on purpose: per-module locks do not serialize against each other, and this crate
 // has env-touching tests in five modules.
 //
-// As of the `render.llm` / model-pin work this applies to EVERY render test, not just the
+// As of the model-pin work this applies to EVERY render test, not just the
 // config-precedence ones. Render used to load `clyde.yml` only when `--format` was absent, so a
 // fully-flagged test never touched config and could run unsynchronized. The model pins live in
 // config and render always needs one, so the load is now unconditional and every
@@ -40,7 +40,6 @@ fn with_clyde_yml<T>(clyde_yml: Option<&str>, f: impl FnOnce() -> T) -> T {
 /// A `RenderArgs` with only `format`/`output` varied; every other field at its inert default.
 fn render_args(format: Option<crate::cli::Format>, output: Option<PathBuf>) -> crate::cli::RenderArgs {
     crate::cli::RenderArgs {
-        llm: None,
         input: None,
         output,
         format,
@@ -233,7 +232,6 @@ fn collect_config_no_outcomes_defaults_false() {
 #[test]
 fn resolve_command_render_threads_outliers_into_config() {
     let args = crate::cli::RenderArgs {
-        llm: None,
         input: None,
         output: None,
         format: Some(crate::cli::Format::Markdown),
@@ -256,7 +254,6 @@ fn resolve_command_render_threads_outliers_into_config() {
 #[test]
 fn resolve_command_render_threads_format_and_space_into_config() {
     let args = crate::cli::RenderArgs {
-        llm: None,
         input: None,
         output: None,
         format: Some(crate::cli::Format::MarqueeMarkdown),
@@ -283,7 +280,6 @@ fn resolve_command_render_threads_format_and_space_into_config() {
 #[test]
 fn resolve_command_render_rejects_output_with_marquee_format() {
     let args = crate::cli::RenderArgs {
-        llm: None,
         input: None,
         output: Some(std::path::PathBuf::from("out.md")),
         format: Some(crate::cli::Format::MarqueeMarkdown),
@@ -307,7 +303,6 @@ fn resolve_command_render_rejects_output_with_marquee_format() {
 #[test]
 fn resolve_command_render_allows_output_with_local_format() {
     let args = crate::cli::RenderArgs {
-        llm: None,
         input: None,
         output: Some(std::path::PathBuf::from("out.pdf")),
         format: Some(crate::cli::Format::Pdf),
@@ -347,71 +342,34 @@ fn resolve_command_collect_threads_no_outcomes_into_config() {
     }
 }
 
-// ---- transport resolution: the whole precedence matrix, pure ------------------------------------
+// ---- transport resolution: one transport, present/absent x format ------------------------------
 
-use crate::cli::{Format, Llm};
+use crate::cli::Format;
 
-/// `--llm cli` is honored as given, even on a host with no `claude` at all. The transport itself
-/// then produces the specific error; resolution does not second-guess an explicit request.
+/// `claude` present -> cli, for every format. There is one transport now, so presence is the whole
+/// decision.
 #[test]
-fn explicit_cli_is_honored_even_without_the_binary() {
-    let got = resolve_transport(Llm::Cli, false, true, Format::Markdown).unwrap();
-    assert_eq!(got, TransportKind::Cli);
+fn present_claude_resolves_to_cli_for_every_format() {
+    for format in [Format::Markdown, Format::Pdf, Format::MarqueeMarkdown] {
+        assert_eq!(resolve_transport(true, format).unwrap(), TransportKind::Cli);
+    }
 }
 
-/// `--llm api` is honored as given, even with no key set.
+/// No `claude` on PATH -> a loud error naming the one remedy, and the format the user actually asked
+/// for. Post-excision there is no second door, so the message must not resurrect one.
 #[test]
-fn explicit_api_is_honored_even_without_a_key() {
-    let got = resolve_transport(Llm::Api, true, false, Format::Markdown).unwrap();
-    assert_eq!(got, TransportKind::Api);
-}
-
-/// `auto` + `claude` on PATH -> cli. This is the DEFAULT routing for everyone (AC1c/AC2c).
-#[test]
-fn auto_prefers_cli_when_claude_is_present() {
-    let got = resolve_transport(Llm::Auto, true, false, Format::Markdown).unwrap();
-    assert_eq!(got, TransportKind::Cli);
-}
-
-/// `auto` + no `claude` + a key -> api. The api transport is the automatic fallback ONLY for a host
-/// that has no `claude` binary at all.
-#[test]
-fn auto_falls_back_to_api_when_claude_is_absent() {
-    let got = resolve_transport(Llm::Auto, false, true, Format::Markdown).unwrap();
-    assert_eq!(got, TransportKind::Api);
-}
-
-/// AC7, the fail-loud decision made mechanically checkable: `claude` present AND a valid key present
-/// still resolves to CLI. Selection is a PRESENCE check, never a success check, so a stale or
-/// logged-out `claude` fails the render rather than silently billing the key.
-#[test]
-fn auto_picks_cli_even_when_a_key_is_also_available() {
-    let got = resolve_transport(Llm::Auto, true, true, Format::Markdown).unwrap();
-    assert_eq!(
-        got,
-        TransportKind::Cli,
-        "presence of a key must not divert auto away from cli"
-    );
-}
-
-/// AC6: neither door open -> a loud error naming BOTH remedies. The pre-flip error named only the
-/// api key, which is the dead end that started this design.
-#[test]
-fn auto_with_neither_credential_errors_naming_both_remedies() {
-    let err = resolve_transport(Llm::Auto, false, false, Format::Markdown)
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("ANTHROPIC_API_KEY"), "must name the key: {err}");
-    assert!(err.contains("--llm api"), "must name the api flag: {err}");
+fn absent_claude_errors_naming_the_one_remedy() {
+    let err = resolve_transport(false, Format::Markdown).unwrap_err().to_string();
     assert!(err.contains("claude"), "must name the cli remedy: {err}");
-    assert!(err.contains("--llm cli"), "must name the cli flag: {err}");
-    // And it names the format the user actually asked for.
+    assert!(err.contains("log in"), "must name the login step: {err}");
+    assert!(!err.contains("ANTHROPIC_API_KEY"), "must not advise a key: {err}");
+    assert!(!err.contains("--llm"), "the flag is gone: {err}");
     assert!(err.contains("markdown"), "must name the requested format: {err}");
 }
 
 #[test]
-fn neither_credential_error_names_the_requested_format_not_a_generic_one() {
-    let err = resolve_transport(Llm::Auto, false, false, Format::MarqueeMarkdown)
+fn absent_claude_error_names_the_requested_format_not_a_generic_one() {
+    let err = resolve_transport(false, Format::MarqueeMarkdown)
         .unwrap_err()
         .to_string();
     assert!(err.contains("marquee-markdown"), "got: {err}");
@@ -421,13 +379,10 @@ fn neither_credential_error_names_the_requested_format_not_a_generic_one() {
     );
 }
 
-// ---- --llm precedence: flag > config > default --------------------------------------------------
-
-/// A `RenderArgs` with `--llm` set, everything else inert.
-fn render_args_llm(llm: Option<Llm>) -> crate::cli::RenderArgs {
-    let mut args = render_args(Some(Format::Markdown), None);
-    args.llm = llm;
-    args
+/// A `RenderArgs` at `format: markdown`, everything else inert. Base for the tests below that vary
+/// `clyde.yml` rather than the flags.
+fn render_args_base() -> crate::cli::RenderArgs {
+    render_args(Some(Format::Markdown), None)
 }
 
 fn resolved_render(args: crate::cli::RenderArgs, clyde_yml: Option<&str>) -> RenderConfig {
@@ -440,47 +395,18 @@ fn resolved_render(args: crate::cli::RenderArgs, clyde_yml: Option<&str>) -> Ren
     }
 }
 
-#[test]
-fn omitted_llm_resolves_from_clyde_yml() {
-    let cfg = resolved_render(render_args_llm(None), Some("render:\n  llm: api\n"));
-    assert_eq!(cfg.llm, Llm::Api);
-}
-
-#[test]
-fn omitted_llm_falls_back_to_auto_without_config() {
-    let cfg = resolved_render(render_args_llm(None), None);
-    assert_eq!(cfg.llm, Llm::Auto);
-}
-
-#[test]
-fn explicit_llm_flag_overrides_clyde_yml() {
-    let cfg = resolved_render(render_args_llm(Some(Llm::Cli)), Some("render:\n  llm: api\n"));
-    assert_eq!(cfg.llm, Llm::Cli, "flag must beat config");
-}
-
-/// AC10: `render.llm: api` overrides `auto` even when `claude` IS present on PATH.
-#[test]
-fn config_api_beats_auto_even_with_claude_present() {
-    let cfg = resolved_render(render_args_llm(None), Some("render:\n  llm: api\n"));
-    // Config resolved to Api, so resolution never consults the binary at all.
-    assert_eq!(
-        resolve_transport(cfg.llm, true, true, cfg.format).unwrap(),
-        TransportKind::Api
-    );
-}
-
-// ---- AC11: the model pins are configurable and plumbed ------------------------------------------
+// ---- the model pins are configurable and plumbed -------------------------------------------------
 
 #[test]
 fn model_pins_default_to_opus_4_8_without_config() {
-    let cfg = resolved_render(render_args_llm(None), None);
+    let cfg = resolved_render(render_args_base(), None);
     assert_eq!(cfg.model, "claude-opus-4-8");
 }
 
 #[test]
 fn model_pins_come_from_clyde_yml_when_set() {
     let yml = "render:\n  model: claude-sonnet-5\n";
-    let cfg = resolved_render(render_args_llm(None), Some(yml));
+    let cfg = resolved_render(render_args_base(), Some(yml));
     assert_eq!(cfg.model, "claude-sonnet-5");
 }
 
@@ -491,7 +417,7 @@ fn model_pins_come_from_clyde_yml_when_set() {
 fn the_retired_html_keys_are_rejected_by_name() {
     for key in ["html-model: claude-opus-4-7", "html-max-output-tokens: 64000"] {
         let err = with_clyde_yml(Some(&format!("render:\n  {key}\n")), || {
-            resolve_command(crate::cli::Command::Render(render_args_llm(None))).unwrap_err()
+            resolve_command(crate::cli::Command::Render(render_args_base())).unwrap_err()
         });
         let msg = format!("{err:#}");
         assert!(
@@ -505,7 +431,7 @@ fn the_retired_html_keys_are_rejected_by_name() {
 
 #[test]
 fn ceilings_default_without_config() {
-    let cfg = resolved_render(render_args_llm(None), None);
+    let cfg = resolved_render(render_args_base(), None);
     assert_eq!(
         cfg.judge_max_output_tokens,
         common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS
@@ -516,15 +442,15 @@ fn ceilings_default_without_config() {
     );
 }
 
-/// AC-C1's first hop: `clyde.yml` -> the resolved per-invocation `RenderConfig`. The two transports'
-/// halves of the probe live in `summarize/api/tests.rs` and `summarize/cli/tests.rs`.
+/// AC-C1's first hop: `clyde.yml` -> the resolved per-invocation `RenderConfig`. The transport's
+/// half of the probe lives in `summarize/cli/tests.rs`.
 ///
 /// Sentinels that could never be a default, and distinct, so a hardcoded value or a crossed pair in
 /// `resolve_command` fails here.
 #[test]
 fn ceilings_come_from_clyde_yml_when_set() {
     let yml = "render:\n  judge-max-output-tokens: 12345\n  slot-max-output-tokens: 543\n";
-    let cfg = resolved_render(render_args_llm(None), Some(yml));
+    let cfg = resolved_render(render_args_base(), Some(yml));
     assert_eq!(cfg.judge_max_output_tokens, 12_345);
     assert_eq!(cfg.slot_max_output_tokens, 543);
 }
@@ -533,10 +459,7 @@ fn ceilings_come_from_clyde_yml_when_set() {
 fn ceilings_are_independent_of_each_other() {
     // Setting only one must leave the other at its default, not zero it — a ceiling of 0 fails every
     // render.
-    let cfg = resolved_render(
-        render_args_llm(None),
-        Some("render:\n  judge-max-output-tokens: 12345\n"),
-    );
+    let cfg = resolved_render(render_args_base(), Some("render:\n  judge-max-output-tokens: 12345\n"));
     assert_eq!(cfg.judge_max_output_tokens, 12_345);
     assert_eq!(
         cfg.slot_max_output_tokens,
@@ -552,9 +475,8 @@ fn ceilings_are_independent_of_each_other() {
 /// fully-flagged invocation that previously worked — and it must fail LOUDLY, naming the file, never
 /// silently defaulting.
 #[test]
-fn malformed_config_fails_loudly_even_with_format_and_llm_both_present() {
-    let mut args = render_args(Some(Format::Markdown), None);
-    args.llm = Some(Llm::Cli);
+fn malformed_config_fails_loudly_even_with_format_present() {
+    let args = render_args(Some(Format::Markdown), None);
     let err = with_clyde_yml(Some("render:\n  format: [not, a, string\n"), || {
         resolve_command(crate::cli::Command::Render(args)).unwrap_err()
     });
@@ -563,21 +485,36 @@ fn malformed_config_fails_loudly_even_with_format_and_llm_both_present() {
 }
 
 /// An unknown key under `render:` is a typo, not a new feature. `deny_unknown_fields` makes it loud
-/// rather than silently ignored.
+/// rather than silently ignored. `llmm` also stands in for the retired `llm` key itself: after the
+/// excision, `render: llm: ...` is unknown too, not merely a stale enum value.
 #[test]
 fn unknown_render_key_fails_loudly() {
     let err = with_clyde_yml(Some("render:\n  llmm: api\n"), || {
-        resolve_command(crate::cli::Command::Render(render_args_llm(None))).unwrap_err()
+        resolve_command(crate::cli::Command::Render(render_args_base())).unwrap_err()
     });
     let msg = format!("{err:#}");
     assert!(msg.contains("llmm") || msg.contains("unknown field"), "got: {msg}");
 }
 
-/// An invalid `render.llm` value must not silently fall back to `auto`.
+/// The retired `llm` key is REJECTED by name, not tolerated: `clyde.yml` files written before the
+/// excision must fail loudly rather than have the key silently ignored.
 #[test]
-fn invalid_llm_value_fails_loudly() {
-    let err = with_clyde_yml(Some("render:\n  llm: telepathy\n"), || {
-        resolve_command(crate::cli::Command::Render(render_args_llm(None))).unwrap_err()
+fn the_retired_llm_key_is_rejected_by_name() {
+    let err = with_clyde_yml(Some("render:\n  llm: cli\n"), || {
+        resolve_command(crate::cli::Command::Render(render_args_base())).unwrap_err()
+    });
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("unknown field") && msg.contains("llm"),
+        "the retired key must be named as unknown: {msg}"
+    );
+}
+
+/// An invalid `render.format` value must not silently fall back to the default.
+#[test]
+fn invalid_format_value_fails_loudly() {
+    let err = with_clyde_yml(Some("render:\n  format: telepathy\n"), || {
+        resolve_command(crate::cli::Command::Render(render_args_base())).unwrap_err()
     });
     let msg = format!("{err:#}");
     assert!(msg.contains("clyde.yml") || msg.contains("telepathy"), "got: {msg}");
