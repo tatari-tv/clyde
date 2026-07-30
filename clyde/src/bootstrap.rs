@@ -1042,7 +1042,8 @@ fn compose_path_env(dir: &Path, inherited: Option<&str>) -> String {
 
 /// Render the `Environment=PATH=...` unit directive, or an empty string when `claude` could not be
 /// resolved (see [`resolve_claude_path_env`]). Single source of truth for the line's exact shape, so
-/// [`install_clyde_timer`] (fresh unit) and [`rewrite_unit`] (existing unit) cannot drift.
+/// [`clyde_service_body`] cannot drift from itself: it is the one caller, and both the fresh-install
+/// and repair paths go through it.
 fn environment_path_line(claude_path_env: Option<&str>) -> String {
     match claude_path_env {
         Some(composed) => format!("Environment=PATH={composed}\n"),
@@ -1141,7 +1142,7 @@ fn install_clyde_timer(paths: &Paths) -> Result<bool> {
     Ok(true)
 }
 
-/// The enrich timer unit, as named by `repoint_systemd` and the `Paths::clyde_timer` helper.
+/// The enrich timer unit, as named by [`ensure_enrich_unit`] and the `Paths::clyde_timer` helper.
 const CLYDE_ENRICH_TIMER: &str = "clyde-enrich.timer";
 
 /// Best-effort `systemctl --user daemon-reload`. Warns on failure; never aborts bootstrap. Lives

@@ -789,3 +789,67 @@ not see. Not widening the lint here (unrequested, and the test already covers it
 ### Open questions
 
 None.
+
+## Implementation audit (review panel, Mode 2), 2026-07-30
+
+Architect (Gemini) and Staff Engineer (Codex), both `rc=0`, run against `git diff main..HEAD` on the
+unpushed branch. Run dir `/tmp/review-panel/ug5RKA5V`.
+
+**The two reviewers disagreed, and averaging them would have been wrong.** Architect returned
+**PASS with zero findings**. Staff returned **four**, three of which were real and are fixed below.
+Recording the divergence rather than reporting a clean panel: on this doc the Architect's pass was the
+less useful result, and a single-reviewer audit would have missed a real test gap.
+
+The panel agent itself went idle twice without delivering a report. Both reviewer outputs were on disk
+the whole time (`arch.out`, `staff.out`, `done.txt`); the wrapper is what failed, not the reviewers.
+Findings were read from those files directly.
+
+### Folded in
+
+- **Staff 1, stale references to deleted/renamed symbols. CONFIRMED, fixed.** Phase 4 swept
+  `bootstrap.rs` for `klod` but not for references to the symbols it had just deleted or renamed:
+  - `bootstrap.rs:1045` carried a rustdoc intra-doc link `[`rewrite_unit`]` to a function Phase 4
+    DELETED. Worse than a stale comment: a broken doc link. Rewritten to describe
+    `clyde_service_body` as its own single caller.
+  - `bootstrap.rs:1144` said `CLYDE_ENRICH_TIMER` is "as named by `repoint_systemd`", the name Phase 4
+    retired. Now names `ensure_enrich_unit`.
+  - `bootstrap.rs:923` also matches the grep and is CORRECT: it is `ensure_enrich_unit`'s own
+    "Renamed from `repoint_systemd`" historical note. Left alone.
+  - Lesson for the next sweep: grepping for the retired *concept* (`klod`) is not the same as grepping
+    for the retired *symbols*. Both greps are needed.
+- **Staff 3, a residue state detected but untested. CONFIRMED, fixed.** Nothing planted a bare
+  `klod-enrich.service`. AC6 asserted "all five residue states" while naming tests for four, so the
+  count hid the gap. Added `a_bare_klod_service_unit_is_unhealthy_and_names_its_path`, which also pins
+  that this state (unlike the timer-only and dangling-symlink ones) DOES populate `timer_unit`, since a
+  `.service` exists. Break-it check: dropping the `klod-enrich.service` candidate from
+  `legacy_timer_residue` fails it (`legacy_state must name the offending path: []`). Restored, green.
+  - Both AC6 and Phase 4's own criterion are amended to ENUMERATE the five states instead of asserting
+    a count. Same lesson as AC3's three amendments: a criterion that states a number without listing
+    its members cannot be checked against the code.
+- **Staff 2, Phase 5's third success criterion was never executed.** Correct, and it was my omission:
+  the criterion says `general:skill-reviewer` on the edited skill returns no critical finding, and I
+  never ran it. Run and recorded in the next section.
+
+### Pushed back, with rationale
+
+- **Staff 4, "the 139.5-token mean over 33 rows is externally unverifiable because it was measured on a
+  temporary DB copy".** Partially rejected. The copy is indeed gone, but the claim is not
+  unverifiable: **all 33 individual `tokens_out` values are listed verbatim in the Phase 2 section
+  above**, so the mean, the max, and the over-200 count can each be recomputed from the notes. The
+  reviewer read the summary line and not the distribution. Accepted half: a future measurement of this
+  shape should say up front that the raw sample is recorded inline, since a reader who cannot re-run it
+  needs to be told where the evidence is.
+  - The measurement was deliberately taken on a copy, and that stands: taking it live would have
+    re-enriched 33 already-good rows and overwritten their tags to produce a number.
+- **Staff 4, "could not verify the Slack runbook thread because Slack access is not installed".** Not a
+  defect, a reviewer access limitation. The thread is cited by permalink, channel id, and message ts in
+  the Phase 6 section and in `2026-07-30-scope-dormancy-cost-handoff.md`, all independently checkable
+  by anyone with Slack.
+- **Architect's zero-findings PASS.** Not adopted as the panel's verdict. It explicitly claimed it had
+  audited the "disclosed deviations to scrutinize hardest" list and found nothing, yet Staff 1 and
+  Staff 3 are both real and both inside that scope.
+
+### Not re-litigated
+
+Both reviewers were told the three handed-off findings (scope-off-cwd, dormancy, cost undercount) are
+known-open and out of this doc's scope. Neither disputed that call.

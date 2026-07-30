@@ -484,3 +484,39 @@ fn non_klod_legacy_state_is_not_klod_residue() {
         report.legacy_state
     );
 }
+
+/// The fifth residue state, and the one the implementation audit found uncovered: a bare
+/// `klod-enrich.service` with no `.timer` and no enable symlink beside it.
+///
+/// AC6 claimed all five residue states were covered; four were. `timer_state`'s `legacy_present`
+/// and `legacy_timer_residue` both check this path today, so the code fails loud correctly, but
+/// nothing bit if either check regressed. Unlike the timer-only and dangling-symlink cases this one
+/// DOES populate `timer_unit` (a `.service` exists), so it also pins that the report names the unit.
+#[test]
+fn a_bare_klod_service_unit_is_unhealthy_and_names_its_path() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let user = paths.xdg_config.join("systemd").join("user");
+    fs::create_dir_all(&user).unwrap();
+    fs::write(
+        user.join("klod-enrich.service"),
+        "[Service]\nType=oneshot\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
+    )
+    .unwrap();
+
+    let report = diagnose(&paths).unwrap();
+
+    assert!(!report.healthy(), "a surviving klod service unit must fail loud");
+    assert_eq!(report.timer, Target::Legacy("klod"));
+    // A .service exists, so unlike the timer-only case the unit line is populated.
+    assert_eq!(report.timer_unit.as_deref(), Some("klod-enrich.service"));
+    assert!(
+        report.legacy_state.iter().any(|s| s.contains("klod-enrich.service")),
+        "legacy_state must name the offending path: {:?}",
+        report.legacy_state
+    );
+    assert!(
+        report.has_klod_residue(),
+        "this must route to the pre-retirement-clyde remedy, not `run clyde bootstrap`"
+    );
+}

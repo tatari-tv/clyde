@@ -405,10 +405,17 @@ So this phase deletes the ~80 refs of *machinery that migrates* and keeps a hand
 - **the tripwire fails loudly on all five residue states.** Two existing tests are RETAINED, not written:
   `legacy_klod_dirs_are_unhealthy` (`doctor/tests.rs:127`) already plants both klod dirs and asserts
   `!report.healthy()`, and `clyde_service_with_klod_execstart_is_legacy` (`doctor/tests.rs:195`) already
-  covers the klod-`ExecStart` path. **One test is genuinely new: the dangling
-  `timers.target.wants/klod-enrich.timer` symlink, which has no test today** (`rg -n symlink
-  clyde/src/doctor/tests.rs` returns nothing). Break-it check for the new one: change `symlink_metadata`
-  to `exists()` and it must fail. This replaces the old criterion, which was unfalsifiable: with the
+  covers the klod-`ExecStart` path. **Three tests are genuinely new**, and the five states are
+  ENUMERATED rather than asserted as a count: (a) the dangling
+  `timers.target.wants/klod-enrich.timer` symlink, which had no test (`rg -n symlink
+  clyde/src/doctor/tests.rs` returned nothing); (b) a bare `klod-enrich.timer` unit; (c) a bare
+  `klod-enrich.service` unit. Break-it check for (a): change `symlink_metadata` to `exists()` and it
+  must fail. Break-it check for (c): drop the `klod-enrich.service` candidate from
+  `legacy_timer_residue` and it must fail.
+  *Amended after the implementation audit, 2026-07-30.* This criterion claimed "all five residue
+  states" while naming tests for four. The Staff Engineer reviewer caught that a bare
+  `klod-enrich.service` was DETECTED but untested. Asserting a count without enumerating it is exactly
+  how the gap hid, which is the same lesson as AC3's three amendments. This replaces the old criterion, which was unfalsifiable: with the
   detection deleted, "reports no legacy state" was true no matter how dirty the host was
 
 #### Phase 5: Gate acceptance criteria on the running system
@@ -524,10 +531,13 @@ Per Phase 5's gate, each was executed against `main` while drafting and the obse
       an unrecorded outcome does not.
 - [x] **AC6.** A dirty klod host fails loud after Phase 4, across the dir half AND the timer half:
       `legacy_klod_dirs_are_unhealthy` (`doctor/tests.rs:127`) and
-      `clyde_service_with_klod_execstart_is_legacy` (`doctor/tests.rs:195`) both still pass, a NEW test
-      asserts `diagnose(...).healthy() == false` for a dangling
-      `timers.target.wants/klod-enrich.timer` symlink, and changing `symlink_metadata` to `exists()`
-      (`doctor.rs:235`) makes that new test fail.
+      `clyde_service_with_klod_execstart_is_legacy` (`doctor/tests.rs:195`) both still pass, and THREE
+      new tests assert `diagnose(...).healthy() == false` for each remaining residue state: a dangling
+      `timers.target.wants/klod-enrich.timer` symlink, a bare `klod-enrich.timer`, and a bare
+      `klod-enrich.service`. Changing `symlink_metadata` to `exists()` must fail the dangling-symlink
+      test, and dropping the `klod-enrich.service` candidate from `legacy_timer_residue` must fail the
+      bare-service test. *Amended after the implementation audit:* the bare-service state was detected
+      but untested, and this criterion asserted a count of five rather than listing them.
       *Observed on `main`:* `Report::healthy()` (`doctor.rs:78-86`) returns false today because
       `legacy_state` carries the klod dir checks. After Phase 4 without a tripwire it would return true
       and `clyde doctor` would exit 0 on that host, which is why this is an overall criterion and not a
