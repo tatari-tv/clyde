@@ -22,6 +22,14 @@ use serde_json::Value;
 /// Mirrors `sessions::db::BUSY_TIMEOUT_MS`.
 const EVENTS_BUSY_TIMEOUT_MS: i64 = 5_000;
 
+/// The binary bootstrap resolves off PATH at install/repoint time so it can write the enrich unit's
+/// `Environment=PATH=` override (design `2026-07-29-excise-api-key.md` Phase 5, G7). Mirrors
+/// `common::llm::cli::CLAUDE_BINARY` and `clyde::resolve_claude`.
+const CLAUDE_BINARY: &str = "claude";
+
+/// The environment variable [`resolve_claude_path_env`] reads and composes.
+const PATH_ENV: &str = "PATH";
+
 /// Flags for `clyde bootstrap`.
 #[derive(Args, Debug, Default)]
 pub struct BootstrapArgs {
@@ -201,6 +209,7 @@ pub fn run_paths<S: Systemd>(paths: &Paths, args: &BootstrapArgs, systemd: &S) -
             println!("  (nothing to migrate — already on clyde or no legacy state found)");
         }
         println!("Dry run: no files were moved, no symlinks created, the events DB was not opened.");
+        print_stale_env_file_warning(&outcome);
         if let Some((step, err)) = outcome.failed {
             eprintln!("  ✗ would fail at: {step}");
             return Err(eyre::eyre!("bootstrap --dry-run failed planning step '{step}': {err}"));
@@ -217,6 +226,7 @@ pub fn run_paths<S: Systemd>(paths: &Paths, args: &BootstrapArgs, systemd: &S) -
         println!("  (nothing to migrate — already on clyde or no legacy state found)");
     }
     println!("Backups (if any) left at <path>.clyde.bak. Run `clyde doctor` to verify.");
+    print_stale_env_file_warning(&outcome);
     // A mid-sequence failure reports exactly which steps completed (above), then surfaces the
     // failing step and exits non-zero. Re-running is safe (completed steps are no-ops).
     if let Some((step, err)) = outcome.failed {
@@ -224,6 +234,18 @@ pub fn run_paths<S: Systemd>(paths: &Paths, args: &BootstrapArgs, systemd: &S) -
         return Err(eyre::eyre!("bootstrap failed at step '{step}': {err}"));
     }
     Ok(())
+}
+
+/// Print the operator-visible G6 warning line when [`Outcome::stale_env_file`] is set. Shared by
+/// both the dry-run and live branches of [`run_paths`] so the wording cannot drift between them.
+fn print_stale_env_file_warning(outcome: &Outcome) {
+    if let Some(path) = &outcome.stale_env_file {
+        println!(
+            "  ! stale credential file found: {} — clyde no longer reads it; remove it (e.g. `rkvr rmrf {}`)",
+            path.display(),
+            path.display()
+        );
+    }
 }
 
 /// What a bootstrap run did, for reporting and to drive the post-run daemon-reload. On a partial
@@ -234,6 +256,10 @@ pub struct Outcome {
     pub completed: Vec<String>,
     pub systemd_changed: bool,
     pub failed: Option<(String, String)>,
+    /// Present when a stale `~/.config/clyde/enrich.env` is still on disk (G6). Nothing reads it any
+    /// more, but clyde does not delete it — see [`check_stale_env_file`]. `run()` surfaces this as an
+    /// operator-visible warning line naming the path.
+    pub stale_env_file: Option<PathBuf>,
 }
 
 /// The hermetic migration core: every step operates on `paths` and never shells out. Steps are
@@ -320,6 +346,10 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
             }
         }
     }
+
+    // 3. Post-migration checks. Read-only, so it runs identically under --dry-run and live: there is
+    // nothing to gate.
+    out.stale_env_file = check_stale_env_file(paths);
 
     Ok(out)
 }
@@ -861,6 +891,25 @@ fn merge_pricing_overrides(paths: &Paths, force: bool, dry_run: bool) -> Result<
     Ok(true)
 }
 
+/// G6: detect (never delete) a stale enrich `.env` file. Phase 5 removed the only code that ever
+/// read it (`EnvironmentFile=` in the generated unit) and the only code that ever wrote it
+/// (`move_env_file`), so a file at this path is now inert — but it may still hold a live credential,
+/// and destroying an operator's secret is not a bootstrap's job (`secrets.md`: custody is the
+/// operator's channel; see the design's Non-Goals). Read-only, so it is safe to run identically
+/// under `--dry-run` and live: there is no mutation to gate.
+fn check_stale_env_file(paths: &Paths) -> Option<PathBuf> {
+    let path = paths.xdg_config.join("clyde").join("enrich.env");
+    debug!("check_stale_env_file: {}", path.display());
+    if !path.exists() {
+        return None;
+    }
+    warn!(
+        "check_stale_env_file: {} is no longer read by clyde and should be removed",
+        path.display()
+    );
+    Some(path)
+}
+
 /// Rewrite the statusline script's `ccu <today|weekly|monthly>` invocations to `clyde cost ...`.
 /// No-op if the script is absent or already repointed. Backs up before rewriting.
 fn repoint_statusline(paths: &Paths, dry_run: bool) -> Result<bool> {
@@ -954,11 +1003,11 @@ fn rewrite_hook_commands(root: &mut Value) -> bool {
     changed
 }
 
-/// Repoint the enrich systemd user timer from `klod` to `clyde`: rewrite `ExecStart`, move the
-/// `EnvironmentFile` to the clyde config dir (permissions preserved, contents never logged), write
-/// the unit as `clyde-enrich.service`, and remove the old `klod-enrich.service`. Repoints an
-/// existing unit only, unless `install_timer` is set (then it creates the clyde unit from a
-/// template). Returns whether the unit changed.
+/// Repoint the enrich systemd user timer from `klod` to `clyde`: rewrite `ExecStart`, strip the
+/// `EnvironmentFile` credential-file directive entirely (clyde installs no credential file — Phase
+/// 5, G6), write the unit as `clyde-enrich.service`, and remove the old `klod-enrich.service`.
+/// Repoints an existing unit only, unless `install_timer` is set (then it creates the clyde unit
+/// from a template). Returns whether the unit changed.
 fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<bool> {
     let legacy_svc = paths.legacy_unit();
     let legacy_tmr = paths.legacy_timer();
@@ -966,8 +1015,8 @@ fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<
         legacy_svc.exists() || legacy_tmr.exists() || fs::symlink_metadata(paths.legacy_wants_link()).is_ok();
     if !has_legacy {
         // No klod state to migrate. Two sub-cases still need handling:
-        //   - an already-installed clyde unit may predate the `sessions`->`session` rename and still
-        //     invoke `clyde ... sessions enrich`, which now fails (no `sessions` alias). Rewrite it.
+        //   - an already-installed clyde unit may predate the `sessions`->`session` rename, still
+        //     carry the retired `EnvironmentFile=` directive, or both. Rewrite it.
         //   - no clyde unit yet and an install was requested -> install fresh.
         let clyde_svc = paths.clyde_unit();
         if clyde_svc.exists() {
@@ -983,16 +1032,16 @@ fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<
         return Ok(false);
     }
     if dry_run {
-        // Legacy units present: a live run WOULD rewrite the service/timer, move the env file,
-        // repoint the enable symlink, and remove the legacy units. Report without performing any of
-        // it — no reads of unit bodies are needed to know the move would happen.
+        // Legacy units present: a live run WOULD rewrite the service/timer, strip the
+        // EnvironmentFile directive, repoint the enable symlink, and remove the legacy units. Report
+        // without performing any of it — no reads of unit bodies are needed to know that.
         return Ok(true);
     }
 
     let mut changed = false;
 
-    // The oneshot service: rewrite klod -> clyde, move the API-key env file (perms preserved,
-    // contents never logged), back up an existing clyde dest before overwrite, remove the old unit.
+    // The oneshot service: rewrite klod -> clyde, strip the retired EnvironmentFile directive, back
+    // up an existing clyde dest before overwrite, remove the old unit.
     if legacy_svc.exists() {
         let text =
             fs::read_to_string(&legacy_svc).with_context(|| format!("failed to read {}", legacy_svc.display()))?;
@@ -1001,8 +1050,8 @@ fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<
         if clyde_svc.exists() {
             backup(&clyde_svc)?;
         }
-        write_atomic(&clyde_svc, &rewrite_unit(&text))?;
-        move_env_file(paths)?;
+        let claude_path_env = resolve_claude_path_env();
+        write_atomic(&clyde_svc, &rewrite_unit(&text, claude_path_env.as_deref()))?;
         if legacy_svc != clyde_svc {
             fs::remove_file(&legacy_svc)
                 .with_context(|| format!("failed to remove old unit {}", legacy_svc.display()))?;
@@ -1012,7 +1061,8 @@ fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<
 
     // The .timer is the actual scheduler (klod-enrich.timer, WantedBy=timers.target, enabled via a
     // symlink in timers.target.wants/). It must be renamed too, and its enable symlink repointed,
-    // or the daily enrich sweep silently stops firing after the service is renamed.
+    // or the daily enrich sweep silently stops firing after the service is renamed. A timer has no
+    // `ExecStart=`, so it never needs the `Environment=PATH=` injection — pass `None` explicitly.
     if legacy_tmr.exists() {
         let text =
             fs::read_to_string(&legacy_tmr).with_context(|| format!("failed to read {}", legacy_tmr.display()))?;
@@ -1021,7 +1071,7 @@ fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<
         if clyde_tmr.exists() {
             backup(&clyde_tmr)?;
         }
-        write_atomic(&clyde_tmr, &rewrite_unit(&text))?;
+        write_atomic(&clyde_tmr, &rewrite_unit(&text, None))?;
         repoint_wants_symlink(paths)?;
         if legacy_tmr != clyde_tmr {
             fs::remove_file(&legacy_tmr)
@@ -1063,75 +1113,163 @@ fn repoint_wants_symlink(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-/// Pure transform of a unit file (service or timer): every `klod` -> `clyde`, then the old
-/// `sessions enrich` subcommand spelling -> `session enrich`. The enrich units reference `klod`
-/// only in clyde-appropriate places (ExecStart binary, EnvironmentFile path, Description, the
-/// `tatari-tv/klod` Documentation URL), so a blanket replace is correct here. The subcommand
-/// rename is applied after so units that were already `clyde sessions enrich` also get migrated.
-fn rewrite_unit(text: &str) -> String {
-    text.replace("klod", "clyde")
-        .replace("sessions enrich", "session enrich")
+/// Pure transform of a unit file (service or timer): every `klod` -> `clyde`, the old `sessions
+/// enrich` subcommand spelling -> `session enrich`, and (Phase 5, G6) drop any `EnvironmentFile=`
+/// directive entirely — clyde installs no credential file, and stripping the line (never replacing
+/// it with an optional `EnvironmentFile=-`) is what removes the orphaned reference. A systemd unit
+/// treats a bare `EnvironmentFile=` as MANDATORY, so leaving it point at a path the operator is
+/// about to delete (Rollout) would fail the unit at the next start. Line-filtered, not `.replace`,
+/// because removing a whole directive is not a substring substitution.
+///
+/// `claude_path_env`, when `Some`, is injected as `Environment=PATH=...` immediately before
+/// `ExecStart=` (Phase 5, G7/R7): once the unit no longer loads an env file it has one less way to
+/// end up with a usable `PATH`, and `systemctl --user` does not inherit an interactive login PATH
+/// (no `import-environment` in dotfiles, no `PATH` in `~/.config/environment.d/`). A `.timer` unit
+/// has no `ExecStart=` line, so the injection is a no-op there — callers pass `None` for timers. A
+/// unit that already carries its own `Environment=PATH=` (an operator override, or a prior run of
+/// this function) is left alone rather than duplicated.
+fn rewrite_unit(text: &str, claude_path_env: Option<&str>) -> String {
+    debug!(
+        "rewrite_unit: text bytes={} claude_path_env={:?}",
+        text.len(),
+        claude_path_env
+    );
+    let renamed = text
+        .replace("klod", "clyde")
+        .replace("sessions enrich", "session enrich");
+    let already_has_path_env = renamed
+        .lines()
+        .any(|line| line.trim_start().starts_with("Environment=PATH="));
+    let inject = if already_has_path_env { None } else { claude_path_env };
+
+    let mut out = String::with_capacity(renamed.len());
+    for line in renamed.lines() {
+        if line.trim_start().starts_with("EnvironmentFile=") {
+            continue;
+        }
+        if inject.is_some() && line.trim_start().starts_with("ExecStart=") {
+            out.push_str(&environment_path_line(inject));
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
-/// Rewrite an already-clyde-named enrich unit that still uses the pre-rename `sessions enrich`
-/// subcommand spelling. Reached from the no-legacy path of [`repoint_systemd`]: a user who already
-/// migrated off klod (so no `klod-*` state triggers the full repoint) but whose installed unit
-/// predates the `sessions`->`session` rename would otherwise be left with a timer firing
-/// `clyde ... sessions enrich`, which now errors. Returns whether a rewrite happened (or, in
-/// dry-run, would happen). No-op if the unit is already on the new spelling.
+/// Rewrite an already-clyde-named enrich unit that still needs one of two fixes: the pre-rename
+/// `sessions enrich` subcommand spelling, or a retired `EnvironmentFile=` directive (Phase 5, G6).
+/// Reached from the no-legacy path of [`repoint_systemd`]: a user who already migrated off klod (so
+/// no `klod-*` state triggers the full repoint) but whose installed unit predates one of those two
+/// fixes would otherwise be left with a broken or stale-firing timer. Returns whether a rewrite
+/// happened (or, in dry-run, would happen). No-op if the unit already carries neither defect.
 fn refresh_clyde_unit(svc: &Path, dry_run: bool) -> Result<bool> {
     debug!("refresh_clyde_unit: svc={} dry_run={}", svc.display(), dry_run);
     let text = fs::read_to_string(svc).with_context(|| format!("failed to read {}", svc.display()))?;
-    if !text.contains("sessions enrich") {
+    let has_stale_subcommand = text.contains("sessions enrich");
+    let has_environment_file = text
+        .lines()
+        .any(|line| line.trim_start().starts_with("EnvironmentFile="));
+    if !has_stale_subcommand && !has_environment_file {
         return Ok(false);
     }
     if dry_run {
-        // WOULD rewrite the stale subcommand spelling in place. Report without writing.
+        // WOULD rewrite the stale spelling and/or strip the EnvironmentFile directive. Report
+        // without writing.
         return Ok(true);
     }
     backup(svc)?;
-    write_atomic(svc, &rewrite_unit(&text))?;
+    let claude_path_env = resolve_claude_path_env();
+    write_atomic(svc, &rewrite_unit(&text, claude_path_env.as_deref()))?;
     info!(
-        "rewrote stale `sessions enrich` -> `session enrich` in {}",
+        "refreshed clyde enrich unit {} (stale_subcommand={has_stale_subcommand} environment_file={has_environment_file})",
         svc.display()
     );
     Ok(true)
 }
 
-/// Move `~/.config/klod/enrich.env` -> `~/.config/clyde/enrich.env`, preserving permissions.
-fn move_env_file(paths: &Paths) -> Result<()> {
-    let legacy = paths.xdg_config.join("klod").join("enrich.env");
-    let dest = paths.xdg_config.join("clyde").join("enrich.env");
-    if !legacy.exists() || dest.exists() {
-        return Ok(());
+/// Resolve `claude`'s directory off PATH at install/repoint time and compose it with bootstrap's own
+/// inherited [`PATH_ENV`], so the enrich unit's `Environment=PATH=` override can find `claude` even
+/// when the systemd user manager does not carry an interactive PATH (Phase 5, G7/R7: there is no
+/// `import-environment` in dotfiles and no `PATH` in `~/.config/environment.d/`, so today's working
+/// resolution is inherited from the login session, not owned by the unit). Returns `None` (having
+/// warned) when `claude` cannot be resolved right now, in which case the unit is written with no
+/// `Environment=PATH=` override at all — the pre-fix behavior of relying on whatever PATH the
+/// systemd user manager itself carries.
+///
+/// Writes the SYMLINK's directory (e.g. `~/.local/bin`), never the versioned install target (e.g.
+/// `~/.local/share/claude/versions/2.1.220`): `which::which` returns the PATH-search hit itself,
+/// never canonicalized through the symlink, which is exactly the stable directory wanted so the
+/// unit does not go stale on a `claude` self-update.
+fn resolve_claude_path_env() -> Option<String> {
+    debug!("resolve_claude_path_env: resolving `{CLAUDE_BINARY}` off PATH");
+    let claude = match which::which(CLAUDE_BINARY) {
+        Ok(path) => path,
+        Err(e) => {
+            warn!(
+                "resolve_claude_path_env: `{CLAUDE_BINARY}` not found on PATH ({e}); the enrich unit \
+                 will carry no explicit PATH override and will rely on the systemd user manager's own \
+                 PATH, which may not include it"
+            );
+            return None;
+        }
+    };
+    let Some(dir) = claude.parent() else {
+        warn!(
+            "resolve_claude_path_env: resolved `{CLAUDE_BINARY}` path {} has no parent directory",
+            claude.display()
+        );
+        return None;
+    };
+    let composed = compose_path_env(dir, std::env::var(PATH_ENV).ok().as_deref());
+    info!(
+        "resolve_claude_path_env: prepending {} to the enrich unit's PATH",
+        dir.display()
+    );
+    Some(composed)
+}
+
+/// Pure: prepend `dir` to `inherited` (bootstrap's own `PATH`), or stand alone if `inherited` is
+/// absent/empty. Split out from [`resolve_claude_path_env`] so the composition itself is directly
+/// testable without a real `which::which` lookup.
+fn compose_path_env(dir: &Path, inherited: Option<&str>) -> String {
+    match inherited {
+        Some(p) if !p.is_empty() => format!("{}:{p}", dir.display()),
+        _ => dir.display().to_string(),
     }
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+}
+
+/// Render the `Environment=PATH=...` unit directive, or an empty string when `claude` could not be
+/// resolved (see [`resolve_claude_path_env`]). Single source of truth for the line's exact shape, so
+/// [`install_clyde_timer`] (fresh unit) and [`rewrite_unit`] (existing unit) cannot drift.
+fn environment_path_line(claude_path_env: Option<&str>) -> String {
+    match claude_path_env {
+        Some(composed) => format!("Environment=PATH={composed}\n"),
+        None => String::new(),
     }
-    let perms = fs::metadata(&legacy).map(|m| m.permissions()).ok();
-    fs::rename(&legacy, &dest).with_context(|| format!("failed to move env file {}", legacy.display()))?;
-    if let Some(perms) = perms {
-        fs::set_permissions(&dest, perms).with_context(|| format!("failed to set perms on {}", dest.display()))?;
-    }
-    info!("moved enrich env file to clyde config (contents not logged)");
-    Ok(())
 }
 
 /// Create a fresh clyde enrich service + timer + enable symlink (only under `--install-timer`
 /// when no legacy unit exists). The timer is the scheduler; without it (and its enable symlink)
-/// the oneshot service would never fire.
+/// the oneshot service would never fire. Installs no `EnvironmentFile=` (Phase 5, G6: clyde reads no
+/// credential file), and resolves `claude` off PATH at install time to write an explicit
+/// `Environment=PATH=` override (Phase 5, G7) when possible — see [`resolve_claude_path_env`].
 fn install_clyde_timer(paths: &Paths) -> Result<bool> {
+    debug!("install_clyde_timer: paths={paths:?}");
     let svc = paths.clyde_unit();
-    let svc_body = "[Unit]\n\
+    let claude_path_env = resolve_claude_path_env();
+    let svc_body = format!(
+        "[Unit]\n\
         Description=clyde session enrichment sweep (work-scoped, dormant)\n\
         After=network-online.target\n\
         Wants=network-online.target\n\n\
         [Service]\n\
         Type=oneshot\n\
-        EnvironmentFile=%h/.config/clyde/enrich.env\n\
+        {}\
         ExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n\
-        Nice=10\n";
-    write_atomic(&svc, svc_body)?;
+        Nice=10\n",
+        environment_path_line(claude_path_env.as_deref())
+    );
+    write_atomic(&svc, &svc_body)?;
 
     let tmr = paths.clyde_timer();
     let tmr_body = "[Unit]\n\

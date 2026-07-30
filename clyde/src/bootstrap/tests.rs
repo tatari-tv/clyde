@@ -51,9 +51,6 @@ fn seed_full_legacy_world(paths: &Paths) {
     )
     .unwrap();
     std::os::unix::fs::symlink(paths.legacy_timer(), paths.legacy_wants_link()).unwrap();
-    let env_legacy = paths.xdg_config.join("klod").join("enrich.env");
-    fs::create_dir_all(env_legacy.parent().unwrap()).unwrap();
-    fs::write(&env_legacy, "ANTHROPIC_API_KEY=secret\n").unwrap();
 }
 
 /// Build a `Paths` rooted under `root`, so no test touches the real machine. The caller holds the
@@ -440,7 +437,9 @@ fn skip_statusline_leaves_statusline_untouched() {
 }
 
 #[test]
-fn systemd_unit_rewrite_moves_env_file_with_perms() {
+fn repoint_systemd_strips_environment_file_from_legacy_unit() {
+    // Phase 5, G6: the credential-file directive must be GONE from the rewritten unit, not moved
+    // alongside a relocated env file (there is no env file to relocate any more).
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     let legacy_unit = paths.legacy_unit();
@@ -450,10 +449,6 @@ fn systemd_unit_rewrite_moves_env_file_with_perms() {
         "[Service]\nEnvironmentFile=%h/.config/klod/enrich.env\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
     )
     .unwrap();
-    let env_legacy = paths.xdg_config.join("klod").join("enrich.env");
-    fs::create_dir_all(env_legacy.parent().unwrap()).unwrap();
-    fs::write(&env_legacy, "ANTHROPIC_API_KEY=secret\n").unwrap();
-    fs::set_permissions(&env_legacy, fs::Permissions::from_mode(0o600)).unwrap();
 
     assert!(repoint_systemd(&paths, false, false).unwrap());
 
@@ -462,14 +457,13 @@ fn systemd_unit_rewrite_moves_env_file_with_perms() {
     assert!(!legacy_unit.exists(), "old unit must be removed");
     let unit_text = fs::read_to_string(&clyde_unit).unwrap();
     assert!(unit_text.contains("/.cargo/bin/clyde --log-level info session enrich"));
-    assert!(unit_text.contains(".config/clyde/enrich.env"));
     assert!(!unit_text.contains("klod"));
-
-    let env_dest = paths.xdg_config.join("clyde").join("enrich.env");
-    assert!(env_dest.exists(), "env file must move to clyde config");
-    assert!(!env_legacy.exists());
-    let mode = fs::metadata(&env_dest).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "env file permissions must be preserved");
+    assert!(
+        !unit_text
+            .lines()
+            .any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "the EnvironmentFile directive must be stripped, not renamed: {unit_text}"
+    );
 }
 
 #[test]
@@ -500,10 +494,20 @@ fn repoint_rewrites_clyde_unit_with_stale_subcommand_and_no_legacy() {
         !unit_text.contains("sessions enrich"),
         "stale subcommand spelling must be gone"
     );
+    assert!(
+        !unit_text
+            .lines()
+            .any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "the retired EnvironmentFile directive must also be stripped in the same rewrite: {unit_text}"
+    );
 }
 
 #[test]
-fn repoint_is_noop_for_already_correct_clyde_unit() {
+fn repoint_rewrites_clyde_unit_that_still_carries_environment_file() {
+    // Phase 5, G6: a clyde unit already on the correct subcommand spelling but STILL carrying the
+    // retired EnvironmentFile directive must be rewritten too — refresh_clyde_unit's trigger is not
+    // just the stale subcommand spelling. This is exactly the live desk.lan state: `session enrich`
+    // (already migrated) plus `EnvironmentFile=` (not yet excised).
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     let clyde_unit = paths.clyde_unit();
@@ -515,8 +519,35 @@ fn repoint_is_noop_for_already_correct_clyde_unit() {
     .unwrap();
 
     assert!(
+        repoint_systemd(&paths, false, false).unwrap(),
+        "a unit still carrying EnvironmentFile must be rewritten even with the correct subcommand"
+    );
+
+    let unit_text = fs::read_to_string(&clyde_unit).unwrap();
+    assert!(unit_text.contains("/.cargo/bin/clyde --log-level info session enrich"));
+    assert!(
+        !unit_text
+            .lines()
+            .any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "EnvironmentFile must be stripped: {unit_text}"
+    );
+}
+
+#[test]
+fn repoint_is_noop_for_already_correct_clyde_unit() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    fs::write(
+        &clyde_unit,
+        "[Service]\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n",
+    )
+    .unwrap();
+
+    assert!(
         !repoint_systemd(&paths, false, false).unwrap(),
-        "a correct unit needs no rewrite"
+        "a correct unit (no stale subcommand, no EnvironmentFile) needs no rewrite"
     );
 }
 
@@ -641,6 +672,11 @@ fn systemd_repoints_service_timer_and_enable_symlink() {
     assert!(paths.clyde_timer().exists());
     assert!(!paths.legacy_unit().exists());
     assert!(!paths.legacy_timer().exists());
+    let svc = fs::read_to_string(paths.clyde_unit()).unwrap();
+    assert!(
+        !svc.lines().any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "the service's EnvironmentFile directive must be stripped: {svc}"
+    );
     let tmr = fs::read_to_string(paths.clyde_timer()).unwrap();
     assert!(!tmr.contains("klod"), "timer body must be fully rewritten");
     assert!(tmr.contains("tatari-tv/clyde"));
@@ -662,6 +698,101 @@ fn install_timer_creates_service_timer_and_symlink() {
     assert!(paths.clyde_unit().exists());
     assert!(paths.clyde_timer().exists());
     assert_eq!(fs::read_link(paths.clyde_wants_link()).unwrap(), paths.clyde_timer());
+}
+
+#[test]
+fn install_clyde_timer_writes_no_environment_file() {
+    // Phase 5 success criterion: the unit body `install_clyde_timer` generates must contain no
+    // `EnvironmentFile` line — clyde installs no credential file. Break-it check: restoring the old
+    // `EnvironmentFile=%h/.config/clyde/enrich.env` line in `install_clyde_timer`'s template makes
+    // this assertion fail.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+
+    assert!(install_clyde_timer(&paths).unwrap());
+
+    let body = fs::read_to_string(paths.clyde_unit()).unwrap();
+    assert!(
+        !body.lines().any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "the generated unit must not load a credential file: {body}"
+    );
+}
+
+#[test]
+fn compose_path_env_prepends_claude_dir_to_inherited_path() {
+    // Pure-function coverage for the PATH composition, independent of a real `which::which` lookup
+    // (Phase 5, G7): prepend, never replace, so mise/sbin/snap entries in the inherited PATH survive.
+    let dir = Path::new("/home/user/.local/bin");
+    assert_eq!(
+        compose_path_env(dir, Some("/usr/bin:/bin")),
+        "/home/user/.local/bin:/usr/bin:/bin"
+    );
+    assert_eq!(
+        compose_path_env(dir, Some("")),
+        "/home/user/.local/bin",
+        "an empty inherited PATH must not leave a dangling separator"
+    );
+    assert_eq!(
+        compose_path_env(dir, None),
+        "/home/user/.local/bin",
+        "an absent inherited PATH still yields the resolved dir alone"
+    );
+}
+
+#[test]
+fn rewrite_unit_strips_environment_file_and_injects_claude_path_before_exec_start() {
+    let text = "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n";
+
+    let rewritten = rewrite_unit(text, Some("/home/user/.local/bin:/usr/bin"));
+
+    assert!(
+        !rewritten
+            .lines()
+            .any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "EnvironmentFile must be stripped: {rewritten}"
+    );
+    assert!(
+        rewritten.contains("Environment=PATH=/home/user/.local/bin:/usr/bin\n"),
+        "the composed PATH must be injected: {rewritten}"
+    );
+    // The injected line must precede ExecStart, or the systemd directive order is meaningless.
+    let env_pos = rewritten.find("Environment=PATH=").unwrap();
+    let exec_pos = rewritten.find("ExecStart=").unwrap();
+    assert!(env_pos < exec_pos, "Environment=PATH= must come before ExecStart=");
+}
+
+#[test]
+fn rewrite_unit_writes_no_environment_line_when_claude_path_env_is_none() {
+    // `resolve_claude_path_env` returning `None` (claude not found at rewrite time) must not leave
+    // the unit with any PATH override — the pre-fix fallback of relying on the systemd manager's own
+    // PATH, not a broken/empty `Environment=PATH=` line.
+    let text = "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n";
+
+    let rewritten = rewrite_unit(text, None);
+
+    assert!(!rewritten.contains("Environment=PATH="));
+    assert!(
+        !rewritten
+            .lines()
+            .any(|l| l.trim_start().starts_with("EnvironmentFile="))
+    );
+    assert!(rewritten.contains("ExecStart=%h/.cargo/bin/clyde --log-level info session enrich"));
+}
+
+#[test]
+fn rewrite_unit_does_not_duplicate_an_existing_environment_path_line() {
+    // Idempotent: a unit that already carries its own `Environment=PATH=` (an operator override, or
+    // a prior run of this function) must not get a second one appended.
+    let text = "[Service]\nEnvironment=PATH=/opt/custom/bin:/usr/bin\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n";
+
+    let rewritten = rewrite_unit(text, Some("/home/user/.local/bin:/usr/bin"));
+
+    let occurrences = rewritten.matches("Environment=PATH=").count();
+    assert_eq!(occurrences, 1, "must not duplicate the directive: {rewritten}");
+    assert!(
+        rewritten.contains("Environment=PATH=/opt/custom/bin:/usr/bin"),
+        "{rewritten}"
+    );
 }
 
 #[test]
@@ -743,8 +874,7 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
     //  - pricing overrides (merge_pricing_overrides)
     //  - statusline (repoint_statusline)
     //  - global + local settings hooks (repoint_hook x2)
-    //  - systemd service + timer + enable symlink + env file (repoint_systemd, move_env_file,
-    //    repoint_wants_symlink)
+    //  - systemd service + timer + enable symlink (repoint_systemd, repoint_wants_symlink)
     fs::create_dir_all(paths.xdg_data.join("klod")).unwrap();
     fs::write(paths.xdg_data.join("klod").join("sessions.db"), b"sessions").unwrap();
     fs::create_dir_all(paths.xdg_config.join("klod")).unwrap();
@@ -799,8 +929,6 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
     )
     .unwrap();
     std::os::unix::fs::symlink(paths.legacy_timer(), paths.legacy_wants_link()).unwrap();
-    let env_legacy = paths.xdg_config.join("klod").join("enrich.env");
-    fs::write(&env_legacy, "ANTHROPIC_API_KEY=secret\n").unwrap();
 
     // Read the row count FIRST: opening the DB (even read) settles/removes an empty WAL sidecar at
     // connection close, so do it before snapshotting or the snapshot would race that settling and
@@ -968,4 +1096,41 @@ fn pricing_overrides_merge_with_ccu_winning() {
     assert_eq!(merged["model-a"], 1);
     assert_eq!(merged["model-b"], 2);
     assert_eq!(merged["shared"], "ccu", "ccu wins on conflict");
+}
+
+#[test]
+fn stale_env_file_is_warned_but_never_deleted() {
+    // Phase 5, G6 (Non-Goal): clyde stopped writing/reading an enrich `.env` file, but does not
+    // delete an operator's pre-existing one (it may hold a live credential; deletion is Scott's own
+    // Rollout action, per `secrets.md`). Both halves are asserted: the path is named in the outcome,
+    // and the file is left untouched.
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let stale = paths.xdg_config.join("clyde").join("enrich.env");
+    fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    fs::write(&stale, "irrelevant contents, never read\n").unwrap();
+
+    let out = bootstrap(&paths, &BootstrapArgs::default()).unwrap();
+
+    assert_eq!(
+        out.stale_env_file.as_deref(),
+        Some(stale.as_path()),
+        "bootstrap must name the stale file's path"
+    );
+    assert!(stale.exists(), "clyde must never delete the operator's credential file");
+    assert_eq!(
+        fs::read_to_string(&stale).unwrap(),
+        "irrelevant contents, never read\n",
+        "the file's contents must be untouched"
+    );
+}
+
+#[test]
+fn no_stale_env_file_reports_none() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+
+    let out = bootstrap(&paths, &BootstrapArgs::default()).unwrap();
+
+    assert!(out.stale_env_file.is_none());
 }
