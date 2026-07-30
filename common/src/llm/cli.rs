@@ -17,7 +17,7 @@
 //! `stop_reason: max_tokens`), so advising `--llm api` there would send the reader to a path that
 //! fails the same way. Suggesting a remedy that cannot work is worse than suggesting none.
 
-use super::{Job, Transport};
+use super::{Completion, Job, Kind, Transport, TransportError};
 use crate::proc;
 use eyre::{Context, Result, bail};
 use log::{debug, info};
@@ -43,6 +43,20 @@ const MIN_CLAUDE_VERSION: &str = "2.1.219";
 /// How much child stderr to quote in a failure. Enough to carry the real message, bounded so a
 /// runaway stderr cannot become the error report.
 const STDERR_PREVIEW_BYTES: usize = 500;
+
+/// The CLI's own classification of a transport-level API failure, in [`Envelope::terminal_reason`].
+/// Measured twice, four days apart: on a bogus-credential 401 and on a refused connection (design
+/// Phase 0 Findings 8 and 9, and the dated fixture this file's tests already carry).
+const TERMINAL_REASON_API_ERROR: &str = "api_error";
+
+/// The HTTP statuses in [`Envelope::api_error_status`] that mean the transport, not the payload, is
+/// the problem. Enumerated rather than "any 4xx": a 400 IS about this payload and stays per-session.
+const HTTP_UNAUTHORIZED: u16 = 401;
+const HTTP_FORBIDDEN: u16 = 403;
+const HTTP_TOO_MANY_REQUESTS: u16 = 429;
+/// Inclusive floor and exclusive ceiling of the 5xx range (upstream is down).
+const HTTP_SERVER_ERROR_FLOOR: u16 = 500;
+const HTTP_SERVER_ERROR_LIMIT: u16 = 600;
 
 /// The keyless transport, holding the resolved binary and its reported version.
 #[derive(Debug, Clone)]
@@ -117,17 +131,23 @@ impl CliTransport {
                 "1".into(),
                 // Deliberately NO --fallback-model, so the CLI cannot silently swap models.
             ],
-            env: child_env(),
+            env: child_env(job.kind),
         }
     }
-}
 
-impl Transport for CliTransport {
-    fn complete(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<String> {
+    /// [`Transport::complete`] plus the token counts the CLI billed, for callers that PERSIST them.
+    ///
+    /// Inherent rather than on the trait: `sessions` holds a concrete `CliTransport` and needs the
+    /// counts (they are durable columns), while `report`'s callers publish an artifact and never
+    /// account for it. Widening `Transport::complete` for one caller would churn every existing
+    /// implementation and test double for a value they discard. See [`Completion`].
+    pub fn complete_with_usage(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<Completion> {
         let spawn = self.build_spawn(job, system, prompt);
         // The IDENTICAL fenced block the api transport puts in its user message, so the model sees
-        // the same content in the same order on both transports. Only the channel differs.
-        let payload = format!("```json\n{json_body}\n```\n");
+        // the same content in the same order on both transports. Only the channel differs. The LABEL
+        // is the kind's, because it describes the payload: JSON facts for a slot or the judge, prose
+        // for enrich and narrate.
+        let payload = format!("```{}\n{json_body}\n```\n", job.kind.fence());
         info!(
             "CliTransport::complete: transport=cli job={job:?} binary={} version={} \
              payload bytes={}",
@@ -138,25 +158,43 @@ impl Transport for CliTransport {
 
         let mut cmd = spawn.to_command();
         let binary = self.binary.clone();
+        // A spawn failure means the binary we resolved a moment ago cannot be run AT ALL, which is
+        // never about this payload -- so it is `Unavailable`, same class as a resolve failure.
         let output = proc::run_with_payload("claude -p", &mut cmd, &payload, move |e| {
-            eyre::eyre!(
+            TransportError::Unavailable(format!(
                 "failed to invoke the `claude` CLI at {}: {e}; try `claude` interactively to check the \
                  install, or pass --llm api to use ANTHROPIC_API_KEY",
                 binary.display()
-            )
+            ))
+            .into()
         })?;
 
         // GUARD 1: exit status, checked BEFORE parsing. A logged-out `claude` exits non-zero and
         // prints to stderr WITHOUT emitting a JSON envelope, so parsing first would report
         // "malformed envelope" for what is really "you are logged out".
+        //
+        // Sweep-fatal, per the design's classification table ("logged out | non-zero exit, no
+        // envelope | sweep-fatal"): a `claude` that cannot complete a run is not a property of the
+        // payload, and one unattended sweep must not charge a durable attempt to every candidate.
         if !output.status.success() {
-            bail!(self.exit_failure(&output));
+            return Err(TransportError::Unavailable(self.exit_failure(&output)).into());
         }
 
         let envelope = parse_envelope(&output.stdout)?;
-        let result = check_envelope(envelope, job, &self.observations())?;
-        debug!("CliTransport::complete: job={job:?} ok result bytes={}", result.len());
-        Ok(result)
+        let completion = check_envelope(envelope, job, &self.observations())?;
+        debug!(
+            "CliTransport::complete_with_usage: job={job:?} ok result bytes={} tokens_in={} tokens_out={}",
+            completion.text.len(),
+            completion.tokens_in,
+            completion.tokens_out
+        );
+        Ok(completion)
+    }
+}
+
+impl Transport for CliTransport {
+    fn complete(&self, job: Job<'_>, system: &str, prompt: &str, json_body: &str) -> Result<String> {
+        Ok(self.complete_with_usage(job, system, prompt, json_body)?.text)
     }
 }
 
@@ -165,18 +203,26 @@ impl Transport for CliTransport {
 /// Pure, and separate from [`CliTransport::complete`] so every failure mode is driven by a recorded
 /// envelope fixture in tests rather than requiring a real `claude` subprocess. Returns the validated
 /// artifact text. Every guard bails loudly; none of them degrade the artifact.
-fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Result<String> {
+fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Result<Completion> {
     debug!(
-        "check_envelope: job={job:?} is_error={} subtype={:?} stop_reason={:?}",
-        envelope.is_error, envelope.subtype, envelope.stop_reason
+        "check_envelope: job={job:?} is_error={} subtype={:?} stop_reason={:?} api_error_status={:?}",
+        envelope.is_error, envelope.subtype, envelope.stop_reason, envelope.api_error_status
     );
 
     // GUARD 2: the CLI's own error message, forwarded VERBATIM. An expired token produces a perfectly
     // well-formed envelope saying exactly what is wrong; reporting that as a generic failure throws
     // away the one useful sentence we were given.
+    //
+    // This is also where the sweep-fatal split lives, and it is the reason the split cannot be done on
+    // exit status: this envelope arrives at exit 0 (design G5). `is_sweep_fatal` reads the STRUCTURED
+    // fields; nothing here matches prose.
     if envelope.is_error {
         let detail = failure_detail(&envelope).unwrap_or_else(|| NO_DETAIL_IN_ENVELOPE.to_string());
-        bail!("claude -p reported an error: {detail}\n{observations}\n{ESCAPE_HATCH}");
+        let report = format!("claude -p reported an error: {detail}\n{observations}\n{ESCAPE_HATCH}");
+        if is_sweep_fatal(&envelope) {
+            return Err(TransportError::Unavailable(report).into());
+        }
+        bail!("{report}");
     }
 
     // GUARD 3: subtype.
@@ -225,26 +271,36 @@ fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Resul
         usage.tokens_out()
     );
 
-    // GUARD 7: the output ceiling, CHECKED because it cannot be SET. `end_turn` proves the model
-    // stopped naturally; it does NOT prove the output stayed under the job's ceiling, and unlike the
-    // api transport this one cannot put `max_tokens` on the wire.
-    let ceiling = job.max_output_tokens;
-    let used = usage.tokens_out();
-    if used > u64::from(ceiling) {
-        // `job.kind`, not `job`: a `{job:?}` on the struct would print the model pin into a
-        // user-facing error message.
-        //
-        // The bail NAMES THE KEY. Now that the ceiling is a budget the user set rather than a mirror of
-        // an api limit, "you are over by N" without the one line that raises it is the remedy-less
-        // error this file's own doctrine rejects — and on the cli path those tokens are already
-        // generated and already billed, so the error is the only thing left that can be made useful.
-        bail!(
-            "claude -p produced {used} output tokens, over the {ceiling}-token ceiling for the {:?} \
-             job; refusing to publish an artifact that exceeded its budget. Raise \
-             {} in clyde.yml, or narrow the window with a shorter --since.\n{observations}",
-            job.kind,
-            job.kind.max_output_tokens_key()
-        );
+    // GUARD 7: the output ceiling, CHECKED because it cannot be SET -- and checked ONLY for a kind
+    // whose ceiling the user can actually set. `end_turn` proves the model stopped naturally; it does
+    // NOT prove the output stayed under the job's ceiling, and unlike the api transport this one cannot
+    // put `max_tokens` on the wire.
+    //
+    // `max_output_tokens_key()` is the gate, so the two facts cannot diverge: a kind with no config key
+    // has no output BUDGET, only a const, and there would be no line to name in the bail below. For
+    // `Kind::Enrich`/`Kind::Narrate` the count is dominated by CLI-side reasoning that never reaches
+    // `result` (measured 5,798 and 678 tokens against a 512 const, and it does not track payload size,
+    // so no low ceiling is safe) -- so `stop_reason == end_turn`, checked by Guard 4 above, is the whole
+    // truncation contract for them (design Phase 0 Finding 3 + Finding 10).
+    if let Some(ceiling_key) = job.kind.max_output_tokens_key() {
+        let ceiling = job.max_output_tokens;
+        let used = usage.tokens_out();
+        if used > u64::from(ceiling) {
+            // `job.kind`, not `job`: a `{job:?}` on the struct would print the model pin into a
+            // user-facing error message.
+            //
+            // The bail NAMES THE KEY. Now that the ceiling is a budget the user set rather than a mirror
+            // of an api limit, "you are over by N" without the one line that raises it is the
+            // remedy-less error this file's own doctrine rejects — and on the cli path those tokens are
+            // already generated and already billed, so the error is the only thing left that can be
+            // made useful.
+            bail!(
+                "claude -p produced {used} output tokens, over the {ceiling}-token ceiling for the {:?} \
+                 job; refusing to publish an artifact that exceeded its budget. Raise \
+                 {ceiling_key} in clyde.yml, or narrow the window with a shorter --since.\n{observations}",
+                job.kind,
+            );
+        }
     }
 
     // GUARD 8: the model that actually ran.
@@ -254,7 +310,41 @@ fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Resul
     // top-level error printer use) would show only "binary: ... version: ..." and HIDE the actual
     // cause. Every other guard formats them inline; this one matches.
     check_model(&envelope.model_usage, job.model, observations)?;
-    Ok(result)
+    Ok(Completion {
+        text: result,
+        tokens_in: usage.tokens_in(),
+        tokens_out: usage.tokens_out(),
+    })
+}
+
+/// Whether a failing envelope means the TRANSPORT cannot serve requests, rather than that THIS payload
+/// failed. Structured only: an HTTP status and the CLI's own terminal classification, never prose.
+///
+/// The two rows are each measured (design Phase 0):
+/// - a status of 401/403 (auth), 429 (rate limit) or 5xx (upstream down). Finding 8 measured
+///   `api_error_status: 401` on a rejected credential under the exact argv this transport builds.
+/// - `terminal_reason: "api_error"` with NO status, which is the network case: Finding 9 measured a
+///   refused connection returning `api_error` with `api_error_status: null`, and this file's dated
+///   2026-07-26 fixture carries the same shape.
+///
+/// Any OTHER status stays per-session, because a 400 is about the request we just sent. Everything the
+/// later guards catch (malformed envelope, bad schema, empty result, model mismatch, non-`end_turn`
+/// stop, over-ceiling) stays per-session too: each is a property of one call's reply.
+fn is_sweep_fatal(envelope: &Envelope) -> bool {
+    let fatal = match envelope.api_error_status {
+        Some(status) => {
+            matches!(status, HTTP_UNAUTHORIZED | HTTP_FORBIDDEN | HTTP_TOO_MANY_REQUESTS)
+                || (HTTP_SERVER_ERROR_FLOOR..HTTP_SERVER_ERROR_LIMIT).contains(&status)
+        }
+        // Belt-and-braces for a status-less API failure. Reached only when the CLI itself classified
+        // the failure as `api_error`, so it is not a catch-all for every message-less error envelope.
+        None => envelope.terminal_reason.as_deref() == Some(TERMINAL_REASON_API_ERROR),
+    };
+    debug!(
+        "is_sweep_fatal: api_error_status={:?} terminal_reason={:?} fatal={fatal}",
+        envelope.api_error_status, envelope.terminal_reason
+    );
+    fatal
 }
 
 /// Remediation appended to failures that could plausibly be an install, login, credential, or
@@ -346,7 +436,11 @@ impl Spawn {
 ///
 /// The proxy variables ([`PROXY_VARS`]) are the one addition, and they are enumerated by name for
 /// the same fail-closed reason the rest of this list is.
-fn child_env() -> Vec<(String, String)> {
+///
+/// Keyed on `kind` for ONE reason: [`MAX_THINKING_TOKENS`], set for [`Kind::Enrich`] alone. This
+/// function is shared by every job on the transport, so setting it unconditionally would silently
+/// change what `report render` and `report eval` produce.
+fn child_env(kind: Kind) -> Vec<(String, String)> {
     let mut env = Vec::new();
     // Measured 2026-07-24: an `env -i` child with NO env at all still authenticates, because the
     // runtime falls back to `getpwuid` for the home directory. HOME is passed anyway so the transport
@@ -363,6 +457,12 @@ fn child_env() -> Vec<(String, String)> {
     // An npm-installed Claude Code can print an update notice, and anything ahead of the JSON would
     // make a successful generation look like a malformed envelope. Belt; parse_envelope is suspenders.
     env.push(("NO_UPDATE_NOTIFIER".into(), "1".into()));
+    // Reasoning off, for the enrichment sweep ONLY. Set by clyde, never forwarded from the parent, so
+    // the `env_clear()` allowlist posture is unchanged.
+    if kind == Kind::Enrich {
+        debug!("child_env: {MAX_THINKING_TOKENS}={THINKING_DISABLED} for {kind:?}");
+        env.push((MAX_THINKING_TOKENS.into(), THINKING_DISABLED.into()));
+    }
     // How the child reaches the network at all in a sandboxed environment. See PROXY_VARS.
     for name in PROXY_VARS {
         match std::env::var(name) {
@@ -375,6 +475,26 @@ fn child_env() -> Vec<(String, String)> {
     }
     env
 }
+
+/// The variable that disables the CLI's own reasoning pass, and the value that disables it.
+///
+/// `claude` 2.1.220 treats thinking as enabled iff the value is `> 0`, so `0` turns it off. Set for
+/// [`Kind::Enrich`] and NOTHING else, and the exclusions are each measured (design Phase 0):
+/// - Enrich: 67% cheaper on a p50 payload, ~9x faster (6s vs 52s), output collapses from 5,798 to 140
+///   tokens, tags and summary equal or better (Finding 12). Enrich runs once per session over hundreds
+///   of sessions, so the saving compounds.
+/// - NOT [`Kind::Narrate`]: measured 3 runs per mode on identical facts, the flag DETERMINISTICALLY
+///   flips the verdict (inefficient 3/3 with reasoning, efficient 3/3 without). That is a change to
+///   what narrate produces, which the design's Non-Goal excludes, and one interactive call had no cost
+///   case to justify it (Finding 13).
+/// - NOT [`Kind::Slot`]/[`Kind::Judge`]: unrequested and unmeasured; it would silently change what
+///   `report render` and `report eval` produce.
+///
+/// It is undocumented in the `claude` binary, so the failure mode is COST, not correctness: if a future
+/// release stops honoring it, enrichment still succeeds and simply gets ~3x dearer and ~9x slower. The
+/// canary is ~140 output tokens and ~6s per enrich call (Finding 14).
+const MAX_THINKING_TOKENS: &str = "MAX_THINKING_TOKENS";
+const THINKING_DISABLED: &str = "0";
 
 /// The proxy variables forwarded to the child, ENUMERATED BY NAME.
 ///
@@ -501,14 +621,24 @@ fn check_model(model_usage: &BTreeMap<String, ModelUsage>, requested: &str, obse
 /// `stderr: <empty>` and threw away the one sentence that answered the question, on both the
 /// non-zero-exit path and Guard 2.
 ///
-/// So the fallback chain is `error.message` -> `result` -> `terminal_reason`, and the reason is
-/// appended when a message was found, because "api_error" classifies a sentence that does not
-/// classify itself. Still observations only, never a guessed cause (see the module docs).
+/// So the fallback chain is `error.message` -> `errors[].message` -> `result` -> `terminal_reason`, and
+/// the reason is appended when a message was found, because "api_error" classifies a sentence that does
+/// not classify itself. Still observations only, never a guessed cause (see the module docs).
 fn failure_detail(envelope: &Envelope) -> Option<String> {
     let message = envelope
         .error
         .as_ref()
         .and_then(|e| e.message.as_deref())
+        // The plural spelling, preferred over `result` for the same reason the singular is: it is the
+        // CLI's own sentence about what went wrong. First non-empty message wins; the rest would be
+        // noise in a one-line report.
+        .or_else(|| {
+            envelope
+                .errors
+                .iter()
+                .filter_map(|e| e.message.as_deref())
+                .find(|m| !m.trim().is_empty())
+        })
         // Trim and reject empty BEFORE the fallback, not after. `.or()` fires only on `None`, so an
         // `error: {"message": ""}` short-circuited it and the `filter` then threw the empty string
         // away -- leaving no detail at all while a populated `result` sat right there unread. An
@@ -572,10 +702,23 @@ struct Envelope {
     model_usage: BTreeMap<String, ModelUsage>,
     #[serde(default)]
     error: Option<ErrorBody>,
+    /// The SAME thing, in the plural: some failure shapes emit an `errors` array instead of a singular
+    /// `error` object. Deserialized alongside it rather than instead of it, because both spellings are
+    /// in the wire format and reading only one silently drops the other's message.
+    #[serde(default)]
+    errors: Vec<ErrorBody>,
     /// The CLI's own classification of a terminal failure (`api_error`, ...). Present on failure
-    /// envelopes that carry no `error` object at all, which is why [`failure_detail`] reads it.
+    /// envelopes that carry no `error` object at all, which is why [`failure_detail`] reads it, and one
+    /// of the two structured signals [`is_sweep_fatal`] classifies on.
     #[serde(default)]
     terminal_reason: Option<String>,
+    /// The upstream HTTP status of an API failure, when there was one. THE typed auth discriminator:
+    /// measured 401 on a rejected credential and `null` on a refused connection, both under the exact
+    /// argv this transport builds (design Phase 0 Findings 8 and 9). Marked `@internal` by the CLI and
+    /// propagated only when `subtype == "success"` -- which a failing envelope satisfies, because it
+    /// sets `subtype: "success"` and `is_error: true` at once.
+    #[serde(default)]
+    api_error_status: Option<u16>,
 }
 
 /// Token accounting for one `claude -p` call.

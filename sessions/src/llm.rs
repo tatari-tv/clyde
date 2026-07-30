@@ -1,17 +1,23 @@
-//! The enrichment LLM seam: the [`Completer`] port the orchestrator depends on, and the real
-//! [`AnthropicClient`] that implements it against the Anthropic Messages API.
+//! The enrichment LLM seam: the [`Completer`] and [`Narrator`] ports the orchestrators depend on, and
+//! the real [`ClaudeCli`] that implements BOTH over the keyless `common::llm::CliTransport`.
 //!
 //! Per the workspace DI convention, the orchestrator is generic over `C: Completer`, so tests
-//! inject a deterministic fake and never touch the network. The concrete client reads its key
-//! from the environment (the **work** Anthropic key on desk — never inlined, never logged), sets
-//! an explicit timeout, calls `error_for_status()`, and retries bounded on rate-limit / 5xx.
+//! inject a deterministic fake and never touch the network.
+//!
+//! clyde handles NO credential here (design `2026-07-29-excise-api-key.md`). The `claude` binary the
+//! user is already logged into owns auth end to end. The deleted `AnthropicClient` read an api key from
+//! the environment and put it on the wire as a request header, which made both these commands dead on a
+//! keyless host -- the wall a teammate hit on 2026-07-29 and the reason this exists. (The variable and
+//! header are deliberately not spelled out anywhere in this crate: the design asserts a workspace-wide
+//! grep for either name, and a comment naming them would satisfy the grep while proving nothing.) Its
+//! within-call HTTP retry ladder went with it: the transport is fail-loud-never-retry by design, and
+//! enrich already has the durable cross-run layer (the `attempts` column), which survives a restart.
 
-use std::time::Duration;
-
-use eyre::{Context, Result, bail, eyre};
-use log::{debug, warn};
+use eyre::{Context, Result, bail};
+use log::debug;
 use serde::Deserialize;
-use serde_json::json;
+
+use common::llm::{CliTransport, Completion, Job, Kind, Transport};
 
 /// The model enrichment pins. Stored per-row as `enrich_model` for provenance.
 pub const ENRICH_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -22,19 +28,16 @@ pub const ENRICH_PROMPT_VERSION: i64 = 1;
 /// LLM callers share ONE pinned model on this host (siblings behave identically); a chatty prose
 /// verdict is cheap on the same small model.
 pub const NARRATE_MODEL: &str = ENRICH_MODEL;
-/// Output-token cap for a prose narration. A verdict is a few sentences; a runaway reply is clamped.
+/// Output-token cap for a prose narration, and its enrichment sibling below.
+///
+/// Both are INERT over the cli transport and are kept because [`Job`] carries the field: the api path
+/// SET this as a wire-level `max_tokens`, and the cli path can only CHECK it -- which it no longer does
+/// for these two kinds, because measured output is dominated by CLI-side reasoning that never reaches
+/// the reply (5,798 and 678 tokens against this 512, and it does not track payload size). The real
+/// truncation contract is `stop_reason == "end_turn"`, and `Kind::max_output_tokens_key()` returns `None`
+/// for both kinds so nothing pretends this number is a knob. See design Phase 0 Findings 3 and 10.
 const NARRATE_MAX_OUTPUT_TOKENS: u32 = 512;
-
-/// Environment variable holding the Anthropic API key.
-const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
-const HTTP_TIMEOUT_SECS: u64 = 60;
 const MAX_OUTPUT_TOKENS: u32 = 512;
-/// Bounded in-call retries on rate-limit / 5xx before the call is reported failed (the durable
-/// cross-run backoff is the `attempts` column; this is the within-call layer).
-const MAX_HTTP_RETRIES: u32 = 3;
-const RETRY_BACKOFF_MS: u64 = 2_000;
 /// Upper bound on stored tags (the design specifies 3-7); a chatty reply is clamped, not rejected.
 const MAX_TAGS: usize = 7;
 
@@ -58,7 +61,7 @@ pub struct LlmEnrichment {
 }
 
 /// The enrichment port: turn one session's (already scope-gated, redacted) text into tags + a
-/// summary. Implemented by [`AnthropicClient`] in production and by a fake in tests.
+/// summary. Implemented by [`ClaudeCli`] in production and by a fake in tests.
 pub trait Completer {
     /// Enrich `payload`. `payload` is the redacted high-signal body; implementations must never
     /// log it in full.
@@ -69,59 +72,60 @@ pub trait Completer {
 /// [`Completer`] (which returns the structured enrichment JSON) because narration selects and
 /// phrases pre-computed facts rather than producing a tag/summary schema. The `efficiency` crate's
 /// Phase 8 narrative layer depends on this port so tests inject a deterministic fake and the
-/// narration never touches the network. The real [`AnthropicClient`] implements it over the SAME
-/// key/timeout/retry HTTP path as enrichment (one integration, no new LLM dependency).
+/// narration never touches the network. The real [`ClaudeCli`] implements it over the SAME transport as
+/// enrichment (one integration, no second credential, no second billing path).
 pub trait Narrator {
     /// Complete `user` under `system`, returning the model's prose reply (trimmed, non-empty).
     /// Implementations must never log `user`/`system` in full — previews only, per the logging rule.
     fn narrate(&self, system: &str, user: &str) -> Result<String>;
 }
 
-/// The Anthropic Messages API client. Holds the key in memory only; never serializes or logs it.
-pub struct AnthropicClient {
-    http: reqwest::blocking::Client,
-    api_key: String,
+/// The keyless enrichment/narration client: BOTH ports over one `common::llm::CliTransport`.
+///
+/// Holds no credential, reads no environment variable, and sends no header. The transport shells out to
+/// the locally installed `claude`, which owns auth (and therefore expiry, rate limits, and plan caps)
+/// end to end.
+pub struct ClaudeCli {
+    transport: CliTransport,
 }
 
-impl AnthropicClient {
-    /// Build a client, reading the key from `ANTHROPIC_API_KEY`. Errors (without echoing the key)
-    /// when the variable is unset — enrichment cannot ship without the work key on this host.
-    pub fn from_env() -> Result<Self> {
-        debug!("AnthropicClient::from_env");
-        let api_key = std::env::var(API_KEY_ENV)
-            .map_err(|_| eyre!("{API_KEY_ENV} not set; enrichment needs the work Anthropic key on this host"))?;
-        if api_key.trim().is_empty() {
-            bail!("{API_KEY_ENV} is empty");
-        }
-        let http = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-            .build()
-            .context("failed to build HTTP client")?;
-        Ok(Self { http, api_key })
+/// The install-and-login remedy, named on every failure to construct the client. Nothing here can be
+/// fixed by setting a variable, so the error must not send the reader looking for one.
+const CLAUDE_REMEDY: &str =
+    "install Claude Code and log in once (`claude`, then /login); clyde needs no API key for this";
+
+impl ClaudeCli {
+    /// Resolve `claude` off PATH and log its version.
+    ///
+    /// A PRESENCE check, not a success check: it proves an executable of that name exists and nothing
+    /// more (the transport logs the resolved binary and version at `info!`, and names both in every
+    /// later failure). Called ONCE before the enrich sweep's loop, which is what makes
+    /// `claude`-not-installed sweep-fatal by construction rather than by classification.
+    pub fn resolve() -> Result<Self> {
+        debug!("ClaudeCli::resolve");
+        let transport = CliTransport::resolve().with_context(|| CLAUDE_REMEDY.to_string())?;
+        Ok(Self { transport })
     }
-}
 
-/// Minimal view of the Messages API response we consume.
-#[derive(Debug, Deserialize)]
-struct MessagesResponse {
-    content: Vec<ContentBlock>,
-    usage: Usage,
-}
+    /// The enrich job, built where its pins live. `Kind::Enrich` is what selects the reasoning
+    /// suppression and the prose fence inside the transport.
+    fn enrich_job() -> Job<'static> {
+        Job {
+            kind: Kind::Enrich,
+            model: ENRICH_MODEL,
+            max_output_tokens: MAX_OUTPUT_TOKENS,
+        }
+    }
 
-#[derive(Debug, Deserialize)]
-struct ContentBlock {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    text: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Usage {
-    #[serde(default)]
-    input_tokens: u64,
-    #[serde(default)]
-    output_tokens: u64,
+    /// The narrate job. Same model pin, its own `Kind`, and deliberately NOT reasoning-suppressed: the
+    /// flag flips the verdict this prose carries (design Phase 0 Finding 13).
+    fn narrate_job() -> Job<'static> {
+        Job {
+            kind: Kind::Narrate,
+            model: NARRATE_MODEL,
+            max_output_tokens: NARRATE_MAX_OUTPUT_TOKENS,
+        }
+    }
 }
 
 /// The JSON contract the model is asked to return.
@@ -131,114 +135,62 @@ struct EnrichJson {
     summary: String,
 }
 
-impl Completer for AnthropicClient {
+impl Completer for ClaudeCli {
     fn enrich(&self, payload: &str) -> Result<LlmEnrichment> {
-        debug!("AnthropicClient::enrich: payload_chars={}", payload.chars().count());
-        let resp = self.messages(ENRICH_MODEL, SYSTEM_PROMPT, payload, MAX_OUTPUT_TOKENS)?;
-        let text = Self::first_text(&resp)?;
-        let parsed = parse_enrich_json(text).context("Anthropic response was not the expected JSON")?;
+        debug!("ClaudeCli::enrich: payload_chars={}", payload.chars().count());
+        // The redacted session text rides STDIN, never argv: these payloads run to 500KB
+        // (`enrich::SEND_CAP_CHARS`) and argv is the ARG_MAX hazard the transport's docs warn about. So
+        // the instruction slot is empty and the schema instruction is the system prompt, exactly as
+        // measured in Phase 0.
+        //
+        // Deliberately NO `.context()` on this call: the transport attaches
+        // `common::llm::TransportError` for a sweep-fatal failure, and `sessions::enrich` recovers it by
+        // downcast. Wrapping it is safe for eyre, but leaving the seam bare keeps the one mechanism G5
+        // depends on impossible to break by accident.
+        let Completion {
+            text,
+            tokens_in,
+            tokens_out,
+        } = self
+            .transport
+            .complete_with_usage(Self::enrich_job(), SYSTEM_PROMPT, "", payload)?;
+        let parsed = parse_enrich_json(&text).context("the `claude` CLI reply was not the expected JSON")?;
         let tags = normalize_tags(parsed.tags);
         if tags.is_empty() || parsed.summary.trim().is_empty() {
-            bail!("Anthropic response had empty tags or summary");
+            bail!("the `claude` CLI reply had empty tags or summary");
         }
+        debug!(
+            "ClaudeCli::enrich: tags={} tokens_in={tokens_in} tokens_out={tokens_out}",
+            tags.len()
+        );
         Ok(LlmEnrichment {
             tags,
             summary: parsed.summary.trim().to_string(),
-            tokens_in: resp.usage.input_tokens,
-            tokens_out: resp.usage.output_tokens,
+            tokens_in,
+            tokens_out,
         })
     }
 }
 
-impl Narrator for AnthropicClient {
+impl Narrator for ClaudeCli {
     fn narrate(&self, system: &str, user: &str) -> Result<String> {
         debug!(
-            "AnthropicClient::narrate: system_chars={} user_chars={}",
+            "ClaudeCli::narrate: system_chars={} user_chars={}",
             system.chars().count(),
             user.chars().count()
         );
-        let resp = self.messages(NARRATE_MODEL, system, user, NARRATE_MAX_OUTPUT_TOKENS)?;
-        let prose = Self::first_text(&resp)?.trim().to_string();
+        // `user` on stdin for the same reason enrich's payload is, and no token counts to keep: narrate
+        // is one interactive call with nothing durable to account for.
+        let prose = self
+            .transport
+            .complete(Self::narrate_job(), system, "", user)?
+            .trim()
+            .to_string();
         if prose.is_empty() {
-            bail!("Anthropic narration response had no prose");
+            bail!("the `claude` CLI narration returned no prose");
         }
+        debug!("ClaudeCli::narrate: prose_chars={}", prose.chars().count());
         Ok(prose)
-    }
-}
-
-impl AnthropicClient {
-    /// Build the Messages request and POST it (shared by [`Completer::enrich`] and
-    /// [`Narrator::narrate`] so both callers ride ONE key/timeout/retry path). Returns the decoded
-    /// response; callers pick out the text block via [`first_text`](Self::first_text).
-    fn messages(&self, model: &str, system: &str, user: &str, max_tokens: u32) -> Result<MessagesResponse> {
-        let body = json!({
-            "model": model,
-            "max_tokens": max_tokens,
-            "system": system,
-            "messages": [{ "role": "user", "content": user }],
-        });
-        self.post_with_retry(&body)
-    }
-
-    /// The first `text` content block of a response, or an error when none is present.
-    fn first_text(resp: &MessagesResponse) -> Result<&str> {
-        resp.content
-            .iter()
-            .find(|b| b.kind == "text")
-            .map(|b| b.text.as_str())
-            .ok_or_else(|| eyre!("Anthropic response had no text block"))
-    }
-
-    /// POST the request, retrying bounded on 429 / 5xx with linear backoff. Returns the decoded
-    /// response or an error after the retries are exhausted.
-    fn post_with_retry(&self, body: &serde_json::Value) -> Result<MessagesResponse> {
-        let mut attempt = 0u32;
-        loop {
-            attempt += 1;
-            let result = self
-                .http
-                .post(API_URL)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION)
-                .header("content-type", "application/json")
-                .json(body)
-                .send();
-
-            match result {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        return resp
-                            .json::<MessagesResponse>()
-                            .context("failed to decode Anthropic response");
-                    }
-                    let retryable = status.as_u16() == 429 || status.is_server_error();
-                    let snippet = error_snippet(resp);
-                    if retryable && attempt <= MAX_HTTP_RETRIES {
-                        warn!("AnthropicClient: status {status} (attempt {attempt}/{MAX_HTTP_RETRIES}), retrying");
-                        std::thread::sleep(Duration::from_millis(RETRY_BACKOFF_MS * attempt as u64));
-                        continue;
-                    }
-                    bail!("Anthropic API returned {status}: {snippet}");
-                }
-                Err(e) => {
-                    if attempt <= MAX_HTTP_RETRIES {
-                        warn!("AnthropicClient: transport error (attempt {attempt}/{MAX_HTTP_RETRIES}): {e}");
-                        std::thread::sleep(Duration::from_millis(RETRY_BACKOFF_MS * attempt as u64));
-                        continue;
-                    }
-                    return Err(eyre!("Anthropic API transport error: {e}"));
-                }
-            }
-        }
-    }
-}
-
-/// A short, secret-free snippet of an error response body for diagnostics.
-fn error_snippet(resp: reqwest::blocking::Response) -> String {
-    match resp.text() {
-        Ok(t) => t.chars().take(200).collect(),
-        Err(_) => "<unreadable body>".to_string(),
     }
 }
 

@@ -18,6 +18,11 @@ fn transport() -> CliTransport {
     }
 }
 
+/// The ceiling `sessions::llm` pins for enrich and narrate. A literal here because `common` cannot
+/// depend on `sessions`; its only role in these tests is to prove the ceiling is NOT enforced for those
+/// kinds, since their real output is measured in the thousands (Phase 0 Finding 3).
+const SESSIONS_MAX_OUTPUT_TOKENS: u32 = 512;
+
 /// A `Job` at its DEFAULT pins for the given kind. The one place these tests source a ceiling, so a
 /// change to either default flows through every Guard 6 case instead of being hand-edited per site.
 fn job(kind: Kind) -> Job<'static> {
@@ -25,6 +30,7 @@ fn job(kind: Kind) -> Job<'static> {
         Kind::Slot => DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
         // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
         Kind::Judge => DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        Kind::Enrich | Kind::Narrate => SESSIONS_MAX_OUTPUT_TOKENS,
     };
     Job {
         kind,
@@ -32,6 +38,9 @@ fn job(kind: Kind) -> Job<'static> {
         max_output_tokens,
     }
 }
+
+/// Every kind, so a test that must hold "for exactly one kind" enumerates rather than samples.
+const ALL_KINDS: [Kind; 4] = [Kind::Slot, Kind::Judge, Kind::Enrich, Kind::Narrate];
 
 /// A minimal successful envelope, parameterized so each guard test can spoil exactly one field.
 fn envelope_json(
@@ -142,12 +151,32 @@ fn argv_carries_the_configured_model_and_the_shared_system_prompt() {
 
 #[test]
 fn child_env_is_an_allowlist_and_leaks_no_secret() {
-    // Holds ENV_LOCK even though it mutates nothing: `child_env()` READS the environment, and reading
+    // Holds ENV_LOCK even though it mutates nothing: `child_env` READS the environment, and reading
     // the environ block while another test is inside `set_var` is the unsafety window edition 2024
     // made explicit. Every env-touching test takes this lock, readers included.
     let guard = ENV_LOCK.lock().unwrap();
-    let env = child_env();
+    // Every kind, so the allowlist doctrine is asserted for all of them and not sampled on one.
+    let per_kind: Vec<(Kind, Vec<(String, String)>)> = ALL_KINDS.iter().map(|k| (*k, child_env(*k))).collect();
     drop(guard);
+    for (kind, env) in &per_kind {
+        let names: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+        for name in &names {
+            assert!(
+                matches!(*name, "HOME" | "PATH" | "NO_UPDATE_NOTIFIER" | MAX_THINKING_TOKENS)
+                    || PROXY_VARS.contains(name),
+                "unexpected variable in the {kind:?} allowlist: {name}"
+            );
+        }
+        assert!(
+            !names.iter().any(|n| n.starts_with("CLAUDE")),
+            "no CLAUDE* variable may reach the {kind:?} child: {names:?}"
+        );
+    }
+    let env = per_kind
+        .iter()
+        .find(|(k, _)| *k == Kind::Slot)
+        .map(|(_, e)| e.clone())
+        .expect("Kind::Slot is in ALL_KINDS");
     let names: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
 
     // Enumerated BY NAME so a future secret-bearing variable fails loudly rather than leaking.
@@ -217,7 +246,7 @@ fn child_env_forwards_the_proxy_address_and_never_a_proxy_credential() {
     for (k, v) in planted {
         unsafe { std::env::set_var(k, v) };
     }
-    let env = child_env();
+    let env = child_env(Kind::Slot);
     unsafe {
         for (name, value) in &prior {
             match value {
@@ -259,7 +288,7 @@ fn child_env_forwards_no_proxy_variable_that_is_unset_or_empty() {
         }
         std::env::set_var("HTTPS_PROXY", "");
     }
-    let env = child_env();
+    let env = child_env(Kind::Slot);
     unsafe {
         std::env::remove_var("HTTPS_PROXY");
         for (name, value) in &prior {
@@ -282,12 +311,12 @@ fn child_env_survives_a_secret_being_present_in_the_parent() {
     // The parent's env is irrelevant by construction (env_clear + allowlist), so setting a secret
     // here must change nothing. This is the property a denylist could not guarantee.
     let guard = ENV_LOCK.lock().unwrap();
-    let before = child_env();
+    let before = child_env(Kind::Slot);
     // SAFETY: serialized behind ENV_LOCK; removed before the guard drops.
     unsafe {
         std::env::set_var("CLAUDE_COST_SLACK_BOT_TOKEN", "xoxb-not-a-real-token");
     }
-    let after = child_env();
+    let after = child_env(Kind::Slot);
     unsafe {
         std::env::remove_var("CLAUDE_COST_SLACK_BOT_TOKEN");
     }
@@ -335,12 +364,12 @@ fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
     for (k, _) in planted {
         unsafe { std::env::remove_var(k) };
     }
-    // `child_env()` READS the environment (`dirs::home_dir()`, `PATH`), so it must be called while
+    // `child_env` READS the environment (`dirs::home_dir()`, `PATH`), so it must be called while
     // the lock is still held. Reading the environ block concurrently with another test's `set_var` is
     // the same unsafety window that makes `set_var` itself unsafe in edition 2024 — it can tear or
     // crash rather than fail cleanly. The assertion below cannot go WRONG (the allowlist can never
     // contain a planted secret), so this is purely about not reading a block mid-mutation.
-    let allowlist = child_env();
+    let allowlist = child_env(Kind::Slot);
     drop(guard);
 
     assert!(output.status.success(), "env exited {:?}", output.status.code());
@@ -546,6 +575,11 @@ fn exit_status(code: i32) -> std::process::ExitStatus {
 // watching the test fail.
 
 fn check(json: &str, kind: Kind) -> Result<String> {
+    check_full(json, kind).map(|c| c.text)
+}
+
+/// The same, keeping the token counts, for the cases that assert on them.
+fn check_full(json: &str, kind: Kind) -> Result<Completion> {
     check_envelope(parse_envelope(json.as_bytes()).unwrap(), job(kind), OBS)
 }
 
@@ -555,6 +589,14 @@ fn guards_pass_a_real_successful_envelope() {
     assert_eq!(out, "# Report\n\nprose");
 }
 
+/// PROVENANCE: this fixture is HAND-AUTHORED, not measured, unlike its dated neighbour below. Nobody
+/// has observed what `claude` 2.1.220 emits for a real OAuth expiry, and proving it would require
+/// logging the operator out (design Phase 0 Finding 8, "honest limit").
+///
+/// So it pins ONE thing and nothing more: that Guard 2 forwards whatever sentence the envelope carried,
+/// verbatim. The sweep-fatal classifier is deliberately NOT built on it -- that reads
+/// `api_error_status` and `terminal_reason`, both measured, and this shape carries neither, so it
+/// classifies per-session. Do not add an assertion here about sweep-fatality: it would encode a guess.
 #[test]
 fn guard_is_error_forwards_the_clis_own_message_verbatim() {
     // An expired token yields a WELL-FORMED envelope saying exactly what is wrong. Throwing that
@@ -979,4 +1021,285 @@ fn ceiling_failures_do_not_offer_a_transport_that_fails_the_same_way() {
         err.contains("render.slot-max-output-tokens"),
         "must offer the remedy that actually remedies: {err}"
     );
+}
+
+// ---- Phase 3 / G5: sweep-fatal classification, AT THE TRANSPORT LAYER ---------------------------
+//
+// This is where the bug would actually live. A `Fake` completer that RETURNS
+// `TransportError::Unavailable` proves only that the sweep honors the variant; it cannot prove the
+// transport ever produces it. Every fixture below is either a Phase 0 measurement or a shape the design's
+// classification table names explicitly.
+
+/// Whether the error a fixture produces carries the sweep-fatal variant. Drives every case below off the
+/// real code path (`parse_envelope` -> `check_envelope`), so a parse failure is classified too.
+fn is_unavailable(json: &str, kind: Kind) -> bool {
+    let err = parse_envelope(json.as_bytes())
+        .and_then(|e| check_envelope(e, job(kind), OBS))
+        .expect_err("this fixture must fail");
+    matches!(
+        err.downcast_ref::<TransportError>(),
+        Some(TransportError::Unavailable(_))
+    )
+}
+
+/// The MEASURED auth failure (design Phase 0 Finding 8, probe C, verbatim): a rejected credential under
+/// the exact argv this transport builds. `is_error: true` at `subtype: "success"` and exit 0, which is
+/// why classification cannot read exit status, and `api_error_status: 401` is the typed discriminator.
+///
+/// BITES: drop `api_error_status` from `Envelope`, or drop the 401 arm from `is_sweep_fatal`, and this
+/// fails -- which in production means an expired login charges a durable attempt to every candidate.
+#[test]
+fn the_measured_401_envelope_is_sweep_fatal() {
+    let json = r#"{ "is_error": true, "subtype": "success", "stop_reason": "stop_sequence",
+        "terminal_reason": "api_error", "api_error_status": 401,
+        "result": "Invalid API key · Fix external API key",
+        "total_cost_usd": 0, "duration_ms": 280, "modelUsage": {} }"#;
+    assert!(is_unavailable(json, Kind::Enrich), "a 401 must abort the sweep");
+    // And the operator still gets the CLI's own sentence, not a generic "unavailable".
+    let err = check(json, Kind::Enrich).unwrap_err().to_string();
+    assert!(err.contains("Invalid API key"), "verbatim detail: {err}");
+    assert!(err.contains("unavailable"), "names the class: {err}");
+}
+
+/// The MEASURED network failure (Finding 9, probe D, and independently clyde's own dated 2026-07-26
+/// fixture): `terminal_reason: "api_error"` with `api_error_status: null`. The belt-and-braces row.
+///
+/// BITES: delete the `None => terminal_reason == "api_error"` arm and this fails, and a dead transport
+/// then charges an attempt per row for ~14 hours (179s per call, measured).
+#[test]
+fn the_measured_status_less_api_error_envelope_is_sweep_fatal() {
+    let probe_d = r#"{ "is_error": true, "subtype": "success", "stop_reason": "stop_sequence",
+        "terminal_reason": "api_error", "api_error_status": null,
+        "result": "API Error: Unable to connect to API (ConnectionRefused)",
+        "total_cost_usd": 0, "duration_ms": 176736 }"#;
+    assert!(is_unavailable(probe_d, Kind::Enrich));
+
+    // The dated fixture already in this file, four days earlier, different errno, same shape.
+    let dated_2026_07_26 = r#"{"type":"result","is_error":true,"subtype":"error_during_execution",
+        "terminal_reason":"api_error",
+        "result":"API Error: Unable to connect to API (ENOTIMP)"}"#;
+    assert!(is_unavailable(dated_2026_07_26, Kind::Enrich));
+}
+
+/// The rest of the table's sweep-fatal statuses, enumerated so none is classified by accident.
+#[test]
+fn rate_limit_forbidden_and_upstream_failures_are_sweep_fatal() {
+    for status in [
+        HTTP_UNAUTHORIZED,
+        HTTP_FORBIDDEN,
+        HTTP_TOO_MANY_REQUESTS,
+        HTTP_SERVER_ERROR_FLOOR,
+        502,
+        HTTP_SERVER_ERROR_LIMIT - 1,
+    ] {
+        let json = format!(
+            r#"{{"is_error":true,"subtype":"success","api_error_status":{status},"result":"upstream said no"}}"#
+        );
+        assert!(is_unavailable(&json, Kind::Enrich), "{status} must be sweep-fatal");
+    }
+}
+
+/// The per-session side of the table. Each of these is a property of ONE call, so charging it one
+/// durable attempt is the correct accounting -- and mis-classifying it as sweep-fatal would let three bad
+/// head rows abort every sweep forever.
+///
+/// BITES: widen `is_sweep_fatal` to "any 4xx" or "any is_error" and the 400 case fails.
+#[test]
+fn per_session_failures_do_not_downcast_to_the_sweep_fatal_variant() {
+    // A 400: the request we just sent was malformed. About this payload.
+    let bad_request = r#"{"is_error":true,"subtype":"success","api_error_status":400,
+        "result":"invalid request: messages.0 too long"}"#;
+    assert!(!is_unavailable(bad_request, Kind::Enrich));
+
+    // A malformed envelope: no JSON at all, and JSON that is not an envelope.
+    assert!(!is_unavailable("not json at all", Kind::Enrich));
+    assert!(!is_unavailable(r#"{"is_error": tru"#, Kind::Enrich));
+
+    // A truncation: `stop_reason: max_tokens` on an otherwise-clean envelope.
+    let truncated = envelope_json(false, "success", "max_tokens", "trunc", 10, &real_model_usage());
+    assert!(!is_unavailable(&truncated, Kind::Slot));
+
+    // An empty result, a model substitution, and an absent `usage`: all per-session.
+    let empty = envelope_json(false, "success", "end_turn", "  ", 1, &real_model_usage());
+    assert!(!is_unavailable(&empty, Kind::Slot));
+    let substituted = envelope_json(
+        false,
+        "success",
+        "end_turn",
+        "prose",
+        10,
+        r#"{"claude-opus-4-8":{"canonicalModel":"claude-sonnet-5"}}"#,
+    );
+    assert!(!is_unavailable(&substituted, Kind::Slot));
+    assert!(!is_unavailable(&envelope_with_usage(None), Kind::Slot));
+
+    // An `is_error` envelope with no status and no `api_error` classification: the CLI did not call it a
+    // transport failure, so neither do we.
+    let unclassified = r#"{"is_error":true,"subtype":"error","error":{"message":"something went wrong"}}"#;
+    assert!(!is_unavailable(unclassified, Kind::Slot));
+}
+
+/// A `claude` that cannot be spawned at all is sweep-fatal, and so is one that exits non-zero without an
+/// envelope (Guard 1, the logged-out shape). Both drive the REAL `complete_with_usage` path; neither
+/// needs the `claude` binary, same hygiene as the `/usr/bin/env` test above.
+#[test]
+fn a_binary_that_cannot_run_is_sweep_fatal() {
+    let missing = CliTransport {
+        binary: PathBuf::from("/nonexistent/claude"),
+        version: "unknown".into(),
+    };
+    let err = missing
+        .complete_with_usage(job(Kind::Enrich), "SYS", "", "facts")
+        .expect_err("a missing binary cannot complete");
+    assert!(
+        matches!(
+            err.downcast_ref::<TransportError>(),
+            Some(TransportError::Unavailable(_))
+        ),
+        "a spawn failure is never about this payload: {err}"
+    );
+
+    // Exit non-zero, nothing on stdout: what a logged-out `claude` looks like.
+    let failing = CliTransport {
+        binary: PathBuf::from("/bin/false"),
+        version: "unknown".into(),
+    };
+    let err = failing
+        .complete_with_usage(job(Kind::Enrich), "SYS", "", "facts")
+        .expect_err("a non-zero exit must fail");
+    assert!(
+        matches!(
+            err.downcast_ref::<TransportError>(),
+            Some(TransportError::Unavailable(_))
+        ),
+        "a non-zero exit with no envelope is the logged-out row: {err}"
+    );
+    assert!(
+        err.to_string().contains("exit 1"),
+        "still reports what it observed: {err}"
+    );
+}
+
+/// Some failure shapes emit `errors` (plural) instead of `error`. Before this phase the array was
+/// deserialized nowhere, so its message was silently dropped and the report fell back to
+/// `terminal_reason` alone.
+///
+/// BITES: delete the `errors` field or its `or_else` arm in `failure_detail` and this fails.
+#[test]
+fn an_errors_array_is_read_when_there_is_no_singular_error() {
+    let envelope: Envelope = serde_json::from_str(
+        r#"{"is_error":true,"terminal_reason":"api_error",
+            "errors":[{"message":"overloaded_error"},{"message":"second, ignored"}]}"#,
+    )
+    .unwrap();
+    let detail = failure_detail(&envelope).unwrap();
+    assert_eq!(detail, "overloaded_error (terminal_reason: api_error)");
+
+    // The singular still wins when both are present, so the existing contract is unchanged.
+    let both: Envelope = serde_json::from_str(
+        r#"{"is_error":true,"error":{"message":"the singular one"},"errors":[{"message":"the plural one"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(failure_detail(&both).unwrap(), "the singular one");
+}
+
+// ---- Phase 3: the ceiling no longer rejects valid enrichment work -------------------------------
+
+/// The Phase 0 blocker (Finding 3), fixed. Measured `output_tokens` on real enrich payloads were 5,798
+/// and 678 against a 512 const, so the ceiling check as written rejected 100% of enrich calls -- and the
+/// value does not track payload size, so no low ceiling was safe. `stop_reason` is the direct truncation
+/// signal the ceiling was only ever a proxy for.
+///
+/// BITES: drop the `if let Some(ceiling_key)` gate and the first assertion fails.
+#[test]
+fn the_output_ceiling_is_not_enforced_for_the_kinds_whose_ceiling_is_a_const() {
+    // Probe A's real output count, an order of magnitude over the 512 const, on a natural stop.
+    let json = envelope_json(
+        false,
+        "success",
+        "end_turn",
+        "{\"tags\":[],\"summary\":\"s\"}",
+        5_798,
+        &real_model_usage(),
+    );
+    for kind in [Kind::Enrich, Kind::Narrate] {
+        let out = check_full(&json, kind)
+            .unwrap_or_else(|e| panic!("{kind:?} must accept a natural stop over the const ceiling: {e}"));
+        assert_eq!(out.tokens_out, 5_798, "the count is still reported, just not enforced");
+    }
+    // And the SAME envelope still fails for the kinds whose ceiling is a user budget.
+    assert!(check(&json, Kind::Slot).is_err(), "a slot's budget is still enforced");
+
+    // Truncation is still fatal for the new kinds: `stop_reason` is the whole contract now, so if it
+    // stopped biting there would be nothing left.
+    let truncated = envelope_json(
+        false,
+        "success",
+        "max_tokens",
+        "half a json obj",
+        140,
+        &real_model_usage(),
+    );
+    for kind in [Kind::Enrich, Kind::Narrate] {
+        let err = check(&truncated, kind).unwrap_err().to_string();
+        assert!(err.contains("stop_reason=max_tokens"), "{kind:?}: {err}");
+        assert!(err.contains("truncated"), "{kind:?}: {err}");
+    }
+}
+
+/// The token counts leave the transport as DATA, because `sessions` persists them.
+#[test]
+fn a_completion_carries_the_token_counts_it_was_billed() {
+    let json = envelope_with_usage(Some(
+        r#"{"input_tokens":10,"cache_creation_input_tokens":4336,"cache_read_input_tokens":0,"output_tokens":5798}"#,
+    ));
+    let out = check_full(&json, Kind::Enrich).unwrap();
+    assert_eq!(out.text, "x");
+    assert_eq!(out.tokens_in, 4346, "summed across every bucket the CLI bills");
+    assert_eq!(out.tokens_out, 5798);
+}
+
+// ---- Phase 3: reasoning is suppressed for EXACTLY one kind --------------------------------------
+
+/// Enumerated by kind, over the BUILT child `Command`, so a future refactor cannot silently extend the
+/// setting to a kind that was never measured. `Kind::Narrate`'s exclusion is load-bearing: the flag
+/// deterministically flips its verdict (3/3 inefficient with reasoning, 3/3 efficient without, Finding
+/// 13), which the design's Non-Goal forbids. `Slot`/`Judge` would silently change `report render` and
+/// `report eval`.
+///
+/// BITES: remove the `if kind == Kind::Enrich` conditional in `child_env` (either direction) and this
+/// fails.
+#[test]
+fn reasoning_is_suppressed_for_enrich_and_for_no_other_kind() {
+    let guard = ENV_LOCK.lock().unwrap();
+    let built: Vec<(Kind, Vec<(String, String)>)> = ALL_KINDS
+        .iter()
+        .map(|kind| {
+            let cmd = transport().build_spawn(job(*kind), "SYS", "").to_command();
+            let env: Vec<(String, String)> = cmd
+                .get_envs()
+                .filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned())))
+                .collect();
+            (*kind, env)
+        })
+        .collect();
+    drop(guard);
+
+    for (kind, env) in built {
+        let value = env
+            .iter()
+            .find(|(k, _)| k == MAX_THINKING_TOKENS)
+            .map(|(_, v)| v.clone());
+        match kind {
+            Kind::Enrich => assert_eq!(
+                value.as_deref(),
+                Some(THINKING_DISABLED),
+                "enrich runs once per session; the 67%-cheaper, 9x-faster path is the measured one"
+            ),
+            other => assert_eq!(
+                value, None,
+                "{other:?} must keep today's behavior: setting this changes what it produces"
+            ),
+        }
+    }
 }

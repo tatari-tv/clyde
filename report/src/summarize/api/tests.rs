@@ -34,6 +34,10 @@ fn default_job(kind: Kind) -> Job<'static> {
         Kind::Slot => (MODEL, DEFAULT_SLOT_MAX_OUTPUT_TOKENS),
         // The judge rides the markdown pins by design (`Kind::max_output_tokens_key`).
         Kind::Judge => (MODEL, DEFAULT_JUDGE_MAX_OUTPUT_TOKENS),
+        // `report` never builds an enrich or narrate job: those two kinds are `sessions`' callers over
+        // the cli transport, and their pins live in `sessions::llm`. Reached only if someone wires one
+        // through this crate, which is the moment to decide what it should mean here.
+        Kind::Enrich | Kind::Narrate => panic!("{kind:?} is not a `report` job"),
     };
     Job {
         kind,

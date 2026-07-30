@@ -28,8 +28,8 @@ use cli::{
 /// only to the sessions arm.
 const DEFAULT_LOG_LEVEL: &str = "info";
 use sessions::{
-    AnthropicClient, Db, EnrichOptions, EnrichStats, EnrichSummary, ExportContext, ExportEnvelope, ExportFilters,
-    Fallback, Filters, MatchSource, ReindexStats, SearchResults, SessionRecord, StageStats,
+    ClaudeCli, Db, EnrichOptions, EnrichStats, EnrichSummary, ExportContext, ExportEnvelope, ExportFilters, Fallback,
+    Filters, MatchSource, ReindexStats, SearchResults, SessionRecord, StageStats,
 };
 
 /// Max width of a title in the human (terminal) listing before it is truncated with an ellipsis.
@@ -834,10 +834,10 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
         token_budget: args.budget_tokens,
     };
     let stats = if args.dry_run {
-        // No off-machine calls, no key needed: the gate is previewed, not opened.
-        sessions::enrich::<AnthropicClient>(db, None, &opts)?
+        // No off-machine calls, no `claude` needed: the gate is previewed, not opened.
+        sessions::enrich::<ClaudeCli>(db, None, &opts)?
     } else {
-        let client = AnthropicClient::from_env()?;
+        let client = ClaudeCli::resolve()?;
         sessions::enrich(db, Some(&client), &opts)?
     };
     print_enrich(&stats);

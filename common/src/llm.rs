@@ -36,25 +36,85 @@ pub enum Kind {
     /// (design Phase 13). It rides the existing transport rather than a second client, so the eval
     /// inherits `--llm` and needs no second credential.
     Judge,
+    /// `clyde session enrich`: one dormant session's redacted PROSE -> the catalog entry JSON
+    /// (`{"tags":[...],"summary":"..."}`). One invocation per session, run unattended on a timer, so
+    /// this is the only kind whose cost compounds over hundreds of calls -- which is why it is also
+    /// the only kind that suppresses reasoning (see `cli::child_env`).
+    Enrich,
+    /// `clyde efficiency session --narrate`: a prose verdict over already-computed efficiency facts.
+    /// One interactive invocation, never a sweep.
+    Narrate,
 }
 
 impl Kind {
-    /// The `clyde.yml` key carrying this job's output ceiling.
+    /// The `clyde.yml` key carrying this job's output ceiling, or `None` when the ceiling is a
+    /// compile-time const rather than something the user can set.
     ///
     /// Exists so a ceiling failure can name the ONE line that prevents the next one. Per-kind on
     /// purpose: naming a key that does not govern the failing job is a remedy that cannot remedy,
     /// which `cli.rs`'s module docs call worse than offering none.
     ///
-    /// Each arm now names a key named for ITS OWN job. That was not true before design "Render
-    /// Inversion": [`Kind::Judge`] used to name `render.markdown-max-output-tokens`, a key named for
-    /// the whole-document authoring job, and the doc comment here had to argue it was not a stand-in.
-    /// The key is `render.judge-max-output-tokens`, so there is no longer an argument to make.
-    pub fn max_output_tokens_key(self) -> &'static str {
+    /// [`Kind::Enrich`] and [`Kind::Narrate`] return `None`, and that is the whole reason this is an
+    /// `Option`: their ceilings live in `sessions::llm` as consts, so inventing
+    /// `enrich-max-output-tokens` / `narrate-max-output-tokens` keys nobody asked for would advertise
+    /// a knob that governs nothing. `None` is the honest answer, and `cli::check_envelope` reads it as
+    /// "this kind has no configurable output budget, so there is no budget to enforce" (design
+    /// `2026-07-29-excise-api-key.md`, API Design + Phase 0 Finding 3).
+    pub fn max_output_tokens_key(self) -> Option<&'static str> {
         match self {
-            Kind::Slot => "render.slot-max-output-tokens",
-            Kind::Judge => "render.judge-max-output-tokens",
+            Kind::Slot => Some("render.slot-max-output-tokens"),
+            Kind::Judge => Some("render.judge-max-output-tokens"),
+            Kind::Enrich | Kind::Narrate => None,
         }
     }
+
+    /// The fence label the payload rides under in the user message.
+    ///
+    /// A property of the KIND, not of the transport, because it describes what the payload IS. `Slot`
+    /// and `Judge` send curated JSON facts; `Enrich` sends a session's redacted prose and `Narrate`
+    /// sends formatted prose facts, and labeling prose as ```` ```json ```` misdescribes the payload
+    /// to the model.
+    pub fn fence(self) -> &'static str {
+        match self {
+            Kind::Slot | Kind::Judge => "json",
+            Kind::Enrich | Kind::Narrate => "text",
+        }
+    }
+}
+
+/// One completion's text plus the token counts the CLI billed for it.
+///
+/// [`Transport::complete`] returns the text alone, because `report`'s callers publish an artifact and
+/// never account for it. `sessions` DOES account for it: `tokens_in`/`tokens_out` are durable columns
+/// (`sessions::db`), and a token-budget gate that reads a zero it never observed is a fail-quietly bug
+/// (design Data Model). So the counts travel out of the transport as data, on the concrete
+/// [`cli::CliTransport::complete_with_usage`], rather than through a widened trait that every existing
+/// implementation and test double would have to grow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub text: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+}
+
+/// A transport failure the CALLER must not retry per-payload.
+///
+/// The one typed error `common::llm` exposes, so a sweep can tell "this session is bad" from "the
+/// transport is down" by matching a variant rather than by reading a message (`rules/rust.md`: detect
+/// a condition by matching a typed error variant, never by string-matching). The workspace is on
+/// `eyre`, which carries no variants, so the transport attaches this as the report's error and
+/// `sessions::enrich` recovers it with `err.downcast_ref::<TransportError>()`.
+#[derive(Debug, thiserror::Error)]
+pub enum TransportError {
+    /// `claude` is present but cannot serve a request at all: logged out, an expired or rejected
+    /// credential, rate-limited, or the upstream API is down. Sweep-fatal. Charging a durable retry
+    /// attempt for this would burn budget on a condition no retry can fix, and five unattended timer
+    /// runs would silently retire the whole catalog (design G5).
+    ///
+    /// Named for the BROAD meaning ("the transport cannot serve requests right now"), not for auth:
+    /// 429 and 5xx classify identically and are not authentication problems.
+    #[error("the `claude` CLI is unavailable: {0}")]
+    Unavailable(String),
 }
 
 /// A render job with its user-configurable pins RESOLVED from `clyde.yml`.

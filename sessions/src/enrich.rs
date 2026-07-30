@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use eyre::{Result, bail};
+use eyre::{Context, Result, bail};
 use log::{debug, info, warn};
 
 use crate::db::{Db, EnrichSuccess};
@@ -24,6 +24,16 @@ pub const DEFAULT_MAX_ATTEMPTS: i64 = 5;
 /// Cap on payload chars sent to the model. The Phase-1 body parse already bounds the body at 500K;
 /// this is the send-side guard, head+tail when a body somehow exceeds it.
 const SEND_CAP_CHARS: usize = 500_000;
+/// Consecutive per-session failures that abort the sweep (the circuit breaker).
+///
+/// It earns its place on an argument that has nothing to do with error taxonomy: a broken transport does
+/// not fail fast. A refused connection was measured at **179 seconds per call**, so an unbroken sweep
+/// grinds ~14 hours over 286 candidates while failing every row (design Phase 0 Finding 9). Classifying
+/// the failures we can name fixes the accounting and does nothing about the wall clock; this covers both,
+/// including failure modes nobody has enumerated yet.
+///
+/// One bad session cannot trip it. Anything systemic trips it immediately.
+const CONSECUTIVE_FAILURE_LIMIT: usize = 3;
 
 /// How an enrichment pass is scoped and gated.
 pub struct EnrichOptions {
@@ -86,6 +96,10 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         dry_run: opts.dry_run,
         ..Default::default()
     };
+    // Failures since the last success, for the circuit breaker. Counts SENDS, not candidates: a
+    // personal-scope or empty-body skip never reached the transport, so it is neither a failure nor a
+    // success and leaves the count unchanged.
+    let mut consecutive_failures: usize = 0;
 
     for rec in &records {
         let scope = session::classify(rec.cwd.as_deref().map(std::path::Path::new));
@@ -187,6 +201,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         };
         match completer.enrich(&redacted) {
             Ok(out) => {
+                consecutive_failures = 0;
                 // Preserve tags only when they are manually owned and not force-overridden;
                 // enrichment-owned or absent tags are refreshed.
                 let overwrite_tags = force || rec.tags.is_empty() || !db.tags_are_manual(&rec.session_id)?;
@@ -215,8 +230,37 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 ));
             }
             Err(e) => {
+                // --- G5: a dead transport must not spend the durable retry budget. ---
+                //
+                // The `attempts` column is a bounded, PERSISTENT counter, and the candidate predicate
+                // drops a row once it hits `max_attempts`. That was safe against an API key, which never
+                // expires. It is not safe against a Claude Code login, which does: a logged-out or
+                // rate-limited `claude` fails every call, so one unattended timer run would charge an
+                // attempt to all 286 candidates and five daily runs would silently retire the entire
+                // catalog -- looking exactly like "enrich has nothing to do", and not self-healing when
+                // the user logs back in. It has already retired 46 rows on desk.lan.
+                //
+                // Matched on the TYPED variant, never on the message text, and the transport classifies
+                // on envelope CONTENT rather than exit status, because the dominant case (an expired
+                // token) returns a well-formed error envelope at exit 0.
+                if e.downcast_ref::<common::llm::TransportError>().is_some() {
+                    warn!(
+                        "enrich::enrich: transport unavailable at {}; aborting the sweep after {} enriched, \
+                         charging no attempts",
+                        rec.session_id, stats.enriched
+                    );
+                    return Err(e).with_context(|| {
+                        format!(
+                            "enrich: the LLM transport is unavailable, so the sweep was aborted at {} \
+                             ({} enriched, 0 attempts charged). No per-session retry can fix this: check \
+                             `claude` is installed and logged in, then re-run.",
+                            rec.session_id, stats.enriched
+                        )
+                    });
+                }
                 db.record_enrich_failure(&rec.session_id, scope.as_str(), &e.to_string())?;
                 stats.failed += 1;
+                consecutive_failures += 1;
                 stats.details.push(detail(
                     rec,
                     scope.as_str(),
@@ -225,6 +269,23 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                     Some(payload_bytes),
                     EnrichStatus::Failed.as_str(),
                 ));
+                // --- The circuit breaker. ---
+                //
+                // Charging these N observed failures rather than nothing is what makes it SAFE. An
+                // abort-with-no-charge livelocks: candidate order is deterministic (`ORDER BY s.modified
+                // DESC`), so N genuinely-bad rows at the head would trip the breaker every run forever
+                // and nothing would ever enrich. Charging them bounds the damage at N rows per run
+                // instead of the whole candidate set, guarantees forward progress (a bad row exhausts in
+                // `max_attempts` runs and drops out), and still protects everything behind it.
+                if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT {
+                    bail!(
+                        "enrich: {consecutive_failures} consecutive failures (last: {}); aborting the sweep \
+                         rather than grinding through {} remaining candidates. Attempts were charged to \
+                         those {consecutive_failures} rows only. Last error: {e}",
+                        rec.session_id,
+                        stats.considered.saturating_sub(stats.enriched + stats.failed),
+                    );
+                }
             }
         }
     }

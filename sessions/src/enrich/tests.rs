@@ -286,3 +286,229 @@ fn live_pass_without_completer_errors() {
     let err = enrich::<Fake>(&db, None, &EnrichOptions::default());
     assert!(err.is_err(), "a live pass requires a completer");
 }
+
+// ---- Phase 3 / G5 + the circuit breaker, asserted on the DURABLE attempts budget ----------------
+//
+// Every assertion below reads `SELECT sum(attempts)` across the WHOLE candidate set on a second
+// connection, not a Rust tally and not one row: the failure this guards is silent in production (rows
+// quietly leave the candidate set and enrich looks like it has nothing to do), and a partial-abort
+// regression that charged 19 of 20 rows would pass a single-row assertion.
+
+/// How many candidates the multi-row fixtures seed. Comfortably over the breaker's limit, so "charged 3"
+/// and "charged every candidate" cannot be the same number (design AC7 asks for >= 20).
+const SEEDED_ROWS: usize = 20;
+
+/// A seeded, ON-DISK catalog. On disk rather than `open_memory` for one reason: `sum(attempts)` is read
+/// on a separate connection, which an in-memory db has no way to share.
+struct Seeded {
+    db: Db,
+    path: PathBuf,
+    ids: Vec<String>,
+    _tmp: tempfile::TempDir,
+}
+
+/// Seed `n` work-scoped candidate rows, newest first, so the sweep's deterministic
+/// `ORDER BY s.modified DESC` makes "record k" a stable thing to assert about. `ids[0]` is the first
+/// candidate the sweep reaches.
+fn seed(n: usize) -> Seeded {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    let mut ids = Vec::new();
+    for i in 0..n {
+        let id = format!("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f{i:03}");
+        let parent = write_transcript(tmp.path(), &id, "some work content to enrich");
+        let mut rec = parsed_record(tmp.path(), &id, WORK_CWD, &parent);
+        // Descending mtime: row 0 is the newest, so it heads the candidate order.
+        rec.modified = dt("2026-06-21T10:00:00Z") - chrono::Duration::minutes(i as i64);
+        db.upsert_session(&rec, "desk").unwrap();
+        ids.push(id);
+    }
+    Seeded {
+        db,
+        path: tmp.path().join("sessions.db"),
+        ids,
+        _tmp: tmp,
+    }
+}
+
+/// The durable retry budget spent across the entire catalog, read at the storage layer.
+fn attempts_sum(path: &Path) -> i64 {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.query_row("SELECT COALESCE(sum(attempts), 0) FROM sessions", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// A completer that fails on chosen 1-based call numbers, with either an ordinary error or the typed
+/// sweep-fatal one. Records its call count so "the sweep stopped" is asserted, not assumed.
+struct Flaky {
+    calls: RefCell<usize>,
+    fail_on: Vec<usize>,
+    fail_all: bool,
+    fatal: bool,
+    /// The message an ordinary (non-fatal) failure carries. Parameterized so one case can prove the
+    /// classifier reads the TYPE and not the words.
+    message: String,
+}
+
+impl Flaky {
+    fn new(fail_on: &[usize], fail_all: bool, fatal: bool) -> Self {
+        Self {
+            calls: RefCell::new(0),
+            fail_on: fail_on.to_vec(),
+            fail_all,
+            fatal,
+            message: "simulated per-session failure".to_string(),
+        }
+    }
+    fn saying(mut self, message: &str) -> Self {
+        self.message = message.to_string();
+        self
+    }
+    fn calls(&self) -> usize {
+        *self.calls.borrow()
+    }
+}
+
+impl Completer for Flaky {
+    fn enrich(&self, _: &str) -> Result<LlmEnrichment> {
+        let call = {
+            let mut n = self.calls.borrow_mut();
+            *n += 1;
+            *n
+        };
+        if self.fail_all || self.fail_on.contains(&call) {
+            if self.fatal {
+                return Err(common::llm::TransportError::Unavailable("simulated logged-out claude".to_string()).into());
+            }
+            bail!("{}", self.message);
+        }
+        Ok(LlmEnrichment {
+            tags: vec!["rust".to_string()],
+            summary: "a durable summary".to_string(),
+            tokens_in: 10,
+            tokens_out: 5,
+        })
+    }
+}
+
+/// G5 at the sweep layer: a sweep-fatal transport failure aborts and charges NOTHING, to any row.
+///
+/// BITES: change the sweep-fatal arm back to `record_enrich_failure` and the `sum(attempts)` assertion
+/// fails (verified by doing exactly that; see the Phase 3 implementation notes).
+#[test]
+fn a_sweep_fatal_failure_leaves_the_attempts_budget_untouched_on_every_candidate() {
+    let s = seed(SEEDED_ROWS);
+    let before = attempts_sum(&s.path);
+    assert_eq!(before, 0, "the fixture starts unspent");
+
+    let fake = Flaky::new(&[1], false, true);
+    let err = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap_err();
+
+    assert_eq!(fake.calls(), 1, "the sweep must stop at the first record, not grind on");
+    assert_eq!(
+        attempts_sum(&s.path),
+        before,
+        "a dead transport must not spend one row's durable budget, let alone all {SEEDED_ROWS}"
+    );
+    let msg = format!("{err:#}");
+    assert!(msg.contains("transport is unavailable"), "names the class: {msg}");
+    assert!(msg.contains("logged in"), "names the remedy: {msg}");
+}
+
+/// The control for the test above: an ORDINARY failure is still charged, exactly once, and the sweep
+/// carries on. Without this, "charges nothing" could be satisfied by never charging anything.
+#[test]
+fn an_ordinary_failure_charges_exactly_one_attempt_and_the_sweep_continues() {
+    let s = seed(SEEDED_ROWS);
+    let fake = Flaky::new(&[1], false, false);
+    let stats = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(fake.calls(), SEEDED_ROWS, "every candidate is still visited");
+    assert_eq!(stats.failed, 1);
+    assert_eq!(stats.enriched, SEEDED_ROWS - 1);
+    assert_eq!(attempts_sum(&s.path), 1, "exactly the one row that failed");
+}
+
+/// The classifier reads the typed variant, NEVER the message. An ordinary error whose text happens to
+/// say "unavailable" must still be charged, or a reworded upstream message could silently start or stop
+/// retiring the catalog.
+#[test]
+fn the_sweep_fatal_split_is_by_type_not_by_message_text() {
+    let s = seed(SEEDED_ROWS);
+    let fake = Flaky::new(&[1], false, false).saying("the `claude` CLI is unavailable: not really");
+    let stats = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(stats.failed, 1, "the words must not abort the sweep");
+    assert_eq!(attempts_sum(&s.path), 1, "and the attempt is still charged");
+}
+
+/// The breaker bites, and charges its OWN observed failures only. Charging them is what stops the
+/// livelock: candidate order is deterministic, so an abort-with-no-charge would trip on the same head
+/// rows every run forever and nothing would ever enrich.
+///
+/// BITES: raise `CONSECUTIVE_FAILURE_LIMIT` past `SEEDED_ROWS` and the sum becomes 20, not 3.
+#[test]
+fn three_consecutive_failures_abort_the_sweep_charging_only_those_three() {
+    let s = seed(SEEDED_ROWS);
+    let fake = Flaky::new(&[], true, false);
+    let err = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap_err();
+
+    assert_eq!(fake.calls(), CONSECUTIVE_FAILURE_LIMIT, "it must abort, not grind");
+    assert_eq!(
+        attempts_sum(&s.path),
+        CONSECUTIVE_FAILURE_LIMIT as i64,
+        "exactly the observed failures, never the candidate count"
+    );
+    let msg = format!("{err:#}");
+    assert!(msg.contains("consecutive failures"), "{msg}");
+}
+
+/// One bad session in the middle cannot trip the breaker, and a success resets the count -- so a sweep
+/// with scattered bad rows still enriches everything else.
+#[test]
+fn a_single_failure_does_not_abort_the_sweep() {
+    let s = seed(SEEDED_ROWS);
+    let fake = Flaky::new(&[2], false, false);
+    let stats = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(fake.calls(), SEEDED_ROWS);
+    assert_eq!(stats.failed, 1);
+    assert_eq!(attempts_sum(&s.path), 1);
+
+    // Two non-adjacent failures are still under the limit: the counter resets on the success between.
+    let s2 = seed(SEEDED_ROWS);
+    let fake2 = Flaky::new(&[2, 5], false, false);
+    let stats2 = enrich(&s2.db, Some(&fake2), &EnrichOptions::default()).unwrap();
+    assert_eq!(fake2.calls(), SEEDED_ROWS, "non-consecutive failures must not abort");
+    assert_eq!(stats2.failed, 2);
+    assert_eq!(attempts_sum(&s2.path), 2);
+}
+
+/// The recovery path for rows already retired needs NO new code: `--max-attempts` is an existing flag
+/// bound to the `attempts < ?1` predicate, so raising it by one frees every row sitting at the cap.
+/// This is why the design CUT a proposed `--reset-attempts` flag as redundant scope.
+#[test]
+fn raising_max_attempts_recovers_rows_sitting_at_the_cap() {
+    let s = seed(3);
+    for id in &s.ids {
+        for _ in 0..DEFAULT_MAX_ATTEMPTS {
+            db_record_failure(&s.db, id);
+        }
+    }
+    assert_eq!(attempts_sum(&s.path), 3 * DEFAULT_MAX_ATTEMPTS);
+
+    let at_cap =
+        s.db.enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false)
+            .unwrap();
+    assert!(at_cap.is_empty(), "at the cap, every row is outside the sweep");
+
+    let freed =
+        s.db.enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS + 1, false)
+            .unwrap();
+    assert_eq!(freed.len(), 3, "one higher and they are candidates again");
+}
+
+/// Charge one attempt through the same public method the sweep uses, so the fixture cannot drift from
+/// how attempts are really spent.
+fn db_record_failure(db: &Db, id: &str) {
+    db.record_enrich_failure(id, "work", "simulated").unwrap();
+}
