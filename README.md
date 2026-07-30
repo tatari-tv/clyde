@@ -137,6 +137,29 @@ session summaries; below the floor they fall back to session titles, which are w
 opening exchange and say little about what the session produced. Override per run with
 `report collect --min-enrichment <fraction>`; raise coverage with `clyde session enrich`.
 
+### Enrich cost baseline, and the two canary thresholds
+
+Measured on the 2026-07-30 recovery sweep, over the keyless `claude` CLI transport with
+`MAX_THINKING_TOKENS=0`:
+
+| measure | baseline |
+|---|---|
+| wall clock per enriched row | ~6.3s |
+| output tokens per enriched row | ~139 |
+| cost per 100 sessions | ~$2.05 |
+
+**Re-check these after every `claude` upgrade.** `MAX_THINKING_TOKENS` is undocumented in the
+`claude` binary, so if a release stops honoring it, enrichment keeps succeeding and simply gets ~3x
+dearer and ~9x slower -- a silent cost regression, not a failure. The two thresholds that say it
+happened:
+
+- **output tokens per row back into the thousands** (the pre-suppression measurement was 5,798)
+- **per-call wall clock back to ~52s**
+
+Either one means reasoning is being billed again. `clyde session enrich` logs `tokens_out` per row at
+debug, and the `tokens_in`/`tokens_out` columns in `sessions.db` are durable, so the check is a query,
+not a re-measurement.
+
 The `render:` defaults for `report render` (all optional; a missing section is all-defaults):
 
 ```yaml

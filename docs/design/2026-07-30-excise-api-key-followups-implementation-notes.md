@@ -539,3 +539,132 @@ Retained, NOT rewritten, per the plan: `legacy_klod_dirs_are_unhealthy` and
 ### Open questions
 
 None.
+
+## Phase 6: The smaller items
+
+One commit, per the plan. Four items: the decomposition, the dependabot re-check, the AC6 ask, and the
+cost canary.
+
+### 1. Decomposed `common/src/llm/cli/tests.rs`
+
+1,353 lines (1,322 at drafting, plus Phase 2's new test) split into a 128-line entry point and seven
+submodules. `otto bloat` exits 0; largest submodule is 266 lines against the 700-line criterion:
+
+```
+tests.rs   128 (helpers + mod decls)
+argv       106   env 259   envelope 182   guards 275   usage 132   fatal 260   kinds 107
+```
+
+Test count unchanged, which is the criterion that matters: `#[test]` attributes are **63 before and 63
+after** (`git show HEAD:...` vs the split tree). The plan said 62 because Phase 2 added one since
+drafting.
+
+### 2. Dependabot: confirmed already closed, no work
+
+Re-queried with the work persona (the handoff's attempt lacked it):
+
+```
+alert #1  quinn-proto  high  state=fixed
+open alerts: 0
+quinn-proto in Cargo.lock: 0 occurrences
+```
+
+Exactly as the doc predicted. No code, no ignore file.
+
+### 3. The excision's AC6 ask: already sent, answered, and NOT closed
+
+**The ask did not need sending. It was already posted**, which the design doc did not know:
+
+- `#platform-internal` (`C039YLDJW5T`), 2026-07-30 17:26 UTC, ts `1785432360.721679`
+- https://tatari.slack.com/archives/C039YLDJW5T/p1785432360721679
+- Runbook: https://marquee.internal.tatari.dev/p/~scott-idler/claude-usage-report-pipeline-runbook
+  (the `~` is part of the slug; the design doc and handoff both cite it without one, and the
+  tilde-less form 404s through `marquee read`)
+- 21 replies. Both Keegan Ferrando and Patrick Shelby ran it.
+
+**What came back, and why AC6 is still open:**
+
+- **Keyless is CONFIRMED by a teammate.** Patrick Shelby: "v0.18.0 ran clean for me, keyless
+  confirmed. `report render` worked with no `ANTHROPIC_API_KEY` in env." 131 sessions, $948.43 for
+  July. That is the half of AC6 the excision was actually about, and it passes.
+- **The 50% enrichment floor was never measured, by either of them.** Patrick got **0%**: all 131
+  sessions gate `skipped-personal`, so nothing reaches the LLM call at all. Keegan re-ran it and
+  commented on his reports' content, but reported no enrichment percentage either.
+
+So AC7's "Keegan has the AC6 ask" is satisfied in substance. AC6 itself is NOT, and it is not blocked
+on anyone's willingness -- it is blocked on a defect nobody had found yet.
+
+### Findings from that thread, NOT fixed here
+
+Three defects surfaced that are in neither the handoff nor this design doc. Recording, not fixing:
+unrequested scope is illegitimate regardless of quality, and each of these is its own change.
+
+1. **Scope classification makes enrich a no-op for anyone not launching from a repo checkout.**
+   `session::scope` classifies off `cwd`/`project_dir` against the `~/repos/<org>/<repo>` convention.
+   Patrick runs `claude` from `~`, so all 131 sessions come back `repo: null` and every one gates
+   `skipped-personal`: 0% coverage, and the report's Executive Summary, What This Funded, and
+   Conclusion all render EMPTY. Keegan is affected differently and worse: he works from a
+   local-git-only project folder and spiders out, so his repo values are, in his words, "less `null`
+   and more just wrong". **This is the real blocker on AC6's enrichment floor**, and it is a
+   correctness bug in its own right, not just a coverage gap.
+2. **Possible dormancy bug.** `clyde session enrich --dry-run` considered **0** at the default 7d but
+   **44** at `--dormant-after 1h`, on sessions dated July 1-30 run on July 30. The July 1 sessions are
+   ~29 days idle and should qualify at 7d. Patrick's hypothesis (explicitly labelled speculation) is
+   that dormancy reads a timestamp `reindex` refreshes. Downstream effect: with the runbook's
+   `enrich` -> `collect` order, the last 7 days of a month-to-date report can never be enriched.
+3. **Cost accounting reads ~30% under the `claude.ai` web UI.** Keegan: `ccu` used to land within
+   5-10% (always low), but after recent fixes "all the tooling you've made is usually like at least
+   30% lower than the web UI shows". Scott's own reply in-thread: "maybe my accounting is off then ...
+   its been very difficult to nail down. maybe there is more work to be done."
+
+Item 1 gates AC6. Items 1 and 2 both want the full funnel, not a patch.
+
+**No new Slack message was sent.** The ask is already out and already answered by the named teammate,
+so re-posting would be noise; and the missing number is blocked by finding 1, which no amount of
+asking fixes. Whether to ping Keegan directly is Scott's call, surfaced at the finalization
+checkpoint.
+
+### 4. Cost baseline canary in the README
+
+Added under the enrichment section: ~6.3s and ~139 output tokens per enriched row, ~$2.05 per 100
+sessions, with both canary thresholds named (output tokens back into the thousands, per-call wall
+clock back to ~52s) and the reason it belongs in living docs (re-check after every `claude` upgrade,
+because `MAX_THINKING_TOKENS` is undocumented and its failure mode is silent cost, not an error).
+
+### Design decisions
+
+- **Rust 2018+ module style, NOT `mod.rs`.** The plan specified `cli/tests/mod.rs`; the repo is
+  consistently 2018-style (`cli.rs` + `cli/tests.rs`), and `rust.md` says explicitly not to mix styles
+  and to keep `foo.rs` as the entry point when decomposing. A `mod.rs` here would have been the only
+  one in the tree. Recorded as a deviation below.
+- **Seven submodules, not six.** The plan's six names map to contiguous banner runs except for the
+  last two blocks (Guard 7's ceiling and the reasoning-suppression pair), which sit at the end of the
+  file, far from `guards` and `env`. Splitting non-contiguously would have meant multiple extractions
+  per module for no gain, so the tail became `kinds`: both blocks are about per-`Kind` behaviour
+  (the ceiling is enforced only for kinds that have one; reasoning is suppressed for exactly one
+  kind). Every submodule is one contiguous run of the original banners.
+
+### Deviations
+
+- **`cli/tests.rs` + `cli/tests/*.rs`, not `cli/tests/mod.rs`** (see above). Same module graph, same
+  helper visibility, house style preserved.
+- **`kinds` is a seventh submodule the plan did not name** (see above).
+- **Four more shared helpers than the plan listed.** The plan named five (`transport`, `job`,
+  `envelope_json`, `real_model_usage`, `good_envelope`). `check`, `check_full`, `exit_status`, and
+  `envelope_with_usage` are also shared, and were defined MID-file inside the sections rather than in
+  the header, so the first split left them inaccessible to sibling modules. Hoisted into the entry
+  point with the others. All thirteen shared items (9 fns + 4 consts) are `pub(super)`.
+- **No Slack message sent for the AC6 ask** (see above): already sent, already answered.
+
+### Tradeoffs
+
+- **Hoisting the four mid-file helpers rather than duplicating them per submodule.** Duplication would
+  have avoided touching the sections at all, but it fixes the same fixture in four places.
+- **Recording the three thread findings here rather than opening a design doc now.** They are real and
+  finding 1 gates AC6, but three defects found in someone else's test report is a new brief, and this
+  phase is "the smaller items". Deciding their route is Scott's call.
+
+### Open questions
+
+None of my own. One item genuinely blocked and named: **AC6's enrichment percentage cannot be
+obtained until finding 1 is fixed.** No assumption is available that makes it obtainable.
