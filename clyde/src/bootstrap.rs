@@ -892,11 +892,11 @@ fn merge_pricing_overrides(paths: &Paths, force: bool, dry_run: bool) -> Result<
 }
 
 /// G6: detect (never delete) a stale enrich `.env` file. Phase 5 removed the only code that ever
-/// read it (`EnvironmentFile=` in the generated unit) and the only code that ever wrote it
-/// (`move_env_file`), so a file at this path is now inert — but it may still hold a live credential,
-/// and destroying an operator's secret is not a bootstrap's job (`secrets.md`: custody is the
-/// operator's channel; see the design's Non-Goals). Read-only, so it is safe to run identically
-/// under `--dry-run` and live: there is no mutation to gate.
+/// read it (`EnvironmentFile=` in the generated unit) and the only code that ever put it in place
+/// (the klod-era migration step), so a file at this path is now inert. It may still hold a live
+/// credential, and destroying an operator's secret is not a bootstrap's job (`secrets.md`: custody
+/// is the operator's channel; see the design's Non-Goals). Read-only, so it is safe to run
+/// identically under `--dry-run` and live: there is no mutation to gate.
 fn check_stale_env_file(paths: &Paths) -> Option<PathBuf> {
     let path = paths.xdg_config.join("clyde").join("enrich.env");
     debug!("check_stale_env_file: {}", path.display());
