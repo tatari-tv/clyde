@@ -339,3 +339,28 @@ Raw envelopes, payloads, and the probe script under this session's scratchpad (`
 ### Open questions
 
 - None.
+
+## Phase 2: Teach the transport input tokens
+
+### Design decisions
+
+- `Usage` (`common/src/llm/cli.rs::Usage`) gained `input_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`, all `Option<u64>` with `#[serde(default)]`, per the Data Model section verbatim. No `deny_unknown_fields`: `Usage` stays the same forward-compatible carve-out as `Envelope`, so a future CLI field lands unread instead of failing every call.
+- `Usage::tokens_in()` (`common/src/llm/cli.rs::Usage::tokens_in`) sums `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`, each defaulted to 0 for the sum. `Usage::tokens_out()` returns `output_tokens` defaulted to 0. Both are private methods on `Usage`, matching the struct's existing visibility; nothing outside `common::llm::cli` needs them yet (Phase 3 wires persistence).
+- `check_envelope` (`common/src/llm/cli.rs::check_envelope`) gained a new Guard 6, inserted before the existing output-ceiling check: `envelope.usage` absent on an already-successful envelope (passed Guards 2-5) is now `bail!`ed with a message naming `job.kind` (`Slot`/`Judge` today), rather than silently continuing as the old code did. The old Guard 6 (output ceiling) and Guard 7 (model check) renumbered to 7 and 8; the module doc comment ("Guards 2-7") updated to "Guards 2-8".
+- The renumbered ceiling guard (now Guard 7) reads `usage.tokens_out()` instead of `envelope.usage.as_ref().and_then(|u| u.output_tokens)`. Behaviorally identical for every envelope that reaches it: `usage` is now guaranteed `Some` by Guard 6, and `tokens_out()` on a `Usage` with `output_tokens: None` still evaluates to 0, same as the old code's "skip the check" branch when the sub-field was absent.
+- Added one `debug!` at the top of the new Guard 6, logging `job.kind`, `tokens_in()`, and `tokens_out()` together, per the repo's function-level logging rule and to give `tokens_in()` a live (non-test) call site so `#![deny(dead_code)]` does not flag it while Phase 3 (the actual persistence wiring) is still two phases out.
+- Unit tests (`common/src/llm/cli/tests.rs`) cover the four fixture shapes named in the design: `tokens_in_is_plain_input_tokens_when_no_cache_buckets_are_present` (input-only), `tokens_in_is_cache_write_alone_when_plain_input_tokens_is_absent` (cache-write-only), `tokens_in_sums_input_and_cache_write_probe_a` and `..._probe_b` (both, using Phase 0's verbatim Finding 7 fixtures and asserting the exact recorded sums: A `tokens_in=4346`/`tokens_out=5798`, B `tokens_in=35813`/`tokens_out=678`), and `check_envelope_bails_when_usage_is_absent_from_a_success_envelope_and_names_the_job` plus its `Kind::Judge` sibling (absent, hard error, message names the job).
+
+### Deviations
+
+- None. The struct shape, the `tokens_in`/`tokens_out` semantics, and the hard-error-on-absent-usage behavior all match the Data Model section and Finding 7 exactly.
+
+### Tradeoffs
+
+- Made the absent-usage hard error apply to every `Kind` (today `Slot` and `Judge`), not scoped to `Kind::Enrich`/`Kind::Narrate` (which do not exist until Phase 3). The Data Model section states the rule transport-wide, not per-kind, and every real `claude -p` success envelope measured in Phase 0 carried `usage`, so this is not expected to change observable behavior for `report render`/`report eval` in practice; it only replaces a silent skip with a loud failure on an edge case that was already unverified either way. Verified no existing fixture in `cli/tests.rs` exercises a success envelope with `usage` fully absent, so nothing needed to change or weaken to keep the suite green (see Interaction check below).
+- Kept `tokens_in()`/`tokens_out()` as private `Usage` methods rather than exposing them on `Envelope` or widening visibility to `pub(crate)`/`pub`. Phase 3 is the phase that actually reads these values into `sessions::llm::ClaudeCli`, and doing so will require deciding how `Transport::complete`'s return value carries them out of `common::llm::cli` at all (it returns only `String` today); that decision belongs to Phase 3, not this one.
+- Logged `tokens_in()`/`tokens_out()` at `debug!` inside Guard 6 rather than leaving `tokens_in()` unreferenced outside tests. The alternative (an `#[allow(dead_code)]`) is banned by the repo's Rust rules; a debug log is the smallest production call site that is both honest (it is genuinely useful operator information) and consistent with the crate's function-level logging convention, and it adds no behavior Phase 3 needs to undo.
+
+### Open questions
+
+- None. The task's flagged risk (absent-usage hard error breaking an existing `Kind::Slot`/`Kind::Judge` fixture) did not materialize: every existing test that reaches Guard 6 already supplies a `usage` object via the shared `envelope_json` test helper, and every raw-JSON fixture that omits `usage` bails at an earlier guard (`is_error`, missing `subtype`, or missing `stop_reason`) before Guard 6 is ever reached. No existing assertion was touched, weakened, or deleted.

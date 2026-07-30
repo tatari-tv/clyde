@@ -160,7 +160,7 @@ impl Transport for CliTransport {
     }
 }
 
-/// Guards 2-7, applied to an already-parsed envelope from an already-successful exit.
+/// Guards 2-8, applied to an already-parsed envelope from an already-successful exit.
 ///
 /// Pure, and separate from [`CliTransport::complete`] so every failure mode is driven by a recorded
 /// envelope fixture in tests rather than requiring a real `claude` subprocess. Returns the validated
@@ -206,13 +206,31 @@ fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Resul
         bail!("claude -p returned an empty result with no error\n{observations}\n{ESCAPE_HATCH}");
     }
 
-    // GUARD 6: the output ceiling, CHECKED because it cannot be SET. `end_turn` proves the model
+    // GUARD 6: usage MUST be present on an otherwise-successful envelope. The CLI bills the payload
+    // as a 1h cache write (`cache_creation_input_tokens`), so reading an absent `usage` as a zero
+    // would make a token-budget gate a no-op that silently never trips (design
+    // `2026-07-29-excise-api-key.md` Phase 2, Data Model; measured Phase 0 Finding 7). A failed call
+    // is safer than a silently-zero token count.
+    let usage = envelope.usage.as_ref().ok_or_else(|| {
+        eyre::eyre!(
+            "claude -p returned a successful envelope for the {:?} job with no usage; refusing to \
+             record a token count that was never observed.\n{observations}\n{ESCAPE_HATCH}",
+            job.kind
+        )
+    })?;
+    debug!(
+        "check_envelope: job={:?} tokens_in={} tokens_out={}",
+        job.kind,
+        usage.tokens_in(),
+        usage.tokens_out()
+    );
+
+    // GUARD 7: the output ceiling, CHECKED because it cannot be SET. `end_turn` proves the model
     // stopped naturally; it does NOT prove the output stayed under the job's ceiling, and unlike the
     // api transport this one cannot put `max_tokens` on the wire.
     let ceiling = job.max_output_tokens;
-    if let Some(used) = envelope.usage.as_ref().and_then(|u| u.output_tokens)
-        && used > u64::from(ceiling)
-    {
+    let used = usage.tokens_out();
+    if used > u64::from(ceiling) {
         // `job.kind`, not `job`: a `{job:?}` on the struct would print the model pin into a
         // user-facing error message.
         //
@@ -229,7 +247,7 @@ fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Resul
         );
     }
 
-    // GUARD 7: the model that actually ran.
+    // GUARD 8: the model that actually ran.
     //
     // Observations are passed IN rather than wrapped around the returned error. `wrap_err` would make
     // the observations the outermost message, so a plain `{}` format (what most callers and the CLI's
@@ -560,10 +578,38 @@ struct Envelope {
     terminal_reason: Option<String>,
 }
 
+/// Token accounting for one `claude -p` call.
+///
+/// Forward-compatible on purpose, same as [`Envelope`]: the real envelope carries fields this struct
+/// does not name (`service_tier`, `cache_creation`), and `#[serde(default)]` on every field also
+/// tolerates a bucket the CLI omits entirely rather than sending as zero -- measured on the largest
+/// Phase 0 payload, whose `usage` carries no `cache_read_input_tokens` key at all.
 #[derive(Debug, Deserialize)]
 struct Usage {
     #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
     output_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+}
+
+impl Usage {
+    /// Every input-token bucket the CLI bills, summed. `input_tokens` alone reads near-zero for a
+    /// large payload, because the CLI bills the payload itself as a 1h cache write
+    /// (`cache_creation_input_tokens`), not as plain input (measured Phase 0 Finding 7).
+    fn tokens_in(&self) -> u64 {
+        self.input_tokens.unwrap_or(0)
+            + self.cache_creation_input_tokens.unwrap_or(0)
+            + self.cache_read_input_tokens.unwrap_or(0)
+    }
+
+    /// The model's output tokens, including any reasoning that never reaches `result`.
+    fn tokens_out(&self) -> u64 {
+        self.output_tokens.unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Deserialize)]
