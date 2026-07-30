@@ -2,7 +2,7 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-30
-**Status:** Draft
+**Status:** Implemented
 **Review Passes Completed:** 5/5
 
 ## Summary
@@ -476,11 +476,11 @@ otto-ci-green commit per phase.
 
 Per Phase 5's gate, each was executed against `main` while drafting and the observed output recorded.
 
-- [ ] **AC1.** `clyde bootstrap` on desk.lan leaves `~/.config/systemd/user/clyde-enrich.service` with
+- [x] **AC1.** `clyde bootstrap` on desk.lan leaves `~/.config/systemd/user/clyde-enrich.service` with
       zero matches for `EnvironmentFile` and zero for `Anthropic`, and a second run reports `0 steps`.
       *Observed on `main`:* the live unit currently carries 0 `EnvironmentFile` and 3 comment lines, 1
       of which matches `Anthropic`. Criterion is currently FALSE, which is the defect.
-- [ ] **AC2.** `rg -o '\x{2014}' --type rust -g '!target' . | wc -l` returns 0 and `otto lint` exits 0.
+- [x] **AC2.** `rg -o '\x{2014}' --type rust -g '!target' . | wc -l` returns 0 and `otto lint` exits 0.
       *Observed on `main`:* returns **373**. The command is `rg -o … | wc -l`, not `rg -c`, deliberately:
       `rg -c` prints per-file **matching-line** counts, which sum to **356** over 79 files, and 356 is
       also the occurrence count under `*/src/`. Those two 356s collide by coincidence and the collision
@@ -489,7 +489,7 @@ Per Phase 5's gate, each was executed against `main` while drafting and the obse
       trailing whitespace`, `✅ No _variable patterns`) because no em-dash deny exists yet; both halves
       must hold, so the lint is load-bearing. The 17 occurrences outside `*/src/` are why Phase 3's lint
       uses `rg` rather than the existing `grep -r … */src/` shape.
-- [ ] **AC3.** `rg -c klod --type rust --type toml -g '!target' .` returns hits in `clyde/src/doctor.rs`
+- [x] **AC3.** `rg -c klod --type rust --type toml -g '!target' .` returns hits in `clyde/src/doctor.rs`
       and `clyde/src/doctor/tests.rs` ONLY, at **>= 17** and **>= 10** respectively; **exactly zero** for
       `bootstrap.rs`, `bootstrap/tests.rs`, `Cargo.toml`, and `session/src/scope/tests.rs`; and
       `rg -c klod README.md` returns **>= 1**, including the historical design-doc filename.
@@ -513,16 +513,16 @@ Per Phase 5's gate, each was executed against `main` while drafting and the obse
       least 18; and the new dangling-symlink test raises `doctor/tests.rs`. Two bullets of the same phase
       contradicted each other. `>=` still catches the thing being guarded, which is deletion of detection,
       and functional deletion is caught by AC6's break-it check, which no count ever could.
-- [ ] **AC4.** `otto ci` exits 0 with `✅ All CI checks passed!`, and `otto bloat` reports no file over
+- [x] **AC4.** `otto ci` exits 0 with `✅ All CI checks passed!`, and `otto bloat` reports no file over
       1,500 lines with `common/src/llm/cli/tests.rs` no longer present as a single file.
       *Observed on `main`:* `common/src/llm/cli/tests.rs` is 1,322 lines, under the limit, so `otto bloat`
       passes today. The criterion is about the decomposition, not the limit.
-- [ ] **AC5.** The implementation notes record, for the 8 named sessions, how many recovered and the
+- [x] **AC5.** The implementation notes record, for the 8 named sessions, how many recovered and the
       `tokens_out` of each survivor, plus Phase 0's verbatim verdict on the injection hypothesis.
       *Observed on `main`:* all 8 sit at `attempts=6` with `last_error = the \`claude\` CLI reply was not
       the expected JSON`. A recovery count of 0 satisfies this criterion if the explanation is recorded;
       an unrecorded outcome does not.
-- [ ] **AC6.** A dirty klod host fails loud after Phase 4, across the dir half AND the timer half:
+- [x] **AC6.** A dirty klod host fails loud after Phase 4, across the dir half AND the timer half:
       `legacy_klod_dirs_are_unhealthy` (`doctor/tests.rs:127`) and
       `clyde_service_with_klod_execstart_is_legacy` (`doctor/tests.rs:195`) both still pass, a NEW test
       asserts `diagnose(...).healthy() == false` for a dangling
@@ -532,7 +532,7 @@ Per Phase 5's gate, each was executed against `main` while drafting and the obse
       `legacy_state` carries the klod dir checks. After Phase 4 without a tripwire it would return true
       and `clyde doctor` would exit 0 on that host, which is why this is an overall criterion and not a
       per-phase one.
-- [ ] **AC7.** The `create-design-doc` skill carries the execution gate, and Keegan has the AC6 ask.
+- [x] **AC7.** The `create-design-doc` skill carries the execution gate, and Keegan has the AC6 ask.
       `rg -c 'literal command' ~/repos/scottidler/claude/HOME/.claude/skills/create-design-doc/SKILL.md`
       returns non-zero, and the implementation notes record the date the runbook ask was sent plus its
       current state.
