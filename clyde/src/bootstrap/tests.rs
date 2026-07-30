@@ -1134,3 +1134,156 @@ fn no_stale_env_file_reports_none() {
 
     assert!(out.stale_env_file.is_none());
 }
+
+// --- Phase 1: converge the enrich unit on one body ---
+
+/// The exact live desk.lan drift, and the defect item 1 reports: Phase 5 of the excision stripped
+/// the `EnvironmentFile=` directive by line filtering and left the comment block explaining it, so
+/// the unit went on claiming an Anthropic key lived in it. The old trigger
+/// (`has_stale_subcommand || has_environment_file`) matched NEITHER, so bootstrap was a no-op and the
+/// falsehood survived forever.
+#[test]
+fn refresh_repairs_unit_whose_credential_comment_survived_its_directive() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    // Byte-for-byte the shape read off desk.lan: correct subcommand, NO EnvironmentFile directive,
+    // orphaned credential comment, and the `Default sweep` comment that must survive the repair.
+    fs::write(
+        &clyde_unit,
+        "[Unit]\n\
+         Description=clyde session enrichment sweep (work-scoped, dormant)\n\
+         Documentation=https://github.com/tatari-tv/clyde\n\n\
+         [Service]\n\
+         Type=oneshot\n\
+         # The work Anthropic key lives here (0600), since systemd user services do not\n\
+         # inherit the interactive shell environment. Never committed; desk-only.\n\
+         # Default sweep: dormant (>=7d idle), work-scoped only, incremental.\n\
+         ExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n\
+         Nice=10\n",
+    )
+    .unwrap();
+
+    assert!(
+        repoint_systemd(&paths, false, false).unwrap(),
+        "a unit whose credential comment outlived its directive must be repaired"
+    );
+
+    let text = fs::read_to_string(&clyde_unit).unwrap();
+    assert!(
+        !mentions_retired_credential(&text),
+        "the repaired unit must no longer reference a retired credential: {text}"
+    );
+    assert!(
+        !text.contains("Anthropic"),
+        "the orphaned credential comment must be gone: {text}"
+    );
+    assert!(
+        text.contains("# Default sweep:"),
+        "the comment describing ExecStart must survive the converge: {text}"
+    );
+    assert!(
+        text.contains("ExecStart=%h/.cargo/bin/clyde --log-level info session enrich"),
+        "the repaired unit must still run the enrich sweep: {text}"
+    );
+    // The pre-repair unit, credential comment included, is recoverable but NOT restorable verbatim:
+    // restoring it re-arms the trigger. See `refresh_clyde_unit`'s docs.
+    let backup = backup_path(&clyde_unit);
+    assert!(
+        backup.exists(),
+        "the pre-repair unit must be backed up before the write"
+    );
+    assert!(
+        mentions_retired_credential(&fs::read_to_string(&backup).unwrap()),
+        "the backup holds the ORIGINAL text, which is why it cannot be restored wholesale"
+    );
+}
+
+/// Idempotence, and the thing that makes the converge safe to run on every bootstrap: a unit already
+/// carrying the canonical body must trip NO trigger. If `clyde_service_body`'s own output matched
+/// `mentions_retired_credential`, bootstrap would rewrite the unit on every run forever.
+#[test]
+fn refresh_is_noop_for_a_canonical_unit() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    fs::write(&clyde_unit, clyde_service_body(None)).unwrap();
+
+    assert!(
+        !refresh_clyde_unit(&clyde_unit, false).unwrap(),
+        "the canonical body must trip none of the three triggers"
+    );
+    assert!(
+        !repoint_systemd(&paths, false, false).unwrap(),
+        "a second bootstrap over a canonical unit must report no change"
+    );
+}
+
+/// The canonical body's own contract: it carries the one comment that had to survive, and none of
+/// the credential text the repair exists to remove.
+#[test]
+fn canonical_service_body_carries_default_sweep_and_no_credential() {
+    let body = clyde_service_body(Some("/home/u/.local/bin:/usr/bin"));
+
+    assert!(
+        body.contains("# Default sweep:"),
+        "canonical body must carry the comment"
+    );
+    assert!(
+        body.contains("Documentation=https://github.com/tatari-tv/clyde"),
+        "canonical body must adopt the live unit's Documentation directive"
+    );
+    assert!(
+        !body.lines().any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "clyde installs no credential file: {body}"
+    );
+    assert!(
+        !mentions_retired_credential(&body),
+        "the canonical body must not trip its own repair trigger: {body}"
+    );
+    assert!(
+        body.contains("Environment=PATH=/home/u/.local/bin:/usr/bin"),
+        "the resolved PATH override must be injected: {body}"
+    );
+    // `None` is the claude-not-on-PATH case: no override line at all, never an empty one.
+    assert!(
+        !clyde_service_body(None).contains("Environment=PATH="),
+        "an unresolvable claude must yield no PATH override line"
+    );
+}
+
+/// `mentions_retired_credential` is SCOPED to comments and `EnvironmentFile=` directives. A blanket
+/// `contains("anthropic")` would match a `Documentation=` URL and rewrite the unit forever, so the
+/// negative case is the load-bearing half of this test.
+#[test]
+fn mentions_retired_credential_is_scoped_to_comments_and_env_file() {
+    assert!(mentions_retired_credential(
+        "# The work Anthropic key lives here (0600)\nExecStart=/bin/true\n"
+    ));
+    assert!(mentions_retired_credential(
+        "EnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=/bin/true\n"
+    ));
+    assert!(
+        mentions_retired_credential("#   indented comment mentioning an API KEY\n"),
+        "matching must be case-insensitive and tolerate leading whitespace"
+    );
+    assert!(
+        mentions_retired_credential("# see enrich.env for details\n"),
+        "a comment naming the retired env file counts, even with no credential word"
+    );
+
+    assert!(
+        !mentions_retired_credential("Documentation=https://docs.anthropic.com/claude\n"),
+        "a non-comment directive must NOT match, or the unit is rewritten on every run"
+    );
+    assert!(
+        !mentions_retired_credential("Description=clyde session enrichment sweep\nExecStart=/bin/true\n"),
+        "an ordinary unit must not match"
+    );
+    assert!(
+        !mentions_retired_credential("# Default sweep: dormant (>=7d idle), work-scoped only, incremental.\n"),
+        "the canonical comment must not match"
+    );
+}

@@ -309,3 +309,76 @@ fn clyde_service_with_clyde_execstart_is_healthy() {
     assert_eq!(report.timer_unit.as_deref(), Some("clyde-enrich.service"));
     assert!(report.healthy());
 }
+
+// --- Phase 1: an enrich unit that still references a retired credential is unhealthy ---
+
+/// Seed a `clyde-enrich.service` with `body` and return the diagnosed report.
+fn diagnose_with_enrich_unit(paths: &Paths, body: &str) -> Report {
+    let unit = paths
+        .xdg_config
+        .join("systemd")
+        .join("user")
+        .join("clyde-enrich.service");
+    fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    fs::write(&unit, body).unwrap();
+    diagnose(paths).unwrap()
+}
+
+#[test]
+fn enrich_unit_referencing_a_retired_credential_is_unhealthy() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    // The live desk.lan drift: directive already stripped, explanatory comment stranded.
+    let report = diagnose_with_enrich_unit(
+        &paths,
+        "[Service]\n\
+         Type=oneshot\n\
+         # The work Anthropic key lives here (0600), since systemd user services do not\n\
+         # inherit the interactive shell environment. Never committed; desk-only.\n\
+         ExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n",
+    );
+
+    assert!(
+        !report.healthy(),
+        "a unit stating a falsehood about a credential must fail loud, not read healthy"
+    );
+    assert!(
+        report
+            .legacy_state
+            .iter()
+            .any(|s| s.contains("retired credential") && s.contains("clyde-enrich.service")),
+        "the report must name the offending unit so the operator knows which file: {:?}",
+        report.legacy_state
+    );
+    // The remedy printed for this case is `run `clyde bootstrap``, and it is TRUE:
+    // `refresh_clyde_unit` converges the unit on the canonical body.
+    assert_eq!(
+        report.timer,
+        Target::Clyde,
+        "the unit is clyde-named and not klod-legacy"
+    );
+}
+
+#[test]
+fn canonical_enrich_unit_is_healthy() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let report = diagnose_with_enrich_unit(
+        &paths,
+        "[Unit]\n\
+         Description=clyde session enrichment sweep (work-scoped, dormant)\n\
+         Documentation=https://github.com/tatari-tv/clyde\n\n\
+         [Service]\n\
+         Type=oneshot\n\
+         # Default sweep: dormant (>=7d idle), work-scoped only, incremental.\n\
+         ExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n\
+         Nice=10\n",
+    );
+
+    assert!(
+        report.legacy_state.is_empty(),
+        "the canonical body must produce no legacy-state findings: {:?}",
+        report.legacy_state
+    );
+    assert!(report.healthy(), "the canonical unit must read healthy");
+}

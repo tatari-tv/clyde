@@ -233,3 +233,81 @@ Identical. Every probe read the live DB and wrote only to `$TMPDIR/p0/`.
 
 None. Both of Phase 0's unproven facts are now measured, and the branch Phase 2 takes is decided:
 the "payload wins" branch, `prompt`-slot mechanism, with the rationale corrected.
+
+## Phase 1: Converge the enrich unit on one body
+
+Implemented as specified. `clyde_service_body(claude_path_env)` is now the one unit body;
+`install_clyde_timer` (fresh install) and `refresh_clyde_unit` (triggered repair) both write it, and
+`refresh_clyde_unit` no longer line-edits via `rewrite_unit`.
+
+Live verification on desk.lan, with the newly built binary (not an install):
+
+```
+before: 3 comment lines, 1 matching Anthropic, 0 EnvironmentFile   -> clyde doctor exit 1
+run 1 : 1 step, "enrich systemd unit klod -> clyde"
+after : EnvironmentFile 0, Anthropic 0, "Default sweep" 1          -> clyde doctor exit 0
+run 2 : 0 steps                                                    (idempotent, not a rewrite loop)
+timer : enabled, active                                            (nothing live regressed)
+```
+
+The two discarded lines were exactly the credential comment, as the review panel predicted:
+`Nice=10` was already in the template and `Documentation=` is adopted into the canonical body.
+
+### Design decisions
+
+- **`doctor` reports the drift through `legacy_state`, not a new `Report` field**
+  (`clyde/src/doctor.rs`, `diagnose`). That channel already feeds `healthy()` and already prints one
+  line per item under the `run \`clyde bootstrap\`` remedy, which is TRUE for this case because
+  `refresh_clyde_unit` repairs it. A new field would have needed its own print site, its own
+  `healthy()` term, and its own remedy branch for no gain.
+- **`mentions_retired_credential` is `pub(crate)`, and `Paths::clyde_unit` was widened to `pub(crate)`
+  too**, so `doctor` checks the SAME path `bootstrap` writes instead of re-composing
+  `systemd/user/clyde-enrich.service` by hand a fourth time.
+- **Token list over a regex** (`RETIRED_CREDENTIAL_TOKENS`): `environmentfile`, `enrich.env`,
+  `anthropic`, `api key`, matched case-insensitively against `to_lowercase()`. No new dependency, and
+  the list is the thing a future reader needs to see.
+- **`environmentfile` is deliberately in the token list even though `refresh_clyde_unit` already has a
+  separate `has_environment_file` trigger.** The triggers answer different questions: the directive
+  check finds a live directive, this one also fires on a COMMENT that merely mentions it.
+
+### Deviations
+
+- None from the plan's bullets. One thing the plan did not specify and this phase added: the
+  `# Default sweep:` comment is placed directly above `ExecStart=` (which is what the plan's wording
+  said) rather than in the live unit's position above `Environment=PATH=`. The comment describes
+  `ExecStart`, so adjacency is the honest placement.
+
+### Tradeoffs
+
+- **Scoping `mentions_retired_credential` to comments and `EnvironmentFile=` lines, rather than a
+  whole-text `contains`.** A whole-text match is simpler and catches more, but it would match a
+  `Documentation=` URL pointing at an anthropic.com doc and rewrite the unit on every bootstrap
+  forever. The negative half of `mentions_retired_credential_is_scoped_to_comments_and_env_file` is
+  the test that pins this, and it is the load-bearing half.
+- **The converge discards operator customizations rather than merging them.** Merging is what
+  produced the defect. `backup()` plus the documented "strip the credential comment first" recovery
+  instruction is the accepted cost; Alternative 2 (detect-only) was already rejected in the doc.
+- **Kept `rewrite_unit` for the legacy-rename path** rather than deleting it here. Phase 4 removes its
+  last caller and deletes it, which keeps this phase's diff to the repair inversion.
+
+### Tests
+
+Six new, four named by the plan plus two the plan implied:
+
+- `refresh_repairs_unit_whose_credential_comment_survived_its_directive` -- the live drift, repaired;
+  also asserts the backup holds the ORIGINAL text (why it cannot be restored wholesale)
+- `refresh_is_noop_for_a_canonical_unit` -- idempotence, via both `refresh_clyde_unit` and
+  `repoint_systemd`
+- `canonical_service_body_carries_default_sweep_and_no_credential` -- includes the anti-loop assert
+  that the canonical body does not trip its own trigger, plus the `None` (claude-not-on-PATH) case
+- `mentions_retired_credential_is_scoped_to_comments_and_env_file` -- positive and negative scoping
+- `enrich_unit_referencing_a_retired_credential_is_unhealthy` (doctor)
+- `canonical_enrich_unit_is_healthy` (doctor)
+
+Break-it check, as specified: removing `!has_retired_credential` from `refresh_clyde_unit`'s trigger
+makes `refresh_repairs_unit_whose_credential_comment_survived_its_directive` FAIL
+(`test result: FAILED. 38 passed; 1 failed`). Restored, `otto ci` exits 0.
+
+### Open questions
+
+None.

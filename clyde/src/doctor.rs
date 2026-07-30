@@ -124,6 +124,19 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
     if paths.xdg_config.join("klod").exists() {
         legacy_state.push("klod config dir".to_string());
     }
+    // An enrich unit still REFERRING to a credential clyde no longer reads. Reported through
+    // `legacy_state` rather than as its own `Report` field because that channel already feeds
+    // `healthy()` and already prints one line per item with the correct `run \`clyde bootstrap\``
+    // remedy — and `bootstrap` genuinely repairs this one (`refresh_clyde_unit` converges the unit on
+    // the canonical body). Cosmetic on its face, but the file states a falsehood about a credential,
+    // which is exactly the class that must fail loud rather than sit unnoticed.
+    let clyde_svc = paths.clyde_unit();
+    if std::fs::read_to_string(&clyde_svc)
+        .ok()
+        .is_some_and(|text| crate::bootstrap::mentions_retired_credential(&text))
+    {
+        legacy_state.push("enrich unit references a retired credential (clyde-enrich.service)".to_string());
+    }
 
     let (log_locations, legacy_log_dirs) = log_state(paths);
 

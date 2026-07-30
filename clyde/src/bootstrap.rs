@@ -104,7 +104,8 @@ impl Paths {
     fn legacy_unit(&self) -> PathBuf {
         self.systemd_dir().join("klod-enrich.service")
     }
-    fn clyde_unit(&self) -> PathBuf {
+    /// `pub(crate)` so `doctor` checks the SAME path bootstrap writes, rather than re-composing it.
+    pub(crate) fn clyde_unit(&self) -> PathBuf {
         self.systemd_dir().join("clyde-enrich.service")
     }
     fn legacy_timer(&self) -> PathBuf {
@@ -1156,12 +1157,27 @@ fn rewrite_unit(text: &str, claude_path_env: Option<&str>) -> String {
     out
 }
 
-/// Rewrite an already-clyde-named enrich unit that still needs one of two fixes: the pre-rename
-/// `sessions enrich` subcommand spelling, or a retired `EnvironmentFile=` directive (Phase 5, G6).
-/// Reached from the no-legacy path of [`repoint_systemd`]: a user who already migrated off klod (so
-/// no `klod-*` state triggers the full repoint) but whose installed unit predates one of those two
-/// fixes would otherwise be left with a broken or stale-firing timer. Returns whether a rewrite
-/// happened (or, in dry-run, would happen). No-op if the unit already carries neither defect.
+/// Repair an already-clyde-named enrich unit by CONVERGING it on [`clyde_service_body`], when any of
+/// three triggers fires: the pre-rename `sessions enrich` subcommand spelling, a retired
+/// `EnvironmentFile=` directive (Phase 5, G6), or text still referring to a retired credential
+/// ([`mentions_retired_credential`]). Reached from the no-legacy path of [`repoint_systemd`]: a user
+/// who already migrated off klod (so no `klod-*` state triggers the full repoint) but whose installed
+/// unit predates one of those fixes would otherwise be left with a broken, stale-firing, or lying
+/// unit. Returns whether a repair happened (or, in dry-run, would happen). No-op if the unit carries
+/// none of the three defects.
+///
+/// **Writes the canonical body rather than line-editing the existing one.** Editing toward a target is
+/// what shipped the defect this repairs: Phase 5 of the excision stripped the `EnvironmentFile=`
+/// directive by line filtering and left the comment block explaining it, so the unit went on claiming
+/// an Anthropic key lived in it. Nothing here parses comments, so no comment-parsing heuristic can be
+/// wrong about which ones to keep.
+///
+/// **`.clyde.bak` cannot be restored wholesale.** [`backup`] copies the PRE-repair unit, credential
+/// comment included, so restoring it verbatim re-arms [`mentions_retired_credential`] and the next
+/// `clyde bootstrap` discards the customization again. The recovery instruction is: strip the
+/// credential comment from the backup, THEN re-apply customizations. On desk.lan the discarded set is
+/// two comment lines and nothing else (`Nice=10` was already in the template, and `Documentation=` is
+/// adopted into the canonical body), so this is a cost priced for a host we have not met.
 fn refresh_clyde_unit(svc: &Path, dry_run: bool) -> Result<bool> {
     debug!("refresh_clyde_unit: svc={} dry_run={}", svc.display(), dry_run);
     let text = fs::read_to_string(svc).with_context(|| format!("failed to read {}", svc.display()))?;
@@ -1169,19 +1185,20 @@ fn refresh_clyde_unit(svc: &Path, dry_run: bool) -> Result<bool> {
     let has_environment_file = text
         .lines()
         .any(|line| line.trim_start().starts_with("EnvironmentFile="));
-    if !has_stale_subcommand && !has_environment_file {
+    let has_retired_credential = mentions_retired_credential(&text);
+    if !has_stale_subcommand && !has_environment_file && !has_retired_credential {
         return Ok(false);
     }
     if dry_run {
-        // WOULD rewrite the stale spelling and/or strip the EnvironmentFile directive. Report
-        // without writing.
+        // WOULD converge the unit on the canonical body. Report without writing.
         return Ok(true);
     }
     backup(svc)?;
     let claude_path_env = resolve_claude_path_env();
-    write_atomic(svc, &rewrite_unit(&text, claude_path_env.as_deref()))?;
+    write_atomic(svc, &clyde_service_body(claude_path_env.as_deref()))?;
     info!(
-        "refreshed clyde enrich unit {} (stale_subcommand={has_stale_subcommand} environment_file={has_environment_file})",
+        "converged clyde enrich unit {} on the canonical body (stale_subcommand={has_stale_subcommand} \
+         environment_file={has_environment_file} retired_credential={has_retired_credential})",
         svc.display()
     );
     Ok(true)
@@ -1248,6 +1265,63 @@ fn environment_path_line(claude_path_env: Option<&str>) -> String {
     }
 }
 
+/// The canonical clyde enrich service body. The one body in this codebase: [`install_clyde_timer`]
+/// writes it for a fresh install and [`refresh_clyde_unit`] writes it to repair a TRIGGERED drift. Not
+/// a reconciler: a unit that drifts in a way no trigger names is left alone. A repair that line-edits
+/// an existing unit toward this shape is what stranded a credential comment after Phase 5 of the
+/// excision stripped its `EnvironmentFile=` directive; writing one body cannot.
+///
+/// The `Documentation=` directive and the `# Default sweep:` comment are here because the live
+/// desk.lan unit carried both and the previous template did not. Adopting them is what makes the
+/// converge lossless for the only host we have actually seen: the one comment that had to survive is
+/// now canonical, so no comment-parsing heuristic has to preserve it.
+fn clyde_service_body(claude_path_env: Option<&str>) -> String {
+    debug!("clyde_service_body: claude_path_env={claude_path_env:?}");
+    format!(
+        "[Unit]\n\
+        Description=clyde session enrichment sweep (work-scoped, dormant)\n\
+        Documentation=https://github.com/tatari-tv/clyde\n\
+        After=network-online.target\n\
+        Wants=network-online.target\n\n\
+        [Service]\n\
+        Type=oneshot\n\
+        {}\
+        # Default sweep: dormant (>=7d idle), work-scoped only, incremental.\n\
+        ExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n\
+        Nice=10\n",
+        environment_path_line(claude_path_env)
+    )
+}
+
+/// The tokens whose presence in a unit's COMMENTS or `EnvironmentFile=` directives means the file
+/// still refers to a credential clyde no longer reads. Lowercase; matched case-insensitively.
+///
+/// `environmentfile` is included so a surviving directive is caught by this check too, not only by
+/// `refresh_clyde_unit`'s separate `has_environment_file` trigger — the two are deliberately
+/// redundant, because this one also fires on a COMMENT that merely mentions the directive.
+const RETIRED_CREDENTIAL_TOKENS: [&str; 4] = ["environmentfile", "enrich.env", "anthropic", "api key"];
+
+/// True when the unit text still refers to a credential clyde no longer reads. Widens
+/// [`refresh_clyde_unit`]'s trigger so a unit whose directive is already gone but whose comment
+/// survives is still repaired, and gives `doctor` the same signal.
+///
+/// Scoped to `#` comment lines and `EnvironmentFile=` directives ON PURPOSE. A blanket
+/// `text.contains("anthropic")` would match the `Documentation=` URL of any future anthropic-hosted
+/// doc link and rewrite the unit forever. Matches directive and comment TEXT only, never a value: no
+/// secret is read, logged, or echoed.
+pub(crate) fn mentions_retired_credential(text: &str) -> bool {
+    let hit = text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('#') && !trimmed.starts_with("EnvironmentFile=") {
+            return false;
+        }
+        let lower = trimmed.to_lowercase();
+        RETIRED_CREDENTIAL_TOKENS.iter().any(|token| lower.contains(token))
+    });
+    debug!("mentions_retired_credential: text bytes={} hit={hit}", text.len());
+    hit
+}
+
 /// Create a fresh clyde enrich service + timer + enable symlink (only under `--install-timer`
 /// when no legacy unit exists). The timer is the scheduler; without it (and its enable symlink)
 /// the oneshot service would never fire. Installs no `EnvironmentFile=` (Phase 5, G6: clyde reads no
@@ -1257,18 +1331,7 @@ fn install_clyde_timer(paths: &Paths) -> Result<bool> {
     debug!("install_clyde_timer: paths={paths:?}");
     let svc = paths.clyde_unit();
     let claude_path_env = resolve_claude_path_env();
-    let svc_body = format!(
-        "[Unit]\n\
-        Description=clyde session enrichment sweep (work-scoped, dormant)\n\
-        After=network-online.target\n\
-        Wants=network-online.target\n\n\
-        [Service]\n\
-        Type=oneshot\n\
-        {}\
-        ExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n\
-        Nice=10\n",
-        environment_path_line(claude_path_env.as_deref())
-    );
+    let svc_body = clyde_service_body(claude_path_env.as_deref());
     write_atomic(&svc, &svc_body)?;
 
     let tmr = paths.clyde_timer();
