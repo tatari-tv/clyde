@@ -101,24 +101,15 @@ impl Paths {
     fn systemd_dir(&self) -> PathBuf {
         self.xdg_config.join("systemd").join("user")
     }
-    fn legacy_unit(&self) -> PathBuf {
-        self.systemd_dir().join("klod-enrich.service")
-    }
     /// `pub(crate)` so `doctor` checks the SAME path bootstrap writes, rather than re-composing it.
     pub(crate) fn clyde_unit(&self) -> PathBuf {
         self.systemd_dir().join("clyde-enrich.service")
-    }
-    fn legacy_timer(&self) -> PathBuf {
-        self.systemd_dir().join("klod-enrich.timer")
     }
     fn clyde_timer(&self) -> PathBuf {
         self.systemd_dir().join("clyde-enrich.timer")
     }
     fn wants_dir(&self) -> PathBuf {
         self.systemd_dir().join("timers.target.wants")
-    }
-    fn legacy_wants_link(&self) -> PathBuf {
-        self.wants_dir().join("klod-enrich.timer")
     }
     fn clyde_wants_link(&self) -> PathBuf {
         self.wants_dir().join("clyde-enrich.timer")
@@ -292,14 +283,12 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
     let dry = args.dry_run;
 
     // 1. Data/config migration (so a repointed integration finds its state).
-    step!(
-        "sessions data dir klod -> clyde",
-        migrate_dir(&paths.xdg_data.join("klod"), &paths.xdg_data.join("clyde"), dry)
-    );
-    step!(
-        "config dir klod -> clyde",
-        migrate_dir(&paths.xdg_config.join("klod"), &paths.xdg_config.join("clyde"), dry)
-    );
+    //
+    // The pre-rename data/config dir migration is RETIRED (2026-07-30, design Phase 4). Not merely
+    // unused: a host still carrying state under the old binary name can no longer be migrated by this
+    // binary at all, and must install a pre-retirement `clyde` first. `doctor` keeps every check that
+    // DETECTS such a host, names the offending paths, and branches its remedy to say exactly that --
+    // so this file carries no reference to the old name, and a grep for it lands in `doctor` alone.
     step!("permit events DB (WAL-safe move)", migrate_events_db(paths, dry));
     step!(
         "permit config -> clyde/permit.yml",
@@ -335,14 +324,14 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
         repoint_hook(&paths.settings_local(), dry)
     );
     if !args.skip_systemd {
-        match repoint_systemd(paths, args.install_timer, dry) {
+        match ensure_enrich_unit(paths, args.install_timer, dry) {
             Ok(true) => {
-                out.completed.push("enrich systemd unit klod -> clyde".into());
+                out.completed.push("enrich systemd unit (installed or repaired)".into());
                 out.systemd_changed = true;
             }
             Ok(false) => {}
             Err(e) => {
-                out.failed = Some(("enrich systemd unit klod -> clyde".into(), format!("{e:?}")));
+                out.failed = Some(("enrich systemd unit (installed or repaired)".into(), format!("{e:?}")));
                 return Ok(out);
             }
         }
@@ -396,84 +385,6 @@ fn write_atomic(target: &Path, contents: &str) -> Result<()> {
     fs::write(&tmp, contents).with_context(|| format!("failed to write temp {}", tmp.display()))?;
     fs::rename(&tmp, target).with_context(|| format!("failed to rename {} -> {}", tmp.display(), target.display()))?;
     Ok(())
-}
-
-/// Migrate a directory `legacy -> dest`. If `dest` does not exist, rename the whole dir. If `dest`
-/// already exists (e.g. a pre-bootstrap `clyde permit log` created `clyde/events.db`, creating the
-/// clyde data dir), MERGE: move each top-level entry from `legacy` into `dest` that does not
-/// collide with an existing dest entry (never clobber — leave the legacy copy and warn), then
-/// remove `legacy` only if it ends up empty. Returns whether anything moved. This prevents
-/// stranding `klod/sessions.db` under the legacy root while runtime reads the clyde path.
-fn migrate_dir(legacy: &Path, dest: &Path, dry_run: bool) -> Result<bool> {
-    debug!(
-        "migrate_dir: {} -> {} dry_run={dry_run}",
-        legacy.display(),
-        dest.display()
-    );
-    if !legacy.exists() {
-        return Ok(false);
-    }
-    if !dest.exists() {
-        if dry_run {
-            // WOULD rename the whole dir. Report without creating the parent or moving anything.
-            return Ok(true);
-        }
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        fs::rename(legacy, dest)
-            .with_context(|| format!("failed to move {} -> {}", legacy.display(), dest.display()))?;
-        info!("migrated dir {} -> {}", legacy.display(), dest.display());
-        return Ok(true);
-    }
-    // Destination already populated: merge non-colliding entries. Under dry_run, just count what
-    // WOULD move (read-only directory scan) and never create the dest or rename anything.
-    if dry_run {
-        let mut would_move = false;
-        for entry in fs::read_dir(legacy).with_context(|| format!("failed to read {}", legacy.display()))? {
-            let entry = entry.with_context(|| format!("failed to read entry in {}", legacy.display()))?;
-            if !dest.join(entry.file_name()).exists() {
-                would_move = true;
-            }
-        }
-        return Ok(would_move);
-    }
-    fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
-    let mut moved_any = false;
-    let mut collisions = 0usize;
-    for entry in fs::read_dir(legacy).with_context(|| format!("failed to read {}", legacy.display()))? {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", legacy.display()))?;
-        let target = dest.join(entry.file_name());
-        if target.exists() {
-            warn!(
-                "migrate_dir: {} already exists; leaving legacy copy {} in place",
-                target.display(),
-                entry.path().display()
-            );
-            collisions += 1;
-            continue;
-        }
-        fs::rename(entry.path(), &target)
-            .with_context(|| format!("failed to merge {} -> {}", entry.path().display(), target.display()))?;
-        moved_any = true;
-    }
-    if collisions == 0
-        && let Err(e) = fs::remove_dir(legacy)
-    {
-        warn!(
-            "migrate_dir: could not remove emptied legacy dir {}: {e}",
-            legacy.display()
-        );
-    }
-    if moved_any {
-        info!(
-            "merged dir {} -> {} ({} collision(s) left in place)",
-            legacy.display(),
-            dest.display(),
-            collisions
-        );
-    }
-    Ok(moved_any)
 }
 
 /// Move a single config file `legacy -> dest`. `force` governs overwriting an existing dest.
@@ -894,7 +805,7 @@ fn merge_pricing_overrides(paths: &Paths, force: bool, dry_run: bool) -> Result<
 
 /// G6: detect (never delete) a stale enrich `.env` file. Phase 5 removed the only code that ever
 /// read it (`EnvironmentFile=` in the generated unit) and the only code that ever put it in place
-/// (the klod-era migration step), so a file at this path is now inert. It may still hold a live
+/// (the since-retired pre-rename migration step), so a file at this path is now inert. It may still hold a live
 /// credential, and destroying an operator's secret is not a bootstrap's job (`secrets.md`: custody
 /// is the operator's channel; see the design's Non-Goals). Read-only, so it is safe to run
 /// identically under `--dry-run` and live: there is no mutation to gate.
@@ -1004,167 +915,41 @@ fn rewrite_hook_commands(root: &mut Value) -> bool {
     changed
 }
 
-/// Repoint the enrich systemd user timer from `klod` to `clyde`: rewrite `ExecStart`, strip the
-/// `EnvironmentFile` credential-file directive entirely (clyde installs no credential file — Phase
-/// 5, G6), write the unit as `clyde-enrich.service`, and remove the old `klod-enrich.service`.
-/// Repoints an existing unit only, unless `install_timer` is set (then it creates the clyde unit
-/// from a template). Returns whether the unit changed.
-fn repoint_systemd(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<bool> {
-    let legacy_svc = paths.legacy_unit();
-    let legacy_tmr = paths.legacy_timer();
-    let has_legacy =
-        legacy_svc.exists() || legacy_tmr.exists() || fs::symlink_metadata(paths.legacy_wants_link()).is_ok();
-    if !has_legacy {
-        // No klod state to migrate. Two sub-cases still need handling:
-        //   - an already-installed clyde unit may predate the `sessions`->`session` rename, still
-        //     carry the retired `EnvironmentFile=` directive, or both. Rewrite it.
-        //   - no clyde unit yet and an install was requested -> install fresh.
-        let clyde_svc = paths.clyde_unit();
-        if clyde_svc.exists() {
-            return refresh_clyde_unit(&clyde_svc, dry_run);
-        }
-        if install_timer {
-            if dry_run {
-                // WOULD install the clyde service + timer + enable symlink. Report without writing.
-                return Ok(true);
-            }
-            return install_clyde_timer(paths);
-        }
-        return Ok(false);
-    }
-    if dry_run {
-        // Legacy units present: a live run WOULD rewrite the service/timer, strip the
-        // EnvironmentFile directive, repoint the enable symlink, and remove the legacy units. Report
-        // without performing any of it — no reads of unit bodies are needed to know that.
-        return Ok(true);
-    }
-
-    let mut changed = false;
-
-    // The oneshot service: rewrite klod -> clyde, strip the retired EnvironmentFile directive, back
-    // up an existing clyde dest before overwrite, remove the old unit.
-    if legacy_svc.exists() {
-        let text =
-            fs::read_to_string(&legacy_svc).with_context(|| format!("failed to read {}", legacy_svc.display()))?;
-        backup(&legacy_svc)?;
-        let clyde_svc = paths.clyde_unit();
-        if clyde_svc.exists() {
-            backup(&clyde_svc)?;
-        }
-        let claude_path_env = resolve_claude_path_env();
-        write_atomic(&clyde_svc, &rewrite_unit(&text, claude_path_env.as_deref()))?;
-        if legacy_svc != clyde_svc {
-            fs::remove_file(&legacy_svc)
-                .with_context(|| format!("failed to remove old unit {}", legacy_svc.display()))?;
-        }
-        changed = true;
-    }
-
-    // The .timer is the actual scheduler (klod-enrich.timer, WantedBy=timers.target, enabled via a
-    // symlink in timers.target.wants/). It must be renamed too, and its enable symlink repointed,
-    // or the daily enrich sweep silently stops firing after the service is renamed. A timer has no
-    // `ExecStart=`, so it never needs the `Environment=PATH=` injection — pass `None` explicitly.
-    if legacy_tmr.exists() {
-        let text =
-            fs::read_to_string(&legacy_tmr).with_context(|| format!("failed to read {}", legacy_tmr.display()))?;
-        backup(&legacy_tmr)?;
-        let clyde_tmr = paths.clyde_timer();
-        if clyde_tmr.exists() {
-            backup(&clyde_tmr)?;
-        }
-        write_atomic(&clyde_tmr, &rewrite_unit(&text, None))?;
-        repoint_wants_symlink(paths)?;
-        if legacy_tmr != clyde_tmr {
-            fs::remove_file(&legacy_tmr)
-                .with_context(|| format!("failed to remove old timer {}", legacy_tmr.display()))?;
-        }
-        changed = true;
-    } else {
-        // Service present without an adjacent timer file but the enable symlink still points at the
-        // legacy timer name: repoint it so the unit set is consistent.
-        repoint_wants_symlink(paths)?;
-    }
-
-    if changed {
-        info!("repointed enrich units klod -> clyde");
-    }
-    Ok(changed)
-}
-
-/// Repoint the `timers.target.wants/klod-enrich.timer` enable symlink to the clyde timer. No-op if
-/// the legacy enable link is absent. Creates the clyde link (absolute target, matching the live
-/// link style) and removes the legacy one.
-fn repoint_wants_symlink(paths: &Paths) -> Result<()> {
-    let legacy_link = paths.legacy_wants_link();
-    if fs::symlink_metadata(&legacy_link).is_err() {
-        return Ok(());
-    }
-    let clyde_link = paths.clyde_wants_link();
-    fs::create_dir_all(paths.wants_dir())
-        .with_context(|| format!("failed to create {}", paths.wants_dir().display()))?;
-    if fs::symlink_metadata(&clyde_link).is_ok() {
-        fs::remove_file(&clyde_link)
-            .with_context(|| format!("failed to replace enable symlink {}", clyde_link.display()))?;
-    }
-    unixfs::symlink(paths.clyde_timer(), &clyde_link)
-        .with_context(|| format!("failed to create enable symlink {}", clyde_link.display()))?;
-    fs::remove_file(&legacy_link)
-        .with_context(|| format!("failed to remove old enable symlink {}", legacy_link.display()))?;
-    info!("repointed enrich timer enable symlink -> clyde-enrich.timer");
-    Ok(())
-}
-
-/// Pure transform of a unit file (service or timer): every `klod` -> `clyde`, the old `sessions
-/// enrich` subcommand spelling -> `session enrich`, and (Phase 5, G6) drop any `EnvironmentFile=`
-/// directive entirely — clyde installs no credential file, and stripping the line (never replacing
-/// it with an optional `EnvironmentFile=-`) is what removes the orphaned reference. A systemd unit
-/// treats a bare `EnvironmentFile=` as MANDATORY, so leaving it point at a path the operator is
-/// about to delete (Rollout) would fail the unit at the next start. Line-filtered, not `.replace`,
-/// because removing a whole directive is not a substring substitution.
+/// Ensure the enrich systemd user unit is present and current. A dispatch over exactly three cases:
+/// repair a drifted `clyde-enrich.service` ([`refresh_clyde_unit`]), install a fresh service + timer +
+/// enable symlink ([`install_clyde_timer`], only under `--install-timer`), or do nothing. Returns
+/// whether anything changed.
 ///
-/// `claude_path_env`, when `Some`, is injected as `Environment=PATH=...` immediately before
-/// `ExecStart=` (Phase 5, G7/R7): once the unit no longer loads an env file it has one less way to
-/// end up with a usable `PATH`, and `systemctl --user` does not inherit an interactive login PATH
-/// (no `import-environment` in dotfiles, no `PATH` in `~/.config/environment.d/`). A `.timer` unit
-/// has no `ExecStart=` line, so the injection is a no-op there — callers pass `None` for timers. A
-/// unit that already carries its own `Environment=PATH=` (an operator override, or a prior run of
-/// this function) is left alone rather than duplicated.
-fn rewrite_unit(text: &str, claude_path_env: Option<&str>) -> String {
-    debug!(
-        "rewrite_unit: text bytes={} claude_path_env={:?}",
-        text.len(),
-        claude_path_env
-    );
-    let renamed = text
-        .replace("klod", "clyde")
-        .replace("sessions enrich", "session enrich");
-    let already_has_path_env = renamed
-        .lines()
-        .any(|line| line.trim_start().starts_with("Environment=PATH="));
-    let inject = if already_has_path_env { None } else { claude_path_env };
-
-    let mut out = String::with_capacity(renamed.len());
-    for line in renamed.lines() {
-        if line.trim_start().starts_with("EnvironmentFile=") {
-            continue;
-        }
-        if inject.is_some() && line.trim_start().starts_with("ExecStart=") {
-            out.push_str(&environment_path_line(inject));
-        }
-        out.push_str(line);
-        out.push('\n');
+/// Renamed from `repoint_systemd` when the pre-rename migration was retired (2026-07-30). It no
+/// longer repoints anything from the old binary name, and a name that says otherwise is the
+/// says-one-thing-means-another class the house rules forbid. Detection of a host still carrying
+/// legacy units lives in `doctor`, which keeps every one of those checks -- this function simply has
+/// nothing left to do about them.
+fn ensure_enrich_unit(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<bool> {
+    debug!("ensure_enrich_unit: install_timer={install_timer} dry_run={dry_run}");
+    let clyde_svc = paths.clyde_unit();
+    // An already-installed unit may predate the `sessions`->`session` rename, still carry the retired
+    // `EnvironmentFile=` directive, or still refer to a credential clyde no longer reads. Repair it.
+    if clyde_svc.exists() {
+        return refresh_clyde_unit(&clyde_svc, dry_run);
     }
-    out
+    if install_timer {
+        if dry_run {
+            // WOULD install the clyde service + timer + enable symlink. Report without writing.
+            return Ok(true);
+        }
+        return install_clyde_timer(paths);
+    }
+    Ok(false)
 }
 
 /// Repair an already-clyde-named enrich unit by CONVERGING it on [`clyde_service_body`], when any of
 /// three triggers fires: the pre-rename `sessions enrich` subcommand spelling, a retired
 /// `EnvironmentFile=` directive (Phase 5, G6), or text still referring to a retired credential
-/// ([`mentions_retired_credential`]). Reached from the no-legacy path of [`repoint_systemd`]: a user
-/// who already migrated off klod (so no `klod-*` state triggers the full repoint) but whose installed
-/// unit predates one of those fixes would otherwise be left with a broken, stale-firing, or lying
-/// unit. Returns whether a repair happened (or, in dry-run, would happen). No-op if the unit carries
-/// none of the three defects.
+/// ([`mentions_retired_credential`]). Reached from [`ensure_enrich_unit`] whenever a
+/// `clyde-enrich.service` already exists: a user whose installed unit predates one of those fixes
+/// would otherwise be left with a broken, stale-firing, or lying unit. Returns whether a repair
+/// happened (or, in dry-run, would happen). No-op if the unit carries none of the three defects.
 ///
 /// **Writes the canonical body rather than line-editing the existing one.** Editing toward a target is
 /// what shipped the defect this repairs: Phase 5 of the excision stripped the `EnvironmentFile=`

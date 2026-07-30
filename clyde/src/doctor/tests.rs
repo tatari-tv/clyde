@@ -382,3 +382,105 @@ fn canonical_enrich_unit_is_healthy() {
     );
     assert!(report.healthy(), "the canonical unit must read healthy");
 }
+
+// --- Phase 4: the klod tripwire survives retiring the migration ---
+
+/// The residue state with NO test before this phase, and the one most likely to be "simplified" away
+/// later by normalizing `symlink_metadata` to `exists()`: a DANGLING enable symlink in
+/// `timers.target.wants/`, left by deleting the unit files without disabling the timer.
+///
+/// `exists()` FOLLOWS the link and returns false for a dangling one, so that normalization would make
+/// this host read healthy and `clyde doctor` exit 0 on a machine with a dead klod timer still enabled.
+/// Break-it check: change `symlink_metadata` to `exists()` in `legacy_timer_residue` and this fails.
+#[test]
+fn a_dangling_klod_enable_symlink_is_unhealthy_and_names_its_path() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let wants = paths
+        .xdg_config
+        .join("systemd")
+        .join("user")
+        .join("timers.target.wants");
+    fs::create_dir_all(&wants).unwrap();
+    let link = wants.join("klod-enrich.timer");
+    // Point at a target that does NOT exist: this is the dangling case.
+    std::os::unix::fs::symlink(
+        paths.xdg_config.join("systemd").join("user").join("klod-enrich.timer"),
+        &link,
+    )
+    .unwrap();
+    assert!(
+        !link.exists(),
+        "the fixture must be DANGLING for this test to mean anything"
+    );
+    assert!(fs::symlink_metadata(&link).is_ok(), "the link itself must be present");
+
+    let report = diagnose(&paths).unwrap();
+
+    assert!(
+        !report.healthy(),
+        "a dangling klod enable symlink must fail loud, not exit 0"
+    );
+    assert_eq!(report.timer, Target::Legacy("klod"));
+    // The operator must be told WHICH file to touch. Before this phase the whole report for this host
+    // was one line naming no path, because `unit_name` is Some only when a `.service` exists.
+    assert!(
+        report.timer_unit.is_none(),
+        "no .service exists, so the unit line names nothing -- which is why legacy_state must"
+    );
+    assert!(
+        report
+            .legacy_state
+            .iter()
+            .any(|s| s.contains("klod-enrich.timer") && s.contains("timers.target.wants")),
+        "legacy_state must name the dangling symlink's path: {:?}",
+        report.legacy_state
+    );
+    // And the remedy must NOT be the generic `run clyde bootstrap`, which can no longer help.
+    assert!(
+        report.has_klod_residue(),
+        "klod residue must be discriminated so print_report branches its remedy"
+    );
+}
+
+/// The bare-timer residue: a `klod-enrich.timer` unit file with no `.service` beside it. Same
+/// illegibility problem, same fix.
+#[test]
+fn a_bare_klod_timer_unit_names_its_path() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let user = paths.xdg_config.join("systemd").join("user");
+    fs::create_dir_all(&user).unwrap();
+    fs::write(user.join("klod-enrich.timer"), "[Timer]\nOnCalendar=daily\n").unwrap();
+
+    let report = diagnose(&paths).unwrap();
+
+    assert!(!report.healthy());
+    assert_eq!(report.timer, Target::Legacy("klod"));
+    assert!(
+        report.legacy_state.iter().any(|s| s.contains("klod-enrich.timer")),
+        "the timer path must be named: {:?}",
+        report.legacy_state
+    );
+    assert!(report.has_klod_residue());
+}
+
+/// A host whose ONLY problem is `ccu`/`claude-permit` state must keep the ORIGINAL remedy, because
+/// `clyde bootstrap` still fixes those. Guards the remedy branch from over-firing.
+#[test]
+fn non_klod_legacy_state_is_not_klod_residue() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let ccu = paths.xdg_config.join("ccu").join("ccu.yml");
+    fs::create_dir_all(ccu.parent().unwrap()).unwrap();
+    fs::write(&ccu, "x: 1\n").unwrap();
+
+    let report = diagnose(&paths).unwrap();
+
+    assert!(!report.healthy(), "unmigrated ccu config is still unhealthy");
+    assert!(
+        !report.has_klod_residue(),
+        "a ccu-only problem must keep the `run clyde bootstrap` remedy: {:?}",
+        report.legacy_state
+    );
+}

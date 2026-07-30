@@ -427,3 +427,115 @@ Seven new. `cargo test -p sessions llm` 11 passed, `cargo test -p common cli` 67
 ### Open questions
 
 None.
+
+## Phase 4: Retire the klod migration
+
+Net -190 lines across 8 files. The migration MACHINERY is gone; every line of `doctor`'s DETECTION is
+retained, plus the three fixes the phase specified.
+
+Deleted: the two `migrate_dir` steps, `fn migrate_dir`, `repoint_systemd`'s `has_legacy` branch,
+`fn repoint_wants_symlink`, `fn rewrite_unit`, and `Paths::{legacy_unit, legacy_timer,
+legacy_wants_link}`. `repoint_systemd` is renamed `ensure_enrich_unit` and is now a three-case
+dispatch (repair a drifted unit / install a fresh one / do nothing).
+
+### AC3, post-implementation counts
+
+```
+clyde/src/doctor.rs        29   (was 17, criterion >= 17)
+clyde/src/doctor/tests.rs  29   (was 10, criterion >= 10)
+clyde/src/bootstrap.rs      0   (was 22, criterion exactly 0)
+clyde/src/bootstrap/tests.rs 0  (was 31, criterion exactly 0)
+Cargo.toml                  0   (was  1, criterion exactly 0)
+session/src/scope/tests.rs  0   (was  1, criterion exactly 0)
+README.md                   5   (was  1, criterion amended to >= 1)
+```
+
+Both doctor counts ROSE, exactly as the second review round predicted: the remedy discriminator and
+the residue detector must name klod to find it, and the three new tests name it too.
+
+### Live verification that Phase 4 did not undo Phase 1
+
+The one way this phase could silently break the previous one, so it got its own criterion:
+
+```
+Phase 1's repair test after the deletion : ok
+hand-planted credential comment          : Anthropic=1, clyde doctor exit 1
+clyde bootstrap                          : 1 step, "enrich systemd unit (installed or repaired)"
+after                                    : Anthropic=0, "Default sweep" kept, doctor exit 0
+second bootstrap                         : 0 steps
+```
+
+### Design decisions
+
+- **`legacy_timer_residue` is a NEW function beside `timer_state`, not a change to it.** The second
+  review round's whole argument for keeping `timer_state` was that its detection surface stays
+  byte-identical to `main`, which detects correctly today, so retiring the migration needs no new
+  proof. Threading a 4th return value through it would have thrown that away. `diagnose` calls both
+  and extends `legacy_state`.
+- **`Report::has_klod_residue()` is the named discriminator** the remedy branch needed.
+  `print_report` had only `report.healthy()`, a bool. It reads
+  `timer == Target::Legacy("klod") || legacy_state.iter().any(|s| s.contains("klod"))`, exactly as the
+  plan specified, and `non_klod_legacy_state_is_not_klod_residue` guards it from over-firing so a
+  `ccu`-only host keeps the still-correct `run clyde bootstrap` remedy.
+- **The step label became `enrich systemd unit (installed or repaired)`.** The old label said
+  `klod -> clyde`, which the live desk.lan run printed while doing something else entirely.
+- **`bootstrap.rs` carries ZERO `klod` references, including in prose.** Comments explaining the
+  retirement point at `doctor` and the design doc instead of naming the token. That is what makes a
+  grep for `klod` land only where the code that handles it actually lives.
+
+### Deviations
+
+- **AC3's `rg -c klod README.md returns exactly 1` was amended to `>= 1`.** It contradicted Phase 4's
+  own bullet requiring a README note that bootstrap no longer migrates klod state -- which cannot be
+  written without naming klod. This is the SAME defect class as #77's AC2/AC4/AC5 and as AC3's two
+  earlier amendments: a count measured before the change it governs. Third occurrence in this doc,
+  caught during implementation rather than review. Recorded in the doc's AC3 entry.
+  - Rejected alternative: rewording the README to squeeze klod onto one line. That is a criterion
+    driving the implementation instead of checking it, and the note is the substantive requirement --
+    it is the only thing that tells a stranded host what to do.
+- **Three surviving tests were REWRITTEN rather than deleted or left alone**, because the fixtures
+  they depended on are retired while the behaviour they guard is not:
+  - `bootstrap_reports_completed_steps_on_partial_failure` used the data-dir step (succeeds) and the
+    config-dir step (fails). Both are gone. Re-pointed at `permit events DB` (writes under
+    `xdg_data`, succeeds) then `permit config` (writes under `xdg_config/clyde`, which the fixture
+    makes a regular file, so it fails). Different roots is what lets one succeed and the next fail.
+    Added an assert that no LATER step ran, which the original did not check.
+  - `dry_run_performs_zero_mutations_and_lists_planned_steps` and the two `run()` gate tests seeded
+    klod units to make `systemd_changed` true. They now seed a DRIFTED `clyde-enrich.service` (plus a
+    timer, so `run()`'s inner `clyde_timer().exists()` branch stays reachable). Their
+    `!clyde_unit().exists()` assertions became content assertions -- "the drifted unit is left
+    unrepaired" -- since "absent" is no longer the right invariant once the fixture plants the unit.
+  - `seed_full_legacy_world` likewise. Its doc comment now says WHY it seeds a drifted clyde unit, so
+    nobody restores a klod fixture that would silently stop covering the systemctl gate.
+- `repoint_rewrites_clyde_unit_with_stale_subcommand_and_no_legacy` renamed to
+  `repair_rewrites_clyde_unit_with_a_stale_subcommand`: there is no legacy case left to contrast with.
+
+### Tradeoffs
+
+- **Kept `timer_state` whole, including `execstart_legacy`.** Carving it was considered and rejected
+  in review: dropping `execstart_legacy` leaves an exit-0 hole for a host whose `klod-enrich.service`
+  is gone but whose `clyde-enrich.service` still invokes `klod`. Keeping it is simpler AND strictly
+  safer.
+- **`doctor` gained 12 klod references rather than losing 17.** Retiring the migration makes the
+  detection MORE important, not less, because it is now the only channel that can help a stranded
+  host. The count going up is the design working.
+- **`bootstrap` still reports `0 steps` on a dirty host.** Chosen, per the plan: bootstrap genuinely
+  cannot help, and one loud channel that tells the truth beats two.
+
+### Tests
+
+`cargo test -p clyde` 81 passed. Seven deleted (they covered deleted code), three rewritten, three new:
+
+- `a_dangling_klod_enable_symlink_is_unhealthy_and_names_its_path` -- the state with NO coverage
+  before this phase. Break-it check as specified: normalizing `symlink_metadata` to `exists()` makes
+  it FAIL (`legacy_state must name the dangling symlink's path: []`), because `exists()` follows the
+  link and returns false for a dangling one. Restored, all green.
+- `a_bare_klod_timer_unit_names_its_path` -- the sibling residue state, same illegibility problem
+- `non_klod_legacy_state_is_not_klod_residue` -- guards the remedy branch from over-firing
+
+Retained, NOT rewritten, per the plan: `legacy_klod_dirs_are_unhealthy` and
+`clyde_service_with_klod_execstart_is_legacy`. All five residue states are now covered.
+
+### Open questions
+
+None.

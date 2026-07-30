@@ -84,6 +84,14 @@ impl Report {
             && !self.events_db_at_legacy
             && self.legacy_state.is_empty()
     }
+
+    /// Whether the unhealthy state is specifically pre-rename `klod` residue, which `clyde bootstrap`
+    /// no longer migrates (design Phase 4). A NAMED discriminator because [`print_report`] otherwise
+    /// has only [`Report::healthy`], a bool, and would print a remedy that cannot work. Every other
+    /// unhealthy cause (`ccu`, `claude-permit`, a drifted enrich unit) IS still fixed by `bootstrap`.
+    pub fn has_klod_residue(&self) -> bool {
+        self.timer == Target::Legacy("klod") || self.legacy_state.iter().any(|s| s.contains("klod"))
+    }
 }
 
 /// Compute the health picture from the filesystem under `paths`. Pure read-only (no systemctl).
@@ -124,6 +132,10 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
     if paths.xdg_config.join("klod").exists() {
         legacy_state.push("klod config dir".to_string());
     }
+    // The timer half of the same tripwire, naming each residue path. `clyde bootstrap` no longer
+    // migrates any of this (design Phase 4), so `doctor` is the ONE channel that tells such a host the
+    // truth, and its remedy branches accordingly in `print_report`.
+    legacy_state.extend(legacy_timer_residue(paths));
     // An enrich unit still REFERRING to a credential clyde no longer reads. Reported through
     // `legacy_state` rather than as its own `Report` field because that channel already feeds
     // `healthy()` and already prints one line per item with the correct `run \`clyde bootstrap\``
@@ -272,6 +284,36 @@ fn timer_state(paths: &Paths) -> (Target, Option<String>, Option<String>) {
     (target, unit_name, execstart)
 }
 
+/// Legacy `klod-*` enrich residue, each entry naming the exact PATH to remove.
+///
+/// Separate from [`timer_state`], which is left byte-identical to the version that detects correctly
+/// today, so retiring the migration needs no new proof that detection still works.
+///
+/// This exists because [`timer_state`]'s report is illegible for the residue states that matter most.
+/// `unit_name` is `Some` only when a `.service` file exists, so on a host whose only residue is
+/// `klod-enrich.timer` or a dangling enable symlink, the whole report is one line
+/// (`enrich timer: klod (legacy)`): the exit code is right and the operator is never told which file
+/// to touch. `legacy_state` prints one line per entry, which is the channel that already works for the
+/// dir checks.
+fn legacy_timer_residue(paths: &Paths) -> Vec<String> {
+    let dir = paths.xdg_config.join("systemd").join("user");
+    let candidates = [
+        dir.join("klod-enrich.service"),
+        dir.join("klod-enrich.timer"),
+        dir.join("timers.target.wants").join("klod-enrich.timer"),
+    ];
+    let residue: Vec<String> = candidates
+        .iter()
+        // `symlink_metadata`, NOT `exists()`: `exists()` follows the link and returns false for a
+        // DANGLING one, which is exactly the residue left by deleting unit files without disabling
+        // the timer. See the note on `timer_state`.
+        .filter(|p| std::fs::symlink_metadata(p).is_ok())
+        .map(|p| format!("legacy klod enrich unit: {}", p.display()))
+        .collect();
+    debug!("legacy_timer_residue: found={}", residue.len());
+    residue
+}
+
 /// The trimmed `ExecStart=` line of a unit file, if present.
 fn execstart_of(unit: &Path) -> Option<String> {
     let text = std::fs::read_to_string(unit).ok()?;
@@ -343,6 +385,16 @@ fn print_report(paths: &Paths, report: &Report) {
     }
     if report.healthy() {
         println!("{}", "✓ all integrations resolve to clyde".green());
+    } else if report.has_klod_residue() {
+        // `clyde bootstrap` CANNOT fix this any more (design Phase 4 retired the migration), so
+        // printing the generic remedy here would be a lie. Naming the real path is the whole point of
+        // keeping the detection after deleting the machinery.
+        println!(
+            "{}",
+            "✗ pre-rename `klod` state remains, and this clyde can no longer migrate it — install a \
+             pre-retirement clyde (<= v0.18.0), run `clyde bootstrap`, then upgrade again"
+                .red()
+        );
     } else {
         println!("{}", "✗ legacy targets/state remain — run `clyde bootstrap`".red());
     }

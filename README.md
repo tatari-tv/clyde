@@ -73,6 +73,23 @@ systemd user timer). Every file is backed up to `<path>.clyde.bak` before it is 
 state still lives only at a legacy path. It also reports each tool's log location and, purely
 informationally (never affecting the exit code), any legacy log dirs still present on disk.
 
+### Pre-rename (`klod`) state: migration retired
+
+`clyde` was called `klod` before the umbrella merge. As of the release after v0.18.0, **`bootstrap`
+no longer migrates pre-rename state** -- the `~/.config/klod` and `~/.local/share/klod` moves and the
+`klod-enrich.*` unit rename are gone.
+
+`doctor` still DETECTS all of it and still fails loud, naming each offending path. A host that has
+never run `bootstrap` since the rename must therefore:
+
+1. install a pre-retirement `clyde` (v0.18.0 or earlier),
+2. run `clyde bootstrap` there to migrate, then
+3. upgrade again.
+
+`bootstrap` on such a host reports `0 steps` -- it genuinely cannot help, and `doctor` is the one
+channel that says so. Every other legacy state (`ccu`, `claude-permit`, a drifted enrich unit) is
+still migrated and repaired by `bootstrap` as before.
+
 ## Data layout (XDG)
 
 Everything lives under one clyde home:
@@ -230,7 +247,8 @@ The session id may be a unique prefix. `clyde session ls` or `clyde session sear
 ## Design
 
 `docs/design/2026-06-24-clyde-umbrella-cli.md` (and its implementation notes). The session catalog
-and MCP layers predate the umbrella: `docs/design/2026-06-21-session-knowledge-catalog.md` and
+and MCP layers predate the umbrella, and their design docs still carry this tool's pre-rename
+name in their filenames: `docs/design/2026-06-21-session-knowledge-catalog.md` and
 `docs/design/2026-06-22-klod-sessions-mcp.md`.
 
 ## CI

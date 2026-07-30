@@ -13,7 +13,7 @@ dead_code = "deny"
 unused_variables = "deny"
 
 # Reconciled union of the absorbed tools' dependencies. Versions are the highest seen across
-# klod/cr/ccu/claude-permit at merge time; feature flags stay per-crate (additive). Crate-unique
+# clyde/cr/ccu/claude-permit at merge time; feature flags stay per-crate (additive). Crate-unique
 # deps (comfy-table, rasciichart, sparklines, include_dir, gethostname, regex, terminal_size,
 # wait-timeout, mockito, libc, tokio, tracing-subscriber) stay declared in their own manifests.
 [workspace.dependencies]

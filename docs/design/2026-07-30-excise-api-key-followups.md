@@ -396,7 +396,7 @@ So this phase deletes the ~80 refs of *machinery that migrates* and keeps a hand
 
 **Success criteria:**
 - every surviving `klod` reference in Rust is inside `doctor`'s tripwire, and `rg -c klod README.md`
-  returns 1 (the historical design-doc filename, deliberately kept). `rg -n klod --type rust --type toml
+  returns >= 1 (the historical design-doc filename, plus the retirement note this phase adds). `rg -n klod --type rust --type toml
   -g '!target' .` must show zero hits in `bootstrap.rs`, `Cargo.toml`, and `session/src/scope/tests.rs`
 - `otto ci` exits 0, and `rg -c 'fn rewrite_unit|fn migrate_dir' clyde/src/bootstrap.rs` returns nothing
 - Phase 1's repair still works after the deletion: the Phase 1 test that repairs a drifted unit still
@@ -492,13 +492,21 @@ Per Phase 5's gate, each was executed against `main` while drafting and the obse
 - [ ] **AC3.** `rg -c klod --type rust --type toml -g '!target' .` returns hits in `clyde/src/doctor.rs`
       and `clyde/src/doctor/tests.rs` ONLY, at **>= 17** and **>= 10** respectively; **exactly zero** for
       `bootstrap.rs`, `bootstrap/tests.rs`, `Cargo.toml`, and `session/src/scope/tests.rs`; and
-      `rg -c klod README.md` returns exactly 1. Post-implementation counts get recorded in the notes.
+      `rg -c klod README.md` returns **>= 1**, including the historical design-doc filename.
+      Post-implementation counts get recorded in the notes.
       *Observed on `main`:* 82 across 6 Rust/TOML files (`bootstrap.rs` 22, `bootstrap/tests.rs` 31,
       `doctor.rs` 17, `doctor/tests.rs` 10, `Cargo.toml` 1, `session/src/scope/tests.rs` 1) plus
       `README.md` 1. The handoff's 83 counted the README; the Rust/TOML surface is 82.
       *Amended twice during review.* First: the original criterion demanded zero `klod` in Rust, which is
       incompatible with the detection Phase 4 retains, since it must name the klod paths to find them. A
       criterion that forces deleting the tripwire is the defect class Phase 5 exists to prevent.
+      **Amended a third time, during implementation.** `rg -c klod README.md returns exactly 1`
+      contradicted Phase 4's OWN bullet requiring a README note that bootstrap no longer migrates klod
+      state -- a note that cannot be written without naming klod. Two bullets of the same phase
+      contradicted each other again, and the count was again measured before the change it governs.
+      Changed to `>= 1`. Gaming the line count to satisfy `exactly 1` was rejected: the note is the
+      substantive requirement (it is what tells a stranded host what to do), and shrinking prose to fit
+      a metric is how a criterion starts driving the implementation instead of checking it.
       Second, and this one is subtler: pinning it to `exactly 17` and `exactly 10` was **a criterion
       measured before the change it governs**, the mirror image of the same defect. Phase 4 adds a klod
       discriminator to `doctor`'s remedy branch, which must reference `klod`, so `doctor.rs` goes to at

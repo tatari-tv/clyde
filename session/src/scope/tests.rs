@@ -9,7 +9,7 @@ fn classify_str(s: &str) -> Scope {
 
 #[test]
 fn work_paths_classify_work() {
-    assert_eq!(classify_str("/home/saidler/repos/tatari-tv/klod/main"), Scope::Work);
+    assert_eq!(classify_str("/home/saidler/repos/tatari-tv/clyde/main"), Scope::Work);
     assert_eq!(classify_str("/home/saidler/repos/tatari-tv/philo"), Scope::Work);
     // The org dir itself (no repo beneath) is still work.
     assert_eq!(classify_str("/home/saidler/repos/tatari-tv"), Scope::Work);
