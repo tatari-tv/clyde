@@ -1,9 +1,15 @@
-//! Bounded subprocess execution for `report`'s shell-outs.
+//! Bounded subprocess execution for external shell-outs.
 //!
 //! `report` drives three external binaries: `pandoc` (PDF), `marquee` (publish/whoami), and
 //! `claude` (the keyless LLM transport). All of them need the same hygiene -- a wall-clock ceiling,
 //! and a child that is killed AND reaped on overrun rather than left to hang the render -- so the
 //! helpers live here instead of being reimplemented per call site.
+//!
+//! Moved here from `report::proc` (design `2026-07-29-excise-api-key.md` Phase 1) alongside
+//! `common::llm::cli`, its only same-crate-boundary-crossing user at the time of the move.
+//! [`run_bounded`], [`run_with_payload`], [`CLAUDE_TIMEOUT`], and [`SUBPROCESS_TIMEOUT`] widen from
+//! `pub(crate)` to `pub` as a direct consequence of crossing the crate boundary; nothing about their
+//! runtime behavior changed.
 //!
 //! Two shapes, deliberately separate, because their I/O constraints are opposites:
 //!
@@ -25,7 +31,7 @@ use wait_timeout::ChildExt;
 ///
 /// 900s is ~4.4x the worst observed. The margin is deliberately wide because an overrun discards a
 /// generation that has already been billed (~$3), which is the expensive direction to be wrong in.
-pub(crate) const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900);
+pub const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// Wall-clock ceiling for non-interactive external commands (pandoc, `marquee whoami`/`publish`).
 /// A stalled network publish or a wedged pandoc must not hang `report render` indefinitely.
@@ -33,7 +39,7 @@ pub(crate) const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900);
 /// Deliberately NOT reused for the `claude` transport: Phase 0 measured 145s (markdown) and 204s
 /// (html) on a real month, so this ceiling would kill every real render. That path has its own,
 /// much wider const.
-pub(crate) const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
+pub const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Spawn a non-interactive external command with piped stdio and a wall-clock ceiling
 /// ([`SUBPROCESS_TIMEOUT`]); on timeout, kill and reap the child rather than blocking forever
@@ -41,7 +47,7 @@ pub(crate) const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 /// spawn failure (e.g. binary-not-found) to a caller-specific message. Only for commands whose
 /// combined output stays well under the OS pipe buffer (URLs, short stderr) — large stdout must go
 /// to a file, not a pipe, to avoid a fill-the-buffer deadlock.
-pub(crate) fn run_bounded(
+pub fn run_bounded(
     label: &str,
     cmd: &mut Command,
     spawn_err: impl FnOnce(std::io::Error) -> eyre::Report,
@@ -103,7 +109,7 @@ pub(crate) fn run_bounded(
 /// for pandoc, whose own comment says large output goes to a file.
 ///
 /// `spawn_err` maps a spawn failure (e.g. binary-not-found) to a caller-specific message.
-pub(crate) fn run_with_payload(
+pub fn run_with_payload(
     label: &str,
     cmd: &mut Command,
     payload: &str,

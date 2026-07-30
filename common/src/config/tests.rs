@@ -1,13 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use super::*;
+use crate::ENV_LOCK;
 use crate::since::DateTz;
-
-// Env-var mutation isn't safe under parallel tests; serialize the env-touching ones.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn config_default_is_utc() {

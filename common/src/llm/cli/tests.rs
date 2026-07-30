@@ -2,7 +2,7 @@
 
 use super::super::Kind;
 use super::*;
-use common::config::{DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, DEFAULT_SLOT_MAX_OUTPUT_TOKENS};
+use crate::config::{DEFAULT_JUDGE_MAX_OUTPUT_TOKENS, DEFAULT_SLOT_MAX_OUTPUT_TOKENS};
 
 const MODEL: &str = "claude-opus-4-8";
 

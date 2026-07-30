@@ -358,9 +358,12 @@ dependencies = [
  "log",
  "regex",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
+ "thiserror",
  "wait-timeout",
+ "which",
 ]
 
 [[package]]
