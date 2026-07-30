@@ -2,7 +2,8 @@
 //!
 //! This is the paid half, and the reason `otto eval` exists separately from `otto ci` (design
 //! Non-Goals: "Making the *judged* render eval part of `otto ci`"). It runs over the existing
-//! [`crate::summarize::Transport`], so it inherits `--llm` and needs no second credential.
+//! [`crate::summarize::Transport`], so it rides the render's own transport and needs no second
+//! credential.
 //!
 //! The judge is handed a BRIEF: the render's own context block, verbatim, plus the two coverage
 //! targets ([`Brief::top_by_repo`], [`Brief::top_agent_type`]) named separately so the rubric has

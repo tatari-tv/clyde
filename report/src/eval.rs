@@ -35,12 +35,12 @@ pub(crate) mod mechanical;
 pub mod synth;
 
 use crate::aggregate::DEFAULT_OUTLIERS;
-use crate::cli::{Format, Llm};
+use crate::cli::Format;
 use crate::config::TransportKind;
 use crate::render;
 use crate::render::facts::RenderContext;
 use crate::report::Report;
-use crate::summarize::{ApiTransport, CliTransport};
+use crate::summarize::CliTransport;
 use crate::{OutputDest, RunResult};
 use chrono::{DateTime, Utc};
 use claude_pricing::Pricing;
@@ -71,7 +71,6 @@ pub struct EvalConfig {
     /// render that PASSED its mechanical checks is written: a golden is a known-good artifact by
     /// definition, and committing a failing one would make `otto ci` green against a broken render.
     pub write_goldens: bool,
-    pub llm: Llm,
     pub model: String,
     pub judge_max_output_tokens: u32,
     /// Output ceiling for one prose slot, from `render.slot-max-output-tokens`.
@@ -215,11 +214,10 @@ pub(crate) struct EvalReport {
 /// evidence for the failure is on disk before the failure is raised.
 pub(crate) fn run(cfg: &EvalConfig, pricing: &Pricing) -> Result<RunResult> {
     log::info!(
-        "eval::run: fixtures={} judge={} out={} llm={:?}",
+        "eval::run: fixtures={} judge={} out={}",
         cfg.fixtures.len(),
         cfg.judge_model,
-        cfg.out.display(),
-        cfg.llm
+        cfg.out.display()
     );
     if cfg.fixtures.is_empty() {
         bail!("no fixtures to evaluate; pass --fixture <dir> or run from the clyde workspace root");
@@ -308,7 +306,6 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
             render::SlotSource::Stubbed
         } else {
             render::SlotSource::Live {
-                llm: cfg.llm,
                 model: &cfg.model,
                 ceiling: cfg.slot_max_output_tokens,
             }
@@ -438,14 +435,13 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
     })
 }
 
-/// Score one artifact over the transport `--llm` selected. Split out so `evaluate` reads as the
-/// sequence it is; monomorphized per transport, no `Box<dyn Transport>`.
+/// Score one artifact over the resolved transport. Split out so `evaluate` reads as the sequence it
+/// is; monomorphized per transport, no `Box<dyn Transport>`.
 fn judge_artifact(cfg: &EvalConfig, context: &RenderContext, artifact: &str) -> Result<Verdict> {
     let brief = judge::brief(&context.json)?;
     let model = &cfg.judge_model;
     let ceiling = cfg.judge_max_output_tokens;
-    match render::resolve_selected_transport(cfg.llm, Format::Markdown)? {
-        TransportKind::Api => judge::score(&ApiTransport::from_env()?, model, ceiling, artifact, &brief),
+    match render::resolve_selected_transport(Format::Markdown)? {
         TransportKind::Cli => judge::score(&CliTransport::resolve()?, model, ceiling, artifact, &brief),
     }
 }

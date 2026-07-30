@@ -5,17 +5,17 @@
 //! credential: the `claude` binary owns auth end to end. Same shape as the existing shell-outs to
 //! `pandoc` and to `marquee` (which owns its own Okta tokens).
 //!
-//! Fail loud, never fall back. Once this transport is selected, EVERY failure is terminal — logged
-//! out, non-zero exit, malformed envelope, non-`end_turn` stop, model mismatch, timeout. None of
-//! them retry and none silently switch to the api transport, because a silent fallback would make
-//! one command nondeterministic across two transports and two billing paths, and would hide a broken
-//! login forever.
+//! Fail loud, never retry. This is the ONE LLM transport in the workspace (design
+//! `2026-07-29-excise-api-key.md` Phase 4 deleted the api-key path), so EVERY failure is terminal —
+//! logged out, non-zero exit, malformed envelope, non-`end_turn` stop, model mismatch, timeout.
+//! Nothing retries and nothing falls back, because there is nowhere left to fall back to: a broken
+//! login must surface, not hide behind a second credentialed path.
 //!
-//! Failures that could plausibly be fixed by the OTHER transport carry the [`ESCAPE_HATCH`]; the ones
-//! that could not, deliberately do not. A truncation or an over-budget artifact is NOT one of them:
-//! the api path enforces the identical per-job ceiling (it sets `max_tokens` on the wire and bails on
-//! `stop_reason: max_tokens`), so advising `--llm api` there would send the reader to a path that
-//! fails the same way. Suggesting a remedy that cannot work is worse than suggesting none.
+//! Failures that could plausibly be fixed by installing or logging into `claude` carry the
+//! [`ESCAPE_HATCH`]; the ones that could not, deliberately do not. A truncation or an over-budget
+//! artifact is NOT one of them: a working install and login still cannot set a wire-level ceiling
+//! over this transport, so appending the escape hatch there would send the reader to a fix that does
+//! not fix anything. Suggesting a remedy that cannot work is worse than suggesting none.
 
 use super::{Completion, Job, Kind, Transport, TransportError};
 use crate::proc;
@@ -76,10 +76,7 @@ impl CliTransport {
     pub fn resolve() -> Result<Self> {
         debug!("CliTransport::resolve: looking for `{CLAUDE_BINARY}` on PATH");
         let binary = which::which(CLAUDE_BINARY).map_err(|e| {
-            eyre::eyre!(
-                "the `{CLAUDE_BINARY}` CLI was not found on PATH ({e}); install Claude Code and log in \
-                 once, or pass --llm api to use ANTHROPIC_API_KEY"
-            )
+            eyre::eyre!("the `{CLAUDE_BINARY}` CLI was not found on PATH ({e}); install Claude Code and log in once")
         })?;
         let version = probe_version(&binary);
         info!(
@@ -162,8 +159,7 @@ impl CliTransport {
         // never about this payload -- so it is `Unavailable`, same class as a resolve failure.
         let output = proc::run_with_payload("claude -p", &mut cmd, &payload, move |e| {
             TransportError::Unavailable(format!(
-                "failed to invoke the `claude` CLI at {}: {e}; try `claude` interactively to check the \
-                 install, or pass --llm api to use ANTHROPIC_API_KEY",
+                "failed to invoke the `claude` CLI at {}: {e}\n{ESCAPE_HATCH}",
                 binary.display()
             ))
             .into()
@@ -348,14 +344,13 @@ fn is_sweep_fatal(envelope: &Envelope) -> bool {
 }
 
 /// Remediation appended to failures that could plausibly be an install, login, credential, or
-/// model-selection problem — i.e. the ones the api transport would actually resolve. There is no
-/// automatic fallback by design, so those failures must name the manual one.
+/// model-selection problem. There is no fallback transport, so checking the install and login is the
+/// one manual remedy left to name.
 ///
-/// Deliberately NOT appended to the truncation (Guard 4) or over-budget (Guard 6) bails: both are
-/// per-job output-ceiling failures that the api path enforces identically, so pointing at `--llm api`
+/// Deliberately NOT appended to the truncation (Guard 4) or over-budget (Guard 7) bails: both are
+/// per-job output-ceiling failures that a working install and login cannot fix, so appending this
 /// would be a remedy that does not remedy. See the module docs.
-const ESCAPE_HATCH: &str =
-    "try `claude` interactively to check the install and login, or pass --llm api to use ANTHROPIC_API_KEY";
+const ESCAPE_HATCH: &str = "try `claude` interactively to check the install and login";
 
 impl CliTransport {
     /// What we OBSERVED, never a guessed cause. `which` proved only that a file of this name exists,
@@ -431,8 +426,7 @@ impl Spawn {
 /// Also excluded by construction: `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`,
 /// `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`, `CLAUDE_TMPDIR`, `CLAUDE_EFFORT` — an
 /// agent-invoked render must not present itself to the child as a nested session of the caller — and
-/// `ANTHROPIC_API_KEY`, because `--llm cli` must mean what it says and cost attribution must never
-/// silently flip to the key.
+/// `ANTHROPIC_API_KEY`, because clyde handles no key at all and must never forward one to the child.
 ///
 /// The proxy variables ([`PROXY_VARS`]) are the one addition, and they are enumerated by name for
 /// the same fail-closed reason the rest of this list is.

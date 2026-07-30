@@ -21,32 +21,6 @@ impl Format {
     }
 }
 
-/// Which transport performs `report render`'s two model calls, selected via `--llm`.
-///
-/// `auto` (the default) prefers the `claude` CLI, so the keyless path is what everyone gets and an
-/// api key is opt-in rather than the entry fee. This is the SELECTION, not the answer: `auto` still
-/// has to be resolved against the environment (see `config::resolve_transport`).
-#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[clap(rename_all = "kebab-case")]
-pub enum Llm {
-    #[default]
-    Auto,
-    Api,
-    Cli,
-}
-
-/// Map the `clyde.yml` `render.llm` config value onto the CLI [`Llm`]. Lives here (not in `common`)
-/// because the mapping's target type is owned by this crate.
-impl From<common::config::LlmConfig> for Llm {
-    fn from(value: common::config::LlmConfig) -> Self {
-        match value {
-            common::config::LlmConfig::Auto => Llm::Auto,
-            common::config::LlmConfig::Api => Llm::Api,
-            common::config::LlmConfig::Cli => Llm::Cli,
-        }
-    }
-}
-
 /// Map the `clyde.yml` `render.format` config value onto the CLI [`Format`]. Lives here (not in
 /// `common`) because the mapping's target type is owned by this crate.
 impl From<common::config::FormatConfig> for Format {
@@ -175,18 +149,6 @@ pub struct RenderArgs {
     #[arg(long, value_enum, ignore_case = true)]
     pub format: Option<Format>,
 
-    /// Which transport performs the model calls: `auto` (the default) picks `cli` when `claude` is on
-    /// PATH, else `api` when a key is set; `cli` shells out to the locally installed `claude` CLI and
-    /// uses the Claude Code login you already have -- no API key needed; `api` uses
-    /// `ANTHROPIC_API_KEY`.
-    ///
-    /// When omitted, falls back to `render.llm` in `clyde.yml`, and to `auto` if that too is unset.
-    /// There is NO fallback once a transport is chosen: if the `claude` CLI fails (logged out, stale
-    /// install, rate limited), the render fails loudly naming `--llm api` rather than silently
-    /// switching credentials. Automated callers (CI, cron) should pin `--llm api` explicitly.
-    #[arg(long, value_enum, ignore_case = true)]
-    pub llm: Option<Llm>,
-
     /// Target marquee space for `marquee-markdown` (defaults to your personal ~space).
     /// Ignored by `markdown`/`pdf`.
     #[arg(long)]
@@ -261,12 +223,6 @@ pub struct EvalArgs {
     /// definition, and committing a failing one would make `otto ci` green against a broken render.
     #[arg(long)]
     pub write_goldens: bool,
-
-    /// Which transport performs the renders and the judge call: `auto`, `cli`, or `api`. Same
-    /// semantics as `render --llm`, and the judge inherits it -- there is no second credential.
-    /// When omitted, falls back to `render.llm` in `clyde.yml`, and to `auto` if that too is unset.
-    #[arg(long, value_enum, ignore_case = true)]
-    pub llm: Option<Llm>,
 }
 
 #[derive(clap::Args, Debug)]

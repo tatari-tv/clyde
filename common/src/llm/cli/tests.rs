@@ -423,7 +423,10 @@ fn parse_envelope_tolerates_leading_noise_before_the_json_root() {
 fn parse_envelope_bails_when_stdout_has_no_json_at_all() {
     let err = parse_envelope(b"not logged in\n").unwrap_err().to_string();
     assert!(err.contains("no JSON envelope"), "got: {err}");
-    assert!(err.contains("--llm api"), "must carry the escape hatch: {err}");
+    assert!(
+        err.contains("check the install and login"),
+        "must carry the escape hatch: {err}"
+    );
 }
 
 #[test]
@@ -525,7 +528,10 @@ fn exit_failure_reports_code_stderr_observations_and_the_escape_hatch() {
         "must surface the child's stderr verbatim: {msg}"
     );
     assert!(msg.contains("/usr/local/bin/claude"), "{msg}");
-    assert!(msg.contains("--llm api"), "must carry the escape hatch: {msg}");
+    assert!(
+        msg.contains("check the install and login"),
+        "must carry the escape hatch: {msg}"
+    );
 }
 
 #[test]
@@ -605,7 +611,7 @@ fn guard_is_error_forwards_the_clis_own_message_verbatim() {
                    "error":{"message":"OAuth token has expired. Please run /login."}}"#;
     let err = check(json, Kind::Slot).unwrap_err().to_string();
     assert!(err.contains("OAuth token has expired"), "verbatim message: {err}");
-    assert!(err.contains("--llm api"), "escape hatch: {err}");
+    assert!(err.contains("check the install and login"), "escape hatch: {err}");
 }
 
 #[test]
@@ -963,17 +969,18 @@ fn guards_run_in_order_so_the_most_specific_cause_wins() {
 
 // ---- the ESCAPE_HATCH contract, which nothing asserted either way ------------------------------
 
-/// Failures the api transport could actually resolve must name it.
+/// Failures that could plausibly be an install, login, credential, or model-selection problem must
+/// carry the escape hatch.
 #[test]
 fn credential_and_model_failures_carry_the_escape_hatch() {
     let cases = [
-        // is_error: an expired token — api key would work.
+        // is_error: an expired token — checking the install and login would actually help here.
         r#"{"is_error":true,"error":{"message":"OAuth token has expired"}}"#.to_string(),
         // subtype not success.
         envelope_json(false, "error_during_execution", "end_turn", "x", 1, &real_model_usage()),
         // empty result.
         envelope_json(false, "success", "end_turn", "  ", 1, &real_model_usage()),
-        // a substituted model — the api path puts the pin on the wire and would honor it.
+        // a substituted model — a fresh login might select the right one.
         envelope_json(
             false,
             "success",
@@ -994,29 +1001,39 @@ fn credential_and_model_failures_carry_the_escape_hatch() {
     ];
     for json in cases {
         let err = check(&json, Kind::Slot).unwrap_err().to_string();
-        assert!(err.contains("--llm api"), "must offer the api transport: {err}");
+        assert!(
+            err.contains("check the install and login"),
+            "must offer the escape hatch: {err}"
+        );
     }
 }
 
-/// Output-ceiling failures must NOT name it: the api path enforces the same per-job ceiling, so
-/// `--llm api` would send the reader to a path that fails identically. A remedy that cannot remedy is
-/// worse than none. (Audit finding; the invariant was previously stated absolutely and honored
-/// partially, with nothing asserting either side.)
+/// Output-ceiling failures must NOT name it: a working install and login cannot set a wire-level
+/// ceiling over this transport, so appending the escape hatch there would send the reader to a fix
+/// that does not fix anything. A remedy that cannot remedy is worse than none. (Audit finding; the
+/// invariant was previously stated absolutely and honored partially, with nothing asserting either
+/// side.)
 #[test]
-fn ceiling_failures_do_not_offer_a_transport_that_fails_the_same_way() {
+fn ceiling_failures_do_not_offer_a_remedy_that_cannot_remedy() {
     // Guard 4: truncation.
     // The count is INERT here: Guard 4 fires on `stop_reason: max_tokens` before Guard 6 sees it.
     let truncated = envelope_json(false, "success", "max_tokens", "trunc", 1_024, &real_model_usage());
     let err = check(&truncated, Kind::Slot).unwrap_err().to_string();
-    assert!(!err.contains("--llm api"), "api path truncates identically: {err}");
+    assert!(
+        !err.contains("check the install and login"),
+        "a working install and login cannot fix a truncation: {err}"
+    );
     assert!(err.contains("--since"), "must still offer a remedy that works: {err}");
 
-    // Guard 6: over budget on a natural stop.
+    // Guard 7: over budget on a natural stop.
     let over = envelope_json(false, "success", "end_turn", "long", 5_000, &real_model_usage());
     let err = check(&over, Kind::Slot).unwrap_err().to_string();
-    assert!(!err.contains("--llm api"), "api path caps at the same ceiling: {err}");
+    assert!(
+        !err.contains("check the install and login"),
+        "a working install and login cannot raise a config ceiling: {err}"
+    );
     assert!(err.contains("1500-token ceiling"), "must name the budget: {err}");
-    // The remedy it DOES offer must be one that works: the config key, not the other transport.
+    // The remedy it DOES offer must be one that works: the config key, not the escape hatch.
     assert!(
         err.contains("render.slot-max-output-tokens"),
         "must offer the remedy that actually remedies: {err}"

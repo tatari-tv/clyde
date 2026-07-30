@@ -1,10 +1,10 @@
-//! The keyless LLM transport, shared by every crate that needs one. Moved here (design
+//! The LLM transport, shared by every crate that needs one. Moved here (design
 //! `2026-07-29-excise-api-key.md` Phase 1) from `report::summarize`, because `report` depends on
 //! `sessions` and `efficiency`, so a transport that lived in `report` could never be reached from
 //! them. `common` is the one crate both already depend on.
 //!
-//! `report`'s own api-key transport (`ApiTransport`) is NOT here: it stays in `report::summarize`
-//! until Phase 4 deletes it, so it is not this crate's concern.
+//! `report`'s own api-key transport once lived alongside this and was deleted in Phase 4: this is
+//! now the ONE LLM transport in the workspace, and clyde reads, stores, and transmits no credential.
 
 pub mod cli;
 
@@ -34,7 +34,7 @@ pub enum Kind {
     Slot,
     /// `clyde report eval`'s judge: a small JSON verdict over an already-rendered artifact
     /// (design Phase 13). It rides the existing transport rather than a second client, so the eval
-    /// inherits `--llm` and needs no second credential.
+    /// needs no second credential.
     Judge,
     /// `clyde session enrich`: one dormant session's redacted PROSE -> the catalog entry JSON
     /// (`{"tags":[...],"summary":"..."}`). One invocation per session, run unattended on a timer, so
@@ -140,15 +140,11 @@ pub struct Job<'a> {
 /// Bail unless the model finished on its own (`end_turn`). A `max_tokens` (or any non-`end_turn`)
 /// stop is the named output-exhaustion failure mode: the artifact exceeded the model's output
 /// ceiling, so it is truncated and must not be published. Pure, so tests can drive it directly.
-///
-/// `pub`, not `pub(crate)`: `report::summarize::api` (the api-key transport) still calls this
-/// across the crate boundary until Phase 4 deletes that module. Visibility widened for the move;
-/// no runtime behavior changed.
 pub fn check_stop_reason(stop_reason: Option<&str>) -> Result<()> {
     match stop_reason {
         Some("end_turn") => Ok(()),
         other => bail!(
-            "Anthropic API stopped with stop_reason={} (expected end_turn): the generated artifact \
+            "claude -p stopped with stop_reason={} (expected end_turn): the generated artifact \
              exceeded the model's output ceiling and was truncated. Raise the ceiling named by \
              this job's config key, or narrow the window with a shorter --since, then try again.",
             other.unwrap_or("<missing>")

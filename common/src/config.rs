@@ -48,21 +48,6 @@ pub enum FormatConfig {
     MarqueeMarkdown,
 }
 
-/// The serde view of `render.llm`: which transport performs `report render`'s two model calls.
-///
-/// `auto` prefers the `claude` CLI, so the keyless path is the default for everyone and the api key
-/// becomes the exception rather than the entry fee. It is a PRESENCE check on the binary, never a
-/// success check: once a transport is chosen there is no fallback, so a broken login fails loudly
-/// instead of silently billing a different credential.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LlmConfig {
-    #[default]
-    Auto,
-    Api,
-    Cli,
-}
-
 /// Default model pin for every LLM job `report` runs (`render.model`).
 ///
 /// ONE pin covers both jobs -- the prose slots and the eval judge -- because both default to
@@ -168,9 +153,6 @@ pub struct RenderConfig {
     /// Default output format when `--format` is omitted on the command line. Defaults to markdown.
     #[serde(default)]
     format: FormatConfig,
-    /// Which transport performs the two model calls when `--llm` is omitted. Defaults to `auto`.
-    #[serde(default)]
-    llm: LlmConfig,
     /// Model pin for both LLM jobs, the prose slots and the eval judge. Defaults to
     /// [`DEFAULT_MODEL`].
     #[serde(default = "default_model")]
@@ -195,7 +177,6 @@ impl Default for RenderConfig {
     fn default() -> Self {
         Self {
             format: FormatConfig::default(),
-            llm: LlmConfig::default(),
             model: default_model(),
             judge_max_output_tokens: default_judge_max_output_tokens(),
             slot_max_output_tokens: default_slot_max_output_tokens(),
@@ -479,11 +460,6 @@ impl Config {
     /// The configured default output format for `report render` (`markdown` when unset).
     pub fn render_format(&self) -> FormatConfig {
         self.render.format
-    }
-
-    /// The configured transport selection for `report render` (`auto` when unset).
-    pub fn render_llm(&self) -> LlmConfig {
-        self.render.llm
     }
 
     /// The configured model pin for every `report` LLM job ([`DEFAULT_MODEL`] when unset).
