@@ -70,27 +70,62 @@ impl Db {
     /// `activity_at` may legitimately be `None` (a transcript with no parseable `timestamp` on any
     /// record); `parse_version` is written regardless, which is what terminates the backfill for those
     /// rows. Returns the number of rows actually updated. Empty `writes` is a no-op.
-    pub fn set_activity_many(&self, writes: &[(String, Option<DateTime<Utc>>)]) -> Result<usize> {
-        debug!("Db::set_activity_many: writes={}", writes.len());
+    ///
+    /// `title` rides the same write, added at `PARSE_VERSION` 2. It is parse-derived exactly like
+    /// `activity_at` -- a pure function of the transcript, re-derived by the same parse that already
+    /// happened -- so it belongs in this narrow write and not in the content arm. Because `title` is
+    /// ALSO in the high-signal FTS index, and `sessions_fts` is a standalone FTS5 table maintained by
+    /// explicit writes rather than by triggers, the row's FTS title is updated in the same transaction.
+    /// Skipping that would leave search matching the old 2,000-character title while every display
+    /// surface showed the new one.
+    pub fn set_parse_derived_many(&self, writes: &[ParseDerivedWrite]) -> Result<usize> {
+        debug!("Db::set_parse_derived_many: writes={}", writes.len());
         if writes.is_empty() {
             return Ok(0);
         }
         let tx = self.conn.unchecked_transaction()?;
         tx.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
-            .context("set_activity: suppress the revision UPDATE trigger")?;
+            .context("set_parse_derived: suppress the revision UPDATE trigger")?;
         let mut written = 0usize;
-        for (session_id, activity_at) in writes {
+        for w in writes {
             let n = tx.execute(
-                "UPDATE sessions SET activity_at=?2, parse_version=?3 WHERE session_id=?1",
-                params![session_id, activity_at.map(|d| d.to_rfc3339()), session::PARSE_VERSION],
+                "UPDATE sessions SET activity_at=?2, title=?3, parse_version=?4 WHERE session_id=?1",
+                params![
+                    w.session_id,
+                    w.activity_at.map(|d| d.to_rfc3339()),
+                    w.title,
+                    session::PARSE_VERSION
+                ],
             )?;
             written += n;
-            trace!("Db::set_activity_many: session_id={session_id} rows={n}");
+            // Keep the FTS title in step with the column, in this same transaction. Scoped by the
+            // session's rowid via a subquery rather than a separate SELECT, so a row that vanished
+            // between the two statements updates nothing instead of touching the wrong rowid.
+            tx.execute(
+                "UPDATE sessions_fts SET title=?2 \
+                 WHERE rowid = (SELECT id FROM sessions WHERE session_id=?1)",
+                params![w.session_id, w.title.as_deref().unwrap_or("")],
+            )?;
+            trace!("Db::set_parse_derived_many: session_id={} rows={n}", w.session_id);
         }
         tx.execute_batch(V5_TRIGGERS_SQL)
-            .context("set_activity: restore the revision UPDATE trigger")?;
+            .context("set_parse_derived: restore the revision UPDATE trigger")?;
         tx.commit()?;
-        debug!("Db::set_activity_many: backfilled {written} rows (updated_at unchanged)");
+        debug!("Db::set_parse_derived_many: backfilled {written} rows (updated_at unchanged)");
         Ok(written)
     }
+}
+
+/// One row's worth of parse-derived columns for [`Db::set_parse_derived_many`].
+///
+/// A struct rather than a tuple: the payload is an id plus an `Option<DateTime>` plus an
+/// `Option<String>`, and a positional call site is exactly where the last two get transposed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseDerivedWrite {
+    pub session_id: String,
+    /// MAX message timestamp, or `None` when no record carried a parseable `timestamp`.
+    pub activity_at: Option<DateTime<Utc>>,
+    /// The re-derived display title (`session::ParsedSession::title`), or `None` when the session has
+    /// no titleable source at all.
+    pub title: Option<String>,
 }

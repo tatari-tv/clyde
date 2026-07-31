@@ -102,17 +102,21 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
     let mut consecutive_failures: usize = 0;
 
     for rec in &records {
-        // Classify from the cwd AND the repo evidence the catalog already holds. `cwd` alone leaves a
+        // Classify from the cwd, the GIT REMOTE, and the repo evidence the catalog already holds, in
+        // that precedence (`session::classify_with_evidence` documents it). `cwd` alone leaves a
         // `cwd`-hostile workflow at 0% enrichment coverage, because its sessions carry no
-        // `repos/<org>` anchor to read; the evidence places them. The cwd-only rule is unchanged and
-        // still wins outright, and the widening only ever fires where the cwd answer is
+        // `repos/<org>` anchor to read; the remote and the evidence place them. The cwd-only rule is
+        // unchanged and still wins outright, and widening only ever fires where the cwd answer is
         // "unclassifiable", never where it is "personal by a positive signal".
         let evidence = db.scope_evidence(&rec.session_id)?;
-        let scope = session::classify_with_evidence(
+        let decision = session::classify_with_evidence(
             rec.cwd.as_deref().map(std::path::Path::new),
+            rec.repo.as_deref(),
+            rec.repo_source.as_deref().and_then(|s| s.parse().ok()),
             &evidence.repos_touched,
             evidence.files_edited,
         );
+        let scope = decision.scope;
         // PROVISIONAL when the efficiency pass has not REACHED this row, so there was no evidence to
         // consult at all. Recording the current `SCOPE_VERSION` on an evidence-free decision would
         // exclude the row from the widened predicate until the next const bump -- and on a catalog that
@@ -127,7 +131,15 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         // pass and `record_enrich_skip`'s bare UPDATE would bump the export revision every time.
         // Zero-edit sessions are common, so that is a permanent cursor churn for a large set of rows --
         // the same hazard Phase 3 took a batched trigger sandwich to avoid.
-        let scope_version = evidence.present.then_some(session::SCOPE_VERSION);
+        //
+        // ...and it applies ONLY when the touch set is what decided. `Basis::reads_stored_evidence` is
+        // the discriminator, from the classifier itself rather than re-derived here. A cwd-anchor or
+        // git-origin decision never consults `outcome_json`, so it is SETTLED even on a catalog that has
+        // never been fully reindexed -- which is the common case for the very hosts the git-origin branch
+        // exists for. Gating those on `evidence.present` would leave their `scope_version` NULL forever
+        // and re-offer every one of their rows on every pass, exactly the churn this rule prevents.
+        let scope_version =
+            (!decision.basis.reads_stored_evidence() || evidence.present).then_some(session::SCOPE_VERSION);
 
         // --- Routing gate: personal content never leaves the machine. ---
         if !scope.is_work() {

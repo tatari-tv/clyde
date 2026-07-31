@@ -627,6 +627,65 @@ fn an_evidence_free_skip_is_provisional_and_self_heals_on_the_next_pass() {
     assert_eq!(fake2.calls(), 1);
 }
 
+/// A git-origin attribution is enough on its own: enriched on the FIRST pass, with no reindex, and
+/// SETTLED so no later pass reconsiders it.
+///
+/// This is the teammate case measured on 2026-07-31. Their cwd carries no `repos/<org>` anchor to read
+/// and their catalog has no `outcome_json` yet, so before the git-origin branch every session gated
+/// `skipped-personal` and coverage was 0%.
+///
+/// The settled half matters as much as the enriched half. The provisional rule keys on
+/// `Basis::reads_stored_evidence`, and a git-origin decision reads none -- so it must record
+/// `scope_version` even with no evidence stored. Keying it on `evidence.present` instead would leave
+/// every one of these rows NULL forever, and the widened predicate would re-offer all of them on every
+/// pass while `record_enrich_skip`'s bare UPDATE bumped the export cursor each time.
+///
+/// BITES: gate `scope_version` on `evidence.present` alone and the personal half of this test reports
+/// `considered: 1` on the second pass instead of 0.
+#[test]
+fn a_git_origin_attribution_settles_the_decision_with_no_reindex() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    // A layout with no org slot anywhere -- Stephen's, measured. No `outcome_json` is ever written.
+    let parent = write_transcript(tmp.path(), UUID_A, "we set up the marquee bucket in us-east-1");
+    insert(&db, tmp.path(), UUID_A, "/Users/stephen/code/work/philo", &parent);
+    set_git_origin(&db, UUID_A, "tatari-tv/philo");
+
+    let fake = Fake::ok(&["terraform"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(stats.enriched, 1, "the remote must place this session: {stats:?}");
+    assert_eq!(stats.skipped_personal, 0);
+    assert_eq!(fake.calls(), 1);
+
+    // The personal direction, same shape: a personal remote is a SETTLED skip, not a provisional one.
+    let db2 = Db::open_memory().unwrap();
+    let parent2 = write_transcript(tmp.path(), UUID_B, "personal side project");
+    insert(&db2, tmp.path(), UUID_B, "/Users/luke/Projects/claude", &parent2);
+    set_git_origin(&db2, UUID_B, "scottidler/claude");
+
+    let first = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(first.skipped_personal, 1, "a personal remote must not be sent");
+    let second = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        second.considered, 0,
+        "a git-origin decision needs no stored evidence, so it must be settled: {second:?}"
+    );
+}
+
+/// Attribute a session's repo from the git remote, as `sessions::resolve_repos` does on a reindex whose
+/// cwd is a live checkout. Rank 0, so it wins the upgrade-only write unconditionally.
+fn set_git_origin(db: &Db, session_id: &str, repo: &str) {
+    db.upsert_repo(
+        session_id,
+        &common::repo::Resolved {
+            repo: repo.to_string(),
+            source: common::repo::RepoSource::GitOrigin,
+        },
+    )
+    .unwrap();
+}
+
 /// Write an `outcome_json` carrying repo evidence, as `efficiency::reindex_efficiency` does.
 fn set_scope_evidence(db: &Db, session_id: &str, repos: &[(&str, u64)], files_edited: u64) {
     let touched: serde_json::Map<String, serde_json::Value> = repos

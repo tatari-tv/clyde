@@ -436,12 +436,35 @@ impl Spawn {
 /// change what `report render` and `report eval` produce.
 fn child_env(kind: Kind) -> Vec<(String, String)> {
     let mut env = Vec::new();
-    // Measured 2026-07-24: an `env -i` child with NO env at all still authenticates, because the
-    // runtime falls back to `getpwuid` for the home directory. HOME is passed anyway so the transport
-    // never depends on that fallback -- if it changed, the failure would present as "logged out",
-    // which is the exact misdiagnosis this design fights.
+    // Measured 2026-07-24 ON LINUX: an `env -i` child with NO env at all still authenticates, because
+    // the runtime falls back to `getpwuid` for the home directory. HOME is passed anyway so the
+    // transport never depends on that fallback -- if it changed, the failure would present as "logged
+    // out", which is the exact misdiagnosis this design fights.
+    //
+    // That measurement did NOT generalize, and the correction is [`USER_VAR`] below: it held on the
+    // maintainer's Linux host and was read as universal, which is precisely the failure mode the
+    // paragraph above warns about.
     if let Some(home) = dirs::home_dir() {
         env.push(("HOME".into(), home.display().to_string()));
+    }
+    // REQUIRED on macOS, where the child resolves its OAuth credentials through the login Keychain and
+    // needs to know which user it is running as. Without it `claude -p` exits reporting "Not logged in"
+    // on a host whose `claude auth status` is healthy and whose interactive `claude -p` succeeds, so the
+    // symptom points at the login and not at this allowlist -- three teammates lost a run to it
+    // (reported 2026-07-31, isolated with `env -i` by stripping only this variable).
+    //
+    // Forwarded, not synthesized: `getpwuid` would give the same answer on the happy path, but a `sudo`
+    // or `su` context is exactly where the two disagree, and the child must act as the invoking user.
+    // Not a secret -- a username, already visible in every process listing and in `HOME` above.
+    match std::env::var(USER_VAR) {
+        Ok(user) if !user.is_empty() => {
+            debug!("child_env: forwarding {USER_VAR} to the child");
+            env.push((USER_VAR.into(), user));
+        }
+        // Linux does not need it (the `getpwuid` fallback above), so an unset `USER` is not fatal here.
+        // It is still worth a line in the log, because on macOS this is the difference between a
+        // successful render and a "Not logged in" that looks like an auth problem.
+        _ => debug!("child_env: {USER_VAR} unset or empty in the parent; not forwarding"),
     }
     // Not needed to find `claude` (we exec the absolute resolved path), but without it the child
     // warns on stderr that it cannot find `bwrap`/`socat` and disables its own sandbox. Not a secret.
@@ -503,6 +526,11 @@ const THINKING_DISABLED: &str = "0";
 /// prevent. A proxy ADDRESS is not a secret; a proxy PASSWORD is. Both cases of each name, because
 /// the lowercase spellings are the conventional ones for `curl`-family tools and either may be the
 /// one that is set.
+/// The invoking user's name, forwarded to the child so macOS can find its Keychain-backed OAuth
+/// credentials. See the forwarding site in [`child_env`] for why this is required there and merely
+/// belt-and-braces on Linux.
+const USER_VAR: &str = "USER";
+
 const PROXY_VARS: [&str; 8] = [
     "HTTP_PROXY",
     "HTTPS_PROXY",

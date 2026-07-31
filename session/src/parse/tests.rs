@@ -43,7 +43,7 @@ fn parses_title_prompt_model_and_counts() {
     assert_eq!(s.session_id, UUID_A);
     assert_eq!(s.ai_title.as_deref(), Some("Terraform Marquee bucket setup"));
     assert_eq!(s.first_prompt.as_deref(), Some("set up the terraform marquee bucket"));
-    assert_eq!(s.title(), Some("Terraform Marquee bucket setup"));
+    assert_eq!(s.title().as_deref(), Some("Terraform Marquee bucket setup"));
     assert_eq!(s.git_branch.as_deref(), Some("main"));
     assert_eq!(s.cwd.as_deref(), Some(Path::new("/home/saidler/repos/foo")));
     assert_eq!(s.model.as_deref(), Some("claude-opus-4-8"));
@@ -110,7 +110,7 @@ fn title_falls_back_to_first_prompt_when_no_ai_title() {
     );
     let sessions = parse_sessions(&[parent_file(path)]);
     assert_eq!(sessions[0].ai_title, None);
-    assert_eq!(sessions[0].title(), Some("first real prompt here"));
+    assert_eq!(sessions[0].title().as_deref(), Some("first real prompt here"));
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn command_opened_session_titles_from_skill_name() {
         Some("how-to-execute-a-plan"),
         "/clear excluded, skill wins"
     );
-    assert_eq!(s.title(), Some("how-to-execute-a-plan"));
+    assert_eq!(s.title().as_deref(), Some("how-to-execute-a-plan"));
     // Skill boilerplate stays out of the body; real assistant content stays in.
     assert!(!s.body.contains("Base directory for this skill"));
     assert!(s.body.contains("starting phase 1"));
@@ -206,7 +206,7 @@ fn typed_prompt_after_clear_wins_over_command_name() {
         ],
     );
     let s = &parse_sessions(&[parent_file(path)])[0];
-    assert_eq!(s.title(), Some("now wire up the retry logic"));
+    assert_eq!(s.title().as_deref(), Some("now wire up the retry logic"));
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn local_command_stdout_is_noise() {
     );
     let s = &parse_sessions(&[parent_file(path)])[0];
     assert_eq!(s.first_prompt, None, "local-command-stdout is not a prompt");
-    assert_eq!(s.title(), Some("model"));
+    assert_eq!(s.title().as_deref(), Some("model"));
 }
 
 #[test]

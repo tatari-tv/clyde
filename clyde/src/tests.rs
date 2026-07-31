@@ -210,6 +210,33 @@ fn truncate_title_collapses_multiline_and_caps_width() {
     assert!(out.ends_with('…'));
 }
 
+/// The terminal cap composes with the STORED title's own marker instead of mangling it.
+///
+/// `session::ParsedSession::title` caps at 120 chars and marks the cut with an ASCII `...`. A stored
+/// title of 78 content chars plus that marker is 81 chars, so this function's 79-char cut lands one
+/// character into the marker and used to emit a dangling `.…`. Found by CodeRabbit on PR #82.
+///
+/// BITES: drop the `trim_end_matches` and the first assertion sees `.…`.
+#[test]
+fn truncate_title_does_not_stack_markers_on_an_already_marked_title() {
+    // Exactly the boundary case: 78 content chars + the stored `...` marker.
+    let stored = format!("{}...", "w".repeat(78));
+    assert_eq!(stored.chars().count(), 81, "the fixture must exceed the terminal cap");
+    let out = truncate_title(&stored);
+    assert!(!out.contains(".…"), "a dangling dot before the ellipsis: {out:?}");
+    assert!(out.ends_with('…'));
+    assert!(
+        !out.ends_with("..…") && !out.ends_with(".…"),
+        "exactly one marker must survive: {out:?}"
+    );
+
+    // A stored title whose whole tail is the marker collapses to one marker, not four dots.
+    let all_marker = format!("{}...", "w".repeat(TITLE_DISPLAY_WIDTH));
+    let out = truncate_title(&all_marker);
+    assert!(out.ends_with('…'));
+    assert!(!out.contains(".…"), "{out:?}");
+}
+
 #[test]
 fn truncate_title_is_char_boundary_safe() {
     let s = "héllo wörld ".repeat(20);

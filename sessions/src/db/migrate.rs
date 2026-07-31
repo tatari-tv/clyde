@@ -397,7 +397,7 @@ fn migrate_v10_repo(conn: &Connection, from_version: i64) -> Result<()> {
 /// Nor is there a SQL backfill: no query can compute `activity_at`, because the value exists only in
 /// the JSONL. `session::PARSE_VERSION` is what makes the fill happen exactly once -- every existing
 /// row has `parse_version IS NULL`, so `Db::upsert_session` reports it `Backfilled`, the caller fills
-/// it through `Db::set_activity_many`, and the row is skipped from then on.
+/// it through `Db::set_parse_derived_many`, and the row is skipped from then on.
 fn migrate_v11_activity(conn: &Connection) -> Result<()> {
     debug!("migrate_v11_activity: add activity_at + parse_version (column-add only, no reset)");
     ensure_column(conn, "sessions", "activity_at", "TEXT")?;

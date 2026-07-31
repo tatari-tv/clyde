@@ -239,10 +239,11 @@ pub struct ReindexStats {
     pub upserted: usize,
     pub skipped_unchanged: usize,
     /// Rows whose transcript was byte-identical but whose parse-derived columns were stale
-    /// (`parse_version` below `session::PARSE_VERSION`), filled by the narrow `Db::set_activity_many`
+    /// (`parse_version` below `session::PARSE_VERSION`), filled by the narrow `Db::set_parse_derived_many`
     /// write. Its own count, not folded into `upserted`, so a one-time backfill run is legible rather
-    /// than reading as a mass content change: the transcripts did not change, only a
-    /// previously-unstored derived field was filled.
+    /// than reading as a mass content change: the transcripts did not change, only columns DERIVED from
+    /// them were brought up to the current parser. That covers both filling a column that was never
+    /// stored (`activity_at`, v1) and re-deriving one whose rule changed (`title`, v2).
     pub backfilled: usize,
     pub archived: usize,
 }

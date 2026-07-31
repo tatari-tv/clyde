@@ -20,8 +20,10 @@ fn child_env_is_an_allowlist_and_leaks_no_secret() {
         let names: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
         for name in &names {
             assert!(
-                matches!(*name, "HOME" | "PATH" | "NO_UPDATE_NOTIFIER" | MAX_THINKING_TOKENS)
-                    || PROXY_VARS.contains(name),
+                matches!(
+                    *name,
+                    "HOME" | "PATH" | "NO_UPDATE_NOTIFIER" | USER_VAR | MAX_THINKING_TOKENS
+                ) || PROXY_VARS.contains(name),
                 "unexpected variable in the {kind:?} allowlist: {name}"
             );
         }
@@ -61,11 +63,11 @@ fn child_env_is_an_allowlist_and_leaks_no_secret() {
         !names.iter().any(|n| n.starts_with("CLAUDE")),
         "no CLAUDE* variable may reach the child: {names:?}"
     );
-    // The allowlist is exactly the three documented entries plus the enumerated proxy names (HOME
-    // only when resolvable, each proxy name only when set in the parent).
+    // The allowlist is exactly the four documented entries plus the enumerated proxy names (HOME only
+    // when resolvable, USER and each proxy name only when set in the parent).
     for name in &names {
         assert!(
-            matches!(*name, "HOME" | "PATH" | "NO_UPDATE_NOTIFIER") || PROXY_VARS.contains(name),
+            matches!(*name, "HOME" | "PATH" | "NO_UPDATE_NOTIFIER" | USER_VAR) || PROXY_VARS.contains(name),
             "unexpected variable in the allowlist: {name}"
         );
     }
@@ -75,6 +77,67 @@ fn child_env_is_an_allowlist_and_leaks_no_secret() {
             .map(|(_, v)| v.as_str()),
         Some("1"),
         "the update-notice guard must be set"
+    );
+}
+
+/// `USER` reaches the child, forwarded from the parent rather than synthesized.
+///
+/// Why this exists: macOS resolves the child's OAuth credentials through the login Keychain and needs
+/// to know which user it runs as. Without `USER` the child exits reporting "Not logged in" on a host
+/// whose `claude auth status` is healthy, which reads as an auth problem and not as a missing allowlist
+/// entry -- three teammates lost a run to it on 2026-07-31. The bug shipped because the measurement
+/// that justified omitting it ("an `env -i` child still authenticates") was taken on Linux only.
+///
+/// Asserted for EVERY kind: enrich and render both shell out to `claude`, and both were broken.
+///
+/// BITES: delete the `USER_VAR` block from `child_env` and this fails on every kind.
+#[test]
+fn child_env_forwards_the_invoking_user_for_every_kind() {
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior = std::env::var(USER_VAR).ok();
+    // A distinctive value, so this proves the value came FROM THE PARENT and was not synthesized from
+    // `getpwuid` -- which would give the real username and pass a mere is-it-present assertion. The
+    // parent's value is what must win: under `sudo`/`su` that is the only correct answer.
+    let planted = "planted-user-must-be-forwarded";
+    // SAFETY: serialized behind ENV_LOCK; restored below.
+    unsafe { std::env::set_var(USER_VAR, planted) };
+    let per_kind: Vec<(Kind, Vec<(String, String)>)> = ALL_KINDS.iter().map(|k| (*k, child_env(*k))).collect();
+
+    // Absent from the parent -> absent from the child, never a fabricated value. Linux does not need
+    // it (the `getpwuid` fallback), so forwarding a guess would be worse than forwarding nothing.
+    unsafe { std::env::remove_var(USER_VAR) };
+    let unset_env = child_env(Kind::Slot);
+
+    // EMPTY is its own case and the guard is `!user.is_empty()`, not just `Ok(_)`. An empty `USER`
+    // forwarded to macOS would be worse than none: the child would take it as the answer instead of
+    // falling back, so it must be dropped exactly as an unset one is.
+    unsafe { std::env::set_var(USER_VAR, "") };
+    let empty_env = child_env(Kind::Slot);
+
+    // Restore, never blanket-remove: `USER` is legitimately set in any real shell, and wiping it here
+    // would leak into every later test in this binary.
+    unsafe {
+        match &prior {
+            Some(v) => std::env::set_var(USER_VAR, v),
+            None => std::env::remove_var(USER_VAR),
+        }
+    }
+    drop(guard);
+
+    for (kind, env) in &per_kind {
+        assert_eq!(
+            env.iter().find(|(k, _)| k == USER_VAR).map(|(_, v)| v.as_str()),
+            Some(planted),
+            "{kind:?} must forward the parent's USER verbatim"
+        );
+    }
+    assert!(
+        !unset_env.iter().any(|(k, _)| k == USER_VAR),
+        "an unset parent USER must not be fabricated in the child env"
+    );
+    assert!(
+        !empty_env.iter().any(|(k, _)| k == USER_VAR),
+        "an empty parent USER must be dropped, not forwarded as an empty value"
     );
 }
 
@@ -259,7 +322,7 @@ fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
     }
     // And the child's whole environment is the allowlist, nothing more. Both sides of this move
     // together if the allowlist changes, which is why the sibling
-    // `child_env_is_an_allowlist_and_leaks_no_secret` pins the allowlist to its literal three names --
+    // `child_env_is_an_allowlist_and_leaks_no_secret` pins the allowlist to its literal four names --
     // keep the pair together if either is ever refactored.
     let mut got = names.clone();
     got.sort_unstable();
