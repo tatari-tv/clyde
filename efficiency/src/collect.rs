@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
 use common::EfficiencyConfig;
-use common::scan::{SessionFile, find_session_files, pricing_files};
+use common::scan::{SessionFile, find_session_files_with_staged, pricing_files};
 use eyre::{Context, Result};
 use log::{debug, warn};
 use rayon::prelude::*;
@@ -43,9 +43,18 @@ pub struct CollectedSession {
 /// A file that fails to extract is warn-and-skipped (house robustness contract); the rest of its
 /// group still contributes. Sessions are computed in parallel (`extract` re-reads each
 /// page-cache-hot file, same shape as `report`'s collect `par_iter`).
-pub fn collect_all(projects_dir: &Path, config: &EfficiencyConfig) -> Result<Vec<CollectedSession>> {
-    debug!("collect_all: projects_dir={}", projects_dir.display());
-    let files = find_session_files(projects_dir).context("collect_all: failed to scan session files")?;
+pub fn collect_all(
+    projects_dir: &Path,
+    staged_root: &Path,
+    config: &EfficiencyConfig,
+) -> Result<Vec<CollectedSession>> {
+    debug!(
+        "collect_all: projects_dir={} staged_root={}",
+        projects_dir.display(),
+        staged_root.display()
+    );
+    let files = find_session_files_with_staged(projects_dir, staged_root)
+        .context("collect_all: failed to scan session files")?;
     let groups = group_by_session(&files);
     debug!("collect_all: files={} sessions={}", files.len(), groups.len());
 
@@ -60,9 +69,19 @@ pub fn collect_all(projects_dir: &Path, config: &EfficiencyConfig) -> Result<Vec
 /// Discover and compute only the session group(s) whose id starts with `id` (mirrors `cost`'s
 /// `Command::Session` id-prefix match). Returns zero, one, or more than one match (an ambiguous
 /// prefix) so the caller decides how to report each case.
-pub fn collect_matching(projects_dir: &Path, id: &str, config: &EfficiencyConfig) -> Result<Vec<CollectedSession>> {
-    debug!("collect_matching: projects_dir={} id={id}", projects_dir.display());
-    let files = find_session_files(projects_dir).context("collect_matching: failed to scan session files")?;
+pub fn collect_matching(
+    projects_dir: &Path,
+    staged_root: &Path,
+    id: &str,
+    config: &EfficiencyConfig,
+) -> Result<Vec<CollectedSession>> {
+    debug!(
+        "collect_matching: projects_dir={} staged_root={} id={id}",
+        projects_dir.display(),
+        staged_root.display()
+    );
+    let files = find_session_files_with_staged(projects_dir, staged_root)
+        .context("collect_matching: failed to scan session files")?;
     let groups = group_by_session(&files);
 
     let matches: Vec<CollectedSession> = groups

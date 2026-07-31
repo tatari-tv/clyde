@@ -37,6 +37,12 @@ pub struct Config {
     /// `projects_dir` is still accepted (alias) so pre-existing configs keep loading.
     #[serde(alias = "projects_dir")]
     pub projects_dir: Option<PathBuf>,
+    /// Override the staged-transcript root scanned alongside the projects tree, so a session whose
+    /// live transcript was TTL-reaped is still priced from its durable staged copy. Config key
+    /// `staged-dir` (from the struct-level `rename_all`); defaults to
+    /// `common::scan::default_staged_dir()`. No snake_case alias: this field is new, so there is no
+    /// legacy spelling in anyone's config to keep loading.
+    pub staged_dir: Option<PathBuf>,
     /// Log level (trace, debug, info, warn, error). Canonical key `log-level`; the legacy snake_case
     /// `log_level` is still accepted (alias) so pre-existing configs keep loading.
     #[serde(alias = "log_level")]

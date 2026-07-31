@@ -270,9 +270,30 @@ fn compute_summaries(
         .or_else(scanner::default_projects_dir)
         .ok_or_else(|| eyre::eyre!("Could not determine Claude projects directory"))?;
 
-    info!("Scanning: {}", projects_dir.display());
+    // The staged root is scanned ALONGSIDE the projects tree, under live-then-staged precedence: a
+    // session whose live transcript was TTL-reaped is still priced from its durable staged copy, and
+    // a session present in both roots is counted exactly once (from the live root). Without this,
+    // `clyde cost` read $4,818.54 for June against $9,110.96 of settled ground truth on desk.lan.
+    //
+    // An explicit `--path` SCOPES the scan: it means "price this tree", so the default staged root is
+    // NOT silently unioned in. Quietly adding ~/.local/share/clyde/staged to an explicitly-named tree
+    // would make `--path` unpredictable (and would make the Phase 0-style measurement of one tree
+    // impossible). A `staged-dir` in config is honored either way, so pairing `--path` with an
+    // explicit staged root is still expressible.
+    let staged_dir = match (&config.staged_dir, &args.path) {
+        (Some(explicit), _) => Some(explicit.clone()),
+        (None, Some(_)) => None,
+        (None, None) => common::scan::default_staged_dir(),
+    }
+    .unwrap_or_default();
 
-    let all_files = scanner::find_session_files(&projects_dir)?;
+    info!(
+        "Scanning: {} (staged: {})",
+        projects_dir.display(),
+        staged_dir.display()
+    );
+
+    let all_files = scanner::find_session_files_with_staged(&projects_dir, &staged_dir)?;
     let filtered = scanner::filter_by_date_range(&all_files, start, end);
 
     info!("Processing {} files (of {} total)", filtered.len(), all_files.len());
