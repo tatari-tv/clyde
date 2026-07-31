@@ -102,11 +102,33 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
     let mut consecutive_failures: usize = 0;
 
     for rec in &records {
-        let scope = session::classify(rec.cwd.as_deref().map(std::path::Path::new));
+        // Classify from the cwd AND the repo evidence the catalog already holds. `cwd` alone leaves a
+        // `cwd`-hostile workflow at 0% enrichment coverage, because its sessions carry no
+        // `repos/<org>` anchor to read; the evidence places them. The cwd-only rule is unchanged and
+        // still wins outright, and the widening only ever fires where the cwd answer is
+        // "unclassifiable", never where it is "personal by a positive signal".
+        let evidence = db.scope_evidence(&rec.session_id)?;
+        let scope = session::classify_with_evidence(
+            rec.cwd.as_deref().map(std::path::Path::new),
+            &evidence.repos_touched,
+            evidence.files_edited,
+        );
+        // PROVISIONAL when there was no evidence to consult at all. Recording the current
+        // `SCOPE_VERSION` on an evidence-free decision would exclude the row from the widened
+        // predicate until the next const bump -- and on a catalog that has never run a full
+        // `clyde session reindex`, `outcome_json` is NULL for EVERY row, so that is the default path,
+        // not an edge case. Leaving the column NULL keeps the row a candidate for the next pass, and
+        // re-consideration is free (the gate below records a skip without reaching the transport).
+        let scope_version = (!evidence.repos_touched.is_empty()).then_some(session::SCOPE_VERSION);
 
         // --- Routing gate: personal content never leaves the machine. ---
         if !scope.is_work() {
-            db.record_enrich_skip(&rec.session_id, scope.as_str(), EnrichStatus::SkippedPersonal)?;
+            db.record_enrich_skip(
+                &rec.session_id,
+                scope.as_str(),
+                scope_version,
+                EnrichStatus::SkippedPersonal,
+            )?;
             stats.skipped_personal += 1;
             stats.details.push(detail(
                 rec,
@@ -125,7 +147,12 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 "enrich::enrich: {} archived with no staged copy; skipping",
                 rec.session_id
             );
-            db.record_enrich_skip(&rec.session_id, scope.as_str(), EnrichStatus::SkippedEmpty)?;
+            db.record_enrich_skip(
+                &rec.session_id,
+                scope.as_str(),
+                scope_version,
+                EnrichStatus::SkippedEmpty,
+            )?;
             stats.skipped_empty += 1;
             stats.details.push(detail(
                 rec,
@@ -141,7 +168,12 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         let body = match body {
             Some(b) if !b.trim().is_empty() => b,
             _ => {
-                db.record_enrich_skip(&rec.session_id, scope.as_str(), EnrichStatus::SkippedEmpty)?;
+                db.record_enrich_skip(
+                    &rec.session_id,
+                    scope.as_str(),
+                    scope_version,
+                    EnrichStatus::SkippedEmpty,
+                )?;
                 stats.skipped_empty += 1;
                 stats.details.push(detail(
                     rec,

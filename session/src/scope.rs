@@ -19,9 +19,21 @@
 //! `~/repos/tatari-tv/` path is classified personal and skipped (un-enriched), which is the
 //! acceptable failure direction (never the reverse).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use log::trace;
+
+/// Version of the CLASSIFIER below. Bumped whenever the rules change in a way that could give a
+/// stored decision a different answer, which is what lets `Db::enrich_candidates` re-offer rows it
+/// already recorded `skipped-personal`.
+///
+/// It lives here, with the classifier it versions, NOT beside `ENRICH_PROMPT_VERSION` in
+/// `sessions::llm`: scope has nothing to do with the prompt, and colocating them would make a
+/// classifier change read as a prompt change.
+///
+/// v1 is [`classify_with_evidence`], the widening from cwd-only to cwd-plus-repo-evidence.
+pub const SCOPE_VERSION: i64 = 1;
 
 /// The org names that mark a session as work-scoped, matched only in the org slot.
 const WORK_ORGS: &[&str] = &["tatari-tv"];
@@ -65,6 +77,55 @@ pub fn classify(cwd: Option<&Path>) -> Scope {
     scope
 }
 
+/// Classify with the repo evidence the catalog already holds, for the sessions `cwd` alone cannot
+/// place. Work iff EITHER the cwd's org slot is a work org (the existing rule, unchanged), OR all four
+/// hold: the cwd carries no `repos/<org>` anchor at all, the session touched at least one repo, EVERY
+/// repo it touched is under a work org, and the touch counts account for EVERY file the session edited
+/// (`repos_touched.values().sum() == files_edited`).
+///
+/// That fourth condition is what makes the unanimity real rather than nominal. `repos_touched`
+/// (`efficiency::outcome`) silently DROPS any edited path that does not resolve to
+/// `<repo_root>/<org>/<repo>`, logging the skip at `trace!` only, so without the totality check a
+/// session that edited two files in `$HOME` and one work file presents as a unanimous work touch set
+/// and its whole transcript -- personal content included -- would go to the work account.
+///
+/// The fail-safe direction is preserved in every new direction. A cwd anchored to a personal org is
+/// personal no matter what it touched, a mixed touch set is personal, an empty touch set is personal,
+/// and an unaccounted-for edit is personal. Widening only ever fires where today's answer is
+/// "unclassifiable", never where it is "personal by a positive signal".
+///
+/// `repos_touched` is clyde's own parse of the session's transcript (tool-result file paths), not
+/// remote input and not user config, so the hazard is ABSENCE, not forgery: see the caller's
+/// provisional-`scope_version` rule for why an evidence-free decision must not be recorded.
+pub fn classify_with_evidence(cwd: Option<&Path>, repos_touched: &BTreeMap<String, u64>, files_edited: u64) -> Scope {
+    // The existing cwd-only rule wins outright: a work-anchored cwd is work.
+    if let Some(path) = cwd
+        && has_work_org(path)
+    {
+        trace!("scope::classify_with_evidence: cwd={cwd:?} work by cwd anchor");
+        return Scope::Work;
+    }
+    // A cwd anchored to ANY org has already been judged by that anchor. Only an unanchored cwd (or no
+    // cwd at all) is "unclassifiable", and only there does the evidence get a say.
+    if let Some(path) = cwd
+        && has_repos_anchor(path)
+    {
+        trace!("scope::classify_with_evidence: cwd={cwd:?} anchored to a non-work org -> personal");
+        return Scope::Personal;
+    }
+    let accounted: u64 = repos_touched.values().sum();
+    let unanimous_work = !repos_touched.is_empty() && repos_touched.keys().all(|slug| is_work_slug(slug));
+    let total = accounted == files_edited;
+    let scope = if unanimous_work && total { Scope::Work } else { Scope::Personal };
+    trace!(
+        "scope::classify_with_evidence: cwd={cwd:?} repos={} unanimous_work={unanimous_work} \
+         accounted={accounted} files_edited={files_edited} -> {}",
+        repos_touched.len(),
+        scope.as_str()
+    );
+    scope
+}
+
 /// True iff the path's org slot -- the component immediately after a `repos` component -- is a work
 /// org. Requires the `repos/<org>` adjacency, so an org name appearing anywhere else (a repo named
 /// `tatari-tv`, a `/tmp/tatari-tv/` scratch dir) does not classify as work.
@@ -73,6 +134,31 @@ fn has_work_org(path: &Path) -> bool {
     comps
         .windows(2)
         .any(|w| w[0] == REPOS_ANCHOR && WORK_ORGS.contains(&w[1]))
+}
+
+/// True iff the path carries a `repos/<something>` adjacency at all, work org or not. This is the
+/// "was this cwd placeable?" test: a cwd with an anchor has already been judged by [`has_work_org`],
+/// so the repo evidence must not be allowed to overturn it.
+fn has_repos_anchor(path: &Path) -> bool {
+    let comps: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
+    comps.windows(2).any(|w| w[0] == REPOS_ANCHOR)
+}
+
+/// True iff a `repos_touched` KEY names a work org. Its keys are `<org>/<repo>` attribution slugs
+/// (measured: `tatari-tv/thoughts`, `scottidler/claude`), so the org is the segment before the first
+/// `/`.
+///
+/// This is a DIFFERENT matching form from [`has_work_org`] and the two must not be "unified".
+/// `has_work_org` walks path COMPONENTS looking for the slot after `repos`, which is exactly what
+/// makes `~/repos/scottidler/tatari-tv` personal. Both consult the same [`WORK_ORGS`]; only the
+/// extraction differs, and each has its own test.
+fn is_work_slug(slug: &str) -> bool {
+    match slug.split_once('/') {
+        Some((org, _)) => WORK_ORGS.contains(&org),
+        // A key with no `/` is not an `<org>/<repo>` slug at all. Fail closed: unrecognized shape is
+        // never work.
+        None => false,
+    }
 }
 
 #[cfg(test)]

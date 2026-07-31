@@ -513,3 +513,133 @@ fn raising_max_attempts_recovers_rows_sitting_at_the_cap() {
 fn db_record_failure(db: &Db, id: &str) {
     db.record_enrich_failure(id, "work", "simulated").unwrap();
 }
+
+/// A `cwd`-hostile session -- no `repos/<org>` anchor at all -- is the whole cohort item A is about.
+/// Under the cwd-only rule it classified personal and got 0% enrichment coverage. With the catalog's own
+/// repo evidence in hand it is classified WORK and enriched, end to end through the real pass.
+///
+/// BITES: revert `sessions::enrich` to `session::classify` and this session goes back to
+/// `skipped_personal` with `fake.calls() == 0`.
+#[test]
+fn an_unanchored_cwd_with_unanimous_work_evidence_is_enriched() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "we set up the marquee bucket in us-east-1");
+    let db = Db::open_memory().unwrap();
+    // The cohort's shape: a cwd with no `repos/<org>` anchor, so `classify` cannot place it.
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+    set_scope_evidence(&db, UUID_A, &[("tatari-tv/marquee", 3)], 3);
+
+    let fake = Fake::ok(&["terraform", "s3"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(stats.enriched, 1, "the evidence places the session: {stats:?}");
+    assert_eq!(stats.skipped_personal, 0);
+    assert_eq!(fake.calls(), 1);
+    let rec = db.get(UUID_A).unwrap().unwrap();
+    assert_eq!(rec.summary.as_deref(), Some("a durable summary"));
+}
+
+/// The mixed session (`2b163b4e` in the measured cohort: `scottidler/claude | tatari-tv/terraform-modules`)
+/// stays personal and its body never reaches the work account. This is the unanimity rule doing the work
+/// it exists for, on the shape that is actually present in the live catalog.
+#[test]
+fn an_unanchored_cwd_with_a_mixed_touch_set_stays_personal() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "mixed personal and work content");
+    let db = Db::open_memory().unwrap();
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+    set_scope_evidence(
+        &db,
+        UUID_A,
+        &[("tatari-tv/terraform-modules", 2), ("scottidler/claude", 1)],
+        3,
+    );
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(
+        fake.calls(),
+        0,
+        "one personal repo in the set refuses the whole session"
+    );
+    assert_eq!(stats.skipped_personal, 1);
+    assert!(db.get(UUID_A).unwrap().unwrap().summary.is_none());
+    // Decided WITH evidence, so the skip is SETTLED: a second pass does not reconsider it. This is the
+    // observable form of "the current scope_version was recorded" (the column itself is asserted in
+    // `db/tests/scope.rs`, which can reach the connection).
+    let second = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        second.considered, 0,
+        "an evidence-backed personal skip is not reconsidered: {second:?}"
+    );
+}
+
+/// The fail-open the review panel caught, exercised through the real pass: 3 files edited, only 1
+/// attributed (the other 2 were outside `repo_root` and silently dropped by `repos_touched`). Without the
+/// totality check this session -- personal content and all -- would have been sent to the work account.
+#[test]
+fn an_unaccounted_for_edit_keeps_the_session_off_the_work_account() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "notes about taxes plus one work file");
+    let db = Db::open_memory().unwrap();
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+    set_scope_evidence(&db, UUID_A, &[("tatari-tv/philo", 1)], 3);
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(fake.calls(), 0, "unanimity over a FILTERED set is not unanimity");
+    assert_eq!(stats.skipped_personal, 1);
+}
+
+/// The evidence-availability failure the panel caught, end to end. With NO `outcome_json` (a catalog that
+/// has never run a full `clyde session reindex`, which is every teammate's on day one), the decision is
+/// PROVISIONAL: the row is skipped personal but records no `scope_version`, so it is still a candidate on
+/// the next pass. Once the evidence lands, the same pass classifies it work.
+///
+/// BITES: record `Some(SCOPE_VERSION)` on the evidence-free skip and the second pass finds 0 candidates,
+/// so the row stays personal until the next const bump. That is the "ships and changes nothing on exactly
+/// the host it exists for" failure.
+#[test]
+fn an_evidence_free_skip_is_provisional_and_self_heals_on_the_next_pass() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "we set up the marquee bucket in us-east-1");
+    let db = Db::open_memory().unwrap();
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+
+    // Pass 1: no evidence at all -> personal, and deliberately no recorded classifier version.
+    let fake = Fake::ok(&["x"]);
+    let first = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(first.skipped_personal, 1);
+    assert_eq!(fake.calls(), 0);
+
+    // The full reindex lands the evidence. Pass 2 reconsiders the row and gets it right.
+    set_scope_evidence(&db, UUID_A, &[("tatari-tv/marquee", 3)], 3);
+    let fake2 = Fake::ok(&["terraform"]);
+    let second = enrich(&db, Some(&fake2), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        second.considered, 1,
+        "the provisional row is still a candidate: {second:?}"
+    );
+    assert_eq!(second.enriched, 1);
+    assert_eq!(fake2.calls(), 1);
+}
+
+/// Write an `outcome_json` carrying repo evidence, as `efficiency::reindex_efficiency` does.
+fn set_scope_evidence(db: &Db, session_id: &str, repos: &[(&str, u64)], files_edited: u64) {
+    let touched: serde_json::Map<String, serde_json::Value> = repos
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), serde_json::json!(v)))
+        .collect();
+    let outcome = serde_json::json!({ "repos-touched": touched, "files-edited": files_edited }).to_string();
+    db.set_efficiency_many(&[crate::db::EfficiencyWrite {
+        session_id,
+        efficiency_json: r#"{"session-id":"x","aggregate":{}}"#,
+        cache_read_share: None,
+        tool_errors: 0,
+        cost_usd: 0.0,
+        outcome_json: &outcome,
+    }])
+    .unwrap();
+}

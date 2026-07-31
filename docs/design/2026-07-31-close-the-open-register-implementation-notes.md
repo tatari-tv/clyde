@@ -252,3 +252,101 @@ All in `sessions/src/db/tests/activity.rs` unless noted; 8 new tests there plus 
 - `activity_at` is a MAX fold independent of record order, and `None` when no record carries a
   timestamp (`session/src/parse/tests.rs`).
 - Full `otto ci` exits **0**.
+
+## Phase 4: Scope reads the repo evidence the catalog already has (A)
+
+### Design decisions
+
+- **`Db::scope_evidence` returns a `ScopeEvidence { repos_touched, files_edited }` from ONE query and
+  ONE parse.** The plan said to pass `db.repos_touched(&rec.session_id)?`, but the totality check needs
+  `files_edited` as well, and it compares the two against each other. Reading them in two calls would be
+  comparing values that are only incidentally from the same row. New method rather than widening
+  `repos_touched`, whose four existing callers want only the map.
+- **`has_repos_anchor` is the new sibling `has_work_org` needed.** The plan called for "a new sibling
+  [that] answers 'is this cwd anchored to any `repos/<org>` at all'". It is the gate deciding whether
+  the evidence gets a say, which is what preserves the fail-safe direction: a cwd anchored to a personal
+  org is judged by that anchor and evidence cannot overturn it.
+- **The totality check is `==`, not `>=`.** A touch set claiming MORE edits than the session made is as
+  incoherent as one claiming fewer, and incoherent evidence is not trusted. Pinned by the third
+  assertion in `an_unaccounted_for_edit_refuses_the_widening`.
+- **`is_work_slug` fails closed on a key with no `/`.** A `repos_touched` key is an `<org>/<repo>` slug
+  by construction, but the classifier reads a stored blob, so a malformed key is possible. `None` from
+  `split_once('/')` yields `false`: an unrecognized shape is never work.
+- **`record_enrich_skip` gained a `scope_version: Option<i64>` parameter; the other two write sites use
+  `session::SCOPE_VERSION` directly.** Only the skip path can be provisional. `set_enrichment` and
+  `record_enrich_failure` are reached only by a row that already cleared the routing gate as work, so
+  its decision had either a cwd anchor or a unanimous, total touch set: never evidence-free.
+- **The provisional rule is `!evidence.repos_touched.is_empty()`, exactly as the plan wrote it**, rather
+  than the tighter "personal AND no evidence". A Work-by-cwd row with an empty touch set therefore also
+  records NULL, which is unobservable: it gets enriched, so `enrich_status = 'ok'` and the clause's
+  first disjunct (`!= 'skipped-personal'`) is already true. Kept the plan's simpler rule.
+- **`sessions/src/db/enrich.rs` is a new submodule.** See the deviation below.
+- **Storage-level assertions live in `db/tests/scope.rs`, behavior-level ones in `enrich/tests.rs`.**
+  `Db::conn` is private to the `db` module, so the enrich tests cannot read `scope_version` directly. A
+  public `scope_version_of` accessor was written and then removed: it would have been production API
+  existing only for a test. The enrich tests assert the observable consequence instead (a settled row is
+  not reconsidered; a provisional row is), which is the stronger assertion anyway.
+
+### Deviations
+
+- **The enrichment write side was extracted into `sessions/src/db/enrich.rs` before Phase 4's changes
+  went in.** `db.rs` was at **1492** lines after Phase 3, and Phase 4 adds `scope_version` to three
+  UPDATE statements plus the widened predicate plus `scope_evidence` -- comfortably over the 1500-line
+  `otto bloat` limit, which is a hard CI gate. Moved `set_enrichment`, `record_enrich_skip`,
+  `record_enrich_failure`, `enrich_candidates`, `tags_are_manual`, and `enrich_summary` into their own
+  file, mirroring the existing `catalog`/`query`/`repo`/`activity` split. Verified behavior-neutral (210
+  sessions tests green) BEFORE any Phase 4 logic was added, so the two changes cannot be confused in the
+  diff. `db.rs` is now **1316**. This is the same class of in-phase fallout as Phase 2's fixture
+  regeneration: mechanical, forced by a CI gate, and the alternative (raising `BLOAT_MAX_LINES`) is
+  explicitly forbidden by `.otto.yml`'s own comment.
+- **Three `SCHEMA_VERSION` pins raised 11 -> 12** in `db/tests/efficiency.rs`, plus one comment. Same
+  deliberate mechanism as Phase 3.
+- **Five `record_enrich_skip` call sites in tests** gained `Some(session::SCOPE_VERSION)`. Mechanical.
+
+### Tradeoffs
+
+- **Trusting `files-touched` attribution vs. restricting to `git-origin` / `known-path`.** Measured in
+  the design: all 30 cohort rows are `files-touched` and ZERO are the higher-confidence sources, so
+  source-rank restriction flips nothing. The source that helps is the source that carries the risk, so
+  the safety comes from the unanchored-cwd requirement plus unanimity plus totality instead of from
+  rank. Residual risk (a session whose every edited file is under a work repo but whose conversation
+  also covers personal matters) is stated and accepted in the design's Security section.
+- **`scope_version` as its own v12 step vs. riding v11.** One extra migration step and one extra
+  snapshot file per host. The alternative is broken: `migrate` returns early once `user_version >=
+  SCHEMA_VERSION`, so a host that landed Phase 3 alone would skip the ladder and never get the column.
+  Pinned by `a_v11_db_gains_scope_version_because_v12_is_its_own_step`, which rewinds a real on-disk DB
+  to v11 and reopens it.
+- **One `scope_evidence` query per enrich candidate.** Same query shape the reindex path already runs
+  per session, and it replaces nothing, so it is a strict addition. Bounded by the candidate count.
+
+### Open questions
+
+- None.
+
+### Success criteria, executed
+
+- **The five-row table test** (`session/src/scope/tests.rs::classify_with_evidence_table`): unanchored +
+  all-work -> Work; unanchored + mixed -> Personal; personal-anchored + all-work -> Personal;
+  work-anchored + anything -> Work; unanchored + empty -> Personal. Plus no-cwd + empty -> Personal.
+- Each condition verified to BITE independently: dropping the totality check fails
+  `an_unaccounted_for_edit_refuses_the_widening`; dropping the unanchored-cwd requirement fails the
+  table test; dropping the non-empty requirement fails the table test.
+- **The predicate placement**, the failure mode the design flagged as the obvious silent no-op:
+  appending the `scope_version` terms as a separate `AND (...)` instead of inside the
+  `skipped-personal` clause fails **6** tests (3 in `db/tests/scope.rs`, 3 existing enrich tests).
+- **The sibling clause does not re-exclude these rows**, checked explicitly rather than assumed
+  (`the_prompt_version_clause_does_not_re_exclude_a_skipped_personal_row` asserts `enriched_at IS NULL`
+  holds after a skip).
+- **End to end through the real pass** (`sessions/src/enrich/tests.rs`, 4 new tests): an unanchored cwd
+  with unanimous work evidence IS enriched and the completer IS called; a mixed touch set is skipped
+  with `calls() == 0`; an unaccounted-for edit is skipped with `calls() == 0`; an evidence-free skip is
+  provisional and self-heals on the next pass once `outcome_json` lands. Reverting the orchestrator to
+  `session::classify` fails 2 of those; recording `Some(SCOPE_VERSION)` unconditionally fails the
+  self-heal test, which is the "ships and changes nothing on a teammate's catalog" failure.
+- **The v12 migration**: a DB rewound to v11 gains `scope_version`, reaches `user_version >= 12`, gets a
+  `.pre-v12.bak`, and the column is writable through the real `record_enrich_skip` path.
+- Full `otto ci` exits **0**.
+- **AC4's live half is NOT verified here.** It requires an enrich pass that SENDS 29 session bodies to
+  the work Anthropic account, which is one-way. Per the criterion's own instruction the unit tests above
+  are green first, and `clyde session enrich --dry-run` confirms the classifier's answer for the cohort
+  before any real pass. That runs at finalization, not mid-phase.

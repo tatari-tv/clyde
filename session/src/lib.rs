@@ -21,4 +21,4 @@ pub mod stage;
 
 pub use model::{Message, ParsedSession, Role, SessionFile, SessionFileKind};
 pub use parse::PARSE_VERSION;
-pub use scope::{Scope, classify};
+pub use scope::{SCOPE_VERSION, Scope, classify, classify_with_evidence};

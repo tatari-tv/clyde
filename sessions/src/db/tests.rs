@@ -1141,8 +1141,13 @@ fn v5_enrich_skip_write_advances_cursor_once() {
 
     let before = revision_counter(&db);
     assert!(
-        db.record_enrich_skip(UUID_A, "personal", crate::export::EnrichStatus::SkippedPersonal)
-            .unwrap()
+        db.record_enrich_skip(
+            UUID_A,
+            "personal",
+            Some(session::SCOPE_VERSION),
+            crate::export::EnrichStatus::SkippedPersonal
+        )
+        .unwrap()
     );
     assert_eq!(
         revision_counter(&db),
@@ -1365,8 +1370,13 @@ fn v5_migration_from_v4_backfills_in_rowid_order_and_seeds_counter() {
 
     // First post-migration write is MAX+1 = 4 (no collision, strictly greater than every backfill).
     assert!(
-        db.record_enrich_skip(UUID_A, "work", crate::export::EnrichStatus::SkippedEmpty)
-            .unwrap()
+        db.record_enrich_skip(
+            UUID_A,
+            "work",
+            Some(session::SCOPE_VERSION),
+            crate::export::EnrichStatus::SkippedEmpty
+        )
+        .unwrap()
     );
     assert_eq!(revision_counter(&db), 4, "the first write after migration is MAX+1");
     assert_eq!(updated_at_of(&db, UUID_A), 4);
@@ -1477,3 +1487,7 @@ mod efficiency;
 // the efficiency ones do: this file is near the 1500-line limit, and dormancy-off-activity-time plus
 // the narrow backfill is a self-contained surface.
 mod activity;
+
+// Schema v12 (`scope_version`) tests: the widened `enrich_candidates` predicate, the provisional-NULL
+// rule, and the `scope_evidence` read. Own submodule, same line-count reason as the two above.
+mod scope;

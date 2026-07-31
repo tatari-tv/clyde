@@ -325,7 +325,7 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 11,
+        SCHEMA_VERSION, 12,
         "this test pins the v5->current hop; bump me deliberately"
     );
 
@@ -366,8 +366,13 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
         "efficiency write does not move the preserved cursor"
     );
     assert!(
-        db.record_enrich_skip(UUID_B, "work", crate::export::EnrichStatus::SkippedEmpty)
-            .unwrap()
+        db.record_enrich_skip(
+            UUID_B,
+            "work",
+            Some(session::SCOPE_VERSION),
+            crate::export::EnrichStatus::SkippedEmpty
+        )
+        .unwrap()
     );
     assert_eq!(
         revision_counter(&db),
@@ -493,8 +498,13 @@ fn v7_migration_from_v6_invalidates_efficiency_without_advancing_cursor() {
 
     // The schema still functions: a content write advances to MAX+1 = 21.
     assert!(
-        db.record_enrich_skip(UUID_B, "work", crate::export::EnrichStatus::SkippedEmpty)
-            .unwrap()
+        db.record_enrich_skip(
+            UUID_B,
+            "work",
+            Some(session::SCOPE_VERSION),
+            crate::export::EnrichStatus::SkippedEmpty
+        )
+        .unwrap()
     );
     assert_eq!(revision_counter(&db), 21, "first content write after v7 is MAX+1 = 21");
 }
@@ -570,12 +580,12 @@ fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_a
         assert!(!has_outcome, "the v7 DB has no outcome_json column yet");
     }
 
-    // Reopen: migrate v7 -> current (v11).
+    // Reopen: migrate v7 -> current (v12).
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 11,
+        SCHEMA_VERSION, 12,
         "this test pins the v7->current hop; bump me deliberately"
     );
 
@@ -604,8 +614,13 @@ fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_a
 
     // The schema still functions: a content write advances to MAX+1 = 21.
     assert!(
-        db.record_enrich_skip(UUID_B, "work", crate::export::EnrichStatus::SkippedEmpty)
-            .unwrap()
+        db.record_enrich_skip(
+            UUID_B,
+            "work",
+            Some(session::SCOPE_VERSION),
+            crate::export::EnrichStatus::SkippedEmpty
+        )
+        .unwrap()
     );
     assert_eq!(revision_counter(&db), 21, "first content write after v8 is MAX+1 = 21");
 
@@ -692,7 +707,7 @@ fn v10_migration_from_v9_invalidates_both_blobs_without_advancing_cursor() {
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 11,
+        SCHEMA_VERSION, 12,
         "this test pins the v9->current hop; raise me deliberately"
     );
 

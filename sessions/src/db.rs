@@ -17,10 +17,8 @@ use log::{debug, trace, warn};
 use rusqlite::{Connection, OptionalExtension, params};
 use session::ParsedSession;
 
-use crate::export::EnrichStatus;
 use crate::model::{
-    EfficiencyCandidate, EnrichSummary, Fallback, Filters, MatchSource, SearchHit, SearchResults, SessionRecord,
-    SortBy, Unenriched,
+    EfficiencyCandidate, Fallback, Filters, MatchSource, SearchHit, SearchResults, SessionRecord, SortBy, Unenriched,
 };
 
 /// Bumped whenever the schema changes; drives `PRAGMA user_version` migrations.
@@ -58,7 +56,13 @@ use crate::model::{
 ///    restore, or a `cp -r` resets wholesale -- silently suppressing the staging sweep. Column-add
 ///    only: NO efficiency/outcome invalidation, because nothing about those blobs changed. See
 ///    [`migrate::migrate_v11_activity`] and `docs/design/2026-07-31-close-the-open-register.md`.
-const SCHEMA_VERSION: i64 = 11;
+/// v12 added `scope_version`: the classifier version a row's stored `scope` was decided at, so
+///    `Db::enrich_candidates` can re-offer a row it already recorded `skipped-personal` when the
+///    classifier widens (`session::SCOPE_VERSION`). Its own step rather than an addition to v11's,
+///    because [`migrate::migrate`] returns early once `user_version >= SCHEMA_VERSION`: a column
+///    appended to an already-applied step is never created on a host that ran the earlier version.
+///    See [`migrate::migrate_v12_scope`].
+const SCHEMA_VERSION: i64 = 12;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -145,7 +149,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_usd          REAL,
     outcome_json      TEXT,
     activity_at       TEXT,
-    parse_version     INTEGER
+    parse_version     INTEGER,
+    scope_version     INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(title, tags, summary);
@@ -284,6 +289,7 @@ impl Db {
         if let Some(path) = path {
             migrate::snapshot_before_v10(&conn, path).context("failed to snapshot the DB before the v10 migration")?;
             migrate::snapshot_before_v11(&conn, path).context("failed to snapshot the DB before the v11 migration")?;
+            migrate::snapshot_before_v12(&conn, path).context("failed to snapshot the DB before the v12 migration")?;
         }
         migrate::migrate(&conn).context("failed to migrate schema")?;
         Ok(Self { conn })
@@ -537,186 +543,6 @@ impl Db {
         )?;
         self.rebuild_high_signal_fts(id, title.as_deref(), &joined, summary.as_deref())?;
         Ok(true)
-    }
-
-    /// Write a successful enrichment for `session_id` in one transaction: the `summary`, optional
-    /// `tags` (None preserves existing tags -- the manual-tag default), the `scope`, the
-    /// observability/state fields, and a rebuilt high-signal FTS row. Resets `attempts` to 0 and
-    /// clears `last_error`. Returns `false` if no such session exists.
-    ///
-    /// This is the enrichment writer -- deliberately NOT [`Self::upsert_session`], which *preserves*
-    /// `tags`/`summary` across reindex (so the parser can never clobber enrichment) and therefore
-    /// cannot also be the thing that writes them.
-    pub fn set_enrichment(&self, session_id: &str, e: &EnrichSuccess<'_>, now: DateTime<Utc>) -> Result<bool> {
-        debug!(
-            "Db::set_enrichment: session_id={} scope={} model={} prompt_version={} redactions={} tokens_in={} tokens_out={} overwrite_tags={}",
-            session_id,
-            e.scope,
-            e.enrich_model,
-            e.prompt_version,
-            e.redaction_count,
-            e.tokens_in,
-            e.tokens_out,
-            e.tags.is_some()
-        );
-        let row: Option<(i64, Option<String>, String)> = self
-            .conn
-            .query_row(
-                "SELECT id, title, tags FROM sessions WHERE session_id = ?1",
-                params![session_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        let Some((id, title, existing_tags)) = row else {
-            return Ok(false);
-        };
-        let new_tags = match e.tags {
-            Some(tags) => tags.join(" "),
-            None => existing_tags,
-        };
-        // Mark ownership 'enrich' only when we actually wrote tags; otherwise leave the existing
-        // marker (so a preserved 'manual' stays manual) via COALESCE.
-        let tags_source: Option<&str> = e.tags.map(|_| "enrich");
-
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "UPDATE sessions SET summary=?2, tags=?3, scope=?4, enriched_at=?5, enriched_modified=?6, \
-             enrich_model=?7, prompt_version=?8, enrich_status=?13, last_error=NULL, attempts=0, \
-             redaction_count=?9, tokens_in=?10, tokens_out=?11, \
-             tags_source=COALESCE(?12, tags_source) WHERE id=?1",
-            params![
-                id,
-                e.summary,
-                new_tags,
-                e.scope,
-                now.to_rfc3339(),
-                e.enriched_modified.to_rfc3339(),
-                e.enrich_model,
-                e.prompt_version,
-                e.redaction_count as i64,
-                e.tokens_in as i64,
-                e.tokens_out as i64,
-                tags_source,
-                // Single source of truth for the wire literal (never a scattered 'ok').
-                EnrichStatus::Ok.as_str(),
-            ],
-        )?;
-        rebuild_high_signal_fts_on(&tx, id, title.as_deref(), &new_tags, Some(e.summary))?;
-        tx.commit()?;
-        Ok(true)
-    }
-
-    /// Record a non-failure skip ([`EnrichStatus::SkippedPersonal`] / [`EnrichStatus::SkippedEmpty`]):
-    /// persist the `scope` and typed `status` for observability without touching `enriched_at` (the
-    /// session stays un-enriched). The wire literal comes from [`EnrichStatus::as_str`], never a
-    /// scattered string. Returns `false` if no such session exists.
-    pub fn record_enrich_skip(&self, session_id: &str, scope: &str, status: EnrichStatus) -> Result<bool> {
-        debug!(
-            "Db::record_enrich_skip: session_id={session_id} scope={scope} status={}",
-            status.as_str()
-        );
-        let n = self.conn.execute(
-            "UPDATE sessions SET scope=?2, enrich_status=?3 WHERE session_id=?1",
-            params![session_id, scope, status.as_str()],
-        )?;
-        Ok(n > 0)
-    }
-
-    /// Record a failed enrichment attempt: set `status='failed'`, store `last_error`, and bump
-    /// `attempts` (the backoff/max-attempts accountant -- the selection predicate stops retrying
-    /// once `attempts` hits the cap). Leaves `enriched_at` NULL. Returns `false` if absent.
-    pub fn record_enrich_failure(&self, session_id: &str, scope: &str, last_error: &str) -> Result<bool> {
-        warn!("Db::record_enrich_failure: session_id={session_id} scope={scope} last_error={last_error}");
-        let n = self.conn.execute(
-            "UPDATE sessions SET scope=?2, enrich_status=?4, last_error=?3, attempts=attempts+1 \
-             WHERE session_id=?1",
-            // ?4 comes from the enum, not a scattered 'failed' literal.
-            params![session_id, scope, last_error, EnrichStatus::Failed.as_str()],
-        )?;
-        Ok(n > 0)
-    }
-
-    /// Sessions eligible for an enrichment pass. Excludes archived sessions with no staged copy
-    /// (nothing to read), and rows that have exhausted `max_attempts`. Unless `all`, also requires
-    /// the session be un-enriched, grown since last enrichment, or below the current
-    /// `prompt_version`, and skips rows already recorded `skipped-personal`. Dormancy is applied in
-    /// Rust (mirrors [`Self::staging_candidates`]). Scope is NOT filtered here -- the routing gate
-    /// is the orchestrator's job, so personal sessions still surface (once) to be recorded skipped.
-    pub fn enrich_candidates(
-        &self,
-        dormant_before: Option<DateTime<Utc>>,
-        prompt_version: i64,
-        max_attempts: i64,
-        all: bool,
-    ) -> Result<Vec<SessionRecord>> {
-        debug!(
-            "Db::enrich_candidates: dormant_before={dormant_before:?} prompt_version={prompt_version} max_attempts={max_attempts} all={all}"
-        );
-        let mut sql = format!(
-            "SELECT {COLS} FROM sessions s WHERE NOT (s.archived = 1 AND s.staged_path IS NULL) AND s.attempts < ?1"
-        );
-        let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(max_attempts)];
-        if !all {
-            sql.push_str(" AND (s.enrich_status IS NULL OR s.enrich_status != 'skipped-personal')");
-            sql.push_str(
-                " AND (s.enriched_at IS NULL OR s.modified > s.enriched_modified OR s.prompt_version IS NULL OR s.prompt_version < ?2)",
-            );
-            binds.push(Box::new(prompt_version));
-        }
-        sql.push_str(" ORDER BY s.modified DESC");
-
-        let mut stmt = self.conn.prepare(&sql)?;
-        let bind_refs: Vec<&dyn rusqlite::types::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
-        let records: Vec<SessionRecord> = stmt
-            .query_map(bind_refs.as_slice(), map_record)?
-            .collect::<rusqlite::Result<_>>()?;
-        let candidates = match dormant_before {
-            // `dormancy_at()`, never `r.modified`: mtime resets wholesale on a Syncthing sync, a
-            // restore, or a `cp -r`, which would make every session on the host look fresh. ONE
-            // definition, shared with `staging_candidates`, so the two can never disagree.
-            Some(cutoff) => records.into_iter().filter(|r| r.dormancy_at() <= cutoff).collect(),
-            None => records,
-        };
-        Ok(candidates)
-    }
-
-    /// Whether a session's current tags were set manually (`tags_source = 'manual'`). The
-    /// orchestrator preserves these by default -- regardless of whether the session was already
-    /// enriched -- so a post-enrichment manual retag is never clobbered except by `--all`/`<id>`.
-    /// Returns `false` for an absent session or one with enrichment-owned / no tags.
-    pub fn tags_are_manual(&self, session_id: &str) -> Result<bool> {
-        let source: Option<Option<String>> = self
-            .conn
-            .query_row(
-                "SELECT tags_source FROM sessions WHERE session_id = ?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(matches!(source, Some(Some(s)) if s == "manual"))
-    }
-
-    /// Roll-up of enrichment state for `clyde session doctor`.
-    pub fn enrich_summary(&self) -> Result<EnrichSummary> {
-        debug!("Db::enrich_summary");
-        let count = |sql: &str| -> Result<usize> {
-            let n: i64 = self.conn.query_row(sql, [], |r| r.get(0))?;
-            Ok(n as usize)
-        };
-        let last_raw: Option<String> = self
-            .conn
-            .query_row("SELECT MAX(enriched_at) FROM sessions", [], |r| r.get(0))
-            .optional()?
-            .flatten();
-        Ok(EnrichSummary {
-            total: count("SELECT COUNT(*) FROM sessions")?,
-            enriched: count("SELECT COUNT(*) FROM sessions WHERE enrich_status = 'ok'")?,
-            never_enriched: count("SELECT COUNT(*) FROM sessions WHERE enriched_at IS NULL")?,
-            skipped_personal: count("SELECT COUNT(*) FROM sessions WHERE enrich_status = 'skipped-personal'")?,
-            skipped_empty: count("SELECT COUNT(*) FROM sessions WHERE enrich_status = 'skipped-empty'")?,
-            failed: count("SELECT COUNT(*) FROM sessions WHERE enrich_status = 'failed'")?,
-            last_enriched_at: last_raw.as_deref().and_then(parse_dt),
-        })
     }
 
     /// Record the directory holding the durable staged copy for a session. Returns `false` if no
@@ -1476,6 +1302,13 @@ mod catalog;
 /// out of `db.rs` for file-size discipline; the schema/trigger consts and `SCHEMA_VERSION` stay here
 /// (referenced by the write path too) and are imported by the submodule.
 mod migrate;
+
+/// The Phase 2 enrichment write side: `Db::set_enrichment`, `Db::record_enrich_skip`,
+/// `Db::record_enrich_failure`, `Db::enrich_candidates`, `Db::tags_are_manual`, and
+/// `Db::enrich_summary`, plus schema v12's `scope_version`. Split out for file-size discipline,
+/// mirroring `catalog`/`query`/`repo`/`activity`.
+mod enrich;
+pub use enrich::ScopeEvidence;
 
 /// Schema v11 parse-derived columns: the `(modified, parse_version)` skip key (`Db::skip_key_of`) and
 /// the narrow trigger-suppressed backfill write (`Db::set_activity_many`). Split out for file-size
