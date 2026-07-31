@@ -1912,6 +1912,7 @@ name = "session"
 version = "0.19.0"
 dependencies = [
  "chrono",
+ "common",
  "dirs",
  "eyre",
  "log",

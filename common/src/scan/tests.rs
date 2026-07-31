@@ -1,6 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+// The CRATE-level env lock, never a module-local one: `set_var`/`remove_var` mutate the whole
+// environ block, so two modules each holding their own mutex would not serialize against each other
+// (see the rationale on `crate::ENV_LOCK`).
+use crate::ENV_LOCK;
 use chrono::TimeZone;
 use std::io::Write;
 use tempfile::TempDir;
@@ -234,4 +238,328 @@ fn filter_drops_file_before_start() {
 
     let kept = filter_by_date_range(&files, start, end);
     assert!(kept.is_empty(), "a file whose mtime precedes `start` is safely dropped");
+}
+
+// --- Explicit-layout discovery, the pricing predicate, and the staged union (archived-session-spend
+// Phase 1). `archived` records transcript availability, never "this spend did not happen", so the
+// pricing path must resolve a session's bytes from wherever they are: live root first, staged
+// second.
+
+const PROJECT_DIR_NAME: &str = "-home-saidler-repos-foo-bar";
+
+/// Build one live session under a projects tree: `<projects>/<project>/<id>.jsonl` plus
+/// `<projects>/<project>/<id>/subagents/<name>`. Returns the parent transcript path.
+fn live_session(projects: &Path, project: &str, id: &str, subagents: &[&str]) -> PathBuf {
+    let project_dir = projects.join(project);
+    let parent = project_dir.join(format!("{id}.jsonl"));
+    write_jsonl(&parent, r#"{"type":"assistant"}"#);
+    for name in subagents {
+        write_jsonl(
+            &project_dir.join(id).join("subagents").join(name),
+            r#"{"type":"assistant"}"#,
+        );
+    }
+    parent
+}
+
+/// Build one staged session dir: `<staged>/<id>/<id>.jsonl` plus `<staged>/<id>/subagents/<name>`.
+/// `with_parent = false` builds the subagent-only shape `transcript_layout_parts` rejects.
+fn staged_session(staged_root: &Path, id: &str, with_parent: bool, subagents: &[&str]) -> PathBuf {
+    let dir = staged_root.join(id);
+    fs::create_dir_all(&dir).unwrap();
+    if with_parent {
+        write_jsonl(&dir.join(format!("{id}.jsonl")), r#"{"type":"assistant"}"#);
+    }
+    for name in subagents {
+        write_jsonl(&dir.join("subagents").join(name), r#"{"type":"assistant"}"#);
+    }
+    dir
+}
+
+#[test]
+fn layout_files_collects_parent_and_every_subagent() {
+    let tmp = TempDir::new().unwrap();
+    let parent = live_session(
+        tmp.path(),
+        PROJECT_DIR_NAME,
+        PARENT_UUID_A,
+        &["agent-one.jsonl", "agent-two.jsonl"],
+    );
+    let subagents = tmp.path().join(PROJECT_DIR_NAME).join(PARENT_UUID_A).join("subagents");
+
+    let files = layout_files(PARENT_UUID_A, &parent, &subagents);
+
+    assert_eq!(files.len(), 3, "one parent plus two subagents");
+    assert_eq!(files.iter().filter(|f| f.kind == SessionFileKind::Parent).count(), 1);
+    assert_eq!(files.iter().filter(|f| f.kind == SessionFileKind::Subagent).count(), 2);
+    assert!(
+        files.iter().all(|f| f.group_id == PARENT_UUID_A),
+        "subagent spend must fold into the parent session's group"
+    );
+    let paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+    let mut sorted = paths.clone();
+    sorted.sort();
+    assert_eq!(paths, sorted, "layout discovery must be path-sorted");
+}
+
+#[test]
+fn layout_files_subagents_without_parent_is_non_empty() {
+    // The case `transcript_layout_parts` rejects: no parent transcript, but the subagent files hold
+    // real usage records, so pricing must still see them.
+    let tmp = TempDir::new().unwrap();
+    let dir = staged_session(tmp.path(), PARENT_UUID_A, false, &["agent-one.jsonl"]);
+
+    let files = layout_files(
+        PARENT_UUID_A,
+        &dir.join(format!("{PARENT_UUID_A}.jsonl")),
+        &dir.join("subagents"),
+    );
+
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].kind, SessionFileKind::Subagent);
+    assert_eq!(files[0].group_id, PARENT_UUID_A);
+}
+
+#[test]
+fn layout_files_absent_layout_is_empty() {
+    let tmp = TempDir::new().unwrap();
+    let files = layout_files(
+        PARENT_UUID_A,
+        &tmp.path().join(format!("{PARENT_UUID_A}.jsonl")),
+        &tmp.path().join("subagents"),
+    );
+    assert!(files.is_empty(), "no bytes anywhere means an empty vec");
+}
+
+#[test]
+fn layout_files_skips_empty_files() {
+    // Shares `make_parent`/`make_subagent` with `find_session_files`, so the empty-file skip is the
+    // same rule rather than a reimplementation.
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join(PARENT_UUID_A);
+    touch_empty(&dir.join(format!("{PARENT_UUID_A}.jsonl")));
+    touch_empty(&dir.join("subagents").join("agent-one.jsonl"));
+
+    let files = layout_files(
+        PARENT_UUID_A,
+        &dir.join(format!("{PARENT_UUID_A}.jsonl")),
+        &dir.join("subagents"),
+    );
+    assert!(files.is_empty(), "zero-byte transcripts carry no usage records");
+}
+
+#[test]
+fn pricing_files_prefers_live_when_both_roots_hold_the_session() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged_root = tmp.path().join("staged");
+    let parent = live_session(&projects, PROJECT_DIR_NAME, PARENT_UUID_A, &["agent-one.jsonl"]);
+    let staged = staged_session(&staged_root, PARENT_UUID_A, true, &["agent-one.jsonl"]);
+
+    let files = pricing_files(
+        PARENT_UUID_A,
+        &parent,
+        &projects.join(PROJECT_DIR_NAME),
+        Some(staged.as_path()),
+    );
+
+    assert_eq!(files.len(), 2, "the live layout only, never both roots' copies");
+    assert!(
+        files.iter().all(|f| f.path.starts_with(&projects)),
+        "every resolved path must be under the live root: {:?}",
+        files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()
+    );
+    let groups: BTreeSet<&str> = files.iter().map(|f| f.group_id.as_str()).collect();
+    assert_eq!(groups.len(), 1, "a both-roots session yields exactly one group");
+}
+
+#[test]
+fn pricing_files_falls_back_to_the_staged_copy() {
+    // The archived case: the live transcript is reaped, the staged copy holds the money.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged_root = tmp.path().join("staged");
+    let staged = staged_session(
+        &staged_root,
+        PARENT_UUID_A,
+        true,
+        &["agent-one.jsonl", "agent-two.jsonl"],
+    );
+    let reaped_parent = projects.join(PROJECT_DIR_NAME).join(format!("{PARENT_UUID_A}.jsonl"));
+
+    let files = pricing_files(
+        PARENT_UUID_A,
+        &reaped_parent,
+        &projects.join(PROJECT_DIR_NAME),
+        Some(staged.as_path()),
+    );
+
+    assert_eq!(files.len(), 3, "the staged parent plus every staged subagent");
+    assert!(files.iter().all(|f| f.path.starts_with(&staged_root)));
+    assert!(files.iter().all(|f| f.group_id == PARENT_UUID_A));
+}
+
+#[test]
+fn pricing_files_accepts_a_staged_session_with_subagents_but_no_parent() {
+    // Recoverability is "does `pricing_files` return bytes", NOT "does the body resolver return
+    // Some". A session whose parent was reaped between reconcile and staging still has spend.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged_root = tmp.path().join("staged");
+    let staged = staged_session(&staged_root, PARENT_UUID_A, false, &["agent-one.jsonl"]);
+    let reaped_parent = projects.join(PROJECT_DIR_NAME).join(format!("{PARENT_UUID_A}.jsonl"));
+
+    let files = pricing_files(
+        PARENT_UUID_A,
+        &reaped_parent,
+        &projects.join(PROJECT_DIR_NAME),
+        Some(staged.as_path()),
+    );
+
+    assert_eq!(files.len(), 1, "subagent-only staged bytes are still priceable");
+    assert_eq!(files[0].kind, SessionFileKind::Subagent);
+}
+
+#[test]
+fn pricing_files_is_empty_when_there_are_no_bytes_anywhere() {
+    // The only unrecoverable state, and the one Phase 2/Phase 3 both branch on.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged = tmp.path().join("staged").join(PARENT_UUID_A);
+    fs::create_dir_all(&staged).unwrap();
+
+    let files = pricing_files(
+        PARENT_UUID_A,
+        &projects.join(PROJECT_DIR_NAME).join(format!("{PARENT_UUID_A}.jsonl")),
+        &projects.join(PROJECT_DIR_NAME),
+        Some(staged.as_path()),
+    );
+    assert!(files.is_empty());
+}
+
+#[test]
+fn pricing_files_is_empty_when_there_is_no_staged_path_at_all() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+
+    let files = pricing_files(
+        PARENT_UUID_A,
+        &projects.join(PROJECT_DIR_NAME).join(format!("{PARENT_UUID_A}.jsonl")),
+        &projects.join(PROJECT_DIR_NAME),
+        None,
+    );
+    assert!(files.is_empty());
+}
+
+#[test]
+fn staged_union_admits_a_staged_only_session() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged_root = tmp.path().join("staged");
+    live_session(&projects, PROJECT_DIR_NAME, PARENT_UUID_A, &[]);
+    staged_session(&staged_root, PARENT_UUID_B, true, &["agent-one.jsonl"]);
+
+    let files = find_session_files_with_staged(&projects, &staged_root).unwrap();
+
+    let groups: BTreeSet<&str> = files.iter().map(|f| f.group_id.as_str()).collect();
+    assert!(groups.contains(PARENT_UUID_A), "the live session stays");
+    assert!(groups.contains(PARENT_UUID_B), "the staged-only session is admitted");
+    let staged_only: Vec<&SessionFile> = files.iter().filter(|f| f.group_id == PARENT_UUID_B).collect();
+    assert_eq!(staged_only.len(), 2, "its parent and every subagent file");
+}
+
+#[test]
+fn staged_union_counts_a_both_roots_session_exactly_once() {
+    // Live-then-staged precedence is the ONLY thing preventing a double count on the efficiency
+    // surfaces, whose dedup is per-file. 94 sessions on desk.lan have bytes in both roots today.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged_root = tmp.path().join("staged");
+    live_session(&projects, PROJECT_DIR_NAME, PARENT_UUID_A, &["agent-one.jsonl"]);
+    staged_session(&staged_root, PARENT_UUID_A, true, &["agent-one.jsonl"]);
+
+    let files = find_session_files_with_staged(&projects, &staged_root).unwrap();
+
+    assert_eq!(files.len(), 2, "the live copy only, not four files");
+    assert!(
+        files.iter().all(|f| f.path.starts_with(&projects)),
+        "precedence must resolve to the live root"
+    );
+}
+
+#[test]
+fn staged_union_with_a_nonexistent_staged_root_equals_the_live_scan() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    live_session(&projects, PROJECT_DIR_NAME, PARENT_UUID_A, &["agent-one.jsonl"]);
+
+    let live_only = find_session_files(&projects).unwrap();
+    let unioned = find_session_files_with_staged(&projects, &tmp.path().join("no-such-staged")).unwrap();
+
+    let live_paths: Vec<PathBuf> = live_only.iter().map(|f| f.path.clone()).collect();
+    let union_paths: Vec<PathBuf> = unioned.iter().map(|f| f.path.clone()).collect();
+    assert_eq!(union_paths, live_paths);
+}
+
+#[test]
+fn staged_union_warns_and_skips_a_non_uuid_staged_dir() {
+    // Deliberate asymmetry with `find_session_files`, which bails: one stray directory in a
+    // clyde-owned cache must not brick every `clyde cost` invocation.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged_root = tmp.path().join("staged");
+    live_session(&projects, PROJECT_DIR_NAME, PARENT_UUID_A, &[]);
+    write_jsonl(
+        &staged_root.join("not-a-uuid").join("not-a-uuid.jsonl"),
+        r#"{"type":"assistant"}"#,
+    );
+    staged_session(&staged_root, PARENT_UUID_B, true, &[]);
+
+    let files = find_session_files_with_staged(&projects, &staged_root).unwrap();
+
+    let groups: BTreeSet<&str> = files.iter().map(|f| f.group_id.as_str()).collect();
+    assert_eq!(groups.len(), 2, "the stray dir is skipped, the valid ones survive");
+    assert!(groups.contains(PARENT_UUID_A) && groups.contains(PARENT_UUID_B));
+}
+
+#[test]
+fn staged_union_is_sorted_by_path() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged_root = tmp.path().join("staged");
+    live_session(&projects, PROJECT_DIR_NAME, PARENT_UUID_A, &["agent-one.jsonl"]);
+    staged_session(&staged_root, PARENT_UUID_B, true, &["agent-two.jsonl"]);
+
+    let files = find_session_files_with_staged(&projects, &staged_root).unwrap();
+
+    let paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+    let mut sorted = paths.clone();
+    sorted.sort();
+    assert_eq!(paths, sorted, "the union must keep the stable-order contract");
+}
+
+#[test]
+fn default_staged_dir_honors_xdg_data_home() {
+    let guard = ENV_LOCK.lock().unwrap();
+    let prior = std::env::var("XDG_DATA_HOME").ok();
+
+    let dir = TempDir::new().unwrap();
+    unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
+    assert_eq!(
+        default_staged_dir(),
+        Some(dir.path().join("clyde").join("staged")),
+        "the staged root follows $XDG_DATA_HOME on every platform"
+    );
+
+    unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    assert!(
+        default_staged_dir().unwrap().ends_with(".local/share/clyde/staged"),
+        "unset falls back to $HOME/.local/share, never ~/Library/..."
+    );
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+    drop(guard);
 }
