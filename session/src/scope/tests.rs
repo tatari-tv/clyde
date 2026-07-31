@@ -167,6 +167,77 @@ fn a_touched_slugs_org_is_the_segment_before_the_first_slash() {
     assert!(!is_work_slug(""));
 }
 
+/// Malformed slugs that still contain a slash fail CLOSED. Found by the implementation-audit panel:
+/// `is_work_slug` originally ignored the repo segment entirely, so `"tatari-tv/"` passed the org test on
+/// an EMPTY repo name. The no-slash case already failed closed, which is what made the hole easy to miss.
+///
+/// Not reachable from clyde's own writer (`common::repo::slug_under_root` needs two normal path
+/// components, so it can never emit an empty segment or a second slash), but this reads a STORED blob
+/// and it is the gate that decides whether a session body leaves the machine.
+///
+/// BITES: restore `Some((org, _)) => WORK_ORGS.contains(&org)` and the first two assertions flip.
+#[test]
+fn a_malformed_slug_with_a_slash_fails_closed() {
+    assert!(!is_work_slug("tatari-tv/"), "an empty repo segment is not a repo");
+    assert!(
+        !is_work_slug("tatari-tv/a/b"),
+        "two slashes is not the documented shape"
+    );
+    assert!(!is_work_slug("/philo"), "an empty org segment is not a work org");
+    assert!(!is_work_slug("/"));
+    // The well-formed case is unaffected, so this is a narrowing and not a break.
+    assert!(is_work_slug("tatari-tv/philo"));
+}
+
+/// A ZERO count is not a touch. The design's condition is "the session touched at least one repo", which
+/// a map like `{"tatari-tv/philo": 0}` satisfies structurally while representing no touch at all. Found
+/// by the implementation-audit panel: with `files_edited: 0` the totality check passed too, so a session
+/// that edited NOTHING classified Work.
+///
+/// BITES: drop the `*count > 0` conjunct and the first assertion flips to Work.
+#[test]
+fn a_zero_count_touch_set_never_widens_to_work() {
+    assert_eq!(
+        with_evidence(Some("/home/saidler/notes"), &[("tatari-tv/philo", 0)], 0),
+        Scope::Personal,
+        "a session that edited nothing has no work evidence"
+    );
+    // One real touch plus one zero-count entry is still refused: EVERY entry must be a real touch, so
+    // the unanimity is over actual evidence rather than over placeholders.
+    assert_eq!(
+        with_evidence(
+            Some("/home/saidler/notes"),
+            &[("tatari-tv/philo", 1), ("tatari-tv/clyde", 0)],
+            1
+        ),
+        Scope::Personal
+    );
+    // And a positive count with matching totality still widens, so this narrowed nothing real.
+    assert_eq!(
+        with_evidence(Some("/home/saidler/notes"), &[("tatari-tv/philo", 1)], 1),
+        Scope::Work
+    );
+}
+
+/// An overflowing count sum fails CLOSED rather than wrapping. `sum::<u64>()` wraps silently in a
+/// release build, and a wrapped total that happened to equal `files_edited` would satisfy the totality
+/// check on nonsense evidence.
+///
+/// BITES: restore the plain `values().sum()` and the first assertion classifies Work in release, because
+/// `u64::MAX + 2` wraps to 1.
+#[test]
+fn an_overflowing_count_sum_fails_closed() {
+    assert_eq!(
+        with_evidence(
+            Some("/home/saidler/notes"),
+            &[("tatari-tv/philo", u64::MAX), ("tatari-tv/clyde", 2)],
+            1
+        ),
+        Scope::Personal,
+        "a wrapped sum must never satisfy the totality check"
+    );
+}
+
 /// `has_repos_anchor` answers "was this cwd placeable at all", which is the gate on whether evidence
 /// gets a say. It must be true for a personal anchor (so evidence cannot overturn it) and false for a
 /// path with no `repos/` component.

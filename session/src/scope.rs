@@ -113,13 +113,24 @@ pub fn classify_with_evidence(cwd: Option<&Path>, repos_touched: &BTreeMap<Strin
         trace!("scope::classify_with_evidence: cwd={cwd:?} anchored to a non-work org -> personal");
         return Scope::Personal;
     }
-    let accounted: u64 = repos_touched.values().sum();
-    let unanimous_work = !repos_touched.is_empty() && repos_touched.keys().all(|slug| is_work_slug(slug));
-    let total = accounted == files_edited;
+    // A CHECKED sum that fails closed on overflow. `repos_touched` is a STORED blob, so a corrupt or
+    // hand-edited one can carry counts whose sum wraps `u64` in a release build, and a wrapped total
+    // that happened to equal `files_edited` would satisfy the totality check on nonsense evidence.
+    let accounted: Option<u64> = repos_touched.values().try_fold(0u64, |acc, c| acc.checked_add(*c));
+    // Every entry must be a well-formed slug AND carry a POSITIVE count. The positive-count half is the
+    // design's own stated condition ("the session touched at least one repo"), which a map like
+    // `{"tatari-tv/philo": 0}` satisfies structurally while representing no touch at all. Combined with
+    // the totality check below, a positive count also forces `files_edited > 0`, so a session that
+    // edited nothing can never widen to Work.
+    let unanimous_work = !repos_touched.is_empty()
+        && repos_touched
+            .iter()
+            .all(|(slug, count)| *count > 0 && is_work_slug(slug));
+    let total = accounted == Some(files_edited);
     let scope = if unanimous_work && total { Scope::Work } else { Scope::Personal };
     trace!(
         "scope::classify_with_evidence: cwd={cwd:?} repos={} unanimous_work={unanimous_work} \
-         accounted={accounted} files_edited={files_edited} -> {}",
+         accounted={accounted:?} files_edited={files_edited} -> {}",
         repos_touched.len(),
         scope.as_str()
     );
@@ -152,11 +163,18 @@ fn has_repos_anchor(path: &Path) -> bool {
 /// `has_work_org` walks path COMPONENTS looking for the slot after `repos`, which is exactly what
 /// makes `~/repos/scottidler/tatari-tv` personal. Both consult the same [`WORK_ORGS`]; only the
 /// extraction differs, and each has its own test.
+/// Every departure from the exact `<org>/<repo>` shape fails CLOSED, because this function is consulted
+/// by the gate that decides whether a session body leaves the machine. `slug_under_root` (the only
+/// writer) requires two normal path components, so it can never produce an empty segment or a second
+/// slash -- these guards exist for a corrupt or hand-edited `outcome_json`, which is a STORED blob this
+/// function reads rather than something it computes.
 fn is_work_slug(slug: &str) -> bool {
     match slug.split_once('/') {
-        Some((org, _)) => WORK_ORGS.contains(&org),
-        // A key with no `/` is not an `<org>/<repo>` slug at all. Fail closed: unrecognized shape is
-        // never work.
+        // The repo segment must be present and must itself be a single component. `"tatari-tv/"` would
+        // otherwise pass the org test on an empty repo name, and `"tatari-tv/a/b"` is not the documented
+        // shape at all.
+        Some((org, repo)) => !repo.is_empty() && !repo.contains('/') && WORK_ORGS.contains(&org),
+        // A key with no `/` is not an `<org>/<repo>` slug at all.
         None => false,
     }
 }
