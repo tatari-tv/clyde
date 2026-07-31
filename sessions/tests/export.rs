@@ -205,6 +205,7 @@ fn parsed(id: &str, cwd: &str, dir: &Path, parent: &Path) -> ParsedSession {
         model: Some("claude-opus-4-8".to_string()),
         n_msgs: 3,
         created: Some(dt("2026-06-20T10:00:00Z")),
+        activity_at: None,
         modified: dt("2026-06-21T10:00:00Z"),
         body: "indexed body".to_string(),
         jsonl_paths: vec![parent.to_path_buf()],

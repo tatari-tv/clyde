@@ -25,6 +25,7 @@ fn parsed(session_id: &str, transcript: &str) -> ParsedSession {
         model: Some("claude-opus-4-8".into()),
         n_msgs: 12,
         created: Some(dt("2026-06-20T10:00:00Z")),
+        activity_at: None,
         modified: dt("2026-06-21T10:00:00Z"),
         body: "the Marquee S3 bucket lives in us-east-1".into(),
         jsonl_paths: vec![PathBuf::from(transcript)],
@@ -1471,3 +1472,8 @@ fn v5_migration_is_idempotent_on_reopen() {
 // line-count limit (they are a self-contained surface: schema v6 columns, the trigger-suppressed
 // efficiency write, and the v5->v6 migration).
 mod efficiency;
+
+// Schema v11 (`activity_at` / `parse_version`) tests live in their own submodule for the same reason
+// the efficiency ones do: this file is near the 1500-line limit, and dormancy-off-activity-time plus
+// the narrow backfill is a self-contained surface.
+mod activity;

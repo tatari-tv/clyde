@@ -31,6 +31,7 @@ fn parsed(session_id: &str, transcript: &str, modified: &str) -> ParsedSession {
         model: Some("claude-opus-4-8".to_string()),
         n_msgs: 5,
         created: Some(dt("2026-06-01T00:00:00Z")),
+        activity_at: None,
         modified: dt(modified),
         body: "some body text".to_string(),
         jsonl_paths: vec![PathBuf::from(transcript)],

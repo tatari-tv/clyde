@@ -1032,12 +1032,17 @@ fn msgs_column_width(counts: impl Iterator<Item = i64>) -> usize {
 /// documents to stdout, which is not valid JSON a consumer can parse in one read.
 fn print_reindex(reindex: &ReindexStats, stage: &StageStats, eff: &efficiency::PersistStats) {
     if std::io::stdout().is_terminal() {
+        // `backfilled` is its own count, not folded into `upserted`: those rows' transcripts did not
+        // change at all, only a previously-unstored parse-derived column (`activity_at`) was filled.
+        // Reporting it separately is what makes a one-time v11 backfill run legible instead of looking
+        // like a mass content change.
         println!(
-            "{} scanned {}, upserted {}, skipped {}, archived {}",
+            "{} scanned {}, upserted {}, skipped {}, backfilled {}, archived {}",
             "✓".green(),
             reindex.scanned,
             reindex.upserted,
             reindex.skipped_unchanged,
+            reindex.backfilled,
             reindex.archived,
         );
         // `unrecoverable` is printed unconditionally, not only when non-zero: it is the accounting

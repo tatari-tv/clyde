@@ -50,6 +50,15 @@ pub struct ParsedSession {
     pub n_msgs: usize,
     /// Earliest message timestamp in the transcript.
     pub created: Option<DateTime<Utc>>,
+    /// LATEST message timestamp in the transcript: real activity time, the mirror of [`Self::created`].
+    /// `None` when no record in the transcript carried a parseable `timestamp`, which is legitimate
+    /// and NOT the same as "not yet computed" (that distinction is what `parse_version` records).
+    ///
+    /// Distinct from [`Self::modified`] on purpose. `modified` is filesystem mtime, which a Syncthing
+    /// sync, a restore, or a `cp -r` resets wholesale; this is what the session actually did and when.
+    /// Dormancy measures from this (see `sessions::SessionRecord::dormancy_at`); report windowing,
+    /// `--since`, `sort=recency` and export all keep reading `modified` unchanged.
+    pub activity_at: Option<DateTime<Utc>>,
     /// Parent transcript file mtime -- the incremental-reindex skip key.
     pub modified: DateTime<Utc>,
     /// Concatenated user + assistant text, for the body-FTS content-recall index.

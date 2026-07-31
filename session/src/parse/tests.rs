@@ -54,8 +54,50 @@ fn parses_title_prompt_model_and_counts() {
     assert!(s.body.contains("Creating the S3 bucket now"));
     assert!(!s.body.contains("/clear"));
     assert!(!s.body.contains("hmm"));
-    // created = earliest timestamp.
+    // created = earliest timestamp; activity_at = LATEST. Same parsed value, MIN and MAX folds.
     assert_eq!(s.created.unwrap().to_rfc3339(), "2026-06-21T10:00:00+00:00");
+    assert_eq!(s.activity_at.unwrap().to_rfc3339(), "2026-06-21T10:00:10+00:00");
+}
+
+/// `activity_at` is a MAX fold, so it is the latest timestamp in the transcript regardless of the
+/// order the records appear in, and it is independent of the file's mtime. This is what dormancy
+/// measures from (`sessions::SessionRecord::dormancy_at`), which is why it must not be "the last line
+/// I happened to read".
+///
+/// BITES: change the fold to `min` (or to last-write-wins) and the out-of-order fixture below yields
+/// the 10:00:05 record instead of the 12:00:00 one.
+#[test]
+fn activity_at_is_the_max_timestamp_even_out_of_order() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    write(
+        &path,
+        &[
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:00Z","message":{"content":"first"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-06-21T12:00:00Z","message":{"model":"m","content":[{"type":"text","text":"last"}]}}"#,
+            // Deliberately out of order, and deliberately AFTER the latest record.
+            r#"{"type":"user","timestamp":"2026-06-21T10:00:05Z","message":{"content":"middle"}}"#,
+        ],
+    );
+    let s = &parse_sessions(&[parent_file(path)])[0];
+    assert_eq!(s.created.unwrap().to_rfc3339(), "2026-06-21T10:00:00+00:00");
+    assert_eq!(s.activity_at.unwrap().to_rfc3339(), "2026-06-21T12:00:00+00:00");
+}
+
+/// A transcript with no parseable `timestamp` on any record yields `activity_at = None`, which is a
+/// LEGITIMATE answer rather than a failure: `dormancy_at()` then falls back to `modified`, and
+/// `PARSE_VERSION` (not an `IS NOT NULL` probe) is what stops the row being backfilled forever.
+#[test]
+fn a_transcript_with_no_timestamps_has_no_activity_time() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("proj").join(format!("{UUID_A}.jsonl"));
+    write(
+        &path,
+        &[r#"{"type":"user","message":{"content":"no timestamp anywhere"}}"#],
+    );
+    let s = &parse_sessions(&[parent_file(path)])[0];
+    assert_eq!(s.created, None);
+    assert_eq!(s.activity_at, None);
 }
 
 #[test]

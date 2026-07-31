@@ -25,6 +25,7 @@ fn parsed(session_id: &str) -> ParsedSession {
         model: None,
         n_msgs: 1,
         created: None,
+        activity_at: None,
         modified: dt("2026-06-21T10:00:00Z"),
         body: "body".into(),
         jsonl_paths: vec![PathBuf::from("/tmp/does-not-exist.jsonl")],

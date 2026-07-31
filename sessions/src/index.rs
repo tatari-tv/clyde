@@ -13,6 +13,14 @@
 //! reindexed for the first time has a NULL `outcome_json` while [`reindex`] is running. That is what
 //! [`resolve_repos`] is for: the caller runs it once the efficiency pass has written the blobs, and
 //! the chain converges within a single `clyde session reindex` instead of needing a second one.
+//!
+//! Schema v11's parse-derived columns (`activity_at`, `parse_version`) ride the same pass but NOT the
+//! same write. A row whose transcript is byte-identical and whose `parse_version` is stale is reported
+//! [`Upsert::Backfilled`], collected, and filled in one batch by [`Db::set_activity_many`] after the
+//! loop -- deliberately not through the content UPDATE arm, which would NULL every efficiency blob and
+//! bump every row's export revision for a transcript that did not change. This costs no extra file
+//! I/O: [`reindex`] already parses every session before the upsert loop, so the value is in hand and
+//! only the DB write was being skipped.
 
 use std::path::Path;
 
@@ -47,10 +55,16 @@ pub fn reindex(db: &Db, projects_dir: &Path, repo_root: &Path) -> Result<Reindex
         ..Default::default()
     };
     let mut resolver = Resolver::new();
+    // Rows whose transcript is byte-identical but whose parse-derived columns are stale. Collected
+    // here and written in ONE trigger-suppressed batch after the loop (`Db::set_activity_many`), never
+    // per row: a per-row trigger sandwich would do one DROP/CREATE pair per session and, on a crash
+    // between the two, leave the revision trigger permanently dropped. See that method's doc.
+    let mut pending_activity: Vec<(String, Option<chrono::DateTime<Utc>>)> = Vec::new();
     for parsed in &sessions {
         match db.upsert_session(parsed, &host)? {
             Upsert::Inserted | Upsert::Updated => stats.upserted += 1,
             Upsert::SkippedUnchanged => stats.skipped_unchanged += 1,
+            Upsert::Backfilled => pending_activity.push((parsed.session_id.clone(), parsed.activity_at)),
         }
         if let Some(cwd) = &parsed.cwd {
             // Rule 3's input comes from the PERSISTED `outcome_json` (empty for a session the
@@ -59,10 +73,11 @@ pub fn reindex(db: &Db, projects_dir: &Path, repo_root: &Path) -> Result<Reindex
             apply_chain(db, &mut resolver, &parsed.session_id, cwd, &repos_touched, repo_root)?;
         }
     }
+    stats.backfilled = db.set_activity_many(&pending_activity)?;
     stats.archived = db.reconcile_archived()?;
     info!(
-        "index::reindex: scanned={} upserted={} skipped={} archived={}",
-        stats.scanned, stats.upserted, stats.skipped_unchanged, stats.archived
+        "index::reindex: scanned={} upserted={} skipped={} backfilled={} archived={}",
+        stats.scanned, stats.upserted, stats.skipped_unchanged, stats.backfilled, stats.archived
     );
     Ok(stats)
 }

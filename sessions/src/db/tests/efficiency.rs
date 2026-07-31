@@ -325,7 +325,7 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 10,
+        SCHEMA_VERSION, 11,
         "this test pins the v5->current hop; bump me deliberately"
     );
 
@@ -570,12 +570,12 @@ fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_a
         assert!(!has_outcome, "the v7 DB has no outcome_json column yet");
     }
 
-    // Reopen: migrate v7 -> current (v10).
+    // Reopen: migrate v7 -> current (v11).
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 10,
+        SCHEMA_VERSION, 11,
         "this test pins the v7->current hop; bump me deliberately"
     );
 
@@ -692,8 +692,8 @@ fn v10_migration_from_v9_invalidates_both_blobs_without_advancing_cursor() {
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 10,
-        "this test pins the v9->v10 hop; raise me deliberately"
+        SCHEMA_VERSION, 11,
+        "this test pins the v9->current hop; raise me deliberately"
     );
 
     assert!(has_column(&db, "repo"), "v10 adds the repo column");

@@ -26,6 +26,7 @@ fn parsed(sid: &str) -> ParsedSession {
         model: Some("claude-opus-4-7".to_string()),
         n_msgs: 1,
         created: Some("2026-04-10T10:00:00Z".parse().unwrap()),
+        activity_at: None,
         modified: "2026-04-10T10:00:00Z".parse().unwrap(),
         body: "body".to_string(),
         jsonl_paths: vec![PathBuf::from(format!("/tmp/{sid}.jsonl"))],

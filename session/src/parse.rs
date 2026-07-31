@@ -15,6 +15,20 @@ use serde_json::Value;
 
 use crate::model::{Message, ParsedSession, Role, SessionFile, SessionFileKind};
 
+/// Version of the PARSE-DERIVED columns this parser produces. Bumped whenever a new field is mined
+/// from the transcript that existing catalog rows cannot already hold, which is what drains the
+/// backfill: `Db::upsert_session` skips a row only when its transcript mtime is unchanged AND its
+/// stored `parse_version` equals this, so a bump makes every row a one-time backfill candidate and
+/// then stops.
+///
+/// It lives here, beside the parser it versions, for the same reason `SCOPE_VERSION` lives beside
+/// the classifier: colocating it with `ENRICH_PROMPT_VERSION` in `sessions::llm` would make a parser
+/// change read as a prompt change.
+///
+/// v1 is `activity_at` (MAX message timestamp), the first parse-derived column to need this gate.
+/// A NULL `parse_version` means "written before the gate existed" and is always a candidate.
+pub const PARSE_VERSION: i64 = 1;
+
 /// Cap on the stored first-prompt (some first prompts paste whole files).
 const MAX_FIRST_PROMPT_CHARS: usize = 2_000;
 /// Cap on the per-session body indexed for content recall, bounding worst-case storage.
@@ -317,6 +331,10 @@ struct Acc {
     model: Option<String>,
     n_msgs: usize,
     created: Option<DateTime<Utc>>,
+    /// MAX message `timestamp`, the mirror of [`Self::created`]'s MIN over the same parsed value.
+    /// This is REAL activity time, unlike `modified`, which is filesystem mtime and resets on a
+    /// Syncthing sync, a restore, or a `cp -r`.
+    activity: Option<DateTime<Utc>>,
     modified: Option<DateTime<Utc>>,
     body: String,
     body_chars: usize,
@@ -336,6 +354,7 @@ impl Acc {
             model: None,
             n_msgs: 0,
             created: None,
+            activity: None,
             modified: None,
             body: String::new(),
             body_chars: 0,
@@ -386,6 +405,10 @@ impl Acc {
         }
         if let Some(dt) = v.get("timestamp").and_then(Value::as_str).and_then(parse_ts) {
             self.created = Some(self.created.map_or(dt, |cur| cur.min(dt)));
+            // MAX beside the MIN, from the same parsed value: `created` is when the session started,
+            // `activity` is when it last did anything. Folding both here is what makes this cost
+            // nothing -- the timestamp is already parsed.
+            self.activity = Some(self.activity.map_or(dt, |cur| cur.max(dt)));
         }
 
         match v.get("type").and_then(Value::as_str) {
@@ -462,6 +485,7 @@ impl Acc {
             model: self.model,
             n_msgs: self.n_msgs,
             created: self.created,
+            activity_at: self.activity,
             modified,
             body: self.body,
             jsonl_paths: self.paths,

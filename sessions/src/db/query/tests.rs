@@ -43,6 +43,7 @@ fn parsed_cwd(session_id: &str, transcript: &str, cwd: &str, modified: &str) -> 
         model: Some("claude-opus-4-8".to_string()),
         n_msgs: 12,
         created: Some(dt("2026-06-20T10:00:00Z")),
+        activity_at: None,
         modified: dt(modified),
         body: "some body text".to_string(),
         jsonl_paths: vec![PathBuf::from(transcript)],

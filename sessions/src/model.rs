@@ -38,6 +38,17 @@ pub struct SessionRecord {
     pub model: Option<String>,
     pub n_msgs: i64,
     pub created: Option<DateTime<Utc>>,
+    /// MAX message timestamp from the transcript (schema v11): real activity time. `None` on a row
+    /// written before the v11 backfill reached it, and legitimately `None` for a transcript with no
+    /// parseable `timestamp` on any record. Read through [`Self::dormancy_at`], never directly, so the
+    /// `modified` fallback lives in exactly one place.
+    ///
+    /// `#[serde(skip)]`, like `id`: an internal input to the dormancy decision, not part of the
+    /// public/JSON surface. Serializing it would grow every `sessions_search` hit for a field no
+    /// consumer asked for, and the response is char-capped (`SEARCH_RESPONSE_MAX_CHARS`), so those
+    /// bytes come straight out of the hit budget -- measured, it cost one hit at the cap.
+    #[serde(skip)]
+    pub activity_at: Option<DateTime<Utc>>,
     /// Parent transcript mtime -- the incremental-reindex skip key.
     pub modified: DateTime<Utc>,
     /// Phase 4 (cr migration) populates cost; `None` for now.
@@ -48,6 +59,22 @@ pub struct SessionRecord {
     /// Directory holding the durable staged copy (Phase 1.5), once staged; `None` otherwise.
     /// Survives the TTL reap, so `open`/trace still resolve an archived session's content.
     pub staged_path: Option<PathBuf>,
+}
+
+impl SessionRecord {
+    /// The instant dormancy is measured from: real activity when known, filesystem mtime otherwise.
+    ///
+    /// ONE definition, consulted by both `Db::enrich_candidates` and `Db::staging_candidates`, so the
+    /// two can never disagree about what "dormant" means. The `modified` fallback is what makes the
+    /// v11 backfill window safe: an un-backfilled row behaves exactly as it does today, so no session
+    /// that is swept now stops being swept.
+    ///
+    /// Why this exists: `modified` is filesystem mtime, so a Syncthing sync, a restore, or a `cp -r`
+    /// resets it wholesale and every session on the host stops looking dormant. That silently
+    /// suppresses the staging sweep standing between a dormant session and permanent unpriceability.
+    pub fn dormancy_at(&self) -> DateTime<Utc> {
+        self.activity_at.unwrap_or(self.modified)
+    }
 }
 
 /// Where a search hit matched, so ranking can put high-signal hits above body-only hits.
@@ -211,6 +238,12 @@ pub struct ReindexStats {
     pub scanned: usize,
     pub upserted: usize,
     pub skipped_unchanged: usize,
+    /// Rows whose transcript was byte-identical but whose parse-derived columns were stale
+    /// (`parse_version` below `session::PARSE_VERSION`), filled by the narrow `Db::set_activity_many`
+    /// write. Its own count, not folded into `upserted`, so a one-time backfill run is legible rather
+    /// than reading as a mass content change: the transcripts did not change, only a
+    /// previously-unstored derived field was filled.
+    pub backfilled: usize,
     pub archived: usize,
 }
 
