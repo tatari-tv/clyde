@@ -404,19 +404,14 @@ const CLYDE_DIR: &str = "clyde";
 /// Subdirectory under clyde's data root holding durable transcript copies.
 const STAGED_DIR: &str = "staged";
 
-/// XDG data dir, honoring `$XDG_DATA_HOME` and falling back to `$HOME/.local/share`.
+/// XDG data dir: a DELEGATION to [`crate::paths::xdg_data_dir`], this crate's own definition.
 ///
-/// `dirs::data_local_dir()` is deliberately NOT used: it honors `$XDG_DATA_HOME` only on Linux and
-/// returns `~/Library/Application Support` on macOS. Mirrors `session::paths::xdg_data_dir`, which
-/// cannot be called from here (`common` must not depend on `session`; the edge runs the other way).
+/// The comment this replaces explained why it could not call `session::paths::xdg_data_dir` (`common`
+/// must not depend on `session`; the edge runs the other way). That reason no longer applies -- the
+/// definition moved DOWN into `common`, which is where all five callers can reach it -- so the comment
+/// is gone rather than left to contradict the edge that now exists.
 fn xdg_data_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
-        let path = PathBuf::from(dir);
-        if path.is_absolute() {
-            return Some(path);
-        }
-    }
-    dirs::home_dir().map(|h| h.join(".local").join("share"))
+    crate::paths::xdg_data_dir()
 }
 
 /// The default staged-transcript root (`~/.local/share/clyde/staged`).

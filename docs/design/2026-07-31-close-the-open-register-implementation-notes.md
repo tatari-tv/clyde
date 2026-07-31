@@ -350,3 +350,64 @@ All in `sessions/src/db/tests/activity.rs` unless noted; 8 new tests there plus 
   the work Anthropic account, which is one-way. Per the criterion's own instruction the unit tests above
   are green first, and `clyde session enrich --dry-run` confirms the classifier's answer for the cohort
   before any real pass. That runs at finalization, not mid-phase.
+
+## Phase 5: One XDG helper (housekeeping)
+
+### Design decisions
+
+- **`common::scan`'s private copy delegates to `crate::paths::xdg_data_dir`, not to `common::paths::`
+  spelled out.** Same crate, so the intra-crate path is the honest one.
+- **The four public wrappers keep their names and signatures**, per the plan, so no caller in any crate
+  changes. Their doc comments now say they are delegations and point at the one real implementation;
+  the `dirs::data_local_dir()` rationale lives once, with that implementation, instead of five times.
+- **`common/src/scan.rs`'s doc comment was DELETED, not edited.** It explained why it could not call
+  `session::paths::xdg_data_dir` (`common` must not depend on `session`). That reason no longer applies
+  now that the definition moved DOWN into `common`, and the plan explicitly called for deleting it
+  rather than leaving it to contradict the edge that now exists. Replaced with two sentences recording
+  what changed and why, so the next reader does not re-derive it.
+- **`session/src/paths/tests.rs`'s test became a DELEGATION check, renamed
+  `xdg_data_dir_delegates_to_common`.** It asserts `xdg_data_dir() == common::paths::xdg_data_dir()` on
+  both the env-set and the fallback path. This is the test that actually guards the consolidation: AC5's
+  `rg` count still passes if a wrapper regrows its own body using `dirs::home_dir()` directly (measured:
+  the count stays 1), so the count alone is not sufficient and the equality assertion is what bites.
+
+### Deviations
+
+- None. All five plan bullets landed: `common/src/paths.rs` with `pub fn xdg_data_dir()` declared via
+  `pub mod paths;`, all four public definitions plus `common::scan`'s private one delegating, the
+  env-honoring test moved to `common/src/paths/tests.rs`, the delegation keeping its own check, and
+  exactly five crates touched with nothing else riding along.
+
+### Tradeoffs
+
+- **Keeping the four wrappers vs. deleting them and updating callers.** Keeping them means the function
+  NAME still exists five times, which reads like duplication until you see the bodies -- and it is why
+  AC5 counts `env::var("XDG_DATA_HOME")` bodies rather than `fn xdg_data_dir` definitions. Deleting them
+  would touch every call site in four crates and put an unrelated import churn in a housekeeping commit.
+  The design already chose keeping, and AC5 is written to match.
+- **A new `common::paths` module vs. adding to `common::config`.** `common/src/config.rs` exists and
+  loads `clyde.yml`; path resolution is not config loading, and `paths` is the single-word name the house
+  rule asks for. It also gives the next XDG helper (`xdg_config_dir`, which still has its own copies) an
+  obvious home.
+
+### Open questions
+
+- `xdg_config_dir` and `xdg_cache_dir` still have multiple copies (`session::paths`, `cost::config`,
+  `permit::config`). Out of scope: the register's item is the `xdg_data_dir` consolidation specifically,
+  and `common::paths` is now the obvious place for them whenever that is asked for. Flagged rather than
+  done quietly, and NOT presented as a defect this phase left behind.
+
+### Success criteria, executed
+
+- **AC5**: `rg -n 'env::var\("XDG_DATA_HOME"\)' --type rust -g '!target' -g '!*tests*' . | wc -l`
+  returns **1** (`common/src/paths.rs:32`), down from **5** on `main`.
+- The DEFINITION count went **5 -> 6** as the design predicted (the four kept delegations plus
+  `common::scan`'s, plus the new real one), which is why it is not the criterion.
+- `dirs::data_local_dir` CALLS: **0**, unchanged. The 8 textual occurrences are all doc comments
+  explaining why it is not used; the call count is what the criterion is about.
+- Tests verified to BITE: giving the `session` wrapper its own body again fails
+  `xdg_data_dir_delegates_to_common` (plus 2 collateral path tests) while AC5's count still reads 1 --
+  which is exactly why the delegation test exists; dropping the `path.is_absolute()` guard fails
+  `a_relative_xdg_data_home_is_ignored` and `xdg_data_dir_honors_env_and_falls_back`.
+- Full `otto ci` exits **0**, and `git status` shows exactly the five crates the plan named
+  (`common`, `cost`, `permit`, `report`, `session`) with nothing else riding along.

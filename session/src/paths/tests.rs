@@ -7,16 +7,25 @@ use tempfile::TempDir;
 // Env-var mutation is process-global; serialize every env-touching test.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+/// This wrapper DELEGATES to `common::paths::xdg_data_dir`, so what is checked here is the delegation:
+/// the two agree, always. The env-honoring platform behavior itself is pinned once, in
+/// `common/src/paths/tests.rs`, beside the one body that reads the variable.
+///
+/// BITES: give this wrapper its own body again and the two answers diverge the moment either changes,
+/// which is exactly the five-copy drift this consolidation removed.
 #[test]
-fn xdg_data_dir_honors_env_and_falls_back() {
+fn xdg_data_dir_delegates_to_common() {
     let guard = ENV_LOCK.lock().unwrap();
     let prior = std::env::var("XDG_DATA_HOME").ok();
 
     let dir = TempDir::new().unwrap();
     unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
+    assert_eq!(xdg_data_dir(), common::paths::xdg_data_dir());
     assert_eq!(xdg_data_dir().as_deref(), Some(dir.path()));
 
+    // And they still agree on the fallback, not just on the env-set path.
     unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    assert_eq!(xdg_data_dir(), common::paths::xdg_data_dir());
     assert!(xdg_data_dir().unwrap().ends_with(".local/share"));
 
     match prior {

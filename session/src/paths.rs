@@ -34,14 +34,13 @@ pub fn xdg_config_dir() -> Option<PathBuf> {
 }
 
 /// XDG data dir, honoring `$XDG_DATA_HOME` and falling back to `$HOME/.local/share`.
+///
+/// A DELEGATION to [`common::paths::xdg_data_dir`], which is the one body that reads the env var. Kept
+/// as a public wrapper so no caller in this crate changes; kept as a delegation rather than deleted
+/// because callers name it through this crate's own path. The `dirs::data_local_dir()` rationale lives
+/// with the real implementation now, once instead of five times.
 pub fn xdg_data_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
-        let path = PathBuf::from(dir);
-        if path.is_absolute() {
-            return Some(path);
-        }
-    }
-    dirs::home_dir().map(|h| h.join(".local").join("share"))
+    common::paths::xdg_data_dir()
 }
 
 /// XDG cache dir, honoring `$XDG_CACHE_HOME` and falling back to `$HOME/.cache`.

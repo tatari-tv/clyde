@@ -11,6 +11,7 @@ pub mod atomic;
 pub mod config;
 pub mod llm;
 pub mod metrics;
+pub mod paths;
 pub mod proc;
 pub mod repo;
 pub mod scan;
