@@ -20,6 +20,8 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
 
 ### D. Fail-open cost math: an unpriceable model contributes $0 to the catalog
 
+**Closed by** [`docs/design/2026-07-31-close-the-open-register.md`](2026-07-31-close-the-open-register.md), Phase 2. Its step 3 (union into report's `untracked_models`) was declined, with the measurement, in that doc's Resolved Decisions.
+
 - **Where:** `common/src/metrics.rs:138` translates the `Result` to an `Option`
   (`pricing.calculate_usd(model, usage).ok()`). The fail-open is at the CONSUMER:
   `efficiency/src/metrics.rs:173` does `.unwrap_or_else(|| { warn!(...); 0.0 })` and adds that $0
@@ -30,9 +32,16 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
   counterfactual rather than guessing. The unguarded path is the CATALOG: the `cost_usd` column
   `efficiency` writes has no `untracked_models` equivalent, and nothing downstream can tell a genuine
   $0 from an unpriced one.
-- **Why it matters more after v0.20.0.** `report collect` now reads 199 more June rows on desk.lan,
-  and each one's dollars come from that column. A host running a model the feed lacks gets a quietly
-  low total that looks exactly like the bug we just spent a design doc chasing.
+- **Why it matters more after v0.20.0.** ~~`report collect` now reads 199 more June rows on desk.lan,
+  and each one's dollars come from that column.~~ **Wrong, corrected 2026-07-31.** `report` does NOT
+  read the catalog's scalar `cost_usd`: it re-prices from the blob's `by_model` through its own fetched
+  `Pricing` (`report/src/report.rs:500`, `:545`), and `:582-584` states that as a deliberate design
+  choice. D is still a real defect, but its consumers are the surfaces that read the BLOB's `cost-usd`
+  (`clyde efficiency session`, `--narrate` at `efficiency/src/narrate.rs:239`, MCP
+  `session_efficiency`) plus the indexed-but-unread `cost_usd` column a future ranking feature would
+  trust. Also measured: on this host D is a LATENT guard, not a live leak -- the catalog's blobs name 9
+  distinct models, 8 price cleanly, and the 9th (`<synthetic>`) carries all-zero tokens in all 72 rows
+  it appears in, so it contributes $0 correctly. See `docs/design/2026-07-31-close-the-open-register.md`.
 - **The fix:** persist the unpriced-model set alongside the efficiency blob, the way the report
   artifact already does, and stop laundering the failure into a number.
   1. Add `unpriced_models: BTreeSet<String>` to the counters that feed `SessionEfficiency`
@@ -55,6 +64,8 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
 
 ### E. The `_variable` lint only walks `*/src/`
 
+**Closed by** [`docs/design/2026-07-31-close-the-open-register.md`](2026-07-31-close-the-open-register.md), Phase 1.
+
 - **Where:** `.otto.yml:16`, `grep -rn --include='*.rs' -P '...' */src/`
 - **What:** misses `*/tests/` and `*/build.rs`. Exactly the hole the em-dash lint was deliberately
   scoped to avoid (whole tree, `--exclude-dir=target`).
@@ -72,6 +83,8 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
 
 ### F. `report/templates/slots/*.pmt` are outside the em-dash lint
 
+**Closed by** [`docs/design/2026-07-31-close-the-open-register.md`](2026-07-31-close-the-open-register.md), Phase 1 (E and F share one commit, as this register permits).
+
 - **Where:** 5 templates, compiled in via `include_str!` and sent to the model. The lint is
   `--include='*.rs'`, so it cannot see them.
 - **Currently clean:** 0 em-dash occurrences across all five. Their ONLY protection is the assertion
@@ -85,6 +98,8 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
 ## These need design docs
 
 ### B. Dormancy reads the transcript's filesystem mtime, not activity time. DO THIS BEFORE A
+
+**Closed by** [`docs/design/2026-07-31-close-the-open-register.md`](2026-07-31-close-the-open-register.md), Phase 3 -- as a phase of one combined doc rather than its own, on the owner's call recorded there.
 
 - **Where:** `session/src/parse.rs:353` sets `modified` to the MAX filesystem mtime across the
   session's files. Filtered at `sessions/src/db.rs:601` (`enrich_candidates`) **and `:692`
@@ -103,7 +118,10 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
 - **Invisible on desk.lan:** plenty of rows sit past the 7d cutoff here, so sweeps always find work.
   It needs a regression test, not a fix-and-eyeball.
 - **The fix is nearly free:** `session/src/parse.rs:388` ALREADY parses per-message `timestamp` (MIN
-  into `created`). A MAX of the same field is activity time, immune to file touches.
+  into `created`). A MAX of the same field is activity time, immune to file touches. (This line number
+  is CORRECT as written: `:387` extracts the `timestamp` and `:388` is the MIN fold into `created`. An
+  earlier draft of `docs/design/2026-07-31-close-the-open-register.md`
+  wrongly "corrected" it to `:387`; that correction is withdrawn.)
 - **Two things the doc must settle:** `modified` stays load-bearing elsewhere (grown-since-enrichment
   compares `s.modified > s.enriched_modified`; export duration is mtime minus earliest ts), so ADD
   alongside, never repurpose. And decide the backfill: NULL means "not dormant", or trigger a re-parse.
@@ -112,14 +130,19 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
 
 ### A. `scope` classifies off `cwd` alone. Still blocks the excision's AC6
 
+**Closed by** [`docs/design/2026-07-31-close-the-open-register.md`](2026-07-31-close-the-open-register.md), Phase 4. Its Security section carries the required analysis; AC7 there keeps the excision's AC6 open until a teammate reports coverage.
+
 - **Where:** `sessions/src/enrich.rs:105` (the gate) calls
   `session::classify(rec.cwd.as_deref().map(Path::new))` and consults nothing else, into
   `session/src/scope.rs:59`.
 - **The asymmetry, and the lead:** `common/src/repo.rs:37` already attributes a repo FOUR ways
   (`git-origin` / `known-path` / `files-touched` / `path-guess`). `scope` uses none of them, so the
   catalog can know a session edited `tatari-tv/philo` and still call it personal.
-- **Measured:** 21 sessions on desk.lan have a `tatari-tv/*` repo but `scope='personal'`. Patrick: 0
-  of 131 (runs `claude` from `~`). Keegan: repo values "less null and more just wrong".
+- **Measured:** **30** sessions on desk.lan have a `tatari-tv/*` repo but `scope='personal'` (this
+  entry originally said 21; the count drifted, re-measured 2026-07-31). All 30 are attributed by
+  `repo_source = 'files-touched'` and zero by `git-origin` or `known-path`, and exactly one
+  (`2b163b4e`) has a mixed touch set. Patrick: 0 of 131 (runs `claude` from `~`). Keegan: repo values
+  "less null and more just wrong".
 - **Blast radius:** 0% enrichment coverage, and `report collect`'s Executive Summary, What This
   Funded, and Conclusion render EMPTY.
 - **NOT a bug in the fail-safe.** `session/src/scope.rs:20` already documents this failure direction
@@ -145,6 +168,8 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
   commit and nothing else riding along.
 
 ### G. The hook registration is still uncommitted
+
+**Closed by** [`docs/design/2026-07-31-close-the-open-register.md`](2026-07-31-close-the-open-register.md), Phase 6. The commit itself lands in `~/repos/scottidler/claude`, not here.
 
 - **Where:** `~/repos/scottidler/claude`, `HOME/.claude/settings.json`
 - **What:** the PreToolUse entry for `codex-stdin-guard.sh` is live on disk but NOT committed, because
@@ -182,9 +207,16 @@ Two things that came out of running them, both already folded into the design do
   `clyde report merge` covers.
 
 **The 64 unrecoverable rows are now a fixed, closed set**, not a leading edge: the staging backlog is
-0 and the sweep runs inside every reindex. It only stays closed if the `clyde-reindex` timer is
-installed (`clyde doctor` reports it absent on this host as of 2026-07-31) and if B is fixed, since B
-can suppress the sweep that keeps it closed.
+0 and the sweep runs inside every reindex. It only stays closed while the `clyde-reindex` timer runs and
+B is fixed, since B can suppress the sweep that keeps it closed.
+
+> **Corrected 2026-07-31.** This paragraph originally said `clyde doctor` reports the timer absent on
+> this host. It is not absent. Measured the same day: `systemctl --user is-enabled clyde-reindex.timer`
+> returns `enabled`, `is-active` returns `active`, `list-timers` shows the next run at
+> `Fri 2026-07-31 06:18:12 PDT`, and `clyde doctor` prints `reindex timer: clyde`. There is no doctor
+> defect and no install step to do. This matters in both directions: it sent the next reader to install
+> something already running, and it understated B's urgency -- the automatic sweep B can suppress is
+> live right now. See `docs/design/2026-07-31-close-the-open-register.md`.
 
 ## Suggested order
 
