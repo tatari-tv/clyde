@@ -143,7 +143,8 @@
                 "tokens": 1248123,
                 "cost-usd": 2.31
               }
-            }
+            },
+            "unpriced-models": []
           },
           "cache-read-share": 0.9398179327778574,
           "cache-1h-write-fraction": 0.0,
@@ -244,7 +245,8 @@
                 "tokens": 820768,
                 "cost-usd": 1.52
               }
-            }
+            },
+            "unpriced-models": []
           },
           "cache-read-share": 0.9290865594321306,
           "cache-1h-write-fraction": 0.0,
@@ -363,7 +365,8 @@
                 "tokens": 1413763,
                 "cost-usd": 2.62
               }
-            }
+            },
+            "unpriced-models": []
           },
           "cache-read-share": 0.9435527547522368,
           "cache-1h-write-fraction": 0.0,
@@ -471,7 +474,8 @@
                 "tokens": 810693,
                 "cost-usd": 1.5
               }
-            }
+            },
+            "unpriced-models": []
           },
           "cache-read-share": 0.9253283200646355,
           "cache-1h-write-fraction": 0.0,
@@ -572,7 +576,8 @@
                 "cost-usd": 2.24
               }
             },
-            "by-mcp-tool": {}
+            "by-mcp-tool": {},
+            "unpriced-models": []
           },
           "cache-read-share": 0.9325388980209873,
           "cache-1h-write-fraction": 0.0,
@@ -686,7 +691,8 @@
                 "tokens": 2057644,
                 "cost-usd": 3.81
               }
-            }
+            },
+            "unpriced-models": []
           },
           "cache-read-share": 0.9226888559133113,
           "cache-1h-write-fraction": 0.0,
@@ -794,7 +800,8 @@
                 "tokens": 1006079,
                 "cost-usd": 1.86
               }
-            }
+            },
+            "unpriced-models": []
           },
           "cache-read-share": 0.93544224266904,
           "cache-1h-write-fraction": 0.0,
@@ -885,7 +892,8 @@
               }
             },
             "by-skill": {},
-            "by-mcp-tool": {}
+            "by-mcp-tool": {},
+            "unpriced-models": []
           },
           "cache-read-share": 0.9386640205885141,
           "cache-1h-write-fraction": 0.0,
@@ -991,7 +999,8 @@
                 "tokens": 936092,
                 "cost-usd": 1.73
               }
-            }
+            },
+            "unpriced-models": []
           },
           "cache-read-share": 0.9398179327778574,
           "cache-1h-write-fraction": 0.0,
@@ -1097,7 +1106,8 @@
                 "cost-usd": 1.23
               }
             },
-            "by-mcp-tool": {}
+            "by-mcp-tool": {},
+            "unpriced-models": []
           },
           "cache-read-share": 0.9318978313422703,
           "cache-1h-write-fraction": 0.18505693917229887,
@@ -1209,7 +1219,8 @@
                 "tokens": 841658,
                 "cost-usd": 1.56
               }
-            }
+            },
+            "unpriced-models": []
           },
           "cache-read-share": 0.9290959726586595,
           "cache-1h-write-fraction": 0.1848380870684109,
@@ -1327,7 +1338,8 @@
                 "tokens": 706244,
                 "cost-usd": 1.31
               }
-            }
+            },
+            "unpriced-models": []
           },
           "cache-read-share": 0.9375515373823837,
           "cache-1h-write-fraction": 0.0,

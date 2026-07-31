@@ -147,6 +147,9 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
         "the backfilled session must no longer report as missing efficiency"
     );
     assert_eq!(stats.unrecoverable, 0, "the live transcript was there to price");
+    // The fixture names only `claude-opus-4-7` / `claude-opus-4-8`, both priced by the embedded feed,
+    // so the standing `unpriced` ledger line reads 0 rather than being absent.
+    assert_eq!(stats.unpriced, 0, "every model in this fixture prices");
     let after = db.export(&ExportFilters::default(), &ctx).unwrap();
     assert_eq!(
         after.sessions[0].updated_at, updated_at_before,
@@ -256,6 +259,64 @@ fn reindex_persists_per_model_tokens_and_outcomes() {
     assert_eq!(outcomes.commits, vec!["abc123".to_string()], "committed sha persisted");
     assert_eq!(outcomes.files_edited, 1, "one confirmed Edit persisted");
     assert!(outcomes.prs.is_empty());
+}
+
+const SID_UNPRICED: &str = "55555555-5555-4555-8555-555555555fab";
+
+/// A model the embedded feed cannot price, carrying REAL tokens, is disclosed all the way through the
+/// persisted blob AND counted in [`PersistStats::unpriced`], so a `clyde session reindex` run says out
+/// loud that some of its dollars are missing instead of storing a confident-looking low `cost_usd`.
+///
+/// BITES: restore the bare `unwrap_or_else(|| 0.0)` in `RawCounters::add_usage` and both the blob's
+/// `unpriced-models` and this count go empty/zero while `cost-usd` stays low. Drop the
+/// `unpriced_models.is_empty()` filter in `reindex_efficiency` and the count stops tracking the blob.
+#[test]
+fn reindex_discloses_and_counts_a_session_whose_model_could_not_be_priced() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let project = projects.join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let transcript = project.join(format!("{SID_UNPRICED}.jsonl"));
+    // One priced turn plus one turn on a model no feed carries, with real tokens on both. The priced
+    // turn is what makes the assertion below meaningful: `cost-usd` is non-zero yet still LOW.
+    let lines = [
+        format!(
+            r#"{{"type":"assistant","sessionId":"{SID_UNPRICED}","message":{{"role":"assistant","model":"claude-opus-4-8","usage":{{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":200}}}}}}"#
+        ),
+        format!(
+            r#"{{"type":"assistant","sessionId":"{SID_UNPRICED}","message":{{"role":"assistant","model":"claude-not-in-any-feed-9","usage":{{"input_tokens":9000,"output_tokens":4000}}}}}}"#
+        ),
+    ];
+    std::fs::write(&transcript, lines.join("\n")).unwrap();
+
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed_row(SID_UNPRICED, &project, &transcript), "host-01")
+        .unwrap();
+
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    assert_eq!(stats.computed, 1);
+    assert_eq!(
+        stats.unpriced, 1,
+        "the session's dollars cannot be trusted, and the ledger says so"
+    );
+
+    let eff_json = db.get_efficiency_json(SID_UNPRICED).unwrap().expect("annotated");
+    let eff: serde_json::Value = serde_json::from_str(&eff_json).unwrap();
+    assert_eq!(
+        eff["aggregate"]["raw"]["unpriced-models"],
+        serde_json::json!(["claude-not-in-any-feed-9"]),
+        "the unpriced model is named in the persisted blob, which is what MCP `session_efficiency` \
+         and `clyde efficiency session` pass through verbatim: {eff_json}"
+    );
+    // The priced turn still priced: the disclosure rides ALONGSIDE the dollars, it does not replace
+    // them, and the unpriced turn's 13,000 tokens contributed exactly $0 of that figure.
+    let cost = eff["aggregate"]["raw"]["cost-usd"].as_f64().unwrap();
+    assert!(cost > 0.0, "the opus turn priced: {eff_json}");
+    assert_eq!(
+        eff["aggregate"]["raw"]["by-model"]["claude-not-in-any-feed-9"]["total"].as_u64(),
+        Some(13000),
+        "the unpriced model's tokens are still counted, so the gap is quantifiable"
+    );
 }
 
 const SID_ARCHIVED: &str = "22222222-2222-4222-8222-2222222222ab";

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use claude_pricing::{AssistantEntry, parse_jsonl_file};
@@ -253,6 +253,123 @@ fn add_usage_splits_tokens_by_model_and_reconstructs_the_aggregate() {
     assert_eq!(reconstructed.cache_5m_write, raw.cache_5m_write_tokens);
     assert_eq!(reconstructed.cache_1h_write, raw.cache_1h_write_tokens);
     assert_eq!(reconstructed.total, raw.total_tokens());
+}
+
+/// A model the EMBEDDED feed cannot price, carrying real tokens, is DISCLOSED in `unpriced_models`
+/// and contributes exactly $0 to `cost_usd`. This is the whole of item D: before this, the failure
+/// was laundered into a $0 that reads as a real price on every surface consuming the blob.
+///
+/// BITES: restore the bare `unwrap_or_else(|| { warn!(..); 0.0 })` in `add_usage` and the set is
+/// empty while `cost_usd` stays 0.0, which is the exact regression shape.
+#[test]
+fn unpriced_model_with_tokens_is_disclosed_and_contributes_zero() {
+    let mut raw = RawCounters::default();
+    // A priced model first, so the assertion below proves the set holds ONLY the failures.
+    raw.add_usage("claude-opus-4-8", &usage(2, 4251, 0, 202003, 0));
+    let priced = raw.cost_usd;
+    assert!(
+        priced > 0.0,
+        "the control model must price, else this test proves nothing"
+    );
+
+    let cost = raw.add_usage("claude-not-in-any-feed-9", &usage(1000, 500, 0, 0, 0));
+
+    assert_eq!(cost, 0.0, "an unpriced turn contributes $0");
+    assert_eq!(raw.cost_usd, priced, "cost_usd is unchanged by the unpriced turn");
+    assert_eq!(
+        raw.unpriced_models,
+        BTreeSet::from(["claude-not-in-any-feed-9".to_string()]),
+        "the unpriced model is named, and the priced one is not"
+    );
+    // Tokens are still counted: the gap is in the DOLLARS, and the token totals must stay honest so
+    // the set can be read as "these tokens went unpriced".
+    assert_eq!(
+        raw.by_model["claude-not-in-any-feed-9"],
+        token_totals(1000, 500, 0, 0, 0)
+    );
+}
+
+/// A zero-token unpriced model costs $0 CORRECTLY, so it is not a gap and is not disclosed. This is
+/// the measured live case: `<synthetic>` appears in 72 catalog rows carrying all-zero tokens in every
+/// one. Mirrors `report::has_tokens`, which filters the same shape out of `untracked_models`, so the
+/// two paths agree on what a real pricing gap is.
+///
+/// BITES: drop the `usage_has_tokens` gate and the set fills with `<synthetic>` on this host,
+/// reporting a $0 impact as a defect.
+#[test]
+fn zero_token_unpriced_model_is_not_disclosed() {
+    let mut raw = RawCounters::default();
+    let cost = raw.add_usage("<synthetic>", &usage(0, 0, 0, 0, 0));
+
+    assert_eq!(cost, 0.0);
+    assert!(
+        raw.unpriced_models.is_empty(),
+        "a zero-token unpriced model is priced correctly at $0, not a gap: {:?}",
+        raw.unpriced_models
+    );
+    // It is still counted as a turn and still in the model mix: only the DISCLOSURE is suppressed.
+    assert_eq!(raw.turns, 1);
+    assert_eq!(raw.model_mix["<synthetic>"], 1);
+}
+
+/// `merge` unions the sets, the additive operation for a set, so a gap found in one subagent's scope
+/// cannot vanish from the whole-session aggregate `fold` recomputes from the unioned counters.
+///
+/// BITES: drop the `extend` line in `merge` and the aggregate loses `b`'s model.
+#[test]
+fn merge_unions_unpriced_models() {
+    let mut a = RawCounters {
+        unpriced_models: BTreeSet::from(["model-a".to_string(), "shared".to_string()]),
+        ..RawCounters::default()
+    };
+    let b = RawCounters {
+        unpriced_models: BTreeSet::from(["model-b".to_string(), "shared".to_string()]),
+        ..RawCounters::default()
+    };
+    a.merge(&b);
+    assert_eq!(
+        a.unpriced_models,
+        BTreeSet::from(["model-a".to_string(), "model-b".to_string(), "shared".to_string()])
+    );
+}
+
+/// An `efficiency_json` blob written before this field existed deserializes to an EMPTY set rather
+/// than failing. That `#[serde(default)]` is why Phase 2 takes no `SCHEMA_VERSION` bump: no
+/// migration and no blob invalidation is needed to read ~1,800 existing rows.
+///
+/// BITES: remove `#[serde(default)]` and this fails with a missing-field error.
+#[test]
+fn blob_without_the_field_deserializes_to_an_empty_set() {
+    // Build a blob exactly as the pre-field code did: every field this struct had before, and no
+    // `unpriced-models` key at all. Derived by serializing and DELETING the key rather than by
+    // hand-writing JSON, so the fixture cannot drift out of sync with the struct's other fields.
+    let mut legacy = serde_json::to_value(&RawCounters {
+        input_tokens: 5,
+        output_tokens: 7,
+        cost_usd: 1.5,
+        ..RawCounters::default()
+    })
+    .expect("RawCounters must serialize");
+    legacy
+        .as_object_mut()
+        .expect("a serialized struct is a JSON object")
+        .remove("unpriced-models")
+        .expect("the key must exist to be removed, else this test proves nothing");
+
+    let raw: RawCounters = serde_json::from_value(legacy).expect("a pre-field blob must still parse");
+    assert_eq!(raw.input_tokens, 5);
+    assert_eq!(raw.output_tokens, 7);
+    assert_eq!(raw.cost_usd, 1.5);
+    assert!(raw.unpriced_models.is_empty());
+
+    // And the wire key is kebab-case, matching every other field on this struct and the export
+    // contract's convention.
+    let round_tripped = serde_json::to_value(&RawCounters {
+        unpriced_models: BTreeSet::from(["m".to_string()]),
+        ..RawCounters::default()
+    })
+    .expect("RawCounters must serialize");
+    assert_eq!(round_tripped["unpriced-models"], serde_json::json!(["m"]));
 }
 
 #[test]

@@ -1055,13 +1055,19 @@ fn print_reindex(reindex: &ReindexStats, stage: &StageStats, eff: &efficiency::P
             stage.up_to_date,
             stage.files_copied,
         );
+        // `unpriced` is printed unconditionally for the same reason `unrecoverable` is: it is a
+        // standing ledger line, and a count that appears only when non-zero reads as an error rather
+        // than as accounting. A non-zero value names sessions whose stored `cost_usd` is LOW because
+        // the embedded feed could not price a model their turns actually used; the model ids
+        // themselves are in each session's blob (`clyde efficiency session <id>`).
         println!(
-            "{} efficiency: candidates {}, computed {}, written {}, unrecoverable {}",
+            "{} efficiency: candidates {}, computed {}, written {}, unrecoverable {}, unpriced {}",
             "✓".green(),
             eff.candidates,
             eff.computed,
             eff.written,
             eff.unrecoverable,
+            eff.unpriced,
         );
     } else {
         print_json(&serde_json::json!({ "reindex": reindex, "staging": stage, "efficiency": eff }));
