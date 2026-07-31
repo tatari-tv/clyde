@@ -4,16 +4,17 @@
 //! `weekly`) shares -- mirroring `cost`'s single `compute_summaries` seam (design "API Design":
 //! "Discovery reuses `common::scan`").
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
 use common::EfficiencyConfig;
-use common::scan::{SessionFile, find_session_files};
+use common::scan::{SessionFile, find_session_files, pricing_files};
 use eyre::{Context, Result};
 use log::{debug, warn};
 use rayon::prelude::*;
+use sessions::EfficiencyCandidate;
 
 use crate::extract::{self, FileEfficiency};
 use crate::fold::{SessionEfficiency, fold};
@@ -26,7 +27,7 @@ use crate::score::scored;
 /// scope), so the session's own files' mtime is the correct-seam substitute -- the same signal
 /// `common::scan::filter_by_date_range`'s date prefilter already uses.
 ///
-/// `outcomes` is populated ONLY on the reindex path ([`collect_ids`], which passes a `repo_root`):
+/// `outcomes` is populated ONLY on the reindex path ([`collect_layouts`], which passes a `repo_root`):
 /// the catalog persists per-session outcomes (Phase 2), but the live `clyde efficiency` surfaces
 /// (`session`/`daily`/`weekly`/`--worst`) do not render them, so [`collect_all`]/[`collect_matching`]
 /// skip the second per-file scan and leave this at its all-empty default.
@@ -73,40 +74,90 @@ pub fn collect_matching(projects_dir: &Path, id: &str, config: &EfficiencyConfig
     Ok(matches)
 }
 
-/// Discover and compute ONLY the session groups whose id is in `ids`. The incremental seam behind
-/// the Phase 6 backfill (`efficiency::reindex_efficiency`): the catalog hands the set of
-/// efficiency-`NULL` session ids, and this recomputes exactly those (skipping the many already-
-/// annotated sessions) rather than the whole tree. Empty `ids` is an empty result (no scan work
-/// beyond the directory walk). Parallel over the matched groups, same shape as [`collect_all`].
+/// What one backfill pass found: the sessions it could compute, and the ones with no bytes left.
+/// A named struct rather than a tuple so neither half can be read as the other at a call site.
+#[derive(Debug, Clone, Default)]
+pub struct Collected {
+    pub sessions: Vec<CollectedSession>,
+    /// Session ids that resolved to NO readable transcript, live or staged. Nothing to price, ever,
+    /// so `sessions.len() < candidates.len()` is never a silent delta.
+    pub unrecoverable: Vec<String>,
+}
+
+/// Compute the listed candidates, resolving each one's bytes through [`common::scan::pricing_files`]
+/// (live layout first, staged second, subagent-only accepted).
+///
+/// The incremental seam behind the backfill (`efficiency::reindex_efficiency`): the catalog hands
+/// over its efficiency-`NULL` rows WITH their path fields, and this prices exactly those. It does no
+/// tree walk at all -- it stats only the candidates' own paths -- which is why it replaced
+/// `collect_ids`, whose whole-tree scan could never see a reaped session's staged copy.
+///
+/// A candidate resolving to an empty file list is **unrecoverable**: its live transcript is gone and
+/// no staged copy exists, so its spend cannot be recovered by any later run. It is counted and
+/// warned about rather than silently dropped from the total.
 ///
 /// This is the ONLY collector that extracts outcomes: the reindex path persists per-session outcomes
 /// into the catalog's `outcome_json` column (Phase 2), so it pays the second per-file scan the live
 /// surfaces skip. `repo_root` is the configured clone root the edited-file paths are bucketed
 /// against for `Outcomes::repos_touched` (repo attribution's rule 3).
-pub fn collect_ids(
-    projects_dir: &Path,
-    ids: &BTreeSet<String>,
+pub fn collect_layouts(
+    candidates: &[EfficiencyCandidate],
     config: &EfficiencyConfig,
     repo_root: &Path,
-) -> Result<Vec<CollectedSession>> {
+) -> Result<Collected> {
     debug!(
-        "collect_ids: projects_dir={} ids={} repo_root={}",
-        projects_dir.display(),
-        ids.len(),
+        "collect_layouts: candidates={} repo_root={}",
+        candidates.len(),
         repo_root.display()
     );
-    if ids.is_empty() {
-        return Ok(Vec::new());
+    if candidates.is_empty() {
+        return Ok(Collected::default());
     }
-    let files = find_session_files(projects_dir).context("collect_ids: failed to scan session files")?;
-    let groups = group_by_session(&files);
-    let sessions: Vec<CollectedSession> = groups
+
+    // Resolution is a handful of stats per candidate (no tree walk), so it runs sequentially: it is
+    // cheap, and it keeps `unrecoverable` in the catalog's own stable row order rather than in
+    // whatever order a parallel map happens to finish.
+    let mut unrecoverable: Vec<String> = Vec::new();
+    let mut priceable: Vec<(&EfficiencyCandidate, Vec<SessionFile>)> = Vec::new();
+    for candidate in candidates {
+        let files = pricing_files(
+            &candidate.session_id,
+            &candidate.transcript_path,
+            Path::new(&candidate.project_dir),
+            candidate.staged_path.as_deref(),
+        );
+        if files.is_empty() {
+            // Names the REASON, not just the id: the first run after this ships emits one of these
+            // per historically-reaped session, and a wall of bare ids reads as a live crash rather
+            // than as the historical fact it is.
+            warn!(
+                "{}: no transcript on disk (live reaped, no staged copy); spend for this session is unrecoverable",
+                candidate.session_id
+            );
+            unrecoverable.push(candidate.session_id.clone());
+        } else {
+            priceable.push((candidate, files));
+        }
+    }
+
+    let sessions: Vec<CollectedSession> = priceable
         .par_iter()
-        .filter(|(session_id, _)| ids.contains(*session_id))
-        .map(|(session_id, group_files)| build_session(session_id, group_files, config, Some(repo_root)))
+        .map(|(candidate, files)| {
+            let group_files: Vec<&SessionFile> = files.iter().collect();
+            build_session(&candidate.session_id, &group_files, config, Some(repo_root))
+        })
         .collect();
-    debug!("collect_ids: requested={} computed={}", ids.len(), sessions.len());
-    Ok(sessions)
+
+    debug!(
+        "collect_layouts: candidates={} computed={} unrecoverable={}",
+        candidates.len(),
+        sessions.len(),
+        unrecoverable.len()
+    );
+    Ok(Collected {
+        sessions,
+        unrecoverable,
+    })
 }
 
 fn group_by_session(files: &[SessionFile]) -> BTreeMap<String, Vec<&SessionFile>> {

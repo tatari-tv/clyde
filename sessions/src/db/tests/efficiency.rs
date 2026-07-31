@@ -10,6 +10,16 @@ use std::path::Path;
 
 use super::*;
 
+/// Just the session ids from `sessions_missing_efficiency`, for tests asserting WHICH rows are
+/// candidates rather than what path fields they carry.
+fn candidate_ids(db: &Db) -> Vec<String> {
+    db.sessions_missing_efficiency()
+        .unwrap()
+        .into_iter()
+        .map(|c| c.session_id)
+        .collect()
+}
+
 /// The stored efficiency columns for one session: (efficiency_json, cache_read_share, tool_errors,
 /// cost_usd). All `Option` since a fresh/un-annotated row leaves every column `NULL`.
 fn efficiency_of(db: &Db, session_id: &str) -> (Option<String>, Option<f64>, Option<i64>, Option<f64>) {
@@ -130,7 +140,7 @@ fn v6_content_update_nulls_stale_efficiency() {
         "annotated before the content change"
     );
     assert!(
-        db.sessions_missing_efficiency().unwrap().is_empty(),
+        candidate_ids(&db).is_empty(),
         "an annotated row is not a backfill candidate"
     );
 
@@ -143,16 +153,23 @@ fn v6_content_update_nulls_stale_efficiency() {
         "a content change must invalidate the stale efficiency annotation"
     );
     assert_eq!(
-        db.sessions_missing_efficiency().unwrap(),
+        candidate_ids(&db),
         vec![UUID_A.to_string()],
         "the grown session becomes a backfill candidate again"
     );
 }
 
-/// `sessions_missing_efficiency` returns non-archived un-annotated rows only: an annotated row and an
-/// archived row are both excluded.
+/// `sessions_missing_efficiency` excludes ANNOTATED rows and nothing else. An ARCHIVED row is a
+/// candidate: `archived` records that the live transcript was reaped, never that the session cost
+/// nothing, and clyde keeps a durable staged copy precisely so that spend stays priceable.
+///
+/// BITES: this is the inverse of the assertion that shipped through v0.19.0
+/// (`..._excludes_annotated_and_archived`). Re-add `AND archived = 0` to the predicate and the
+/// archived row disappears from the candidate set, failing here. That clause was the root cause of
+/// `report collect` reading ~50% low on an aged window, so the regression test is the guard that
+/// keeps a money path from filtering on transcript availability again.
 #[test]
-fn v6_sessions_missing_efficiency_excludes_annotated_and_archived() {
+fn v6_sessions_missing_efficiency_includes_archived_and_excludes_annotated() {
     let tmp = tempfile::TempDir::new().unwrap();
     let live_a = tmp.path().join("a.jsonl");
     let live_b = tmp.path().join("b.jsonl");
@@ -163,7 +180,7 @@ fn v6_sessions_missing_efficiency_excludes_annotated_and_archived() {
     // A: un-annotated, live (real transcript on disk) -> a candidate.
     db.upsert_session(&parsed(UUID_A, live_a.to_str().unwrap()), "desk")
         .unwrap();
-    // B: annotated, live -> excluded.
+    // B: annotated, live -> excluded. Annotation is the ONLY exclusion.
     db.upsert_session(&parsed(UUID_B, live_b.to_str().unwrap()), "desk")
         .unwrap();
     db.set_efficiency_many(&[EfficiencyWrite {
@@ -175,14 +192,46 @@ fn v6_sessions_missing_efficiency_excludes_annotated_and_archived() {
         outcome_json: "{}",
     }])
     .unwrap();
-    // C: un-annotated but archived (reaped transcript) -> excluded (nothing to recompute from).
+    // C: un-annotated and archived (live transcript reaped) -> STILL a candidate. Whether its bytes
+    // are actually recoverable is `common::scan::pricing_files`' question, resolved per row by the
+    // caller; it is not this predicate's job to guess from a column.
     db.upsert_session(&parsed(UUID_C, "/tmp/reaped.jsonl"), "desk").unwrap();
     db.reconcile_archived().unwrap();
 
-    assert_eq!(
-        db.sessions_missing_efficiency().unwrap(),
-        vec![UUID_A.to_string()],
-        "only the live, un-annotated session is a backfill candidate"
+    let ids = candidate_ids(&db);
+    assert!(
+        ids.contains(&UUID_A.to_string()),
+        "the live un-annotated row is a candidate"
+    );
+    assert!(
+        ids.contains(&UUID_C.to_string()),
+        "the ARCHIVED un-annotated row is a candidate: it may still have a staged copy to price"
+    );
+    assert!(
+        !ids.contains(&UUID_B.to_string()),
+        "the annotated row is the only exclusion"
+    );
+    assert_eq!(ids.len(), 2);
+}
+
+/// Each candidate carries the three path fields `common::scan::pricing_files` needs, so the backfill
+/// resolves live-or-staged per row instead of walking the projects tree and filtering.
+#[test]
+fn v6_sessions_missing_efficiency_carries_the_resolver_path_fields() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/projects/proj/a.jsonl"), "desk")
+        .unwrap();
+    db.set_staged_path(UUID_A, Path::new("/staged/a")).unwrap();
+
+    let candidates = db.sessions_missing_efficiency().unwrap();
+    assert_eq!(candidates.len(), 1);
+    let c = &candidates[0];
+    assert_eq!(c.session_id, UUID_A);
+    assert_eq!(c.transcript_path, Path::new("/tmp/projects/proj/a.jsonl"));
+    assert_eq!(c.staged_path.as_deref(), Some(Path::new("/staged/a")));
+    assert!(
+        !c.project_dir.is_empty(),
+        "project_dir is the live subagents-dir root the resolver joins onto"
     );
 }
 

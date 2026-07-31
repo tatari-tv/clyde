@@ -54,7 +54,7 @@ use eyre::{Context, Result};
 use log::debug;
 
 pub use cli::EfficiencyArgs;
-pub use collect::{CollectedSession, collect_all, collect_ids, collect_matching};
+pub use collect::{Collected, CollectedSession, collect_all, collect_layouts, collect_matching};
 pub use extract::{FileEfficiency, Scope, SubagentRaw, extract};
 pub use fold::{EfficiencyFlag, SessionEfficiency, SubagentEfficiency, fold};
 pub use metrics::{
