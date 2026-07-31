@@ -22,17 +22,25 @@ tasks:
       echo "✅ No _variable patterns found"
       echo ""
       echo "=== Deny em dash in Rust source ==="
-      # `rg`, not `grep -r ... */src/`: 17 of the 373 occurrences this lint was written to kill lived
-      # in */tests/ integration files, which a */src/ walk never reaches. A lint narrower than the rule
-      # is a hole the tree drifts back through where CI cannot see it. Using rg also makes this command
-      # and the design's acceptance criterion literally the same one, so they cannot diverge.
-      # `\x{2014}` (not the character) keeps this file em-dash-free too.
-      # Status is checked EXPLICITLY, not via `if rg ...`. ripgrep exits 0 on a match, 1 on no
-      # match, and 2 on an error (bad glob, unreadable path, broken regex). A bare `if` treats 2
-      # like 1, so a lint that silently stopped scanning would report success: fail-open, in the one
-      # place that exists to fail closed.
+      # `grep`, NOT `rg`: ripgrep is NOT installed on the CI runner, and the first version of this
+      # lint used it. `rg: command not found` exits 127, which an `if rg ...; then` reads as
+      # "no match", so the lint printed its success line having scanned NOTHING. It was a no-op in
+      # CI from the day it landed, and a green run proved only that rg was absent. Found by the
+      # explicit status check below on PR #78, which is exactly what that check is for.
+      #
+      # `\x{2014}` (PCRE codepoint escape, hence -P) rather than the literal character, so this file
+      # stays em-dash-free itself. Verified to match under LC_ALL=C, POSIX, and C.UTF-8, so it does not
+      # depend on the runner's locale. The raw-byte form `\xe2\x80\x94` was tried first and matches
+      # NOTHING under -P, which is why the pattern is written this way.
+      # Scope stays the whole tree with only `target` excluded: 17 of the 369 original occurrences
+      # lived in `*/tests/`, which the sibling `*/src/` lint above never walks. A lint narrower than
+      # the rule is a hole the tree drifts back through where CI cannot see it.
+      #
+      # Status is checked EXPLICITLY, never via `if grep ...`. grep exits 0 on a match, 1 on no
+      # match, and 2+ on an error (and 127 if the binary is missing). A bare `if` treats every
+      # non-zero as "clean", which is the fail-open this comment exists to document.
       em_status=0
-      rg -n --type rust -g '!target' '\x{2014}' . || em_status=$?
+      grep -rn --include='*.rs' --exclude-dir=target -P '\x{2014}' . || em_status=$?
       case "$em_status" in
         0)
           echo ""
@@ -46,7 +54,7 @@ tasks:
           ;;
         *)
           echo ""
-          echo "❌ ripgrep exited $em_status scanning for em dashes (not 0=found / 1=clean)."
+          echo "❌ grep exited $em_status scanning for em dashes (not 0=found / 1=clean)."
           echo "   The scan did not complete, so this is a lint FAILURE, not a pass."
           exit 1
           ;;

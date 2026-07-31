@@ -911,3 +911,42 @@ appends it to the prompt, so from a non-TTY caller it blocks until the tool time
 `HOME/.claude/hooks/codex-stdin-guard.sh`, a PreToolUse deny with the fix named, verified against 10
 cases. This is the structural remedy rather than an intention to be careful: the `general:codex` skill's
 own patterns omit stdin handling, and it lives in a plugin cache an update overwrites.
+
+### The em-dash lint was a no-op in CI, and the fail-closed fix is what caught it
+
+The most consequential thing to come out of PR #78's review, recorded because the lesson generalizes.
+
+CodeRabbit flagged that `if rg ...; then` conflates ripgrep's status 2 (scan error) with status 1
+(clean). Fixing that turned the next CI run RED, which exposed the real defect underneath:
+
+```
+lint/script.sh: line 43: rg: command not found
+```
+
+**`rg` is not installed on the CI runner.** `command not found` exits 127, the `if` read that as
+"no match", and the lint printed `✅ No em dashes in Rust source` having scanned nothing at all. So:
+
+- the em-dash lint never ran in CI from the moment it landed in Phase 3
+- AC2's `otto lint` half passed **vacuously** in CI. It was true locally, where `rg` exists, which is
+  exactly why the gap was invisible: the acceptance criterion was executed on the machine that has the
+  tool, and CI silently disagreed
+- the first green run on this PR proved only that ripgrep was absent
+
+Fixed by switching to `grep -rn --include='*.rs' --exclude-dir=target -P '\x{2014}' .`, which keeps
+the whole-tree scope that was the point of using `rg` in the first place. Two things measured rather
+than assumed:
+
+- the raw-byte pattern `\xe2\x80\x94` matches **nothing** under `grep -P`; the first attempt at this
+  fix used it and the break-it check caught it. `\x{2014}` is the form that works, and it also keeps
+  `.otto.yml` em-dash-free
+- `\x{2014}` matches under `LC_ALL=C`, `POSIX`, and `C.UTF-8`, so the lint does not depend on the
+  runner's locale
+
+Break-it check re-run after the fix: an em-dash planted in `sessions/tests/export.rs` (outside
+`*/src/`) fails `otto lint`, and the sibling `*/src/` grep still cannot see it.
+
+**The generalizable lesson, which is bigger than this lint:** a green CI run is evidence only if the
+check actually executed. `if <tool> ...; then` silently converts "the tool is missing" into "the
+check passed", and a lint is precisely where that inversion is most costly. Any future CI check that
+shells out to a non-POSIX tool should either assert the tool exists or match its exit status
+explicitly. This is the same fail-open class as `.ok()` on a pricing lookup (Phase 6 finding C).

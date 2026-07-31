@@ -501,6 +501,14 @@ Per Phase 5's gate, each was executed against `main` while drafting and the obse
       trailing whitespace`, `✅ No _variable patterns`) because no em-dash deny exists yet; both halves
       must hold, so the lint is load-bearing. The 17 occurrences outside `*/src/` are why Phase 3's lint
       uses `rg` rather than the existing `grep -r … */src/` shape.
+      *Corrected on PR #78, and this one matters:* the lint as first written used `rg`, which is **not
+      installed on the CI runner**. `rg: command not found` exits 127, and the original
+      `if rg ...; then` read that as "no match", so the lint printed its success line having scanned
+      NOTHING. The em-dash lint was a **no-op in CI from the day it landed**, and the first green PR run
+      proved only that ripgrep was absent. The lint now uses `grep -P '\x{2014}'` (verified to match
+      under C, POSIX, and C.UTF-8 locales) and checks grep's exit status explicitly, so a missing
+      binary or a failed scan is a lint FAILURE rather than a pass. Found by the explicit status check
+      that CodeRabbit asked for, which is the whole argument for fail-closed status handling.
 - [x] **AC3.** `rg -c klod --type rust --type toml -g '!target' .` returns hits in `clyde/src/doctor.rs`
       and `clyde/src/doctor/tests.rs` ONLY, at **>= 17** and **>= 10** respectively; **exactly zero** for
       `bootstrap.rs`, `bootstrap/tests.rs`, `Cargo.toml`, and `session/src/scope/tests.rs`; and
