@@ -853,3 +853,49 @@ Findings were read from those files directly.
 
 Both reviewers were told the three handed-off findings (scope-off-cwd, dormancy, cost undercount) are
 known-open and out of this doc's scope. Neither disputed that call.
+
+### Staff finding 2 closed: Phase 5's skill review, and what it found
+
+Phase 5's third success criterion is "`general:skill-reviewer` on the edited skill returns no critical
+finding." I had not run it. Running it exposed a **real CRITICAL defect in my own Phase 5 edit**, which
+is the best possible argument for the criterion existing.
+
+**The named agent could not be used.** `general:skill-reviewer` was invoked and went idle twice without
+returning a report, the same wrapper failure that hit the review panel. Reviewing my own edit myself
+would be circular authority ("a claim is not evidence if you authored it this session"), so the review
+was run through an independent model (codex) instead. **Substitution disclosed rather than papered
+over: the criterion as literally worded is not satisfied, because that specific agent never produced a
+verdict.** What was obtained is an independent-model review, which is the criterion's intent.
+
+Findings, and what happened to each:
+
+- **CRITICAL, fixed.** My added paragraph in `how-to-execute-a-plan` step 0.5 said: run the command,
+  and if the criterion is unsatisfiable as written, "AMEND IT IN THE DOC ... then continue." That
+  directly contradicts the same section's pre-existing "If any criterion FAILS, the work is not done:
+  stop and surface it." As written, an agent could invoke "amend it" to make a genuinely failing
+  implementation pass. **I turned a verification gate into a rubber stamp.** Fixed with a two-row table
+  that splits the cases: a proven DOC defect may be amended; a sound criterion the code fails means
+  STOP, and amending it is explicitly forbidden. Plus the test that decides which: if you cannot say in
+  one sentence why the criterion is wrong INDEPENDENT of your code, it is not a doc defect.
+- **MAJOR, fixed.** The executed-criteria requirement lived only at finalization (step 0.5), which is
+  far too late for something called a ready-to-build gate. Added to `how-to-execute-a-plan`'s
+  pre-phase-1 gate, where a criterion naming a nonexistent flag costs seconds to catch instead of
+  surfacing after every phase has shipped green.
+- **MAJOR, not taken.** "`every criterion's literal command` conflicts with criteria being assert
+  statements; require an explicit probe command." Rejected: the gate already scopes itself to criteria
+  that name "a flag, column, path, exit code, count, or command", and the recorded observed-output line
+  is the probe. Adding a second required field for the same fact is ceremony.
+- **MINOR, fixed.** `*Observed on `main`:*` nests emphasis around inline code, which renders
+  inconsistently. Now `` `Observed on main:` ``.
+- **MINOR, not taken.** "The clyde #77 story is bloat, shrink to one sentence." Rejected: the reviewer
+  also said 263 lines is still followable and the gate should stay in SKILL.md. The five-occurrence
+  history IS the argument that makes an agent run the commands instead of skipping the step, and the
+  doc it governs lost that argument twice already. Kept deliberately.
+
+### Related structural fix, `scottidler/claude`
+
+I hung the Bash tool twice invoking `codex exec` without resolving stdin. `codex exec` reads stdin and
+appends it to the prompt, so from a non-TTY caller it blocks until the tool timeout. Added
+`HOME/.claude/hooks/codex-stdin-guard.sh`, a PreToolUse deny with the fix named, verified against 10
+cases. This is the structural remedy rather than an intention to be careful: the `general:codex` skill's
+own patterns omit stdin handling, and it lives in a plugin cache an update overwrites.

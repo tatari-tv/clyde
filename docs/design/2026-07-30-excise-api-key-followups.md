@@ -444,7 +444,12 @@ required deleting the tests that prove its own phase. AC5 required a non-zero ex
 - `rg -c 'literal command' ~/repos/scottidler/claude/HOME/.claude/skills/create-design-doc/SKILL.md`
   returns non-zero, and the gate names where the output is recorded
 - the Acceptance Criteria section of THIS doc carries an observed-output line per criterion
-- `general:skill-reviewer` on the edited skill returns no critical finding
+- `general:skill-reviewer` on the edited skill returns no critical finding.
+  *Amended after the implementation audit:* the named agent went idle twice without a verdict, so an
+  INDEPENDENT-MODEL review (codex) was substituted rather than self-reviewing, which would be circular.
+  It returned one CRITICAL (my step-0.5 wording let a failing implementation be waved through by
+  "amending" a sound criterion) plus two MAJOR. All fixed. The criterion as literally worded is NOT
+  satisfied, because that specific agent produced nothing; its intent is. See the notes
 
 #### Phase 6: The smaller items
 **Model:** sonnet
