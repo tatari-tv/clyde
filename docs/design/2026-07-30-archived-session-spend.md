@@ -2,7 +2,9 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-30
-**Status:** Ready to build, gated on PR #78 landing first (see Ship Order)
+**Status:** Implemented (branch `archived-session-spend`, 2026-07-31). PR #78's gate was satisfied
+before Phase 1: it merged as `main` @ `0bb133f` (v0.19.0). Implementation notes:
+`docs/design/2026-07-30-archived-session-spend-implementation-notes.md`
 **Review Passes Completed:** 5/5 authoring passes + 1 cross-model review panel round (all findings
 dispositioned, no open pushbacks)
 
@@ -600,9 +602,17 @@ pub fn collect_layouts(
   Phase 2's regression test, not prose, which is the house preference anyway.
 - Write `docs/design/2026-07-30-archived-session-spend-implementation-notes.md`.
 - **Success criteria:**
-  - `rg -n "archived" README.md` returns the new semantics statement, and no doc in the tree still
-    claims archived sessions have nothing to recompute from:
-    `rg -n "nothing on disk to recompute" -- '*.rs' '*.md'` returns zero hits.
+  - `rg -n "archived" README.md` returns the new semantics statement, and no CODE still claims
+    archived sessions have nothing to recompute from: `rg -n "nothing on disk to recompute"
+    --type rust` returns zero hits.
+    - **Amended during implementation (2026-07-31), doc defect.** As authored this criterion greped
+      `'*.rs' '*.md'` and asserted ZERO hits. It can never pass: this design doc is itself a `.md`
+      that must quote the phrase to explain the false premise it exists to kill, so the criterion
+      matched its own text plus the Phase 2 bullet's quotation. Verified: `grep -rn "nothing on disk
+      to recompute" --include='*.md' .` returns exactly two lines, both in THIS file (the Phase 2
+      bullet and this criterion), and `--include='*.rs'` returns zero. Scoped to Rust, which is where
+      the premise was load-bearing (the `sessions_missing_efficiency` doc comment that invited the
+      `archived = 0` predicate straight back).
   - `docs/design/2026-07-30-archived-session-spend-implementation-notes.md` exists and walks the
     plan phase by phase.
   - `otto ci` green.

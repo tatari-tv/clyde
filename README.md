@@ -97,7 +97,7 @@ Everything lives under one clyde home:
 ```
 $XDG_DATA_HOME/clyde/sessions.db     # the session index (rebuildable: delete + reindex)
 $XDG_DATA_HOME/clyde/events.db       # permit events (moved from claude-permit, WAL-safe)
-$XDG_DATA_HOME/clyde/staged/         # durable transcript copies (TTL insurance, via `stage`)
+$XDG_DATA_HOME/clyde/staged/         # durable transcript copies (TTL insurance; see "Reaped transcripts")
 $XDG_DATA_HOME/clyde/logs/clyde.log  # clyde's own log
 $XDG_DATA_HOME/clyde/logs/cost.log   # was ccu/logs/ccu.log
 $XDG_DATA_HOME/clyde/logs/permit.log # was claude-permit/logs/claude-permit.log
@@ -266,6 +266,38 @@ The `--` before any claude flags is required: `clyde session resume <id> --model
 will produce a parse error. This is intentional - clyde does not parse claude's flags.
 
 The session id may be a unique prefix. `clyde session ls` or `clyde session search` show ids.
+
+## Reaped transcripts, staging, and what `archived` means
+
+Claude Code eventually deletes a session's JSONL from `~/.claude/projects`. clyde records that as
+`archived` on the catalog row, and `archived` means exactly one thing: **the live transcript is no
+longer on disk.** It never means the session did not happen, and it never means the session cost
+nothing.
+
+- **Every cost surface prices reaped sessions from their staged copies.** `clyde report collect`,
+  `clyde cost`, and `clyde efficiency` all resolve a session's bytes live-first, then staged. A
+  session whose live transcript is gone still contributes its full spend as long as
+  `$XDG_DATA_HOME/clyde/staged/` holds a copy.
+- **A session with no bytes anywhere is stated, never rendered as $0.** If both the live transcript
+  and the staged copy are gone, that spend is unrecoverable: no re-run can price it. `report collect`
+  EXCLUDES the row (an all-zero entry would corrupt every ratio-of-sums total), names the count in
+  the artifact's `notes`, and still exits 0. `clyde session reindex` reports the same rows as
+  `unrecoverable`, so `candidates == computed + unrecoverable` always balances.
+- **`clyde report merge` carries those disclosures through**, prefixed with the host that produced
+  them, so a multi-host total never looks complete when one machine lost sessions.
+
+Two operational notes:
+
+1. **Run `clyde session reindex` on a timer so staging beats the TTL.** `reindex` stages every
+   dormant (>=7d idle) transcript before pricing, so a durable copy exists before Claude Code can
+   reap it. `clyde bootstrap --install-timer` installs a `clyde-reindex` timer that does this every
+   6h, and `clyde doctor` reports whether that timer is present. Without it, sessions keep aging
+   into the permanently-unpriceable state. `clyde session stage` remains the manual, tunable entry
+   point (`--dormant-after`, `--all`).
+2. **Re-run `report collect` for any window whose artifact predates this behavior.** Older artifacts
+   silently omitted archived sessions and carry no marker saying so, so a `report merge` mixing old
+   and new artifacts understates by whatever the old one dropped. Re-collecting is cheap: it reads
+   only the catalog and scans no JSONL.
 
 ## Design
 
