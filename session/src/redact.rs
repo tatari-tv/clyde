@@ -1,4 +1,4 @@
-//! Secret scrubbing — defense-in-depth, **not** the trust boundary.
+//! Secret scrubbing -- defense-in-depth, **not** the trust boundary.
 //!
 //! The real Phase 2 boundary is the scope gate ([`crate::scope`]) plus the work account's
 //! data-retention posture. This module is the net beneath it: a single chokepoint
@@ -7,7 +7,7 @@
 //! cleared to reach the work account, before the payload leaves the process.
 //!
 //! It deliberately matches only high-confidence shapes. Generic bearer tokens, DSNs, JWT
-//! variants, PII, and proprietary URLs are out of scope and are *known* gaps — the scope gate,
+//! variants, PII, and proprietary URLs are out of scope and are *known* gaps -- the scope gate,
 //! not this regex, is what keeps personal content off the work account. Over-scrubbing is
 //! acceptable: the redacted text only feeds tag/summary inference, never replaces the stored body.
 

@@ -18,7 +18,7 @@ use super::{SCHEMA_SQL, SCHEMA_VERSION, V5_TRIGGERS_SQL};
 /// Snapshot the on-disk DB file to `<path>.pre-v10.bak` (plus any `-wal`/`-shm` sidecars) before the
 /// v10 migration's first run, per the house migration-verification rule (`rules/rust.md`: "Snapshot
 /// the DB before the first run of a schema change"). Fires only when there is real pre-v10 state to
-/// protect — a genuinely pre-existing catalog whose PRE-migration `user_version` is in `1..10` — so a
+/// protect -- a genuinely pre-existing catalog whose PRE-migration `user_version` is in `1..10` -- so a
 /// brand-new catalog (`user_version == 0`, nothing written yet) is skipped, and so is a DB already at
 /// v10 or later (this predicate can never match again once the migration below bumps the version, so
 /// the snapshot fires exactly once per DB, ever).
@@ -111,7 +111,7 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
 /// version-gated, so re-running against an already-migrated DB is a no-op.
 ///
 /// `from_version` is the PRE-migration `user_version`. The one-shot backfill+seed (steps 2-3) runs
-/// ONLY when `from_version < 5` — a genuine v4->v5 upgrade where `updated_at` did not yet exist.
+/// ONLY when `from_version < 5` -- a genuine v4->v5 upgrade where `updated_at` did not yet exist.
 /// Without this gate a later migration (e.g. v5->v6) would re-enter this step and the unconditional
 /// rowid-order backfill would RESET every live revision to its rowid position, silently rewinding
 /// consumers' `--cursor` paging. (The column/index/counter/trigger creation is idempotent and safe
@@ -132,7 +132,7 @@ fn migrate_v5_cursor(conn: &Connection, from_version: i64) -> Result<()> {
     .context("v5: create updated_at index and export_meta counter")?;
     if from_version < 5 {
         // (2) Backfill revisions in rowid order (id == rowid here): each row's revision is its 1-based
-        // position, strictly increasing, distinct — a rowid-order dense rank, never a timestamp. This
+        // position, strictly increasing, distinct -- a rowid-order dense rank, never a timestamp. This
         // runs BEFORE the triggers exist (on a v4->v5 upgrade) so it does not fire them, and ONLY on
         // that first upgrade so it never rewrites live revisions on a later migration.
         let backfilled = conn
@@ -141,7 +141,7 @@ fn migrate_v5_cursor(conn: &Connection, from_version: i64) -> Result<()> {
                 [],
             )
             .context("v5: backfill updated_at in rowid order")?;
-        // (3) Seed the counter to MAX(updated_at) so the first post-migration write is MAX+1 — never a
+        // (3) Seed the counter to MAX(updated_at) so the first post-migration write is MAX+1 -- never a
         // collision, never going backward.
         conn.execute(
             "UPDATE export_meta SET revision = (SELECT COALESCE(MAX(updated_at), 0) FROM sessions) WHERE id = 0",
@@ -163,10 +163,10 @@ fn migrate_v5_cursor(conn: &Connection, from_version: i64) -> Result<()> {
 /// their ranking indexes.
 ///
 /// Idempotent: every `ensure_column` probes `pragma_table_info` before `ALTER`, the indexes use
-/// `IF NOT EXISTS`, and `migrate` is version-gated — re-running against an already-v6 DB is a no-op.
+/// `IF NOT EXISTS`, and `migrate` is version-gated -- re-running against an already-v6 DB is a no-op.
 /// The columns all default to `NULL` (no efficiency computed yet); the `reindex_efficiency` pass
 /// populates them (via `Db::set_efficiency_many`), which is why the migration itself never computes
-/// anything — that is a separate, expensive, file-reading annotation pass.
+/// anything -- that is a separate, expensive, file-reading annotation pass.
 fn migrate_v6_efficiency(conn: &Connection) -> Result<()> {
     debug!(
         "migrate_v6_efficiency: add efficiency_json + indexed scalar columns (cache_read_share, tool_errors, cost_usd)"
@@ -186,16 +186,16 @@ fn migrate_v6_efficiency(conn: &Connection) -> Result<()> {
 
 /// Invalidate the schema-v6 efficiency annotation on a genuine v6->v7 upgrade so the corrected
 /// named-subagent type-recovery logic recomputes it: set `efficiency_json` and the three indexed
-/// scalars to `NULL` for every row. The next `reindex_efficiency` pass — driven by the
-/// `efficiency_json IS NULL` predicate — then repopulates them from disk with the fix.
+/// scalars to `NULL` for every row. The next `reindex_efficiency` pass -- driven by the
+/// `efficiency_json IS NULL` predicate -- then repopulates them from disk with the fix.
 ///
 /// Runs ONCE, on the genuine v6->v7 hop only, gated on the PRE-migration `from_version == 6`. A
-/// fresh DB (`< 6`, never had v6 data — the columns migrate_v6 just added are already all `NULL`)
-/// skips it; and an already-v7+ DB (`> 6`) also skips it — since v8 landed, such a DB DOES re-enter
+/// fresh DB (`< 6`, never had v6 data -- the columns migrate_v6 just added are already all `NULL`)
+/// skips it; and an already-v7+ DB (`> 6`) also skips it -- since v8 landed, such a DB DOES re-enter
 /// `migrate`, but its efficiency invalidation is subsumed by `migrate_v8_extend_efficiency` below, so
 /// re-running this here would be a wasted full-table `UPDATE` + trigger churn on every later upgrade.
-/// Mirrors `Db::set_efficiency_many`'s trigger suppression — DROP the UPDATE trigger, NULL, recreate
-/// — so invalidating a DERIVED read-side annotation does NOT advance `updated_at` and force every
+/// Mirrors `Db::set_efficiency_many`'s trigger suppression -- DROP the UPDATE trigger, NULL, recreate
+/// -- so invalidating a DERIVED read-side annotation does NOT advance `updated_at` and force every
 /// `session export --cursor` consumer to re-fetch the whole catalog.
 fn migrate_v7_reset_efficiency(conn: &Connection, from_version: i64) -> Result<()> {
     debug!(
@@ -222,14 +222,14 @@ fn migrate_v7_reset_efficiency(conn: &Connection, from_version: i64) -> Result<(
 /// Apply the schema v8 catalog extension inside the caller's migration transaction: add the
 /// `outcome_json` blob column (the per-session `Outcomes` relocated from `report::outcome` into the
 /// reindex path) and, on a DB that already carries efficiency data, INVALIDATE that annotation so the
-/// next `reindex_efficiency` pass repopulates it with the NEW shape — per-model `TokenTotals`
-/// (`efficiency::RawCounters::by_model`) that the pre-v8 blobs lack — AND writes the fresh
+/// next `reindex_efficiency` pass repopulates it with the NEW shape -- per-model `TokenTotals`
+/// (`efficiency::RawCounters::by_model`) that the pre-v8 blobs lack -- AND writes the fresh
 /// `outcome_json` alongside.
 ///
 /// `ensure_column` is idempotent (probes `pragma_table_info`), so the column add is safe on every
-/// migration. The invalidation runs only when `from_version >= 6` — a DB that could hold v6/v7
+/// migration. The invalidation runs only when `from_version >= 6` -- a DB that could hold v6/v7
 /// efficiency blobs; a fresh/pre-efficiency DB (`< 6`) has nothing to invalidate. Mirrors
-/// `migrate_v7_reset_efficiency`'s trigger suppression — DROP the UPDATE trigger, NULL, recreate — so
+/// `migrate_v7_reset_efficiency`'s trigger suppression -- DROP the UPDATE trigger, NULL, recreate -- so
 /// invalidating a DERIVED read-side annotation is cursor-neutral.
 fn migrate_v8_extend_efficiency(conn: &Connection, from_version: i64) -> Result<()> {
     debug!(
@@ -295,7 +295,7 @@ fn migrate_v9_reset_efficiency(conn: &Connection, from_version: i64) -> Result<(
 /// rank `99` meaning "unresolved") plus the `repo_paths` learned-path map (rule 2's backing store,
 /// `docs/design/2026-07-26-report-story-fidelity.md` Data Model). Idempotent (`ensure_column` probes
 /// `pragma_table_info`; the table uses `IF NOT EXISTS`), safe to run on every migration. Writes
-/// nothing itself — `sessions::index::reindex` populates the columns on the next reindex pass via
+/// nothing itself -- `sessions::index::reindex` populates the columns on the next reindex pass via
 /// `Db::upsert_repo` / `Db::record_repo_path`.
 ///
 /// It ALSO bundles the outcome-blob reset (Phase 3) rather than adding a v11 step: `Outcomes` gained
@@ -350,7 +350,7 @@ fn migrate_v10_repo(conn: &Connection, from_version: i64) -> Result<()> {
 }
 
 /// Idempotently add `column` to `table` if absent (probe `PRAGMA table_info` first). All three
-/// args are hardcoded identifiers — never user input — so interpolation is safe.
+/// args are hardcoded identifiers -- never user input -- so interpolation is safe.
 fn ensure_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let exists = stmt

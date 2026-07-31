@@ -18,7 +18,7 @@ fn pricing() -> Pricing {
 }
 
 /// One model's usage folded into a fresh `RawCounters` (populates `by_model`, tokens, and the
-/// embedded-priced `cost_usd`) — the shape the catalog's `efficiency_json` carries.
+/// embedded-priced `cost_usd`) -- the shape the catalog's `efficiency_json` carries.
 fn raw_with(model: &str, usage: TokenUsage) -> RawCounters {
     let mut r = RawCounters::default();
     r.add_usage(model, &usage);
@@ -45,7 +45,7 @@ fn small_usage(input: u64) -> TokenUsage {
     }
 }
 
-/// A `SessionEfficiency` whose whole-session aggregate is `finalize(parent ⊎ subs)` — internally
+/// A `SessionEfficiency` whose whole-session aggregate is `finalize(parent ⊎ subs)` -- internally
 /// consistent with the Aggregation invariant, so `subtract_subagents(aggregate, subs)` recovers
 /// `parent` exactly.
 fn session_eff(sid: &str, parent: RawCounters, subs: Vec<SubagentEfficiency>) -> SessionEfficiency {
@@ -868,7 +868,7 @@ fn no_rollup_explodes_into_residual_plus_subagents() {
     let sub_key = format!("{SID_A}/asub-1");
     assert_eq!(exploded.sessions[&sub_key].total_tokens(), 700);
     let sum: u64 = exploded.sessions.values().map(|e| e.total_tokens()).sum();
-    assert_eq!(sum, 1000, "parts sum to the aggregate — no double count");
+    assert_eq!(sum, 1000, "parts sum to the aggregate, no double count");
     // The report-wide token total (via the models table) is view-independent.
     let rolled_total: u64 = rolled.totals.models.values().map(|m| m.total).sum();
     let exploded_total: u64 = exploded.totals.models.values().map(|m| m.total).sum();
@@ -987,7 +987,7 @@ fn build_report_rolls_up_outcomes_with_global_dedupe() {
 }
 
 /// `--no-outcomes` (`outcomes_enabled: false`): no `outcomes` field anywhere, even when a session
-/// carries outcome data — fail closed at the persist seam, not just the extract seam.
+/// carries outcome data -- fail closed at the persist seam, not just the extract seam.
 #[test]
 fn build_report_with_outcomes_disabled_strips_all_outcomes() {
     let o = Outcomes {

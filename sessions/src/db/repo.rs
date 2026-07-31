@@ -55,7 +55,7 @@ pub struct RepoSnapshot {
 impl Db {
     /// Upgrade-only write of `sessions.repo`/`repo_source`/`repo_rank`: the row changes ONLY when
     /// `resolved.source.rank()` STRICTLY improves on the stored `repo_rank` (`?2 < repo_rank` in the
-    /// `WHERE` clause — never `<=`, never `COALESCE`). `COALESCE(:repo, sessions.repo)` is the exact
+    /// `WHERE` clause -- never `<=`, never `COALESCE`). `COALESCE(:repo, sessions.repo)` is the exact
     /// form this rejects: it would let a low-confidence `path-guess` written once outlive every
     /// better answer that arrives on a later reindex.
     ///
@@ -64,13 +64,13 @@ impl Db {
     /// identical upgrade-only DATA result via a `WHERE ?2 < repo_rank` guard instead, which is the
     /// better seam here specifically: unlike every other content column (written only when the
     /// transcript's mtime changed), repo resolution runs on EVERY reindex pass for EVERY session
-    /// regardless of content change — a cwd can gain or lose git-origin evidence with no transcript
+    /// regardless of content change -- a cwd can gain or lose git-origin evidence with no transcript
     /// change at all. An unconditional `UPDATE` would therefore touch nearly every row on nearly
     /// every reindex and fire the v5 revision trigger each time, forcing every `session export
-    /// --cursor` consumer to re-fetch the whole catalog on each pass — exactly the mass-churn defect
+    /// --cursor` consumer to re-fetch the whole catalog on each pass -- exactly the mass-churn defect
     /// the v6 efficiency-annotation exemption exists to prevent, just reached by a different route.
     /// The `WHERE`-gated form touches a row only on a genuine improvement, which is itself a real,
-    /// exportable content change (repo is persisted catalog content, like `git_branch` — not a
+    /// exportable content change (repo is persisted catalog content, like `git_branch` -- not a
     /// derived-only annotation like `efficiency_json`), so letting THAT case alone advance the
     /// cursor is correct.
     ///
@@ -94,7 +94,7 @@ impl Db {
     /// Record a rule-1 (`GitOrigin`) success into the learned `repo_paths` map: latest-live-
     /// observation wins, in contrast to `sessions.repo`'s strictly-improving policy (see the design
     /// doc's "The two tables need OPPOSITE write policies"). Every hit UPDATEs the row (refreshing
-    /// `repo` and `last_seen`) so a path deleted and re-cloned as a different repo self-corrects —
+    /// `repo` and `last_seen`) so a path deleted and re-cloned as a different repo self-corrects --
     /// `repo_paths` is a live map of what a cwd currently resolves to, not a historical fact.
     /// `first_seen` is preserved across an update (only set on the initial insert).
     pub fn record_repo_path(&self, path: &str, repo: &str, now: DateTime<Utc>) -> Result<()> {
@@ -198,7 +198,7 @@ impl Db {
 
     /// Rule 3's input for one session: `Outcomes::repos_touched` out of the stored `outcome_json`.
     /// An absent blob, an absent key, or an unparseable one all yield an EMPTY map, which makes
-    /// rule 3 abstain — the same answer as a session that edited nothing. That is the fail-closed
+    /// rule 3 abstain -- the same answer as a session that edited nothing. That is the fail-closed
     /// direction here (no attribution beats a wrong one), and a malformed blob is WARNed rather
     /// than swallowed so it cannot go unnoticed.
     pub fn repos_touched(&self, session_id: &str) -> Result<BTreeMap<String, u64>> {
@@ -249,7 +249,7 @@ impl Db {
 
     /// The persisted [`RepoAttribution`] for one session. Returns `None` for a session id absent
     /// from the catalog. Exposed for introspection (tests, and any future `clyde session
-    /// doctor`-style reporting) — the report/export-facing surface (`SessionRecord`, `session
+    /// doctor`-style reporting) -- the report/export-facing surface (`SessionRecord`, `session
     /// export`) is Phase 3's wiring.
     pub fn repo_of(&self, session_id: &str) -> Result<Option<RepoAttribution>> {
         debug!("Db::repo_of: session_id={session_id}");
@@ -298,7 +298,7 @@ fn parse_repos_touched(session_id: &str, blob: Option<&str>) -> BTreeMap<String,
 }
 
 /// The catalog-backed [`PathMap`]: rule 2's per-ancestor lookup is a `repo_paths` PRIMARY KEY point
-/// read, never a scan or a `LIKE` — [`common::repo::from_known_path`] already walks
+/// read, never a scan or a `LIKE` -- [`common::repo::from_known_path`] already walks
 /// [`Path::ancestors`] and calls this once per ancestor, so the longest-prefix semantics live there
 /// and this stays a single indexed lookup.
 impl PathMap for Db {

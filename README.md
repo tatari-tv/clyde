@@ -10,14 +10,14 @@ permission hygiene.
 ## Workspace
 
 ```
-clyde/      thin umbrella bin — top-level CLI, dispatch, bootstrap, doctor (the only entry binary)
-common/     the clyde-common surface — Globals passed from clyde down to each tool's run()
-session/    shared core — locate ~/.claude/projects, parse JSONL, path resolution
-sessions/   navigational layer — sessions.db (SQLite + dual FTS5): search / ls / resume / tag / reindex
-report/     was claude-report     — JSON/markdown session reporting (lib)
-cost/       was claude-cost-usage  — cost/usage + statusline installer (lib)
-permit/     was claude-permit      — permission hygiene + PreToolUse hook (lib)
-pricing/    was claude-pricing     — pricing data, JSONL parsing, cost math (lib `claude_pricing`, no bin)
+clyde/      thin umbrella bin: top-level CLI, dispatch, bootstrap, doctor (the only entry binary)
+common/     the clyde-common surface: Globals passed from clyde down to each tool's run()
+session/    shared core: locate ~/.claude/projects, parse JSONL, path resolution
+sessions/   navigational layer: sessions.db (SQLite + dual FTS5): search / ls / resume / tag / reindex
+report/     was claude-report     : JSON/markdown session reporting (lib)
+cost/       was claude-cost-usage  : cost/usage + statusline installer (lib)
+permit/     was claude-permit      : permission hygiene + PreToolUse hook (lib)
+pricing/    was claude-pricing     : pricing data, JSONL parsing, cost math (lib `claude_pricing`, no bin)
 ```
 
 ## Command surface
@@ -48,12 +48,12 @@ on a normal invocation. Rendering lives in `common::tools`.
 `$XDG_DATA_HOME/clyde/logs/<tool>.log` location (see
 `docs/design/2026-07-03-deep-dive-remediations.md`, Decision D3), instead of the old per-tool
 legacy dirs (`claude-report/logs/`, `ccu/logs/`, `claude-permit/logs/`). Old log *content* is not
-migrated — logs are disposable diagnostics — so the legacy dirs are left in place; `clyde doctor`
+migrated (logs are disposable diagnostics), so the legacy dirs are left in place; `clyde doctor`
 lists them informationally if present. Every `--help` renders the live path, never a hardcoded
 string.
 
 The pre-merge standalone tools (`claude-report`/`cr`, `claude-cost-usage`/`ccu`, `claude-permit`)
-and their compat shims have been removed — everything is reached through `clyde` subcommands.
+and their compat shims have been removed: everything is reached through `clyde` subcommands.
 `clyde bootstrap` repoints the live integrations (statusline, PreToolUse hook, enrich timer) from
 the old binaries to `clyde`.
 
@@ -72,6 +72,23 @@ systemd user timer). Every file is backed up to `<path>.clyde.bak` before it is 
 `doctor` exits non-zero while any integration still resolves to an old binary name or any tool's
 state still lives only at a legacy path. It also reports each tool's log location and, purely
 informationally (never affecting the exit code), any legacy log dirs still present on disk.
+
+### Pre-rename (`klod`) state: migration retired
+
+`clyde` was called `klod` before the umbrella merge. As of the release after v0.18.0, **`bootstrap`
+no longer migrates pre-rename state**: the `~/.config/klod` and `~/.local/share/klod` moves and the
+`klod-enrich.*` unit rename are gone.
+
+`doctor` still DETECTS all of it and still fails loud, naming each offending path. A host that has
+never run `bootstrap` since the rename must therefore:
+
+1. install a pre-retirement `clyde` (v0.18.0 or earlier),
+2. run `clyde bootstrap` there to migrate, then
+3. upgrade again.
+
+`bootstrap` on such a host reports `0 steps`: it genuinely cannot help, and `doctor` is the one
+channel that says so. Every other legacy state (`ccu`, `claude-permit`, a drifted enrich unit) is
+still migrated and repaired by `bootstrap` as before.
 
 ## Data layout (XDG)
 
@@ -119,6 +136,29 @@ warns on stderr naming the gap and still writes the artifact. The report's theme
 session summaries; below the floor they fall back to session titles, which are written from the
 opening exchange and say little about what the session produced. Override per run with
 `report collect --min-enrichment <fraction>`; raise coverage with `clyde session enrich`.
+
+### Enrich cost baseline, and the two canary thresholds
+
+Measured on the 2026-07-30 recovery sweep, over the keyless `claude` CLI transport with
+`MAX_THINKING_TOKENS=0`:
+
+| measure | baseline |
+|---|---|
+| wall clock per enriched row | ~6.3s |
+| output tokens per enriched row | ~139 |
+| cost per 100 sessions | ~$2.05 |
+
+**Re-check these after every `claude` upgrade.** `MAX_THINKING_TOKENS` is undocumented in the
+`claude` binary, so if a release stops honoring it, enrichment keeps succeeding and simply gets ~3x
+dearer and ~9x slower: a silent cost regression, not a failure. The two thresholds that say it
+happened:
+
+- **output tokens per row back into the thousands** (the pre-suppression measurement was 5,798)
+- **per-call wall clock back to ~52s**
+
+Either one means reasoning is being billed again. `clyde session enrich` logs `tokens_out` per row at
+debug, and the `tokens_in`/`tokens_out` columns in `sessions.db` are durable, so the check is a query,
+not a re-measurement.
 
 The `render:` defaults for `report render` (all optional; a missing section is all-defaults):
 
@@ -168,7 +208,7 @@ never ranked as "worst," since a structurally-low cache-read share there is expe
 session was (in)efficient, alongside the numbers (nothing is removed; JSON gains a `narrative`
 field, the human/YAML view gets a `narrative:` block). It needs a logged-in `claude` on PATH and
 makes one LLM call; without the flag nothing touches the network. The model only phrases the
-Rust-computed facts — it is handed pre-formatted display strings, not raw numbers, and any prose
+Rust-computed facts: it is handed pre-formatted display strings, not raw numbers, and any prose
 that introduces a figure absent from those facts is rejected.
 
 Config readers prefer the clyde location and fall back to the legacy path until `bootstrap`
@@ -196,7 +236,7 @@ clyde mcp bundle                      # package a .mcpb for Claude Desktop / Cow
 
 **Upgrading from a build that had `clyde session serve`:** the MCP subcommand moved to the top
 level (`clyde session serve` -> `clyde mcp serve`), so any existing `claude mcp add clyde ... session
-serve` entry is now stale. Run `clyde mcp register --target user` UNCONDITIONALLY after upgrading —
+serve` entry is now stale. Run `clyde mcp register --target user` UNCONDITIONALLY after upgrading,
 it overwrites the stale entry in place (`register` is idempotent and derives the value from the
 current binary). Do not rely on `clyde mcp status` to detect staleness: it only checks that the key
 is present, not that its `command`/`args` are current.
@@ -230,7 +270,8 @@ The session id may be a unique prefix. `clyde session ls` or `clyde session sear
 ## Design
 
 `docs/design/2026-06-24-clyde-umbrella-cli.md` (and its implementation notes). The session catalog
-and MCP layers predate the umbrella: `docs/design/2026-06-21-session-knowledge-catalog.md` and
+and MCP layers predate the umbrella, and their design docs still carry this tool's pre-rename
+name in their filenames: `docs/design/2026-06-21-session-knowledge-catalog.md` and
 `docs/design/2026-06-22-klod-sessions-mcp.md`.
 
 ## CI

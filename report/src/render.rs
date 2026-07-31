@@ -948,7 +948,7 @@ fn marquee_publish(dir: &Path, report: &Report, cfg: &RenderConfig) -> Result<St
 
 /// Ensure a usable marquee session: probe `marquee whoami`, and on failure attempt an interactive
 /// `marquee login` ONCE before re-probing. The login is attempted ONLY when both stdin and stdout
-/// are TTYs — `marquee login` is an interactive browser/device OAuth flow, so auto-launching it
+/// are TTYs -- `marquee login` is an interactive browser/device OAuth flow, so auto-launching it
 /// over SSH-without-a-tty, in CI, or under an agent would block `report render` forever. Outside a
 /// TTY (or if login/re-probe still fails) we error with the captured `whoami` detail and the
 /// manual remediation.
@@ -970,8 +970,8 @@ fn ensure_marquee_auth() -> Result<()> {
     }
 
     log::warn!("marquee: not authenticated ({detail}); attempting interactive `marquee login`");
-    // Interactive: inherit the terminal for the browser/device flow. NOT time-bounded — a human is
-    // driving it — which is exactly why it is gated behind the TTY check above.
+    // Interactive: inherit the terminal for the browser/device flow. NOT time-bounded -- a human is
+    // driving it -- which is exactly why it is gated behind the TTY check above.
     let status = Command::new("marquee")
         .arg("login")
         .stdin(Stdio::inherit())

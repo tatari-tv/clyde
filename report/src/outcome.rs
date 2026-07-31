@@ -47,7 +47,7 @@ pub struct OutcomeTotals {
 }
 
 /// Roll up a set of per-session [`Outcomes`] into the persisted [`OutcomeTotals`], deduping commits
-/// and PRs GLOBALLY across every session (not just within one session — a PR opened from one host and
+/// and PRs GLOBALLY across every session (not just within one session -- a PR opened from one host and
 /// referenced from another must count once, not twice). `None` entries (sessions with no observed
 /// outcome) contribute nothing. Confluence/Jira/Slack writes and `files-edited` are plain sums; they
 /// carry no cross-session identity to dedupe on.

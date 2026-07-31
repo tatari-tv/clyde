@@ -14,7 +14,7 @@ fn pricing() -> Pricing {
     Pricing::embedded()
 }
 
-/// An empty v2 efficiency passthrough — aggregate rollups read tokens/spend from `models`, never the
+/// An empty v2 efficiency passthrough -- aggregate rollups read tokens/spend from `models`, never the
 /// efficiency object, so an all-zero scope is enough for these fixtures.
 fn empty_efficiency() -> SessionEfficiency {
     SessionEfficiency {

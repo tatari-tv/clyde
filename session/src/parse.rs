@@ -106,7 +106,7 @@ pub struct BoundedMessages {
 /// `max_bytes` (when `Some`). Each transcript file is STREAMED line-by-line (`BufRead::read_until`
 /// on raw bytes, so a non-UTF-8 byte cannot silently truncate the stream) rather than read whole,
 /// so a runaway multi-MB transcript stops reading at the cap instead of buffering the entire message
-/// Vec first — the bounded-read requirement the export `--with-body` path depends on. Truncation
+/// Vec first -- the bounded-read requirement the export `--with-body` path depends on. Truncation
 /// drops WHOLE trailing messages (never a byte-split of a message's text, which would panic on a
 /// char boundary); `truncated` is set when it happens. `None` means unbounded.
 pub fn parse_messages_bounded(
@@ -188,7 +188,7 @@ fn file_order_key(f: &SessionFile) -> (bool, PathBuf) {
 
 /// Stream one transcript file line-by-line, appending role-labeled messages to `out` in file line
 /// order, and stop as soon as the cumulative `*emitted` message-text bytes would exceed `max_bytes`
-/// (when `Some`). Returns `true` when it stopped early because the cap was reached — the caller must
+/// (when `Some`). Returns `true` when it stopped early because the cap was reached -- the caller must
 /// then not read further files. Reads via `BufRead::read_until(b'\n')` on RAW bytes (never
 /// `read_line`, which returns `InvalidData` on the first non-UTF-8 byte and would silently drop the
 /// rest of the transcript) so the stream ends only at real EOF or the cap, never buffering the whole

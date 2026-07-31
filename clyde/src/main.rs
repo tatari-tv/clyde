@@ -46,7 +46,7 @@ fn main() -> Result<()> {
     let mut command = Cli::command().after_help(after_help);
     // Subcommands that shell out to external binaries advertise them in a REQUIRED TOOLS block at
     // the end of their `--help`. Building a block spawns a `--version` probe per tool, so attach
-    // one only when that specific subcommand's help is requested — never on a normal run.
+    // one only when that specific subcommand's help is requested -- never on a normal run.
     let argv: Vec<String> = std::env::args().collect();
     if let Some(path) = cli::help_target(&argv) {
         let path: Vec<&str> = path.iter().map(String::as_str).collect();
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
     // `mcp serve|register|unregister|status|bundle` is intercepted here, BEFORE any logging setup
     // and the renew notice below, for the reason the `mcp-io` library exists: once `mcp serve`
     // runs, stdout IS the JSON-RPC protocol channel, so nothing (not our logger init, not a renew
-    // stdout notice) may touch it first — `mcp-io` owns stdout and routes its own logging to a
+    // stdout notice) may touch it first -- `mcp-io` owns stdout and routes its own logging to a
     // file. `common::config::load()` is read here (token-free, `deny_unknown_fields`): a malformed
     // `clyde.yml` FAILS LOUD/CLOSED via `?` on stderr rather than silently serving defaults. The
     // build closure opens the `Db` + runs the startup reindex ONLY for the build-requiring verbs
@@ -96,14 +96,14 @@ fn main() -> Result<()> {
     }
 
     // The absorbed tools (report/cost/permit) own their own logging, output, and exit code, so
-    // clyde must NOT install a logger for those arms — env_logger can only be initialized once
+    // clyde must NOT install a logger for those arms -- env_logger can only be initialized once
     // per process. Only the clyde-native `sessions` subtree sets up clyde's logger here.
     let level = cli.log_level.clone().unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string());
     if matches!(cli.command, Command::Report(_) | Command::Cost(_) | Command::Permit(_)) {
         // Absorbed tools install their own logger; clyde must not (one init per process).
     } else {
         // Every clyde-native arm (sessions, bootstrap, doctor, update) uses env_logger. (The
-        // `mcp` arm never reaches here — it is intercepted above and owns its own file logging.)
+        // `mcp` arm never reaches here -- it is intercepted above and owns its own file logging.)
         setup_logging(&level, &log_path)?;
     }
 
@@ -150,8 +150,8 @@ fn reset_sigpipe() {}
 /// Map an absorbed tool's `run() -> Result<i32>` onto a process exit code: a propagated error is
 /// rendered to stderr and the process exits 1.
 ///
-/// `debug` selects the rendering. At the default (info or lower verbosity) we print `{e:#}` — the
-/// full eyre **cause chain** with NO `Location:`/backtrace — so a normal failure reads as a clean,
+/// `debug` selects the rendering. At the default (info or lower verbosity) we print `{e:#}` -- the
+/// full eyre **cause chain** with NO `Location:`/backtrace -- so a normal failure reads as a clean,
 /// chained message instead of leaking an internal `report/src/config.rs:NNN` source location. Only
 /// when `--log-level debug` (or trace) is set do we print `{e:?}` (Debug, with the location capture)
 /// for diagnosis. Plain `{e}` is deliberately avoided: Display alone hides the causal chain and
@@ -168,7 +168,7 @@ fn dispatch_tool(result: Result<i32>, debug: bool) -> ! {
     std::process::exit(code);
 }
 
-/// True when the resolved log level is `debug` or `trace` — the verbosity at which the absorbed
+/// True when the resolved log level is `debug` or `trace` -- the verbosity at which the absorbed
 /// tools' errors should render their full Debug form (with eyre's `Location:` capture) instead of
 /// the clean cause chain. Unparseable levels are treated as non-debug.
 fn is_debug_level(level: &str) -> bool {
@@ -290,7 +290,7 @@ fn cmd_ls(db: &Db, args: LsArgs, tz: common::DateTz) -> Result<()> {
 }
 
 /// `clyde session export`: always-JSON, versioned envelope (deliberate deviation from the
-/// TTY-detect house pattern — an export is machine output by definition, design doc "Architecture").
+/// TTY-detect house pattern -- an export is machine output by definition, design doc "Architecture").
 ///
 /// Two mutually exclusive shapes, both wrapped in the same [`ExportEnvelope`]:
 /// - bulk metadata page (`--cursor`/`--since`/`--repo`/`--tag`/`--dormant-after`/`--include-archived`/
@@ -408,7 +408,7 @@ fn cmd_export_one(
 /// `--dormant-after`) into the [`chrono::Duration`] threshold [`ExportContext::dormant_after`]
 /// wants, by reusing the shared [`sessions::parse_since`] span parser: `parse_since` resolves a
 /// span to the instant that long ago, and the duration back to `now` recovers the span itself
-/// (correct seam — no second span parser to keep in sync with `common::since`).
+/// (correct seam -- no second span parser to keep in sync with `common::since`).
 fn dormant_after_duration(
     span: &str,
     tz: common::DateTz,
@@ -851,7 +851,7 @@ fn cmd_doctor(db: &Db) -> Result<()> {
 }
 
 /// Refresh the catalog before a query (incremental, cheap). Failures warn but never abort the
-/// query — stale data beats no answer.
+/// query -- stale data beats no answer.
 fn lazy_reindex(db: &Db, skip: bool) {
     if skip {
         return;
@@ -884,7 +884,7 @@ fn lazy_reindex(db: &Db, skip: bool) {
 }
 
 /// Renders a search response. Piped output is the whole `SearchResults` object (`count`,
-/// `results`, `fallback`, `unenriched`, `truncated`) — a disclosed breaking change from the prior
+/// `results`, `fallback`, `unenriched`, `truncated`) -- a disclosed breaking change from the prior
 /// bare-array JSON shape, needed so `fallback`/`unenriched` have somewhere to land (design doc,
 /// Resolved Decisions). TTY output stays the existing per-hit listing, plus a one-line notice when
 /// the results are an AND->OR fallback and another when the hit list was truncated to fit the

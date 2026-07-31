@@ -50,7 +50,7 @@ fn a_fresh_row_carries_the_unresolved_default() {
     assert_eq!(row.rank, 99, "the schema default before any repo write");
 }
 
-/// AC: a reindex populates `repo`/`repo_source`/`repo_rank` for a session whose cwd exists — the
+/// AC: a reindex populates `repo`/`repo_source`/`repo_rank` for a session whose cwd exists -- the
 /// first successful resolution always writes, since anything beats the unresolved default of 99.
 #[test]
 fn upsert_repo_writes_on_first_resolution() {
@@ -69,7 +69,7 @@ fn upsert_repo_writes_on_first_resolution() {
 }
 
 /// AC (precedence, reverse direction): a session already at `known-path` (rank 1) is REJECTED by a
-/// later `path-guess` (rank 3) resolution — the write must never regress.
+/// later `path-guess` (rank 3) resolution -- the write must never regress.
 ///
 /// BITES: swap `?2 < repo_rank` for `?2 <= repo_rank` and this test still passes (equal ranks are
 /// rare), but swap it for a bare `COALESCE`/unconditional write and the guess wins here.

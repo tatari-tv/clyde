@@ -11,18 +11,18 @@
 //!
 //! Reconciliation reports deltas at three separately-attributed levels so an omission is caught
 //! *as what it is*, not blurred into a single arithmetic mismatch:
-//!   - **file** — the discovered session-JSONL set (oracle's recursive walk vs the scanner). A
+//!   - **file** -- the discovered session-JSONL set (oracle's recursive walk vs the scanner). A
 //!     file only one side found is a discovery omission.
-//!   - **parse** — with file sets equal, the count of counted entries. A difference means a line
+//!   - **parse** -- with file sets equal, the count of counted entries. A difference means a line
 //!     survived one pipeline's parse/count but not the other's: a parse-drop, not a lost file.
-//!   - **aggregation** — final per-session / total cost. A difference with files AND entries equal
+//!   - **aggregation** -- final per-session / total cost. A difference with files AND entries equal
 //!     is a pure math divergence.
 //!
-//! The only clyde primitive the oracle deliberately shares is [`crate::dates::local_date`] — the
+//! The only clyde primitive the oracle deliberately shares is [`crate::dates::local_date`] -- the
 //! UTC-to-local calendar bucketing. That is neither discovery, parse, nor pricing; sharing it keeps
 //! the day-window semantics identical so an equality assertion is not silently timezone-fragile.
 //!
-//! Deliberate choice (Phase 4): the injected-omission test uses a FILE-level omission — a session
+//! Deliberate choice (Phase 4): the injected-omission test uses a FILE-level omission -- a session
 //! JSONL placed where the scanner structurally will not look. It is unambiguous, needs no
 //! "deliberately-wrong" oracle parser, and cleanly demonstrates the property that matters: a
 //! pure-arithmetic recheck (which trusts clyde's own extracted entries) reproduces clyde's total
@@ -77,7 +77,7 @@ struct OracleEntry {
 /// `pricing/data/pricing.json`. Independent of `claude_pricing::calculate_usd` so the oracle does
 /// not reuse clyde's cost math. The Phase 4 fixtures carry no cache tokens, so input+output rates
 /// fully determine cost: `cost = input*in/1e6 + output*out/1e6`. An unknown model returns `None`
-/// and is skipped — matching clyde's unknown-model skip.
+/// and is skipped -- matching clyde's unknown-model skip.
 fn oracle_rate(model: &str) -> Option<(f64, f64)> {
     match model {
         "claude-opus-4-7" => Some((5.0, 25.0)),
@@ -301,7 +301,7 @@ fn run_clyde(projects_dir: &Path, start: NaiveDate, end: NaiveDate) -> ClydeResu
 
 /// A "pure-arithmetic recheck": re-derive the total by re-pricing the entries clyde's OWN scanner
 /// and parser extract. Because it trusts clyde's extracted set, it reproduces clyde's reported
-/// total exactly and is BLIND to a file the scanner never discovered — the failure mode the
+/// total exactly and is BLIND to a file the scanner never discovered -- the failure mode the
 /// level-separated oracle exists to catch.
 fn pure_arithmetic_recheck(projects_dir: &Path, start: NaiveDate, end: NaiveDate) -> f64 {
     let files = crate::scanner::find_session_files(projects_dir).unwrap();
@@ -342,7 +342,7 @@ fn pure_arithmetic_recheck(projects_dir: &Path, start: NaiveDate, end: NaiveDate
 }
 
 /// A hand-authored expected manifest for a frozen fixture. The numbers are computed by hand (see
-/// each test's arithmetic comments), NOT read from clyde — the whole point of an independent
+/// each test's arithmetic comments), NOT read from clyde -- the whole point of an independent
 /// oracle is that its ground truth does not originate in the code under test.
 struct Manifest {
     files: usize,
@@ -592,7 +592,7 @@ fn injected_scanner_omission_is_flagged_at_file_level_and_missed_by_arithmetic()
     );
 
     // A pure-arithmetic recheck reproduces clyde's total (it trusts clyde's extracted entries) and
-    // is blind to the omitted file — the exact miss the level-separated oracle catches.
+    // is blind to the omitted file -- the exact miss the level-separated oracle catches.
     let recheck = pure_arithmetic_recheck(&projects, start, end);
     assert!(
         (recheck - clyde.total_cost).abs() < 1e-9,

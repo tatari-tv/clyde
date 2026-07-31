@@ -16,10 +16,49 @@ tasks:
       if grep -rn --include='*.rs' -P '(\blet\s+(mut\s+)?|[(,]\s*|\|\s*|\bfor\s+)_[a-zA-Z]' */src/; then
         echo ""
         echo "❌ Found _variable binding pattern."
-        echo "   Use _ to discard or use the variable — never _varname."
+        echo "   Use _ to discard or use the variable, never _varname."
         exit 1
       fi
       echo "✅ No _variable patterns found"
+      echo ""
+      echo "=== Deny em dash in Rust source ==="
+      # `grep`, NOT `rg`: ripgrep is NOT installed on the CI runner, and the first version of this
+      # lint used it. `rg: command not found` exits 127, which an `if rg ...; then` reads as
+      # "no match", so the lint printed its success line having scanned NOTHING. It was a no-op in
+      # CI from the day it landed, and a green run proved only that rg was absent. Found by the
+      # explicit status check below on PR #78, which is exactly what that check is for.
+      #
+      # `\x{2014}` (PCRE codepoint escape, hence -P) rather than the literal character, so this file
+      # stays em-dash-free itself. Verified to match under LC_ALL=C, POSIX, and C.UTF-8, so it does not
+      # depend on the runner's locale. The raw-byte form `\xe2\x80\x94` was tried first and matches
+      # NOTHING under -P, which is why the pattern is written this way.
+      # Scope stays the whole tree with only `target` excluded: 17 of the 369 original occurrences
+      # lived in `*/tests/`, which the sibling `*/src/` lint above never walks. A lint narrower than
+      # the rule is a hole the tree drifts back through where CI cannot see it.
+      #
+      # Status is checked EXPLICITLY, never via `if grep ...`. grep exits 0 on a match, 1 on no
+      # match, and 2+ on an error (and 127 if the binary is missing). A bare `if` treats every
+      # non-zero as "clean", which is the fail-open this comment exists to document.
+      em_status=0
+      grep -rn --include='*.rs' --exclude-dir=target -P '\x{2014}' . || em_status=$?
+      case "$em_status" in
+        0)
+          echo ""
+          echo "❌ Found em dash in Rust source."
+          echo "   Use --, a colon, parens, or split the sentence (rules/voice.md)."
+          echo "   To assert an em dash is ABSENT, write '\\u{2014}' rather than the literal."
+          exit 1
+          ;;
+        1)
+          echo "✅ No em dashes in Rust source"
+          ;;
+        *)
+          echo ""
+          echo "❌ grep exited $em_status scanning for em dashes (not 0=found / 1=clean)."
+          echo "   The scan did not complete, so this is a lint FAILURE, not a pass."
+          exit 1
+          ;;
+      esac
 
   bloat:
     help: "Fail if any source file exceeds BLOAT_MAX_LINES (default 1500)"

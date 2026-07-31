@@ -17,7 +17,7 @@ fn run_with_payload_round_trips_a_payload_larger_than_the_pipe_buffer() {
     assert!(payload.len() > 64 * 1024, "payload must exceed the pipe buffer");
     let mut cmd = Command::new("cat");
     // `cat` echoes stdin to stdout, so this drives a large payload IN and a large capture OUT
-    // simultaneously — the exact pairing that deadlocks a pipe-based helper.
+    // simultaneously -- the exact pairing that deadlocks a pipe-based helper.
     let out = run_with_payload("cat (test)", &mut cmd, &payload, |e| eyre::eyre!("{e}")).unwrap();
     assert!(out.status.success());
     assert_eq!(out.stdout.len(), payload.len(), "stdout must not be truncated");

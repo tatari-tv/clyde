@@ -58,7 +58,7 @@ impl fmt::Display for Recommendation {
     }
 }
 
-/// Returns true if `broad` covers everything `narrow` covers — i.e., `narrow` is redundant.
+/// Returns true if `broad` covers everything `narrow` covers -- i.e., `narrow` is redundant.
 ///
 /// Two cases:
 /// - Bash: `Bash(X:*)` subsumes `Bash(Y:*)` when Y starts with "X " (word-boundary prefix)

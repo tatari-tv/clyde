@@ -105,7 +105,7 @@ fn fixture(name: &str) -> serde_json::Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse fixture {name}: {e}"))
 }
 
-/// Key set of a JSON object, one level deep — enough to structurally pin the envelope/record
+/// Key set of a JSON object, one level deep -- enough to structurally pin the envelope/record
 /// shape (renamed, dropped, or added fields all change this set) without pinning exact values.
 fn keys(v: &serde_json::Value) -> BTreeSet<String> {
     v.as_object()
@@ -142,7 +142,7 @@ fn bulk_export_envelope_matches_fixture_schema() {
     );
 
     // Per-record shape: metadata-mode records (no `--with-body`) carry exactly the never-enriched
-    // fixture's field set — no body-block keys.
+    // fixture's field set -- no body-block keys.
     let fixture_record = &fixture_envelope["sessions"][0];
     for rec in sessions {
         assert_eq!(

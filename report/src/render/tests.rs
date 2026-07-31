@@ -47,7 +47,7 @@ fn empty_efficiency() -> SessionEfficiency {
     }
 }
 
-/// A v2 `SessionEntry` with the curated efficiency fields at their empty defaults — render fixtures
+/// A v2 `SessionEntry` with the curated efficiency fields at their empty defaults -- render fixtures
 /// only exercise title/repo/tokens/spend/outcomes, so the efficiency signals stay zero.
 #[allow(clippy::too_many_arguments)]
 fn session_entry(

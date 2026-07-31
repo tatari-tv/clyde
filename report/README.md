@@ -142,10 +142,10 @@ url=$(clyde report render --format marquee-markdown --space eng)   # prints the 
 - `marquee-markdown` prints the published **URL to stdout** (the status line goes to stderr), so
   `url=$(clyde report render --format marquee-markdown)` captures it. Use `--space <space>` to
   target a marquee space other than your personal one.
-- `-o`/`--output` is rejected with `marquee-markdown` — the output is a URL, not a file.
+- `-o`/`--output` is rejected with `marquee-markdown`: the output is a URL, not a file.
 - **marquee auth:** render probes `marquee whoami`. If you are not logged in *and* you are on an
   interactive terminal, it runs `marquee login` once, then retries. In a non-TTY context (SSH
-  without a tty, CI, an agent) it does **not** launch the interactive flow — it errors and tells
+  without a tty, CI, an agent) it does **not** launch the interactive flow: it errors and tells
   you to run `marquee login` yourself, so a headless render can never hang on a login prompt.
 
 ## Default format via `clyde.yml`

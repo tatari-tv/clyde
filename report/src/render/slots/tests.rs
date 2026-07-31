@@ -528,7 +528,7 @@ fn every_slot_carries_a_real_prompt() {
         assert!(prompt.len() > 100, "{} has a stub prompt", slot.key());
         assert!(prompt.contains("Intent:"), "{} states no intent", slot.key());
         assert!(prompt.contains(slot.key()), "{} does not name itself", slot.key());
-        assert!(!prompt.contains('—'), "{} carries an em dash", slot.key());
+        assert!(!prompt.contains('\u{2014}'), "{} carries an em dash", slot.key());
     }
 }
 

@@ -9,7 +9,7 @@ fn classify_str(s: &str) -> Scope {
 
 #[test]
 fn work_paths_classify_work() {
-    assert_eq!(classify_str("/home/saidler/repos/tatari-tv/klod/main"), Scope::Work);
+    assert_eq!(classify_str("/home/saidler/repos/tatari-tv/clyde/main"), Scope::Work);
     assert_eq!(classify_str("/home/saidler/repos/tatari-tv/philo"), Scope::Work);
     // The org dir itself (no repo beneath) is still work.
     assert_eq!(classify_str("/home/saidler/repos/tatari-tv"), Scope::Work);
@@ -48,7 +48,7 @@ fn substring_of_work_org_is_not_work() {
 #[test]
 fn work_org_only_matches_the_org_slot_not_anywhere() {
     // (Codex audit finding) A personal repo *named* `tatari-tv` sits in the repo slot, not the org
-    // slot — it must classify personal, never get shipped to the work account.
+    // slot -- it must classify personal, never get shipped to the work account.
     assert_eq!(
         classify_str("/home/saidler/repos/scottidler/tatari-tv"),
         Scope::Personal

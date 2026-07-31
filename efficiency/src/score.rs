@@ -3,13 +3,13 @@
 //! `docs/design/2026-07-22-session-efficiency-signals.md`).
 //!
 //! Config supplies the *what* (where each line sits); this module applies it. Scoring is a pure
-//! function of the aggregate [`EfficiencySignals`] plus the [`EfficiencyConfig`] — it returns data,
+//! function of the aggregate [`EfficiencySignals`] plus the [`EfficiencyConfig`] -- it returns data,
 //! never mutates through side effects, so it is trivially testable and the aggregation invariant is
 //! untouched (the aggregate is still `finalize(union of scopes)`; scoring only reads it).
 //!
 //! The **eligibility gate** (`minimum-total-tokens` / `minimum-turns`) applies ONLY to the
 //! cache-waste flag: a short one-shot session cannot structurally reuse cache, so a low
-//! `cache-read-share` there is not waste, it is expected — flagging it would be a false positive.
+//! `cache-read-share` there is not waste, it is expected -- flagging it would be a false positive.
 //! The tool-error-rate and auto-compaction flags are NOT gated: an error-prone or context-to-the-
 //! wall session is worth surfacing regardless of size.
 
@@ -22,7 +22,7 @@ use crate::metrics::{CompactionTrigger, EfficiencySignals};
 /// The eligibility gate, shared by [`score`] (cache-waste flagging) and [`crate::rank::worst`]
 /// (`--worst` ranking) so the two can never drift: a session must carry enough total tokens AND
 /// enough turns to have structurally been able to reuse cache. Below either gate, a low
-/// `cache-read-share` is expected (a short one-shot), not waste — so such a session is neither
+/// `cache-read-share` is expected (a short one-shot), not waste -- so such a session is neither
 /// flagged nor allowed to surface as "worst". One definition kills the drift class.
 pub fn is_eligible(signals: &EfficiencySignals, config: &EfficiencyConfig) -> bool {
     let raw = &signals.raw;
@@ -33,7 +33,7 @@ pub fn is_eligible(signals: &EfficiencySignals, config: &EfficiencyConfig) -> bo
 ///
 /// Order is deterministic (cache-waste, tool-error, auto-compaction) so callers/tests see a stable
 /// list. An all-healthy eligible session, and an ineligible session below the cache floor, both
-/// return an empty (or cache-flag-free) list — the gate is what makes the second case quiet.
+/// return an empty (or cache-flag-free) list -- the gate is what makes the second case quiet.
 pub fn score(signals: &EfficiencySignals, config: &EfficiencyConfig) -> Vec<EfficiencyFlag> {
     let raw = &signals.raw;
     let total_tokens = raw.total_tokens();

@@ -1,10 +1,10 @@
-//! `report merge` — combine multiple per-host `collect` JSON reports into one.
+//! `report merge` -- combine multiple per-host `collect` JSON reports into one.
 //!
 //! Two schema decisions drive this module (both flagged in design review):
 //!
 //! 1. **Keep-both session keying.** A `collect` report keys its sessions in a
 //!    `BTreeMap<String, SessionEntry>` by raw session id. Two hosts that happen to share a
-//!    session id would COLLIDE — one silently overwriting the other — if merged on the raw key.
+//!    session id would COLLIDE -- one silently overwriting the other -- if merged on the raw key.
 //!    We re-key every merged session to `"<host>/<session_id>"` so a same-id-different-host pair
 //!    both survive. The host comes from the per-input report's own `host` field (the same value
 //!    `collect` records), so the prefix is authoritative.
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Typed errors for the merge module. `report` is a workspace library, so per repo convention it
-/// uses `thiserror` with a matchable enum rather than `eyre` strings — consumers (and tests) can
+/// uses `thiserror` with a matchable enum rather than `eyre` strings -- consumers (and tests) can
 /// discriminate `SchemaMismatch` from `NoInputs` without parsing a `Display` string. The CLI
 /// boundary (`merge::run`) maps these into the crate's `eyre` flow via `#[from]`.
 #[derive(Debug, Error)]
@@ -111,7 +111,7 @@ fn read_reports(inputs: &[PathBuf]) -> std::result::Result<Vec<Report>, MergeErr
 /// `since`/`until` window to the min/max across inputs. `host` becomes a multi-host marker.
 ///
 /// **Single-input passthrough.** With exactly one input the merge is a TRUE identity: the input
-/// report is returned UNCHANGED — original (bare, un-re-keyed) session keys, original `generated`
+/// report is returned UNCHANGED -- original (bare, un-re-keyed) session keys, original `generated`
 /// timestamp, original `host`/`since`/`until`/`totals`. So a 1-input merge round-trips byte-for-
 /// byte. Re-keying, re-summing, and a fresh `generated` only make sense when actually combining
 /// two or more reports (the keep-both collision handling exists for that case alone).
@@ -130,7 +130,7 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
 
     // Coverage rule (fail closed): the merged outcomes rollup is trustworthy only when EVERY
     // input ran extraction. An absent flag (`None`, a pre-Phase-4 JSON) is treated the same as
-    // `Some(false)` — a mixed-capability merge must never read as complete.
+    // `Some(false)` -- a mixed-capability merge must never read as complete.
     let all_outcomes_enabled = reports.iter().all(|r| r.outcomes_enabled == Some(true));
 
     let mut sessions: BTreeMap<String, SessionEntry> = BTreeMap::new();
@@ -150,7 +150,7 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
         });
         for (sid, entry) in report.sessions {
             // Keep-both: re-key by host so same-id-different-host sessions both survive.
-            // Per-session `outcomes` fields ride through untouched — only the rollup is gated.
+            // Per-session `outcomes` fields ride through untouched -- only the rollup is gated.
             let key = format!("{}/{}", report.host, sid);
             sessions.insert(key, entry);
         }
@@ -175,7 +175,7 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
         // by-skill/by-mcp, cache/tool signals, the full `efficiency` passthrough) rides through
         // untouched under the re-keyed `<host>/<sid>` session, and the global ratios recompute from
         // the unioned raw counters (see `recompute_totals`). Nothing in v2 is un-mergeable, so the
-        // merged report carries only the standard M2 window note — no field is silently zeroed.
+        // merged report carries only the standard M2 window note -- no field is silently zeroed.
         notes: vec![WINDOW_NOTE.to_string()],
         totals,
         sessions,
@@ -203,7 +203,7 @@ fn assert_uniform_schema(reports: &[Report]) -> std::result::Result<u32, MergeEr
 
 /// Recompute `totals` by RE-SUMMING the merged session set (never blind-summing each input's
 /// `totals`, which double-counts overlap). Per-model token counts are summed; per-model and
-/// session-level spend is summed from the entries' own priced `spend-usd` fields (no re-pricing —
+/// session-level spend is summed from the entries' own priced `spend-usd` fields (no re-pricing --
 /// each input was priced at collect time and we trust those figures).
 ///
 /// `outcomes_enabled` gates the outcomes rollup (fail closed, design D2): when `true` (every
@@ -222,7 +222,7 @@ fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>, outcomes_enabled:
     let mut total_spend = 0.0_f64;
     // Union of every merged session's raw counters, taken from the `efficiency` passthrough each v2
     // `SessionEntry` carries. The global ratios recompute from THIS union (ratio-of-sums), never an
-    // average of the inputs' per-report ratios — the Aggregation invariant across the merge seam.
+    // average of the inputs' per-report ratios -- the Aggregation invariant across the merge seam.
     let mut grand = RawCounters::default();
 
     for entry in sessions.values() {

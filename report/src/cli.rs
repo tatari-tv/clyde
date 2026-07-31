@@ -47,10 +47,10 @@ pub enum Command {
     /// Read the session catalog (`sessions.db`) and emit a per-host JSON usage report.
     ///
     /// Reads whole sessions whose catalog row falls in the `--since`/`--until` window (session-level,
-    /// on `modified`) from `sessions.db` (or `--db`) — tokens, cost, cache/tool/agent-type efficiency
+    /// on `modified`) from `sessions.db` (or `--db`) -- tokens, cost, cache/tool/agent-type efficiency
     /// signals, and outcomes, all catalog-sourced (no JSONL scan). With `-o <path>`, writes the JSON
     /// report to that file; without `-o`, streams the JSON to stdout so `report collect | jq` works.
-    /// Fails (writing nothing) if any session in the window has not been indexed — run
+    /// Fails (writing nothing) if any session in the window has not been indexed -- run
     /// `clyde session reindex` first.
     Collect(CollectArgs),
     /// Render a collected JSON report into Markdown, PDF, or a published marquee post

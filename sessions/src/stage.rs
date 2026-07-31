@@ -1,5 +1,5 @@
 //! Staging sweep (Phase 1.5): durably copy dormant sessions' transcripts before Claude's 30-day
-//! TTL reaps them, and record the staged location in `sessions.db`. Decoupled from distillation —
+//! TTL reaps them, and record the staged location in `sessions.db`. Decoupled from distillation --
 //! this is pure local file insurance, committing to none of the knowledge-layer questions.
 
 use std::path::Path;

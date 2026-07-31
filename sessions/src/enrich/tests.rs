@@ -20,7 +20,7 @@ fn dt(s: &str) -> DateTime<Utc> {
 }
 
 /// A deterministic completer that records every call (proving the routing gate) and can be set to
-/// fail. It panics if asked about an obviously personal payload would be impossible to detect — so
+/// fail. It panics if asked about an obviously personal payload would be impossible to detect -- so
 /// the gate is asserted by call *count*, not payload inspection.
 struct Fake {
     calls: RefCell<usize>,
@@ -80,7 +80,7 @@ fn write_transcript(dir: &Path, id: &str, body_text: &str) -> PathBuf {
     path
 }
 
-/// Write a body-less transcript (an ai-title line only) — yields an empty high-signal body.
+/// Write a body-less transcript (an ai-title line only) -- yields an empty high-signal body.
 fn write_empty_transcript(dir: &Path, id: &str) -> PathBuf {
     let path = dir.join(format!("{id}.jsonl"));
     let line = serde_json::json!({ "type": "ai-title", "aiTitle": "a title", "timestamp": "2026-06-20T10:00:00Z" })
@@ -182,7 +182,7 @@ fn failure_is_recorded_and_bumps_attempts() {
     assert_eq!(stats.failed, 1);
     assert!(db.get(UUID_A).unwrap().unwrap().summary.is_none());
 
-    // Still a candidate (attempts 1 < max), so it retries on a later sweep — but not forever.
+    // Still a candidate (attempts 1 < max), so it retries on a later sweep -- but not forever.
     let again = db
         .enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false)
         .unwrap();
@@ -249,7 +249,7 @@ fn manual_tags_preserved_by_default_overwritten_with_all() {
 #[test]
 fn manual_retag_after_enrichment_survives_later_default_reenrich() {
     // (Codex consensus finding) A manual retag of an ALREADY-enriched session must be preserved by
-    // a later default re-enrichment — ownership is tracked via tags_source, not enrichment state.
+    // a later default re-enrichment -- ownership is tracked via tags_source, not enrichment state.
     let tmp = tempfile::TempDir::new().unwrap();
     let parent = write_transcript(tmp.path(), UUID_A, "work content that grows over time");
     let db = Db::open_memory().unwrap();

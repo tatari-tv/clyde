@@ -28,13 +28,13 @@ use crate::model::{
 /// v4 added `tags_source` so manual-tag preservation tracks ownership, not enrichment state.
 /// v5 added `updated_at`: an opaque monotonic revision assigned by DB triggers (never a timestamp),
 ///    plus the one-row `export_meta` counter that sources it, so `session export --cursor` is
-///    correct by construction — every write to a `sessions` row advances the cursor structurally.
+///    correct by construction -- every write to a `sessions` row advances the cursor structurally.
 /// v6 added the efficiency annotation: `efficiency_json` (the full nested `SessionEfficiency` blob)
 ///    plus flat indexed scalars (`cache_read_share`, `tool_errors`, `cost_usd`) for ranking/filtering
 ///    without parsing JSON per row. Writing efficiency is a derived READ-side annotation, so it must
 ///    NOT advance `updated_at` (see [`Db::set_efficiency_many`]).
 /// v7 added NO columns: it INVALIDATES the v6 efficiency annotation (NULLs the four columns) so the
-///    corrected named-subagent type-recovery logic recomputes it. A recompute-only migration — the
+///    corrected named-subagent type-recovery logic recomputes it. A recompute-only migration -- the
 ///    on-disk shape is unchanged; only the stored derived values were stale (see
 ///    [`migrate_v7_reset_efficiency`]).
 /// v8 added `outcome_json` (the per-session `Outcomes` blob relocated from `report/src/outcome.rs`
@@ -46,7 +46,7 @@ use crate::model::{
 /// v10 added persisted repo attribution: `repo`/`repo_source`/`repo_rank` on `sessions`, written
 ///    upgrade-only (strictly-improving `repo_rank`, never `COALESCE`) by `db::repo::Db::upsert_repo`
 ///    from the `common::repo` four-rule chain, plus the `repo_paths` learned-path map (rule 2's
-///    backing store, latest-observation-wins via `db::repo::Db::record_repo_path`) — see
+///    backing store, latest-observation-wins via `db::repo::Db::record_repo_path`) -- see
 ///    [`migrate::migrate_v10_repo`] and `docs/design/2026-07-26-report-story-fidelity.md`. The SAME
 ///    migration also INVALIDATES the efficiency + outcome blobs (NULLs `efficiency_json`, the three
 ///    scalars, and `outcome_json`) so the next `reindex_efficiency` pass computes
@@ -82,15 +82,15 @@ const SNIPPET_HIGHLIGHT_END: &str = "**";
 const SNIPPET_ELLIPSIS: &str = "...";
 /// Body-tier re-rank candidate pool: overfetch `max(RERANK_POOL_FACTOR * limit, RERANK_POOL_MIN)`
 /// body rows before the Rust-side weighted-RRF re-rank, then trim to `limit`. The SQL
-/// `ORDER BY score ... LIMIT` truncates by RAW bm25 — which would hide exactly the sessions the
+/// `ORDER BY score ... LIMIT` truncates by RAW bm25 -- which would hide exactly the sessions the
 /// re-rank exists to rescue (a long all-terms deep-dive whose bm25 loses to a short term-repeater).
 /// Overfetching a bounded pool first is what lets the fusion see those sessions.
 const RERANK_POOL_MIN: usize = 200;
 const RERANK_POOL_FACTOR: usize = 10;
 /// Weighted Reciprocal Rank Fusion for the body tier (the proven in-house mechanism: the oracle MCP
 /// fuses BM25 + vector via RRF). `score = W_REL/(K + rank_bm25) + W_MSGS/(K + rank_n_msgs) +
-/// W_REC/(K + rank_recency)`, higher is better. Fusion is scale-free — each session contributes its
-/// RANK per axis, never its magnitude — so a 1000-msg session cannot swamp relevance the way a
+/// W_REC/(K + rank_recency)`, higher is better. Fusion is scale-free -- each session contributes its
+/// RANK per axis, never its magnitude -- so a 1000-msg session cannot swamp relevance the way a
 /// value blend can. `K` is the standard RRF damping constant. `W_REL` dominates (relevance is the
 /// point), `W_MSGS` is the popularity signal, and `W_REC` is deliberately smallest: agents
 /// frequently hunt OLD sessions, so recency is a tiebreaker, never a driver.
@@ -146,7 +146,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS sessions_body_fts USING fts5(body);
 /// Schema v5 revision-cursor triggers. Created LAST in [`migrate_v5_cursor`] (after the backfill),
 /// so the bulk backfill never fires them. Each trigger consumes the next value from the one-row
 /// `export_meta` counter and stamps it on the affected row, making the `updated_at` revision
-/// strictly increasing per write — no timestamp ties, safe `--limit` paging by construction.
+/// strictly increasing per write -- no timestamp ties, safe `--limit` paging by construction.
 ///
 /// The UPDATE trigger carries the recursion guard `WHEN NEW.updated_at IS OLD.updated_at`: a normal
 /// write leaves `updated_at` untouched (guard true -> fire), and the trigger's OWN write changes it
@@ -204,7 +204,7 @@ pub struct EnrichSuccess<'a> {
 /// serializes it) and the three scalars are the SAME aggregate values, materialized for indexed
 /// ranking; `outcome_json` is the per-session `Outcomes` blob (v8, relocated from `report::outcome`).
 /// The caller pulls efficiency + its scalars from ONE computed struct so the scalars can never
-/// diverge from the JSON, and both blobs are written together in one trigger-suppressed batch —
+/// diverge from the JSON, and both blobs are written together in one trigger-suppressed batch --
 /// see [`Db::set_efficiency_many`].
 pub struct EfficiencyWrite<'a> {
     pub session_id: &'a str,
@@ -265,7 +265,7 @@ impl Db {
         Ok(n as usize)
     }
 
-    /// The stored `modified` (mtime) for a session, if present — the incremental-skip probe.
+    /// The stored `modified` (mtime) for a session, if present -- the incremental-skip probe.
     pub fn modified_of(&self, session_id: &str) -> Result<Option<DateTime<Utc>>> {
         let raw: Option<String> = self
             .conn
@@ -304,7 +304,7 @@ impl Db {
             // indexed scalars) so the next `reindex_efficiency` pass (the `efficiency IS NULL`
             // predicate) recomputes it against the grown transcript rather than serving a stale
             // number (derived fields must never diverge from their source). This rides the content
-            // UPDATE's own `updated_at` bump — a legitimate content change — so it is unaffected by
+            // UPDATE's own `updated_at` bump -- a legitimate content change -- so it is unaffected by
             // the derived-annotation no-bump rule that governs [`Self::set_efficiency_many`].
             self.conn.execute(
                 "UPDATE sessions SET cwd=?2, project_dir=?3, transcript_path=?4, title=?5, \
@@ -368,7 +368,7 @@ impl Db {
 
     /// Session ids of non-archived rows with no computed efficiency yet (`efficiency_json IS NULL`).
     /// This is the backfill/reindex predicate: `upsert_session` skips rows whose transcript mtime is
-    /// unchanged, so a bare v6 migration leaves every EXISTING session's efficiency `NULL` forever —
+    /// unchanged, so a bare v6 migration leaves every EXISTING session's efficiency `NULL` forever --
     /// this query is how the `efficiency` crate finds those un-annotated sessions independent of the
     /// mtime skip-key. Archived rows are excluded (their transcripts are TTL-reaped, so there is
     /// nothing on disk to recompute from).
@@ -389,7 +389,7 @@ impl Db {
     /// re-fetch the whole catalog after a backfill. The v5 revision trigger fires on ANY `UPDATE` that
     /// leaves `updated_at` untouched, so a plain efficiency `UPDATE` would advance it. This method
     /// suppresses that by DROPPING the `sessions_updated_at_update` trigger, doing the writes, and
-    /// recreating it — all in ONE transaction, exactly mirroring the v5 "backfill before the triggers
+    /// recreating it -- all in ONE transaction, exactly mirroring the v5 "backfill before the triggers
     /// exist" precedent. On any error the transaction rolls back and the trigger is restored, so the
     /// suppression can never leak past this call. The five columns (`efficiency_json` + the three
     /// indexed scalars + `outcome_json`) are written together from the caller's single computed
@@ -403,7 +403,7 @@ impl Db {
         }
         let tx = self.conn.unchecked_transaction()?;
         // Suppress the revision trigger for the batch (see the method doc). The INSERT trigger is
-        // never dropped — only the UPDATE trigger can fire on these writes.
+        // never dropped -- only the UPDATE trigger can fire on these writes.
         tx.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
             .context("set_efficiency: suppress the revision UPDATE trigger")?;
         let mut written = 0usize;
@@ -477,11 +477,11 @@ impl Db {
     }
 
     /// Write a successful enrichment for `session_id` in one transaction: the `summary`, optional
-    /// `tags` (None preserves existing tags — the manual-tag default), the `scope`, the
+    /// `tags` (None preserves existing tags -- the manual-tag default), the `scope`, the
     /// observability/state fields, and a rebuilt high-signal FTS row. Resets `attempts` to 0 and
     /// clears `last_error`. Returns `false` if no such session exists.
     ///
-    /// This is the enrichment writer — deliberately NOT [`Self::upsert_session`], which *preserves*
+    /// This is the enrichment writer -- deliberately NOT [`Self::upsert_session`], which *preserves*
     /// `tags`/`summary` across reindex (so the parser can never clobber enrichment) and therefore
     /// cannot also be the thing that writes them.
     pub fn set_enrichment(&self, session_id: &str, e: &EnrichSuccess<'_>, now: DateTime<Utc>) -> Result<bool> {
@@ -560,7 +560,7 @@ impl Db {
     }
 
     /// Record a failed enrichment attempt: set `status='failed'`, store `last_error`, and bump
-    /// `attempts` (the backoff/max-attempts accountant — the selection predicate stops retrying
+    /// `attempts` (the backoff/max-attempts accountant -- the selection predicate stops retrying
     /// once `attempts` hits the cap). Leaves `enriched_at` NULL. Returns `false` if absent.
     pub fn record_enrich_failure(&self, session_id: &str, scope: &str, last_error: &str) -> Result<bool> {
         warn!("Db::record_enrich_failure: session_id={session_id} scope={scope} last_error={last_error}");
@@ -577,7 +577,7 @@ impl Db {
     /// (nothing to read), and rows that have exhausted `max_attempts`. Unless `all`, also requires
     /// the session be un-enriched, grown since last enrichment, or below the current
     /// `prompt_version`, and skips rows already recorded `skipped-personal`. Dormancy is applied in
-    /// Rust (mirrors [`Self::staging_candidates`]). Scope is NOT filtered here — the routing gate
+    /// Rust (mirrors [`Self::staging_candidates`]). Scope is NOT filtered here -- the routing gate
     /// is the orchestrator's job, so personal sessions still surface (once) to be recorded skipped.
     pub fn enrich_candidates(
         &self,
@@ -615,8 +615,8 @@ impl Db {
     }
 
     /// Whether a session's current tags were set manually (`tags_source = 'manual'`). The
-    /// orchestrator preserves these by default — regardless of whether the session was already
-    /// enriched — so a post-enrichment manual retag is never clobbered except by `--all`/`<id>`.
+    /// orchestrator preserves these by default -- regardless of whether the session was already
+    /// enriched -- so a post-enrichment manual retag is never clobbered except by `--all`/`<id>`.
     /// Returns `false` for an absent session or one with enrichment-owned / no tags.
     pub fn tags_are_manual(&self, session_id: &str) -> Result<bool> {
         let source: Option<Option<String>> = self
@@ -725,8 +725,8 @@ impl Db {
     /// carries no computed efficiency yet (`efficiency_json` NULL) or the session id is absent.
     ///
     /// This is the READ half of the v6 annotation `set_efficiency_many` writes: the `session_efficiency`
-    /// MCP tool (and any other read-side consumer in `sessions`, which — per the design's dependency
-    /// direction `efficiency -> sessions` — cannot name the `efficiency` crate's types) pulls the stored
+    /// MCP tool (and any other read-side consumer in `sessions`, which -- per the design's dependency
+    /// direction `efficiency -> sessions` -- cannot name the `efficiency` crate's types) pulls the stored
     /// blob back out as an opaque string, exactly as the export contract does. The caller parses it into
     /// a `serde_json::Value`, failing loudly on a corrupt blob.
     pub fn get_efficiency_json(&self, session_id: &str) -> Result<Option<String>> {
@@ -753,7 +753,7 @@ impl Db {
     /// `Some("{...}")` with empty fields is distinct from `None` "not yet reindexed".
     ///
     /// The read half of the v8 annotation `set_efficiency_many` writes. Like `get_efficiency_json`,
-    /// `sessions` returns the blob as an opaque string — the dependency direction is
+    /// `sessions` returns the blob as an opaque string -- the dependency direction is
     /// `efficiency -> sessions`, so `sessions` cannot name the `Outcomes` type; the caller (report,
     /// Phase 4) parses it. The Phase 3 bulk read returns this alongside `efficiency_json`.
     pub fn get_outcome_json(&self, session_id: &str) -> Result<Option<String>> {
@@ -1036,7 +1036,7 @@ impl Db {
     ) -> Result<Vec<SearchHit>> {
         // `fts_table` is a hardcoded identifier (never user input), so interpolating it is safe;
         // the user query is bound via params. The `ORDER BY` clause is chosen from a fixed `match`
-        // of two compile-time string literals — no user input ever reaches the SQL string.
+        // of two compile-time string literals -- no user input ever reaches the SQL string.
         let order_by = match sort {
             SortBy::Relevance => "score, s.modified DESC, s.id DESC",
             SortBy::Recency => "s.modified DESC, score, s.id DESC",
@@ -1102,7 +1102,7 @@ fn rebuild_high_signal_fts_on(
 
 /// Append the `repo`/`since`/`until`/`tag`/`model`/`include_archived` WHERE predicates shared by
 /// [`Db::list`] and the Phase 3 bulk catalog read (`db::catalog::Db::catalog`), so the
-/// window/metadata filtering logic exists in exactly one place — the two callers differ only in
+/// window/metadata filtering logic exists in exactly one place -- the two callers differ only in
 /// which columns they select over the same filtered row set. `sql` must already end in an open
 /// predicate (`... WHERE 1=1`) before this appends its `AND` clauses; ordering/`LIMIT` are the
 /// caller's own concern (added after this returns).
@@ -1243,7 +1243,7 @@ fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
 
 /// How [`fts_query`] joins quoted tokens: FTS5's implicit AND (space-joined, every token
 /// required) or an explicit `OR` (any token matches). Both are equally injection-safe because
-/// every token is double-quoted before joining — the joiner itself is always one of these two
+/// every token is double-quoted before joining -- the joiner itself is always one of these two
 /// compile-time literals, never user input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueryMode {
@@ -1306,7 +1306,7 @@ fn quoted_tokens(user: &str) -> Vec<String> {
 }
 
 /// Build a safe FTS5 query: each whitespace token is double-quoted (so user input can't inject
-/// FTS operators), joined per `mode` (AND: FTS5's implicit default; OR: explicit `OR` keyword —
+/// FTS operators), joined per `mode` (AND: FTS5's implicit default; OR: explicit `OR` keyword --
 /// safe because the tokens themselves are quoted, so `OR` can only ever be interpreted as the
 /// join operator, never smuggled in from user input). Returns `None` when there are no tokens.
 fn fts_query(user: &str, mode: QueryMode) -> Option<String> {
@@ -1325,7 +1325,7 @@ fn fts_query(user: &str, mode: QueryMode) -> Option<String> {
 /// scored `RRF_W_REL/(K + rank_bm25) + RRF_W_MSGS/(K + rank_n_msgs) + RRF_W_REC/(K + rank_recency)`
 /// where the ranks are 1-based positions on each axis: bm25 ascending (lower score is a better
 /// match), `n_msgs` descending, and `modified` descending (most-recent = rank 1). The fusion is
-/// scale-free — every axis contributes a RANK, never a magnitude — so a high message count cannot
+/// scale-free -- every axis contributes a RANK, never a magnitude -- so a high message count cannot
 /// swamp relevance. Ties on every axis and on the fused score fall back to `id ASC` for a
 /// deterministic order.
 ///

@@ -7,7 +7,7 @@ use tempfile::TempDir;
 
 /// Counting [`Systemd`] fake: records how many times each shell-out WOULD have been invoked,
 /// without ever spawning `systemctl` (which CI cannot run). Lets a test PROVE the outer `run()`
-/// gate is honored — zero calls under dry-run/skip-systemd, the real calls otherwise.
+/// gate is honored -- zero calls under dry-run/skip-systemd, the real calls otherwise.
 #[derive(Default)]
 struct CountingSystemd {
     daemon_reloads: Cell<usize>,
@@ -24,12 +24,13 @@ impl Systemd for CountingSystemd {
 }
 
 /// Seed a representative legacy world that touches every gated mutation site, INCLUDING the systemd
-/// service+timer+enable-symlink, so a bootstrap over it sets `systemd_changed` (the precondition
-/// for the outer `run()` systemctl gate). Returns nothing; mutates the temp tree under `paths`.
+/// service, so a bootstrap over it sets `systemd_changed` (the precondition for the outer `run()`
+/// systemctl gate). Returns nothing; mutates the temp tree under `paths`.
+///
+/// The systemd trigger is a DRIFTED `clyde-enrich.service`, not a pre-rename unit: the pre-rename
+/// migration is retired (design Phase 4), so seeding one would set no flag and this helper would
+/// silently stop covering the gate it exists to cover.
 fn seed_full_legacy_world(paths: &Paths) {
-    fs::create_dir_all(paths.xdg_data.join("klod")).unwrap();
-    fs::write(paths.xdg_data.join("klod").join("sessions.db"), b"sessions").unwrap();
-
     let settings = paths.settings_global();
     fs::create_dir_all(settings.parent().unwrap()).unwrap();
     fs::write(
@@ -40,17 +41,20 @@ fn seed_full_legacy_world(paths: &Paths) {
 
     let sysd = paths.systemd_dir();
     fs::create_dir_all(sysd.join("timers.target.wants")).unwrap();
+    // A drifted clyde unit: correct name, retired `EnvironmentFile=` directive. `ensure_enrich_unit`
+    // repairs it, which is what sets `systemd_changed`.
     fs::write(
-        paths.legacy_unit(),
-        "[Service]\nEnvironmentFile=%h/.config/klod/enrich.env\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
+        paths.clyde_unit(),
+        "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n",
     )
     .unwrap();
+    // The timer alongside it, so `run()`'s inner `clyde_timer().exists()` branch (which arms the
+    // timer after a repair) is still reachable. Nothing renames a timer into place any more.
     fs::write(
-        paths.legacy_timer(),
+        paths.clyde_timer(),
         "[Timer]\nOnCalendar=*-*-* 03:00:00\n[Install]\nWantedBy=timers.target\n",
     )
     .unwrap();
-    std::os::unix::fs::symlink(paths.legacy_timer(), paths.legacy_wants_link()).unwrap();
 }
 
 /// Build a `Paths` rooted under `root`, so no test touches the real machine. The caller holds the
@@ -124,7 +128,7 @@ fn events_db_merges_legacy_into_clyde_when_both_present() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     // Content-DISJOINT rows (distinct session_id tags), so the content-dedup merge inserts all of
-    // them — modelling the real disjoint-time-range case.
+    // them -- modelling the real disjoint-time-range case.
     seed_events_db_tagged(&paths.legacy_events_db(), 2, "legacy");
     seed_events_db_tagged(&paths.clyde_events_db(), 9, "clyde");
 
@@ -273,7 +277,7 @@ fn events_db_checkpoint_busy_fails_closed_and_leaves_legacy_intact() {
     // The KEY fail-closed test. A second "holder" connection holds a WRITE lock on the legacy DB so
     // the TRUNCATE checkpoint cannot complete: SQLite reports this as SQLITE_OK with busy=1 (NOT an
     // error). `checkpoint_truncate` reads that busy column and returns Err, which must propagate via
-    // `?` BEFORE the legacy DB is moved — leaving everything intact for a retry.
+    // `?` BEFORE the legacy DB is moved -- leaving everything intact for a retry.
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     let legacy = paths.legacy_events_db();
@@ -437,40 +441,9 @@ fn skip_statusline_leaves_statusline_untouched() {
 }
 
 #[test]
-fn repoint_systemd_strips_environment_file_from_legacy_unit() {
-    // Phase 5, G6: the credential-file directive must be GONE from the rewritten unit, not moved
-    // alongside a relocated env file (there is no env file to relocate any more).
-    let dir = TempDir::new().unwrap();
-    let paths = paths_under(dir.path());
-    let legacy_unit = paths.legacy_unit();
-    fs::create_dir_all(legacy_unit.parent().unwrap()).unwrap();
-    fs::write(
-        &legacy_unit,
-        "[Service]\nEnvironmentFile=%h/.config/klod/enrich.env\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
-    )
-    .unwrap();
-
-    assert!(repoint_systemd(&paths, false, false).unwrap());
-
-    let clyde_unit = paths.clyde_unit();
-    assert!(clyde_unit.exists());
-    assert!(!legacy_unit.exists(), "old unit must be removed");
-    let unit_text = fs::read_to_string(&clyde_unit).unwrap();
-    assert!(unit_text.contains("/.cargo/bin/clyde --log-level info session enrich"));
-    assert!(!unit_text.contains("klod"));
-    assert!(
-        !unit_text
-            .lines()
-            .any(|l| l.trim_start().starts_with("EnvironmentFile=")),
-        "the EnvironmentFile directive must be stripped, not renamed: {unit_text}"
-    );
-}
-
-#[test]
-fn repoint_rewrites_clyde_unit_with_stale_subcommand_and_no_legacy() {
-    // A user already migrated off klod (no klod-* state) but whose installed clyde unit predates the
-    // `sessions`->`session` rename. `clyde bootstrap` must still rewrite the stale spelling, or the
-    // timer keeps firing `clyde ... sessions enrich`, which now errors.
+fn repair_rewrites_clyde_unit_with_a_stale_subcommand() {
+    // An installed clyde unit predating the `sessions`->`session` rename. `clyde bootstrap` must still
+    // rewrite the stale spelling, or the timer keeps firing `clyde ... sessions enrich`, which errors.
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     let clyde_unit = paths.clyde_unit();
@@ -480,11 +453,9 @@ fn repoint_rewrites_clyde_unit_with_stale_subcommand_and_no_legacy() {
         "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info sessions enrich\n",
     )
     .unwrap();
-    // No legacy klod units exist, and install_timer is false: the only thing to do is fix the spelling.
-    assert!(!paths.legacy_unit().exists());
-
+    // install_timer is false: the only thing to do is repair the existing unit.
     assert!(
-        repoint_systemd(&paths, false, false).unwrap(),
+        ensure_enrich_unit(&paths, false, false).unwrap(),
         "stale clyde unit should be rewritten"
     );
 
@@ -505,7 +476,7 @@ fn repoint_rewrites_clyde_unit_with_stale_subcommand_and_no_legacy() {
 #[test]
 fn repoint_rewrites_clyde_unit_that_still_carries_environment_file() {
     // Phase 5, G6: a clyde unit already on the correct subcommand spelling but STILL carrying the
-    // retired EnvironmentFile directive must be rewritten too — refresh_clyde_unit's trigger is not
+    // retired EnvironmentFile directive must be rewritten too -- refresh_clyde_unit's trigger is not
     // just the stale subcommand spelling. This is exactly the live desk.lan state: `session enrich`
     // (already migrated) plus `EnvironmentFile=` (not yet excised).
     let dir = TempDir::new().unwrap();
@@ -519,7 +490,7 @@ fn repoint_rewrites_clyde_unit_that_still_carries_environment_file() {
     .unwrap();
 
     assert!(
-        repoint_systemd(&paths, false, false).unwrap(),
+        ensure_enrich_unit(&paths, false, false).unwrap(),
         "a unit still carrying EnvironmentFile must be rewritten even with the correct subcommand"
     );
 
@@ -546,7 +517,7 @@ fn repoint_is_noop_for_already_correct_clyde_unit() {
     .unwrap();
 
     assert!(
-        !repoint_systemd(&paths, false, false).unwrap(),
+        !ensure_enrich_unit(&paths, false, false).unwrap(),
         "a correct unit (no stale subcommand, no EnvironmentFile) needs no rewrite"
     );
 }
@@ -561,7 +532,7 @@ fn repoint_dry_run_reports_stale_clyde_unit_without_writing() {
     fs::write(&clyde_unit, body).unwrap();
 
     assert!(
-        repoint_systemd(&paths, false, true).unwrap(),
+        ensure_enrich_unit(&paths, false, true).unwrap(),
         "dry-run must report the pending rewrite"
     );
     // Dry-run writes nothing.
@@ -576,9 +547,7 @@ fn repoint_dry_run_reports_stale_clyde_unit_without_writing() {
 fn full_bootstrap_is_idempotent() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
-    // Seed a representative legacy world.
-    fs::create_dir_all(paths.xdg_data.join("klod")).unwrap();
-    fs::write(paths.xdg_data.join("klod").join("sessions.db"), b"x").unwrap();
+    // Seed a representative legacy world. No pre-rename data dir: that migration is retired.
     seed_events_db(&paths.legacy_events_db(), 3);
     let settings = paths.settings_global();
     fs::create_dir_all(settings.parent().unwrap()).unwrap();
@@ -601,92 +570,9 @@ fn full_bootstrap_is_idempotent() {
     );
 
     // Post-state: clyde paths populated, legacy gone, hook repointed.
-    assert!(paths.xdg_data.join("clyde").join("sessions.db").exists());
     assert!(paths.clyde_events_db().exists());
     assert_eq!(row_count(&paths.clyde_events_db()), 3);
     assert!(fs::read_to_string(&settings).unwrap().contains("clyde permit log"));
-}
-
-#[test]
-fn migrate_dir_merges_into_existing_dest_without_clobbering() {
-    let dir = TempDir::new().unwrap();
-    let paths = paths_under(dir.path());
-    // A pre-bootstrap `clyde permit log` created the clyde data dir with events.db.
-    let clyde = paths.xdg_data.join("clyde");
-    fs::create_dir_all(&clyde).unwrap();
-    fs::write(clyde.join("events.db"), b"events").unwrap();
-    // The legacy klod data dir still holds sessions.db.
-    let legacy = paths.xdg_data.join("klod");
-    fs::create_dir_all(&legacy).unwrap();
-    fs::write(legacy.join("sessions.db"), b"sessions").unwrap();
-
-    assert!(migrate_dir(&legacy, &clyde, false).unwrap());
-    assert!(clyde.join("sessions.db").exists(), "sessions.db must merge into clyde");
-    assert!(clyde.join("events.db").exists(), "existing events.db must survive");
-    assert!(!legacy.join("sessions.db").exists(), "sessions.db must leave legacy");
-    assert!(!legacy.exists(), "emptied legacy dir is removed");
-}
-
-#[test]
-fn migrate_dir_leaves_colliding_entry_in_place() {
-    let dir = TempDir::new().unwrap();
-    let paths = paths_under(dir.path());
-    let clyde = paths.xdg_data.join("clyde");
-    fs::create_dir_all(&clyde).unwrap();
-    fs::write(clyde.join("sessions.db"), b"clyde-wins").unwrap();
-    let legacy = paths.xdg_data.join("klod");
-    fs::create_dir_all(&legacy).unwrap();
-    fs::write(legacy.join("sessions.db"), b"legacy-loses").unwrap();
-
-    // No new entries to move (only a collision) -> returns false, dest untouched, legacy kept.
-    assert!(!migrate_dir(&legacy, &clyde, false).unwrap());
-    assert_eq!(fs::read(clyde.join("sessions.db")).unwrap(), b"clyde-wins");
-    assert!(
-        legacy.join("sessions.db").exists(),
-        "colliding legacy copy is left in place"
-    );
-}
-
-#[test]
-fn systemd_repoints_service_timer_and_enable_symlink() {
-    let dir = TempDir::new().unwrap();
-    let paths = paths_under(dir.path());
-    let sysd = paths.systemd_dir();
-    fs::create_dir_all(sysd.join("timers.target.wants")).unwrap();
-    fs::write(
-        paths.legacy_unit(),
-        "[Unit]\nDescription=klod session enrichment sweep\nDocumentation=https://github.com/tatari-tv/klod\n[Service]\nType=oneshot\nEnvironmentFile=%h/.config/klod/enrich.env\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
-    )
-    .unwrap();
-    fs::write(
-        paths.legacy_timer(),
-        "[Unit]\nDescription=Daily klod session enrichment sweep\nDocumentation=https://github.com/tatari-tv/klod\n[Timer]\nOnCalendar=*-*-* 03:00:00\n[Install]\nWantedBy=timers.target\n",
-    )
-    .unwrap();
-    std::os::unix::fs::symlink(paths.legacy_timer(), paths.legacy_wants_link()).unwrap();
-
-    assert!(repoint_systemd(&paths, false, false).unwrap());
-
-    // Both clyde units exist with rewritten content; both legacy units gone.
-    assert!(paths.clyde_unit().exists());
-    assert!(paths.clyde_timer().exists());
-    assert!(!paths.legacy_unit().exists());
-    assert!(!paths.legacy_timer().exists());
-    let svc = fs::read_to_string(paths.clyde_unit()).unwrap();
-    assert!(
-        !svc.lines().any(|l| l.trim_start().starts_with("EnvironmentFile=")),
-        "the service's EnvironmentFile directive must be stripped: {svc}"
-    );
-    let tmr = fs::read_to_string(paths.clyde_timer()).unwrap();
-    assert!(!tmr.contains("klod"), "timer body must be fully rewritten");
-    assert!(tmr.contains("tatari-tv/clyde"));
-    // Enable symlink repointed to the clyde timer; old link gone.
-    assert!(fs::symlink_metadata(paths.clyde_wants_link()).is_ok());
-    assert!(fs::symlink_metadata(paths.legacy_wants_link()).is_err());
-    assert_eq!(fs::read_link(paths.clyde_wants_link()).unwrap(), paths.clyde_timer());
-    // Backups left for both units.
-    assert!(backup_path(&paths.legacy_unit()).exists());
-    assert!(backup_path(&paths.legacy_timer()).exists());
 }
 
 #[test]
@@ -694,7 +580,7 @@ fn install_timer_creates_service_timer_and_symlink() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
     // No legacy units; --install-timer must create the full set.
-    assert!(repoint_systemd(&paths, true, false).unwrap());
+    assert!(ensure_enrich_unit(&paths, true, false).unwrap());
     assert!(paths.clyde_unit().exists());
     assert!(paths.clyde_timer().exists());
     assert_eq!(fs::read_link(paths.clyde_wants_link()).unwrap(), paths.clyde_timer());
@@ -703,7 +589,7 @@ fn install_timer_creates_service_timer_and_symlink() {
 #[test]
 fn install_clyde_timer_writes_no_environment_file() {
     // Phase 5 success criterion: the unit body `install_clyde_timer` generates must contain no
-    // `EnvironmentFile` line — clyde installs no credential file. Break-it check: restoring the old
+    // `EnvironmentFile` line -- clyde installs no credential file. Break-it check: restoring the old
     // `EnvironmentFile=%h/.config/clyde/enrich.env` line in `install_clyde_timer`'s template makes
     // this assertion fail.
     let dir = TempDir::new().unwrap();
@@ -740,79 +626,29 @@ fn compose_path_env_prepends_claude_dir_to_inherited_path() {
 }
 
 #[test]
-fn rewrite_unit_strips_environment_file_and_injects_claude_path_before_exec_start() {
-    let text = "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n";
-
-    let rewritten = rewrite_unit(text, Some("/home/user/.local/bin:/usr/bin"));
-
-    assert!(
-        !rewritten
-            .lines()
-            .any(|l| l.trim_start().starts_with("EnvironmentFile=")),
-        "EnvironmentFile must be stripped: {rewritten}"
-    );
-    assert!(
-        rewritten.contains("Environment=PATH=/home/user/.local/bin:/usr/bin\n"),
-        "the composed PATH must be injected: {rewritten}"
-    );
-    // The injected line must precede ExecStart, or the systemd directive order is meaningless.
-    let env_pos = rewritten.find("Environment=PATH=").unwrap();
-    let exec_pos = rewritten.find("ExecStart=").unwrap();
-    assert!(env_pos < exec_pos, "Environment=PATH= must come before ExecStart=");
-}
-
-#[test]
-fn rewrite_unit_writes_no_environment_line_when_claude_path_env_is_none() {
-    // `resolve_claude_path_env` returning `None` (claude not found at rewrite time) must not leave
-    // the unit with any PATH override — the pre-fix fallback of relying on the systemd manager's own
-    // PATH, not a broken/empty `Environment=PATH=` line.
-    let text = "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n";
-
-    let rewritten = rewrite_unit(text, None);
-
-    assert!(!rewritten.contains("Environment=PATH="));
-    assert!(
-        !rewritten
-            .lines()
-            .any(|l| l.trim_start().starts_with("EnvironmentFile="))
-    );
-    assert!(rewritten.contains("ExecStart=%h/.cargo/bin/clyde --log-level info session enrich"));
-}
-
-#[test]
-fn rewrite_unit_does_not_duplicate_an_existing_environment_path_line() {
-    // Idempotent: a unit that already carries its own `Environment=PATH=` (an operator override, or
-    // a prior run of this function) must not get a second one appended.
-    let text = "[Service]\nEnvironment=PATH=/opt/custom/bin:/usr/bin\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n";
-
-    let rewritten = rewrite_unit(text, Some("/home/user/.local/bin:/usr/bin"));
-
-    let occurrences = rewritten.matches("Environment=PATH=").count();
-    assert_eq!(occurrences, 1, "must not duplicate the directive: {rewritten}");
-    assert!(
-        rewritten.contains("Environment=PATH=/opt/custom/bin:/usr/bin"),
-        "{rewritten}"
-    );
-}
-
-#[test]
 fn bootstrap_reports_completed_steps_on_partial_failure() {
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
-    // Step 1 (sessions data dir) succeeds: legacy klod data dir, clean clyde dest.
-    fs::create_dir_all(paths.xdg_data.join("klod")).unwrap();
-    fs::write(paths.xdg_data.join("klod").join("sessions.db"), b"x").unwrap();
-    // Step 2 (config dir) fails: legacy klod config dir exists, but the clyde config dest is a
-    // regular FILE, so the merge branch's create_dir_all errors.
-    fs::create_dir_all(paths.xdg_config.join("klod")).unwrap();
-    fs::write(paths.xdg_config.join("klod").join("permit.yml"), b"x").unwrap();
-    fs::create_dir_all(&paths.xdg_config).unwrap();
+    // Step 1 (permit events DB) succeeds: it writes under xdg_DATA, which is clean.
+    seed_events_db(&paths.legacy_events_db(), 2);
+    // Step 2 (permit config) fails: it writes under xdg_CONFIG/clyde, and that path is a regular
+    // FILE, so its create_dir_all errors. The two steps therefore land on different roots, which is
+    // what lets one succeed and the next fail.
+    let permit_cfg = paths.xdg_config.join("claude-permit").join("config.yml");
+    fs::create_dir_all(permit_cfg.parent().unwrap()).unwrap();
+    fs::write(&permit_cfg, b"permit: config\n").unwrap();
     fs::write(paths.xdg_config.join("clyde"), b"not a dir").unwrap();
 
     let out = bootstrap(&paths, &BootstrapArgs::default()).unwrap();
-    assert_eq!(out.completed, vec!["sessions data dir klod -> clyde".to_string()]);
+    assert_eq!(out.completed, vec!["permit events DB (WAL-safe move)".to_string()]);
     let failed = out.failed.expect("a step should have failed");
-    assert_eq!(failed.0, "config dir klod -> clyde");
+    assert_eq!(failed.0, "permit config -> clyde/permit.yml");
+    // The run STOPPED at the first error: no later step ran.
+    assert!(
+        !out.completed.iter().any(|s| s.contains("cost config")),
+        "the first error must halt the run: {:?}",
+        out.completed
+    );
 }
 
 #[test]
@@ -866,19 +702,13 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
     let paths = paths_under(dir.path());
 
     // Seed a representative legacy world touching EVERY gated mutation site:
-    //  - sessions data dir (migrate_dir whole-rename)
-    //  - config dir (migrate_dir)
     //  - permit events DB with WAL sidecars (migrate_events_db incl. checkpoint)
     //  - permit config (migrate_permit_config / migrate_file)
     //  - cost config (migrate_file)
     //  - pricing overrides (merge_pricing_overrides)
     //  - statusline (repoint_statusline)
     //  - global + local settings hooks (repoint_hook x2)
-    //  - systemd service + timer + enable symlink (repoint_systemd, repoint_wants_symlink)
-    fs::create_dir_all(paths.xdg_data.join("klod")).unwrap();
-    fs::write(paths.xdg_data.join("klod").join("sessions.db"), b"sessions").unwrap();
-    fs::create_dir_all(paths.xdg_config.join("klod")).unwrap();
-    fs::write(paths.xdg_config.join("klod").join("misc.yml"), b"x").unwrap();
+    //  - a drifted enrich unit (ensure_enrich_unit -> refresh_clyde_unit)
 
     let legacy_db = paths.legacy_events_db();
     seed_events_db(&legacy_db, 4);
@@ -918,17 +748,12 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
 
     let sysd = paths.systemd_dir();
     fs::create_dir_all(sysd.join("timers.target.wants")).unwrap();
+    // A drifted clyde unit is what the systemd step now plans to repair.
     fs::write(
-        paths.legacy_unit(),
-        "[Service]\nEnvironmentFile=%h/.config/klod/enrich.env\nExecStart=%h/.cargo/bin/klod --log-level info sessions enrich\n",
+        paths.clyde_unit(),
+        "[Service]\nEnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n",
     )
     .unwrap();
-    fs::write(
-        paths.legacy_timer(),
-        "[Timer]\nOnCalendar=*-*-* 03:00:00\n[Install]\nWantedBy=timers.target\n",
-    )
-    .unwrap();
-    std::os::unix::fs::symlink(paths.legacy_timer(), paths.legacy_wants_link()).unwrap();
 
     // Read the row count FIRST: opening the DB (even read) settles/removes an empty WAL sidecar at
     // connection close, so do it before snapshotting or the snapshot would race that settling and
@@ -949,8 +774,6 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
     assert!(out.failed.is_none(), "dry-run planning must not fail: {:?}", out.failed);
     let plan = out.completed.join("\n");
     for expected in [
-        "sessions data dir klod -> clyde",
-        "config dir klod -> clyde",
         "permit events DB (WAL-safe move)",
         "permit config -> clyde/permit.yml",
         "cost config -> clyde/cost.yml",
@@ -958,7 +781,7 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
         "statusline ccu -> clyde cost",
         "permit hook (global settings.json)",
         "permit hook (local settings.local.json)",
-        "enrich systemd unit klod -> clyde",
+        "enrich systemd unit (installed or repaired)",
     ] {
         assert!(
             plan.contains(expected),
@@ -980,7 +803,7 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
     );
 
     // The events DB was never opened in a writing mode: no clyde DB was created, the legacy DB is
-    // exactly where it was, and (the load-bearing checkpoint guard) its row count is unchanged —
+    // exactly where it was, and (the load-bearing checkpoint guard) its row count is unchanged --
     // a `PRAGMA wal_checkpoint(TRUNCATE)` would have collapsed/rewritten the file.
     assert!(
         !paths.clyde_events_db().exists(),
@@ -995,7 +818,16 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
 
     // No clyde-side artifacts of any kind were produced.
     assert!(!paths.xdg_data.join("clyde").exists(), "no clyde data dir created");
-    assert!(!paths.clyde_unit().exists(), "no clyde systemd unit written");
+    // The seeded unit is left EXACTLY as it was: still drifted, not repaired. (The byte/mtime
+    // snapshot above already proves this; asserted by content too, because "absent" is no longer the
+    // right invariant now that the fixture plants the unit it plans to repair.)
+    assert!(
+        fs::read_to_string(paths.clyde_unit())
+            .unwrap()
+            .lines()
+            .any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "dry-run must leave the drifted unit unrepaired"
+    );
     assert!(!paths.clyde_timer().exists(), "no clyde timer written");
     assert!(
         fs::symlink_metadata(paths.clyde_wants_link()).is_err(),
@@ -1004,7 +836,7 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
     // No backups were written (a backup is the first mutation a live step makes).
     assert!(!backup_path(&settings).exists(), "no backup written in dry-run");
     assert!(
-        !backup_path(&paths.legacy_unit()).exists(),
+        !backup_path(&paths.clyde_unit()).exists(),
         "no unit backup written in dry-run"
     );
     // Legacy hooks/statusline remain in their pre-migration form.
@@ -1015,7 +847,7 @@ fn dry_run_performs_zero_mutations_and_lists_planned_steps() {
 #[test]
 fn run_dry_run_does_not_shell_out_to_systemctl() {
     // Exercise the OUTER run() over a temp fixture in dry-run with a counting Systemd fake. The
-    // migration must mutate nothing AND the two systemctl shell-outs must NOT be taken — proving
+    // migration must mutate nothing AND the two systemctl shell-outs must NOT be taken -- proving
     // the `!args.dry_run && ...` gate in run() is honored, not merely inspected.
     let dir = TempDir::new().unwrap();
     let paths = paths_under(dir.path());
@@ -1037,7 +869,13 @@ fn run_dry_run_does_not_shell_out_to_systemctl() {
     // And zero filesystem mutation, end to end through run() (not just the core).
     let after = snapshot(dir.path());
     assert_eq!(before, after, "dry-run through run() must not touch any path");
-    assert!(!paths.clyde_unit().exists(), "no clyde unit written under dry-run");
+    assert!(
+        fs::read_to_string(paths.clyde_unit())
+            .unwrap()
+            .lines()
+            .any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "dry-run through run() must leave the drifted unit unrepaired"
+    );
 }
 
 #[test]
@@ -1054,9 +892,16 @@ fn run_live_shells_out_to_systemctl_when_systemd_changed() {
     let args = BootstrapArgs::default();
     run_paths(&paths, &args, &systemd).unwrap();
 
-    // The clyde timer unit now exists, so the gate's inner `clyde_timer().exists()` branch holds:
-    // both shell-outs fire exactly once.
-    assert!(paths.clyde_timer().exists(), "live run writes the clyde timer unit");
+    // The drifted unit was repaired (setting systemd_changed) and the timer exists, so the gate's
+    // inner `clyde_timer().exists()` branch holds: both shell-outs fire exactly once.
+    assert!(
+        !fs::read_to_string(paths.clyde_unit())
+            .unwrap()
+            .lines()
+            .any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "the live run must have repaired the drifted unit"
+    );
+    assert!(paths.clyde_timer().exists(), "the timer unit is present");
     assert_eq!(systemd.daemon_reloads.get(), 1, "live run daemon-reloads once");
     assert_eq!(systemd.timer_starts.get(), 1, "live run starts the timer once");
 }
@@ -1133,4 +978,218 @@ fn no_stale_env_file_reports_none() {
     let out = bootstrap(&paths, &BootstrapArgs::default()).unwrap();
 
     assert!(out.stale_env_file.is_none());
+}
+
+// --- Phase 1: converge the enrich unit on one body ---
+
+/// The exact live desk.lan drift, and the defect item 1 reports: Phase 5 of the excision stripped
+/// the `EnvironmentFile=` directive by line filtering and left the comment block explaining it, so
+/// the unit went on claiming an Anthropic key lived in it. The old trigger
+/// (`has_stale_subcommand || has_environment_file`) matched NEITHER, so bootstrap was a no-op and the
+/// falsehood survived forever.
+#[test]
+fn refresh_repairs_unit_whose_credential_comment_survived_its_directive() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    // Byte-for-byte the shape read off desk.lan: correct subcommand, NO EnvironmentFile directive,
+    // orphaned credential comment, and the `Default sweep` comment that must survive the repair.
+    fs::write(
+        &clyde_unit,
+        "[Unit]\n\
+         Description=clyde session enrichment sweep (work-scoped, dormant)\n\
+         Documentation=https://github.com/tatari-tv/clyde\n\n\
+         [Service]\n\
+         Type=oneshot\n\
+         # The work Anthropic key lives here (0600), since systemd user services do not\n\
+         # inherit the interactive shell environment. Never committed; desk-only.\n\
+         # Default sweep: dormant (>=7d idle), work-scoped only, incremental.\n\
+         ExecStart=%h/.cargo/bin/clyde --log-level info session enrich\n\
+         Nice=10\n",
+    )
+    .unwrap();
+
+    assert!(
+        ensure_enrich_unit(&paths, false, false).unwrap(),
+        "a unit whose credential comment outlived its directive must be repaired"
+    );
+
+    let text = fs::read_to_string(&clyde_unit).unwrap();
+    assert!(
+        !mentions_retired_credential(&text),
+        "the repaired unit must no longer reference a retired credential: {text}"
+    );
+    assert!(
+        !text.contains("Anthropic"),
+        "the orphaned credential comment must be gone: {text}"
+    );
+    assert!(
+        text.contains("# Default sweep:"),
+        "the comment describing ExecStart must survive the converge: {text}"
+    );
+    assert!(
+        text.contains("ExecStart=%h/.cargo/bin/clyde --log-level info session enrich"),
+        "the repaired unit must still run the enrich sweep: {text}"
+    );
+    // The pre-repair unit, credential comment included, is recoverable but NOT restorable verbatim:
+    // restoring it re-arms the trigger. See `refresh_clyde_unit`'s docs.
+    let backup = backup_path(&clyde_unit);
+    assert!(
+        backup.exists(),
+        "the pre-repair unit must be backed up before the write"
+    );
+    assert!(
+        mentions_retired_credential(&fs::read_to_string(&backup).unwrap()),
+        "the backup holds the ORIGINAL text, which is why it cannot be restored wholesale"
+    );
+}
+
+/// Idempotence, and the thing that makes the converge safe to run on every bootstrap: a unit already
+/// carrying the canonical body must trip NO trigger. If `clyde_service_body`'s own output matched
+/// `mentions_retired_credential`, bootstrap would rewrite the unit on every run forever.
+#[test]
+fn refresh_is_noop_for_a_canonical_unit() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    let clyde_unit = paths.clyde_unit();
+    fs::create_dir_all(clyde_unit.parent().unwrap()).unwrap();
+    fs::write(&clyde_unit, clyde_service_body(None)).unwrap();
+
+    assert!(
+        !refresh_clyde_unit(&clyde_unit, false).unwrap(),
+        "the canonical body must trip none of the three triggers"
+    );
+    assert!(
+        !ensure_enrich_unit(&paths, false, false).unwrap(),
+        "a second bootstrap over a canonical unit must report no change"
+    );
+}
+
+/// The canonical body's own contract: it carries the one comment that had to survive, and none of
+/// the credential text the repair exists to remove.
+#[test]
+fn canonical_service_body_carries_default_sweep_and_no_credential() {
+    let body = clyde_service_body(Some("/home/u/.local/bin:/usr/bin"));
+
+    assert!(
+        body.contains("# Default sweep:"),
+        "canonical body must carry the comment"
+    );
+    assert!(
+        body.contains("Documentation=https://github.com/tatari-tv/clyde"),
+        "canonical body must adopt the live unit's Documentation directive"
+    );
+    assert!(
+        !body.lines().any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "clyde installs no credential file: {body}"
+    );
+    assert!(
+        !mentions_retired_credential(&body),
+        "the canonical body must not trip its own repair trigger: {body}"
+    );
+    assert!(
+        body.contains("Environment=PATH=/home/u/.local/bin:/usr/bin"),
+        "the resolved PATH override must be injected: {body}"
+    );
+    // `None` is the claude-not-on-PATH case: no override line at all, never an empty one.
+    assert!(
+        !clyde_service_body(None).contains("Environment=PATH="),
+        "an unresolvable claude must yield no PATH override line"
+    );
+}
+
+/// `mentions_retired_credential` is SCOPED to comments and `EnvironmentFile=` directives. A blanket
+/// `contains("anthropic")` would match a `Documentation=` URL and rewrite the unit forever, so the
+/// negative case is the load-bearing half of this test.
+#[test]
+fn mentions_retired_credential_is_scoped_to_comments_and_env_file() {
+    assert!(mentions_retired_credential(
+        "# The work Anthropic key lives here (0600)\nExecStart=/bin/true\n"
+    ));
+    assert!(mentions_retired_credential(
+        "EnvironmentFile=%h/.config/clyde/enrich.env\nExecStart=/bin/true\n"
+    ));
+    assert!(
+        mentions_retired_credential("#   indented comment mentioning an API KEY\n"),
+        "matching must be case-insensitive and tolerate leading whitespace"
+    );
+    assert!(
+        mentions_retired_credential("# see enrich.env for details\n"),
+        "a comment naming the retired env file counts, even with no credential word"
+    );
+
+    assert!(
+        !mentions_retired_credential("Documentation=https://docs.anthropic.com/claude\n"),
+        "a non-comment directive must NOT match, or the unit is rewritten on every run"
+    );
+    assert!(
+        !mentions_retired_credential("Description=clyde session enrichment sweep\nExecStart=/bin/true\n"),
+        "an ordinary unit must not match"
+    );
+    assert!(
+        !mentions_retired_credential("# Default sweep: dormant (>=7d idle), work-scoped only, incremental.\n"),
+        "the canonical comment must not match"
+    );
+}
+
+/// CodeRabbit, PR #78: `--install-timer` was unreachable once the `.service` existed, because
+/// `ensure_enrich_unit` repaired the service and returned. A host whose `clyde-enrich.timer` or
+/// enable symlink went missing therefore had a DEAD SCHEDULER with no way back: the sweep silently
+/// never fires again and `bootstrap` keeps reporting success.
+#[test]
+fn install_timer_restores_a_missing_timer_even_when_the_service_exists() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    fs::create_dir_all(paths.systemd_dir()).unwrap();
+    // A canonical service, so the repair path has nothing to do and would return false.
+    fs::write(paths.clyde_unit(), clyde_service_body(None)).unwrap();
+    assert!(!paths.clyde_timer().exists(), "fixture: the timer is missing");
+
+    assert!(
+        ensure_enrich_unit(&paths, true, false).unwrap(),
+        "--install-timer must restore a missing timer even though the service exists"
+    );
+    assert!(paths.clyde_timer().exists(), "the timer unit must be written");
+    assert!(
+        fs::symlink_metadata(paths.clyde_wants_link()).is_ok(),
+        "the enable symlink must be created, or the timer is installed but not armed"
+    );
+}
+
+/// The other half: the enable symlink is what actually arms the timer, so a present timer with a
+/// MISSING link is the same dead-scheduler state.
+#[test]
+fn install_timer_restores_a_missing_enable_symlink() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    fs::create_dir_all(paths.systemd_dir()).unwrap();
+    fs::write(paths.clyde_unit(), clyde_service_body(None)).unwrap();
+    fs::write(paths.clyde_timer(), "[Timer]\nOnCalendar=daily\n").unwrap();
+    assert!(
+        fs::symlink_metadata(paths.clyde_wants_link()).is_err(),
+        "fixture: no link"
+    );
+
+    assert!(ensure_enrich_unit(&paths, true, false).unwrap());
+    assert!(fs::symlink_metadata(paths.clyde_wants_link()).is_ok());
+}
+
+/// And without `--install-timer` a canonical service plus a missing timer is still a NO-OP, so the
+/// fix above cannot turn every plain `bootstrap` into a timer installer.
+#[test]
+fn a_missing_timer_is_not_installed_without_the_flag() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    fs::create_dir_all(paths.systemd_dir()).unwrap();
+    fs::write(paths.clyde_unit(), clyde_service_body(None)).unwrap();
+
+    assert!(
+        !ensure_enrich_unit(&paths, false, false).unwrap(),
+        "no flag, nothing to repair: must stay a no-op"
+    );
+    assert!(
+        !paths.clyde_timer().exists(),
+        "no timer may be created without the flag"
+    );
 }

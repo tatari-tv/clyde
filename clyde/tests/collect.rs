@@ -1,6 +1,6 @@
 //! Integration test for `clyde report collect` stdout streaming.
 //!
-//! Driven through the real `clyde` binary so stdout and stderr are genuine, separable streams —
+//! Driven through the real `clyde` binary so stdout and stderr are genuine, separable streams --
 //! the only way to prove HAZARD 1 (the "wrote N sessions" note must NOT corrupt the JSON on
 //! stdout) end to end. Phase 4: collect reads the catalog (`sessions.db`, via `--db`), not JSONL,
 //! so the fixture is a real catalog row + its efficiency/outcome blobs.
@@ -35,7 +35,7 @@ fn parsed(sid: &str) -> ParsedSession {
 #[test]
 fn stdout_mode_streams_valid_json_and_message_to_stderr() {
     // HAZARD 1: when `-o` is omitted, the JSON streams to stdout and the "wrote N sessions"
-    // note must land on STDERR, never stdout — otherwise it corrupts the JSON a `| jq` consumes.
+    // note must land on STDERR, never stdout -- otherwise it corrupts the JSON a `| jq` consumes.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("sessions.db");
     let db = Db::open_at(&db_path).unwrap();
@@ -66,7 +66,7 @@ fn stdout_mode_streams_valid_json_and_message_to_stderr() {
     };
     let eff_json = serde_json::to_string(&eff).unwrap();
     // A reindexed session with no outcomes stores the full serialized empty `Outcomes` object (all
-    // fields present), exactly as `reindex_efficiency` writes it — not a bare `{}`.
+    // fields present), exactly as `reindex_efficiency` writes it -- not a bare `{}`.
     let outcome_json = serde_json::to_string(&Outcomes::default()).unwrap();
     db.set_efficiency_many(&[EfficiencyWrite {
         session_id: SID_A,

@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 pub enum EnrichStatus {
     /// Enrichment completed successfully.
     Ok,
-    /// Skipped: the session is `personal`-scoped (the routing invariant — never sent off-machine).
+    /// Skipped: the session is `personal`-scoped (the routing invariant -- never sent off-machine).
     SkippedPersonal,
     /// Skipped: the session had no high-signal body worth enriching.
     SkippedEmpty,
@@ -35,7 +35,7 @@ pub enum EnrichStatus {
 }
 
 impl EnrichStatus {
-    /// The canonical kebab-case wire string — the ONE source of truth for the literal written to the
+    /// The canonical kebab-case wire string -- the ONE source of truth for the literal written to the
     /// DB (`db.rs` writers bind this) and emitted on the wire (serde produces the same string).
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -52,7 +52,7 @@ impl FromStr for EnrichStatus {
 
     /// Parse a stored TEXT value into the frozen vocabulary. An unknown non-null string is a LOUD
     /// error (fail closed): a non-contract value must never silently reach the wire. The live catalog
-    /// only ever holds the four values, so this never fires in practice — it guards against writer
+    /// only ever holds the four values, so this never fires in practice -- it guards against writer
     /// drift and a corrupt row.
     fn from_str(s: &str) -> Result<Self> {
         match s {
@@ -121,7 +121,7 @@ pub struct ExportRecord {
     // identity
     pub session_id: String,
     pub host: String,
-    /// `work` | `personal` — re-derived at export time via `scope::classify(cwd)`, never the nullable
+    /// `work` | `personal` -- re-derived at export time via `scope::classify(cwd)`, never the nullable
     /// stored column, so the field is always one of the two tokens even for un-enriched sessions
     /// (finding S1).
     pub scope: String,
@@ -152,7 +152,7 @@ pub struct ExportRecord {
     // enrichment block
     pub summary: Option<String>,
     pub tags: Vec<String>,
-    /// `manual` | `enrich` | null — trust routing for consumers.
+    /// `manual` | `enrich` | null -- trust routing for consumers.
     pub tags_source: Option<String>,
     pub enriched_at: Option<String>,
     /// `ok` | `skipped-personal` | `skipped-empty` | `failed` | null. Frozen contract vocabulary,
@@ -170,7 +170,7 @@ pub struct ExportRecord {
     // efficiency block (schema v6)
     /// The full nested `SessionEfficiency` (aggregate + per-subagent breakdown + scored flags) as
     /// computed by the `efficiency` crate and stored verbatim in the catalog's `efficiency_json`
-    /// column; `null` when the session has no computed efficiency yet (`efficiency_json` NULL — a
+    /// column; `null` when the session has no computed efficiency yet (`efficiency_json` NULL -- a
     /// freshly-indexed session before the efficiency reindex pass, an archived/reaped session, or one
     /// whose transcript just grew and awaits recompute).
     ///
@@ -178,7 +178,7 @@ pub struct ExportRecord {
     /// `efficiency` crate (kebab-case), and this contract passes it through unchanged rather than
     /// re-declaring it, so an efficiency-internal field addition rides the additive envelope with no
     /// export-contract type change (the forward-compatible-envelope carve-out). Additive within
-    /// [`EXPORT_SCHEMA_VERSION`] 1 — always emitted (`null` when absent) so a consumer always sees the
+    /// [`EXPORT_SCHEMA_VERSION`] 1 -- always emitted (`null` when absent) so a consumer always sees the
     /// key. The catalog's flat `cache_read_share`/`tool_errors`/`cost_usd` scalar columns exist for
     /// server-side ranking only and are deliberately NOT re-emitted here (they are derivable from this
     /// block, and a field derived from another must never be duplicated where it could diverge).
@@ -224,7 +224,7 @@ pub struct ExportBodyMessage {
 }
 
 /// Metadata filters for a bulk `session export`. All optional / additive; an unset field does not
-/// constrain the result. Kept free of clap (the `sessions` crate stays clap-free — the CLI maps its
+/// constrain the result. Kept free of clap (the `sessions` crate stays clap-free -- the CLI maps its
 /// args into this in Phase 3).
 #[derive(Debug, Clone, Default)]
 pub struct ExportFilters {

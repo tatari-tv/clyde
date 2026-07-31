@@ -3,7 +3,7 @@
 //! The classic stdio-MCP footgun is a stray `println!` / log line corrupting the JSON-RPC
 //! framing. `serve_stdout_carries_only_jsonrpc_frames` spawns the real binary, drives the
 //! `initialize` handshake, and asserts that every line the server writes to stdout is a valid
-//! JSON-RPC frame — nothing else.
+//! JSON-RPC frame -- nothing else.
 //!
 //! `clyde mcp serve` is spawned by an MCP host with FIXED args (`mcp serve`, no flags reachable),
 //! so it takes its projects-dir / reindex-on-start from `clyde.yml`, not the command line. These
@@ -63,12 +63,12 @@ fn serve_stdout_carries_only_jsonrpc_frames() {
     stdin.write_all(init.as_bytes()).expect("write initialize");
     stdin.write_all(b"\n").expect("write newline");
     stdin.flush().expect("flush initialize");
-    // Closing stdin signals EOF after the request, so the server answers then shuts down — which
+    // Closing stdin signals EOF after the request, so the server answers then shuts down -- which
     // lets the reader thread drain stdout to completion (no hang) and we can inspect EVERY line.
     drop(stdin);
 
     // Drain ALL of stdout to EOF on a worker thread so a hung server can't wedge the test, and so
-    // we can assert on every line the server emitted — not just the first.
+    // we can assert on every line the server emitted -- not just the first.
     let (tx, rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut buf = BufReader::new(stdout);
@@ -88,7 +88,7 @@ fn serve_stdout_carries_only_jsonrpc_frames() {
         .recv_timeout(RESPONSE_TIMEOUT)
         .expect("server did not respond / close stdout within the timeout");
 
-    // Every non-empty stdout line MUST be a JSON-RPC frame — no stray log/print line may leak.
+    // Every non-empty stdout line MUST be a JSON-RPC frame -- no stray log/print line may leak.
     let mut saw_init_response = false;
     let mut server_name: Option<String> = None;
     for line in &lines {

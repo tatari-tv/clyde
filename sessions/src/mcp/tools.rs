@@ -14,24 +14,24 @@ use crate::model::SessionRecord;
 
 /// Default result cap for `sessions_search` when the caller omits `limit`.
 pub const SEARCH_LIMIT_DEFAULT: u32 = 20;
-/// Hard cap on `sessions_search` results — values above this are clamped, never honored. Derived
+/// Hard cap on `sessions_search` results -- values above this are clamped, never honored. Derived
 /// from [`crate::db::SEARCH_LIMIT_MAX`], the single source of truth also enforced inside `Db::search`
 /// for the CLI path, so the two surfaces can never diverge.
 pub const SEARCH_LIMIT_MAX: u32 = crate::db::SEARCH_LIMIT_MAX as u32;
 /// Default row cap for `sessions_ls` when the caller omits `limit`.
 pub const LS_LIMIT_DEFAULT: u32 = 50;
-/// Hard cap on `sessions_ls` rows — values above this are clamped, never honored.
+/// Hard cap on `sessions_ls` rows -- values above this are clamped, never honored.
 pub const LS_LIMIT_MAX: u32 = 200;
 
 /// Default match cap for `session_grep` when the caller omits `limit`.
 pub const GREP_LIMIT_DEFAULT: u32 = 10;
-/// Hard cap on `session_grep` matches — values above this are clamped, never honored. When the cap
+/// Hard cap on `session_grep` matches -- values above this are clamped, never honored. When the cap
 /// cuts off further hits the response is flagged `truncated: true`.
 pub const GREP_LIMIT_MAX: u32 = 20;
 /// Default context lines (before and after the matched line, within the same message) when the
 /// caller omits `context_lines`.
 pub const GREP_CONTEXT_DEFAULT: u32 = 2;
-/// Hard cap on `session_grep` context lines — values above this are clamped, never honored.
+/// Hard cap on `session_grep` context lines -- values above this are clamped, never honored.
 pub const GREP_CONTEXT_MAX: u32 = 5;
 /// Hard cap on a single grep excerpt's length, enforced on a char boundary (`chars().take`), never
 /// a byte slice (house UTF-8 rule).
@@ -39,7 +39,7 @@ pub const GREP_EXCERPT_MAX_CHARS: usize = 500;
 
 /// Default window size (messages per page) for `session_read` when the caller omits `limit`.
 pub const READ_LIMIT_DEFAULT: u32 = 20;
-/// Hard cap on `session_read` window size — values above this are clamped, never honored.
+/// Hard cap on `session_read` window size -- values above this are clamped, never honored.
 pub const READ_LIMIT_MAX: u32 = 50;
 /// Hard cap on a single message's returned text, enforced on a char boundary (`chars().take`),
 /// never a byte slice (house UTF-8 rule). When a message exceeds this the text is cut here, the
@@ -74,7 +74,7 @@ pub struct SessionsLsRequest {
     /// Substring match against cwd / project_dir (e.g. a repo name).
     #[schemars(description = "Substring match against cwd / project dir (e.g. a repo name)")]
     pub repo: Option<String>,
-    /// Relative span ("7d", "24h") or an absolute date — sessions modified since.
+    /// Relative span ("7d", "24h") or an absolute date -- sessions modified since.
     #[schemars(description = "Sessions modified since: a relative span (7d, 24h) or an absolute date (YYYY-MM-DD)")]
     pub since: Option<String>,
     /// Require this tag.
@@ -101,7 +101,7 @@ pub struct SessionRef {
 /// The 3-state outcome of `session_open`, modeled explicitly so the agent can act on each case.
 ///
 /// The path is resolved by **existence**, not the `archived` flag: prefer the live
-/// `transcript_path` if it is on disk, else the `staged_path` if present, else `Unavailable` —
+/// `transcript_path` if it is on disk, else the `staged_path` if present, else `Unavailable` --
 /// robust to a transcript reaped between catalog lookup and use.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case", tag = "state")]
@@ -243,7 +243,7 @@ pub enum ReadResult {
 
 /// Hard cap on the total serialized efficiency blob `session_efficiency` returns, in chars.
 ///
-/// MIRRORS `session_read`'s total-response cap ([`READ_RESPONSE_MAX_CHARS`]) exactly — the two
+/// MIRRORS `session_read`'s total-response cap ([`READ_RESPONSE_MAX_CHARS`]) exactly -- the two
 /// read-side tools share ONE tool-result budget so they can never diverge (siblings behave
 /// identically; one definition kills the class). When the persisted blob would exceed this, the
 /// blob is WITHHELD (the [`EfficiencyResult::Oversized`] state) rather than truncated: unlike a
@@ -256,7 +256,7 @@ pub const EFFICIENCY_RESPONSE_MAX_CHARS: usize = READ_RESPONSE_MAX_CHARS;
 ///
 /// The signals are read back from the catalog's persisted `efficiency_json` (schema v6) rather than
 /// recomputed: the `sessions` crate cannot depend on the `efficiency` crate (the design's dependency
-/// direction is `efficiency -> sessions`), so — exactly like the export contract — it passes the
+/// direction is `efficiency -> sessions`), so -- exactly like the export contract -- it passes the
 /// blob through as an opaque [`Value`] whose nested shape is owned by the `efficiency` crate.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case", tag = "state")]
