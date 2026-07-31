@@ -12,6 +12,7 @@ use tempfile::TempDir;
 struct CountingSystemd {
     daemon_reloads: Cell<usize>,
     timer_starts: Cell<usize>,
+    reindex_timer_starts: Cell<usize>,
 }
 
 impl Systemd for CountingSystemd {
@@ -20,6 +21,9 @@ impl Systemd for CountingSystemd {
     }
     fn start_enrich_timer(&self) {
         self.timer_starts.set(self.timer_starts.get() + 1);
+    }
+    fn start_reindex_timer(&self) {
+        self.reindex_timer_starts.set(self.reindex_timer_starts.get() + 1);
     }
 }
 
@@ -1192,4 +1196,92 @@ fn a_missing_timer_is_not_installed_without_the_flag() {
         !paths.clyde_timer().exists(),
         "no timer may be created without the flag"
     );
+}
+
+// --- The reindex sweep's timer (archived-session-spend Phase 5) ---
+
+#[test]
+fn install_timer_creates_the_reindex_service_timer_and_symlink() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+
+    assert!(ensure_reindex_unit(&paths, true, false).unwrap());
+    assert!(paths.clyde_reindex_unit().exists());
+    assert!(paths.clyde_reindex_timer().exists());
+    assert_eq!(
+        fs::read_link(paths.clyde_reindex_wants_link()).unwrap(),
+        paths.clyde_reindex_timer(),
+        "the enable symlink must point at the timer, or it is not armed"
+    );
+}
+
+/// The unit must run `session reindex`, which is the pass that STAGES dormant transcripts. A unit
+/// pointing at anything else would leave the reap-before-stage race open while looking installed.
+#[test]
+fn the_reindex_unit_runs_session_reindex() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    assert!(install_clyde_reindex_timer(&paths).unwrap());
+
+    let body = fs::read_to_string(paths.clyde_reindex_unit()).unwrap();
+    let exec = body
+        .lines()
+        .find(|l| l.trim_start().starts_with("ExecStart="))
+        .expect("the unit must have an ExecStart");
+    assert!(
+        exec.contains("session reindex"),
+        "the timer must drive the staging pass: {exec}"
+    );
+    assert!(
+        !body.lines().any(|l| l.trim_start().starts_with("EnvironmentFile=")),
+        "clyde installs no credential file: {body}"
+    );
+}
+
+/// Without `--install-timer` nothing is written, and a complete install is a no-op the second time
+/// (so `clyde bootstrap` stays idempotent).
+#[test]
+fn ensure_reindex_unit_is_gated_and_idempotent() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+
+    assert!(!ensure_reindex_unit(&paths, false, false).unwrap(), "gated off");
+    assert!(!paths.clyde_reindex_unit().exists());
+
+    assert!(
+        ensure_reindex_unit(&paths, true, false).unwrap(),
+        "first install writes"
+    );
+    assert!(
+        !ensure_reindex_unit(&paths, true, false).unwrap(),
+        "second call is a no-op: nothing changed"
+    );
+}
+
+/// A host with the service but NO timer has a dead scheduler: the sweep silently never fires. The
+/// same hole `ensure_enrich_unit`'s `timer_incomplete` check exists to close.
+#[test]
+fn ensure_reindex_unit_repairs_a_missing_timer() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    assert!(ensure_reindex_unit(&paths, true, false).unwrap());
+
+    fs::remove_file(paths.clyde_reindex_timer()).unwrap();
+    assert!(
+        ensure_reindex_unit(&paths, true, false).unwrap(),
+        "a missing timer must be restored, not read as already-installed"
+    );
+    assert!(paths.clyde_reindex_timer().exists());
+}
+
+#[test]
+fn reindex_unit_dry_run_writes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    assert!(
+        ensure_reindex_unit(&paths, true, true).unwrap(),
+        "dry-run reports it WOULD install"
+    );
+    assert!(!paths.clyde_reindex_unit().exists(), "but writes nothing");
+    assert!(!paths.clyde_reindex_timer().exists());
 }
