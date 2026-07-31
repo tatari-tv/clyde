@@ -108,6 +108,12 @@ fn child_env_forwards_the_invoking_user_for_every_kind() {
     unsafe { std::env::remove_var(USER_VAR) };
     let unset_env = child_env(Kind::Slot);
 
+    // EMPTY is its own case and the guard is `!user.is_empty()`, not just `Ok(_)`. An empty `USER`
+    // forwarded to macOS would be worse than none: the child would take it as the answer instead of
+    // falling back, so it must be dropped exactly as an unset one is.
+    unsafe { std::env::set_var(USER_VAR, "") };
+    let empty_env = child_env(Kind::Slot);
+
     // Restore, never blanket-remove: `USER` is legitimately set in any real shell, and wiping it here
     // would leak into every later test in this binary.
     unsafe {
@@ -128,6 +134,10 @@ fn child_env_forwards_the_invoking_user_for_every_kind() {
     assert!(
         !unset_env.iter().any(|(k, _)| k == USER_VAR),
         "an unset parent USER must not be fabricated in the child env"
+    );
+    assert!(
+        !empty_env.iter().any(|(k, _)| k == USER_VAR),
+        "an empty parent USER must be dropped, not forwarded as an empty value"
     );
 }
 

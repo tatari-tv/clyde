@@ -971,11 +971,19 @@ fn display_title(rec: &SessionRecord) -> String {
 }
 
 /// Collapse whitespace to a single line and truncate to [`TITLE_DISPLAY_WIDTH`] chars (char-safe).
+///
+/// The stored title already carries its own shaping (`session::ParsedSession::title`: first line, capped,
+/// marked with an ASCII `...`), so this is a narrower TERMINAL width cap on top of it, not a second
+/// policy. The two compose badly if this cut lands inside that marker: a stored `<78 chars>...` is 81
+/// chars, so taking 79 keeps one dot and yields a dangling `.…`. Trailing dot/ellipsis characters are
+/// stripped from the kept text before this appends its own marker, so exactly one marker survives
+/// wherever the boundary falls.
 fn truncate_title(raw: &str) -> String {
     let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.chars().count() > TITLE_DISPLAY_WIDTH {
         let kept: String = one_line.chars().take(TITLE_DISPLAY_WIDTH - 1).collect();
-        format!("{kept}…")
+        let trimmed = kept.trim_end_matches(['.', '…']).trim_end();
+        format!("{trimmed}…")
     } else {
         one_line
     }
