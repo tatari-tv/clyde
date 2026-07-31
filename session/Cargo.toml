@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 chrono = "0.4.45"
-common = { version = "0.19.0", path = "../common" }
+common = { path = "../common" }
 dirs = "6.0.0"
 eyre = "0.6.12"
 log = "0.4.33"
