@@ -2,7 +2,10 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-31
-**Status:** Implemented
+**Status:** Code Complete -- all six phases committed, each independently `otto ci` green. NOT yet
+Implemented: AC6 defines done as including the Rollout steps (install, one `clyde session reindex`, one
+`clyde session enrich`, AC3/AC4 observed numbers recorded here), and those have not run. Flip to
+Implemented when they have.
 **Review Passes Completed:** 5/5
 
 ## Summary
@@ -502,7 +505,7 @@ Each command below was run against `main` at `fb4dcb4` on desk.lan and its outpu
 commit's only delta from the v0.20.0 merge (`451d53f`) is documentation, so every code measurement
 below holds for both. Where a criterion is a delta, the pre-state is what makes it falsifiable.
 
-- [ ] **AC1 (Phase 1).** Both lints cover the whole tree and neither can pass on a failed scan.
+- [x] **AC1 (Phase 1).** Both lints cover the whole tree and neither can pass on a failed scan.
       `otto lint` exits 0; planting `let _foo = 1;` under any `*/tests/` and an em dash in any
       `.pmt` each make it exit 1.
       *Observed on `main`:* `otto lint` exits **0**, printing `✅ No _variable patterns found` and
@@ -511,8 +514,11 @@ below holds for both. Where a criterion is a delta, the pre-state is what makes 
       lines, and so does the narrow `*/src/` form, so widening surfaces zero new violations today.
       `grep -rn --include='*.pmt' --exclude-dir=target -P '\x{2014}' .` exits **1** (clean) across
       all 5 templates. Both plant-a-violation halves depend on Phase 1 and cannot run yet.
+      *Observed after Phase 1 (`c19f0fa`):* `otto lint` exits **0**. Planting `let _foo = 1;` in
+      `clyde/tests/collect.rs` takes it to **1**; removing it restores **0**. Planting an em dash in
+      `report/templates/slots/closing.pmt` takes it to **1**; removing it restores **0**. PASS.
 
-- [ ] **AC2 (Phase 2).** An unpriceable model with real tokens is disclosed, never silently $0.
+- [x] **AC2 (Phase 2).** An unpriceable model with real tokens is disclosed, never silently $0.
       `rg -n 'unpriced_models' --type rust -g '!target' -g '!*tests*' .` returns at least one hit
       (test-only hits excluded on purpose, so the criterion cannot be satisfied by a test alone), and
       `clyde session reindex` prints an `unpriced` count on every run, including when it is 0.
@@ -521,6 +527,10 @@ below holds for both. Where a criterion is a delta, the pre-state is what makes 
       carries all-zero tokens in all **72** rows it appears in, so today's measured dollar impact is
       **$0.00**. This criterion guards the next unpriced model, and the doc says so rather than
       claiming a recovery.
+      *Observed after Phase 2 (`7ddf667`):* that `rg` returns **5** production lines. The printed-count
+      half is pinned at the library seam (`PersistStats::unpriced` asserted 0 on an all-priced fixture
+      and 1 on an unpriced-with-tokens fixture); the live CLI line is exercised by the Rollout reindex.
+      PASS on the symbol half.
 
 - [ ] **AC3 (Phase 3).** Dormancy survives a wholesale mtime reset.
       A session whose messages are 30 days old but whose files were all touched `now` is still
@@ -549,7 +559,7 @@ below holds for both. Where a criterion is a delta, the pre-state is what makes 
       sends nothing. It does still write the personal-skip record, so it is read-only with respect to
       the work account, not with respect to the catalog.
 
-- [ ] **AC5 (Phase 5).** One IMPLEMENTATION of the XDG data dir, not one function name.
+- [x] **AC5 (Phase 5).** One IMPLEMENTATION of the XDG data dir, not one function name.
       `rg -n 'env::var\("XDG_DATA_HOME"\)' --type rust -g '!target' -g '!*tests*' . | wc -l`
       returns 1.
       *Observed on `main`:* returns **5** (`session/src/paths.rs:38`, `common/src/scan.rs:413`,
@@ -560,6 +570,9 @@ below holds for both. Where a criterion is a delta, the pre-state is what makes 
       one), so it cannot be the criterion; and bare `rg -n 'XDG_DATA_HOME'` returns **21** because it
       matches doc comments and `--help` text. Without the `!*tests*` filter the chosen command returns
       **12**, the extra 7 being tests that save and restore the env var.
+      *Observed after Phase 5 (`ce626d1`):* the chosen command returns **1** (`common/src/paths.rs:32`).
+      The `fn xdg_data_dir()` DEFINITION count went 5 -> **6** exactly as predicted, and
+      `dirs::data_local_dir()` CALLS remain **0** (its 8 textual occurrences are all doc comments). PASS.
 
 - [ ] **AC6 (all phases).** `otto ci` exits 0 on each of the **five** clyde commits plus the register
       correction (six commits in this repo); the seventh commit is G's, in

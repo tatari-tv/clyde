@@ -411,3 +411,138 @@ All in `sessions/src/db/tests/activity.rs` unless noted; 8 new tests there plus 
   `a_relative_xdg_data_home_is_ignored` and `xdg_data_dir_honors_env_and_falls_back`.
 - Full `otto ci` exits **0**, and `git status` shows exactly the five crates the plan named
   (`common`, `cost`, `permit`, `report`, `session`) with nothing else riding along.
+
+## Phase 6: Correct the register, and G
+
+### Design decisions
+
+- **Each of the four register corrections is marked IN PLACE, not silently rewritten.** The timer
+  paragraph and D's justification carry an explicit "corrected 2026-07-31" note with the measurement
+  that refutes the original claim; the cohort count says it drifted from 21; the `parse.rs:388` bullet
+  records that an earlier draft's "correction" to `:387` was itself wrong and is withdrawn. A register is
+  a diagnosis document that the next reader will compare against their own measurements, so a silent
+  edit destroys the one thing that makes a correction trustworthy: knowing what was wrong.
+- **D's "why it matters more after v0.20.0" bullet is struck through rather than deleted**, because the
+  original sentence is the specific thing that was wrong (report does not read the catalog's scalar
+  `cost_usd`) and a reader who remembers it needs to see it refuted, not vanish.
+- **Six per-item pointers, one per `###` heading, including G.** The criterion checks per ITEM, so each
+  item's own body carries the slug. G got one too, even though its commit lands in another repo, so the
+  register names exactly one owner for every item rather than five plus a gap.
+- **G was staged through the object database, never the working tree.** `HOME/.claude/settings.json` is
+  the symlink target of the LIVE `~/.claude/settings.json`. The obvious way to do a selective commit
+  (write an intermediate file, `git add`, restore) would briefly replace Scott's running configuration,
+  and any hook firing in that window would read the wrong file. Instead: build the
+  HEAD-plus-only-this-entry content in memory, `git hash-object -w --stdin`, `git update-index
+  --cacheinfo`, commit. The working tree is untouched throughout and its 98 remaining insertions of
+  unrelated in-flight work are undisturbed.
+- **The selection is STRUCTURAL, not a text patch.** The entry is inserted by parsing HEAD's JSON,
+  finding the one `PreToolUse` block whose matcher is `Bash` and which already carries
+  `branch-pr-title-guard.sh`, and appending at the same index the entry occupies in the working tree.
+  A text patch could have landed it in a different matcher block that happens to look similar --
+  and there ARE two blocks carrying `branch-pr-title-guard.sh`, which is exactly the ambiguity that
+  would have bitten. Serialization fidelity was verified FIRST: a `json.dumps(indent=2)` round-trip of
+  HEAD is byte-identical to HEAD, so the commit is the entry and not a whole-file reformat.
+
+### Deviations
+
+- **G is committed on `main` in `~/repos/scottidler/claude`, not on a branch.** The design doc specifies
+  "a separate commit in `~/repos/scottidler/claude`, home persona, not gated on anything here" -- a
+  commit, not a PR. It is a personal config repo, the change is one JSON object, and branching would
+  leave an unpushed branch plus a PR to babysit for it. Nothing is pushed, so this stays local and
+  reversible until the finalization checkpoint.
+
+### Tradeoffs
+
+- **Correcting the register in place vs. superseding it with a new file.** In place keeps one register
+  at one path that every prior doc already links to; the cost is that the file now mixes original
+  diagnosis with dated corrections. Mitigated by marking every correction with its date and its
+  measurement, so the two are never confused.
+
+### Open questions
+
+- None.
+
+### Success criteria, executed
+
+- `rg -Uc 'reports it absent' docs/design/2026-07-31-open-defects-handoff.md` prints **nothing** and
+  exits 1, i.e. **zero** occurrences. (Recording the exact behavior: `rg -c` with no match prints no
+  line rather than printing `0`. The criterion asks for zero occurrences and that is what holds.)
+- Per-ITEM pointer check, run as the criterion specifies rather than as a hit count: each of `### D`,
+  `### E`, `### F`, `### B`, `### A` -- and `### G` besides -- has
+  `2026-07-31-close-the-open-register` inside its own section body. All **6** print 1.
+- `git -C ~/repos/scottidler/claude diff HEAD -- HOME/.claude/settings.json | grep -c codex-stdin-guard`
+  returns **0**: the entry is committed. The file still shows 98 insertions of unrelated in-flight work,
+  which is correct and is what "selective commit" means here.
+- The staged diff before committing was inspected and contained **only** the 4-line hook entry.
+- Full `otto ci` exits **0** (this phase is documentation in this repo, so CI is unchanged by it).
+
+## Implementation audit, 2026-07-31 (Architect/Gemini + Staff Engineer/Codex, Mode 2)
+
+Run after all six phases were committed, on Scott's call. Both reviewers walked the Implementation Plan
+bullet-by-bullet against the committed code. **Three findings, all accepted and fixed; nothing deferred,
+nothing dropped.**
+
+### Accepted and fixed
+
+- **The Phase 6 section was MISSING from this file, and its text had been written into a stray untracked
+  file in ANOTHER repo.** The Architect's primary finding, and the reality was worse than it described.
+  Root cause, not a guess: the Phase 6 `cat >>` ran with the shell's working directory still pointing at
+  `~/repos/scottidler/claude`, carried over from the G commit two calls earlier. The `otto ci` in that
+  same command failed with `No ottofile found`, which is exactly the symptom, and it was read as a
+  transient and re-run from the right directory instead of as evidence about where the WRITE had landed.
+  The append therefore created
+  `~/repos/scottidler/claude/docs/design/2026-07-31-close-the-open-register-implementation-notes.md`,
+  polluting a second repo, and `git add docs/design/` in clyde staged only two files rather than three --
+  visible in that commit's own output and not noticed. Fixed: the content is appended here where it
+  belongs, and the stray is archived via `rkvr rmrf` (never `rm`), leaving the other repo clean.
+  **Structural remedy, not a resolution to be more careful:** every `cd` into another repo is now
+  followed by an explicit `cd` back before any relative-path write, and a commit's own `git status`
+  output is read as a check rather than as decoration.
+- **`is_work_slug` fail-open on a malformed slug that still contains a slash.** The Staff Engineer's
+  finding, and the reviewers DISAGREED here: the Architect asserted malformed slugs "fail closed
+  (`None => false`)", which is true only for a slug with NO slash. `"tatari-tv/"` splits to
+  `("tatari-tv", "")`, so the original code passed the org test on an EMPTY repo name. Measured
+  unreachable from clyde's own writer (`common::repo::slug_under_root` requires two
+  `Component::Normal`, so it can never emit an empty segment or a second slash), but this function reads
+  a STORED blob and it is the gate that decides whether a session body leaves the machine. Narrowed to
+  require a non-empty, slash-free repo segment. The Staff Engineer was right and the Architect was not
+  careful; recorded that way rather than split down the middle.
+- **A zero-count touch set widened to Work.** Also the Staff Engineer. This one is a genuine deviation
+  from the doc, not merely hardening: the API contract in the design says "**the session touched at
+  least one repo**", and `{"tatari-tv/philo": 0}` with `files-edited: 0` satisfies
+  `!repos_touched.is_empty()` structurally while representing no touch at all -- so a session that
+  edited NOTHING classified Work. Fixed by requiring a positive count on every entry, which combined
+  with the totality check also forces `files_edited > 0`. The same review pass took the count sum from
+  `values().sum()` to a checked fold: `sum::<u64>()` wraps silently in release, and a wrapped total that
+  happened to equal `files_edited` would satisfy the totality check on nonsense evidence.
+
+All three code fixes verified to BITE: restoring the org-only slug test fails
+`a_malformed_slug_with_a_slash_fails_closed`; dropping the positive-count conjunct fails
+`a_zero_count_touch_set_never_widens_to_work`; restoring an unchecked (wrapping) sum fails
+`an_overflowing_count_sum_fails_closed` in a `--release` build, which is the only build where it wraps.
+
+- **`Status: Implemented` was overstated.** The Staff Engineer's second finding. This doc's own AC6
+  defines done as including the Rollout steps (install, one reindex, one enrich, AC3/AC4 numbers
+  recorded), and "Green CI is not done" is the doc's own sentence. None of those had run. Status is now
+  `Code Complete`, spelling out what remains and when it may flip. AC1/AC2/AC5 are checked off with a
+  post-implementation observed line beside their `main` pre-state; AC3, AC4, AC6 and AC7 stay unchecked
+  because their live halves genuinely have not run.
+
+### Recorded as already-correct rather than actioned
+
+Both reviewers independently confirmed CLOSED in code, with file:line, every hazard the DESIGN panel had
+flagged: the Phase 4 totality check and the `has_repos_anchor` gate that stops evidence overturning a
+personal-anchored cwd; the batched `set_activity_many` with no trigger DDL anywhere in
+`upsert_session`; the `scope_version` terms INSIDE the `skipped-personal` parenthesized clause; the
+provisional-NULL rule; all `COLS` trailing-index consumers deriving from `COLS_LEN`; v11 and v12 as
+separate steps with separate snapshots and no blob invalidation; and `parse_version` written in all
+three paths. Both also found **no unrequested scope**, confirmed the two `db.rs` extractions
+behavior-neutral, and confirmed the Phase 2 fixture regeneration additive-only with no number moved.
+
+### A note on the audit run itself
+
+The panel agent went idle without reconciling. The reviewer output was recovered from
+`/tmp/review-panel/pfJcdLhW/` (`staff.out`, and `arch2.out` after Gemini errored on the first attempt
+with `result=error` and was retried) and reconciled by hand. Worth knowing for the next audit: an idle
+panel agent does NOT mean the reviewers produced nothing, and `.last-run` is a pointer FILE, not a
+directory.
