@@ -104,3 +104,71 @@ Depth for A/B/C: `docs/design/2026-07-30-scope-dormancy-cost-handoff.md`. This i
   test that fails on a machine where every mtime is fresh
 - **C:** probe first, design second. The web-UI comparison question is a measurement, not a design
 - **D, E, F:** targeted fixes, no doc. D is the only one with real consequence
+
+## Addendum, 2026-07-31: after the archived-session-spend build
+
+`docs/design/2026-07-30-archived-session-spend.md` shipped on branch `archived-session-spend`: six
+phases, one commit each, `otto ci` green on every one. It CLOSES C. Nothing else in this register
+moved. Every status below was re-verified against the branch head, not carried forward from the
+original entry.
+
+### C. CLOSED. The root cause was none of the leads listed above
+
+- **What it actually was:** `archived` read as a spend-existence flag at three sites. It is a
+  transcript-AVAILABILITY flag: `reconcile_archived` sets it when `transcript_path` leaves disk. The
+  backfill predicate (`sessions/src/db.rs`) carried `AND archived = 0`, so an archived row could never
+  be priced even with a staged copy sitting on disk; `report collect` windowed with
+  `include_archived: false`; `clyde cost` scanned only `~/.claude/projects`.
+- **Measured on desk.lan, `clyde cost --no-cache monthly`:** June `$4,818.54` -> `$8,040.64` (475 ->
+  695 sessions). May went from absent to `$289.63`. Against June ground truth of `$9,110.96` the gap
+  closed from -47.1% to -11.8%.
+- **The register's "first question" was a dead end.** Whether the web UI counts usage beyond Claude
+  Code never had to be settled: 199 of June's 558 catalog rows were archived, every one with
+  `cost_usd IS NULL`, and every one with a staged copy on disk. The gap was clyde's, not the web UI's.
+- **The other leads were also not it,** and are still unverified rather than refuted: the 5m/1h
+  cache-write split, the above-200k tiers, `<synthetic>` exclusion. Cross-file subagent double-billing
+  WAS confirmed real but is 0.08% ($7.61 of $9,130 in July) and affects only the
+  `efficiency`/`report` path; `clyde cost` dedups message ids globally. Parked in the design doc's
+  Non-Goals with a revisit condition.
+- **What is left of the -11.8%:** multi-host. Scott runs more than one machine and `clyde report
+  merge` is the answer to that, per the design doc. Not a defect.
+
+### B. Still open, and WIDER than when it was registered
+
+- **Unchanged:** `session/src/parse.rs:353` still sets `modified` to the MAX filesystem mtime across
+  the session's files.
+- **Line numbers in the original entry have drifted.** `enrich_candidates` is now
+  `sessions/src/db.rs:601` (was 611) and `staging_candidates` is `:692` (was 682). Both call sites
+  still exist and a fix still has to cover both.
+- **The exposure grew.** Phase 5 wired `stage_dormant` into every `clyde session reindex`, plus a
+  6h `clyde-reindex` systemd timer. `staging_candidates` filters on `modified`, so a Syncthing sync or
+  a `cp -r` that refreshes an mtime now suppresses the AUTOMATIC staging sweep, not just a manual
+  command. Staging is the thing standing between a dormant session and permanent unpriceability, so
+  this defect now silently disables the protection C's fix depends on.
+- Routing is unchanged (`/create-design-doc`), but it should go before A now, not after.
+
+### A, D, E, F, G. Unchanged, still open
+
+- **A:** `sessions/src/enrich.rs:105` still calls `session::classify(rec.cwd...)` and consults nothing
+  else. Still blocks the excision's AC6. Untouched on purpose: the design doc's Non-Goals park it as a
+  deliberate fail-safe, and widening the gate is a security change.
+- **D:** `common/src/metrics.rs:138` still `pricing.calculate_usd(model, usage).ok()`. Worth noting
+  that Phase 3 established the house pattern for exactly this class: split the guard, exclude the row,
+  state the count, never ship a quietly-low total. Copy that shape rather than inventing one.
+- **E:** `.otto.yml:16` still scopes the `_variable` lint to `*/src/`.
+- **F:** 5 `report/templates/slots/*.pmt`, still 0 em-dash occurrences, still outside the lint. Their
+  only guard is the assertion at `report/src/render/slots/tests.rs:531`.
+- **G:** different repo (`~/repos/scottidler/claude`), untouched by this work.
+
+### New, found while building
+
+- **Five copies of the XDG data-dir helper.** `session/src/paths.rs`, `permit/src/config.rs`,
+  `report/src/config.rs`, `cost/src/config.rs`, and now `common/src/scan.rs`, which Phase 1 added
+  because `common` had none and cannot depend on `session`. None of them uses the banned
+  `dirs::data_local_dir()`, so the macOS trap is closed everywhere; this is duplication, not a bug.
+  Targeted fix, no doc. Recorded in the implementation notes as a knowing deviation.
+- **Outstanding measurement, not a defect.** Acceptance criteria A1, A2, A4 and A5 need a
+  `clyde session reindex` run against the real catalog: it writes efficiency annotations for the 294
+  NULL rows and stages the dormant backlog (1,486 sessions as of 2026-07-31). The build verified the
+  read-only half only (`clyde cost`, above, plus 20 new tests). Run the write half after install and
+  record the numbers.
