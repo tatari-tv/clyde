@@ -19,7 +19,8 @@ use session::ParsedSession;
 
 use crate::export::EnrichStatus;
 use crate::model::{
-    EnrichSummary, Fallback, Filters, MatchSource, SearchHit, SearchResults, SessionRecord, SortBy, Unenriched,
+    EfficiencyCandidate, EnrichSummary, Fallback, Filters, MatchSource, SearchHit, SearchResults, SessionRecord,
+    SortBy, Unenriched,
 };
 
 /// Bumped whenever the schema changes; drives `PRAGMA user_version` migrations.
@@ -366,20 +367,38 @@ impl Db {
         Ok(outcome)
     }
 
-    /// Session ids of non-archived rows with no computed efficiency yet (`efficiency_json IS NULL`).
+    /// Un-annotated rows (`efficiency_json IS NULL`), archived or not, each with the path fields the
+    /// pricing resolver needs.
+    ///
     /// This is the backfill/reindex predicate: `upsert_session` skips rows whose transcript mtime is
     /// unchanged, so a bare v6 migration leaves every EXISTING session's efficiency `NULL` forever --
     /// this query is how the `efficiency` crate finds those un-annotated sessions independent of the
-    /// mtime skip-key. Archived rows are excluded (their transcripts are TTL-reaped, so there is
-    /// nothing on disk to recompute from).
-    pub fn sessions_missing_efficiency(&self) -> Result<Vec<String>> {
+    /// mtime skip-key.
+    ///
+    /// The `archived = 0` clause is deliberately GONE. `archived` is set by [`Self::reconcile_archived`]
+    /// when `transcript_path` no longer exists on disk, so it records transcript AVAILABILITY, never
+    /// whether the session happened or what it cost. Filtering on it here meant an archived row could
+    /// never be priced even though clyde holds a durable staged copy of its transcript, which is what
+    /// staging is for. Callers resolve each candidate's bytes through `common::scan::pricing_files`
+    /// (live layout first, staged second) and treat an empty result as unrecoverable.
+    pub fn sessions_missing_efficiency(&self) -> Result<Vec<EfficiencyCandidate>> {
         debug!("Db::sessions_missing_efficiency");
-        let mut stmt = self
-            .conn
-            .prepare("SELECT session_id FROM sessions WHERE efficiency_json IS NULL AND archived = 0")?;
-        let ids: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-        debug!("Db::sessions_missing_efficiency: count={}", ids.len());
-        Ok(ids)
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, transcript_path, project_dir, staged_path \
+             FROM sessions WHERE efficiency_json IS NULL",
+        )?;
+        let candidates: Vec<EfficiencyCandidate> = stmt
+            .query_map([], |r| {
+                Ok(EfficiencyCandidate {
+                    session_id: r.get(0)?,
+                    transcript_path: r.get::<_, String>(1)?.into(),
+                    project_dir: r.get(2)?,
+                    staged_path: r.get::<_, Option<String>>(3)?.map(PathBuf::from),
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        debug!("Db::sessions_missing_efficiency: count={}", candidates.len());
+        Ok(candidates)
     }
 
     /// Persist the computed efficiency for each session in `writes`, WITHOUT advancing `updated_at`.

@@ -121,6 +121,7 @@ fn write_json_round_trips_and_emits_schema_v2() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     assert_eq!(count, 1);
@@ -164,6 +165,7 @@ fn build_report_carries_enrich_summary_and_tags_through_to_session_entry() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
 
@@ -191,6 +193,7 @@ fn build_report_omits_summary_and_tags_when_unenriched() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
 
@@ -217,6 +220,7 @@ fn json_uses_kebab_case_keys_and_carries_v2_fields() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
 
@@ -255,6 +259,7 @@ fn title_appears_before_repo_in_session_entry() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
 
@@ -275,6 +280,7 @@ fn all_priced_session_has_some_spend_and_no_untracked() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     let entry = &report.sessions[SID_A];
@@ -298,6 +304,7 @@ fn all_untracked_session_has_none_spend_and_lists_models() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     let entry = &report.sessions[SID_A];
@@ -325,6 +332,7 @@ fn zero_token_model_is_dropped_from_models_and_untracked() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
 
@@ -366,6 +374,7 @@ fn nonzero_token_unpriced_model_still_flagged_untracked() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     assert_eq!(
@@ -394,6 +403,7 @@ fn totals_untracked_models_dedupe_across_sessions() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     assert_eq!(
@@ -421,6 +431,7 @@ fn json_with_null_spend_round_trips_to_none() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     let body = fs::read_to_string(&path).unwrap();
@@ -460,6 +471,7 @@ fn totals_ratios_are_ratio_of_sums_not_average() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     // Ratio-of-sums: 900 / (100 + 900 + 100) = 900/1100 ≈ 0.818, NOT the average of 0.9 and 0.0 (0.45).
@@ -501,6 +513,7 @@ fn agent_type_costs_attribute_by_subagent_type() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     let costs = &report.sessions[SID_A].agent_type_costs;
@@ -591,6 +604,7 @@ fn agent_type_costs_partition_totals_with_a_positive_main_session_residual() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
 
@@ -685,6 +699,7 @@ fn a_zero_token_agent_type_bucket_is_dropped_and_the_partition_is_unmoved() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
 
@@ -726,6 +741,7 @@ fn agent_type_costs_partition_survives_no_rollup() {
         &pricing(),
         true,
         true,
+        &[],
     )
     .unwrap();
     let partition = agent_type_spend(&report);
@@ -755,6 +771,7 @@ fn agent_type_costs_reprice_from_tokens_not_the_catalog_scalar() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
 
@@ -788,6 +805,7 @@ fn agent_type_costs_error_when_a_subagent_model_is_absent_from_the_aggregate() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .expect_err("a subagent model missing from the aggregate must abort the report");
     let msg = err.to_string();
@@ -815,6 +833,7 @@ fn agent_type_costs_error_when_a_subagent_overstates_a_shared_model() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .expect_err("a subagent overstating a shared model must abort the report");
     let msg = err.to_string();
@@ -843,6 +862,7 @@ fn no_rollup_explodes_into_residual_plus_subagents() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     assert_eq!(rolled.sessions.len(), 1);
@@ -857,6 +877,7 @@ fn no_rollup_explodes_into_residual_plus_subagents() {
         &pricing(),
         true,
         true,
+        &[],
     )
     .unwrap();
     assert_eq!(exploded.sessions.len(), 2);
@@ -905,6 +926,7 @@ fn no_rollup_keeps_outcomes_for_fully_subagent_session() {
         &pricing(),
         true, // outcomes_enabled
         true, // no_rollup
+        &[],
     )
     .unwrap();
 
@@ -975,6 +997,7 @@ fn build_report_rolls_up_outcomes_with_global_dedupe() {
         &pricing(),
         true,
         false,
+        &[],
     )
     .unwrap();
     assert_eq!(report.outcomes_enabled, Some(true));
@@ -1016,6 +1039,7 @@ fn build_report_with_outcomes_disabled_strips_all_outcomes() {
         &pricing(),
         false,
         false,
+        &[],
     )
     .unwrap();
     let body = fs::read_to_string(&path).unwrap();
@@ -1068,6 +1092,7 @@ fn write_is_atomic_via_rename() {
             &pricing(),
             true,
             false,
+            &[],
         )
         .unwrap();
     }

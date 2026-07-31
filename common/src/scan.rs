@@ -18,6 +18,7 @@ use chrono::NaiveDate;
 use eyre::{Result, bail};
 use log::{debug, info, warn};
 use regex::Regex;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -179,6 +180,184 @@ fn read_dir_or_warn(path: &Path, label: &str) -> Result<Vec<fs::DirEntry>> {
     Ok(out)
 }
 
+/// Every JSONL in one session's **explicit** layout, as [`SessionFile`]s carrying the mtime/size
+/// [`filter_by_date_range`] and `cost`'s cache hash need.
+///
+/// Mirrors `session::parse`'s `discover_layout_files` for the `common` type, and reuses the SAME
+/// [`make_parent`]/[`make_subagent`] constructors as [`find_session_files`], so the empty-file skip
+/// and the single-stat rule are shared rather than reimplemented.
+///
+/// No UUID-v4 guard: the id comes from a catalog row that was indexed through the guarded scanner,
+/// so re-validating it here would reject nothing. Sorted by path for the same determinism reason
+/// [`find_session_files`] sorts (`read_dir` order is filesystem-dependent).
+pub fn layout_files(session_id: &str, parent: &Path, subagents_dir: &Path) -> Vec<SessionFile> {
+    debug!(
+        "scan::layout_files: session_id={} parent={} subagents_dir={}",
+        session_id,
+        parent.display(),
+        subagents_dir.display()
+    );
+
+    let mut files = Vec::new();
+
+    if parent.is_file()
+        && let Some(file) = make_parent(parent.to_path_buf(), session_id)
+    {
+        files.push(file);
+    }
+
+    if subagents_dir.is_dir() {
+        match fs::read_dir(subagents_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file()
+                        && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                        && let Some(file) = make_subagent(path, session_id)
+                    {
+                        files.push(file);
+                    }
+                }
+            }
+            Err(e) => warn!(
+                "scan::layout_files: failed to read subagents dir {}: {}",
+                subagents_dir.display(),
+                e
+            ),
+        }
+    }
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    debug!(
+        "scan::layout_files: session_id={} resolved {} file(s)",
+        session_id,
+        files.len()
+    );
+    files
+}
+
+/// THE recoverability predicate for pricing: every readable JSONL for one session, live layout
+/// first, staged layout second, EMPTY when there are no bytes anywhere.
+///
+/// Both the efficiency backfill and `report collect` branch on `is_empty()`, so "unrecoverable"
+/// means one thing in both rather than each answering differently.
+///
+/// Deliberately NOT `sessions::transcript::transcript_layout_parts`: that resolver requires a
+/// regular parent `.jsonl` because it answers "where is this session's BODY" for enrich/export/FTS,
+/// and a body needs the parent. Pricing asks a different question -- "which files hold this
+/// session's usage records" -- and a subagent file holds real ones. So a session whose parent was
+/// reaped before staging still prices from its subagents here. The two questions stay two
+/// functions; see the design doc's "One definition of recoverable".
+pub fn pricing_files(
+    session_id: &str,
+    live_parent: &Path,
+    live_project_dir: &Path,
+    staged_dir: Option<&Path>,
+) -> Vec<SessionFile> {
+    debug!(
+        "scan::pricing_files: session_id={} live_parent={} staged_dir={:?}",
+        session_id,
+        live_parent.display(),
+        staged_dir
+    );
+
+    let live_subagents = live_project_dir.join(session_id).join("subagents");
+    let live = layout_files(session_id, live_parent, &live_subagents);
+    if !live.is_empty() {
+        debug!(
+            "scan::pricing_files: session_id={} resolved live ({} files)",
+            session_id,
+            live.len()
+        );
+        return live;
+    }
+
+    let Some(staged) = staged_dir else {
+        warn!("scan::pricing_files: session_id={session_id} has no live bytes and no staged path");
+        return Vec::new();
+    };
+
+    let staged_parent = staged.join(format!("{session_id}.jsonl"));
+    let staged_subagents = staged.join("subagents");
+    let files = layout_files(session_id, &staged_parent, &staged_subagents);
+    if files.is_empty() {
+        warn!(
+            "scan::pricing_files: session_id={} has no readable bytes live or staged ({})",
+            session_id,
+            staged.display()
+        );
+    }
+    files
+}
+
+/// The live scan, plus every staged session whose id is absent from it.
+///
+/// Live-then-staged precedence, the same rule `sessions::transcript::transcript_layout_parts`
+/// applies per row, so a session staged while still live is counted ONCE (from the live root).
+/// A staged root that does not exist yields the live scan unchanged.
+///
+/// Asymmetry with [`find_session_files`], deliberate: a non-UUID name in the projects tree
+/// [`bail!`]s (it could be misclassified as a parent or subagent), but a non-UUID staged directory
+/// only WARNs and is skipped. The staged filename is *derived* from the directory name
+/// (`<dir>/<dir>.jsonl`), so a wrong name finds nothing rather than misclassifying something, and
+/// bailing would let one stray directory in a clyde-owned cache brick every `clyde cost` run.
+pub fn find_session_files_with_staged(projects_dir: &Path, staged_root: &Path) -> Result<Vec<SessionFile>> {
+    debug!(
+        "scan::find_session_files_with_staged: projects_dir={} staged_root={}",
+        projects_dir.display(),
+        staged_root.display()
+    );
+
+    let mut files = find_session_files(projects_dir)?;
+
+    if !staged_root.is_dir() {
+        debug!(
+            "scan::find_session_files_with_staged: staged root absent, returning {} live file(s)",
+            files.len()
+        );
+        return Ok(files);
+    }
+
+    let live_ids: BTreeSet<String> = files.iter().map(|f| f.group_id.clone()).collect();
+    let mut staged_added = 0usize;
+
+    for entry in read_dir_or_warn(staged_root, "staged root")? {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Some(id) = dir.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !uuid_v4_regex().is_match(id) {
+            warn!(
+                "scan: staged directory name is not a UUID-v4, skipping: {}",
+                dir.display()
+            );
+            continue;
+        }
+        if live_ids.contains(id) {
+            continue;
+        }
+        let parent = dir.join(format!("{id}.jsonl"));
+        let subagents = dir.join("subagents");
+        let resolved = layout_files(id, &parent, &subagents);
+        staged_added += resolved.len();
+        files.extend(resolved);
+    }
+
+    // Sort the union, matching find_session_files' stable-order contract (cost's equal-cost dedup
+    // tie-break depends on it).
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    info!(
+        "scan::find_session_files_with_staged: {} file(s) total ({} from the staged root)",
+        files.len(),
+        staged_added
+    );
+    Ok(files)
+}
+
 /// Prefilter session files by mtime as a *lower-bound optimization only*.
 ///
 /// Counting is by entry timestamp (the counted-entry contract): a line counts iff its own
@@ -217,6 +396,35 @@ pub fn filter_by_date_range(files: &[SessionFile], start: NaiveDate, end: NaiveD
 /// The default Claude projects directory (`~/.claude/projects`).
 pub fn default_projects_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("projects"))
+}
+
+/// Subdirectory name under the XDG data root that owns clyde's data.
+const CLYDE_DIR: &str = "clyde";
+
+/// Subdirectory under clyde's data root holding durable transcript copies.
+const STAGED_DIR: &str = "staged";
+
+/// XDG data dir, honoring `$XDG_DATA_HOME` and falling back to `$HOME/.local/share`.
+///
+/// `dirs::data_local_dir()` is deliberately NOT used: it honors `$XDG_DATA_HOME` only on Linux and
+/// returns `~/Library/Application Support` on macOS. Mirrors `session::paths::xdg_data_dir`, which
+/// cannot be called from here (`common` must not depend on `session`; the edge runs the other way).
+fn xdg_data_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("XDG_DATA_HOME") {
+        let path = PathBuf::from(dir);
+        if path.is_absolute() {
+            return Some(path);
+        }
+    }
+    dirs::home_dir().map(|h| h.join(".local").join("share"))
+}
+
+/// The default staged-transcript root (`~/.local/share/clyde/staged`).
+///
+/// THE definition of that path: `session::paths::staged_dir` delegates here, so the two can never
+/// name different directories.
+pub fn default_staged_dir() -> Option<PathBuf> {
+    xdg_data_dir().map(|d| d.join(CLYDE_DIR).join(STAGED_DIR))
 }
 
 #[cfg(test)]

@@ -1025,3 +1025,126 @@ fn unknown_models_banner_names_models_and_warns_totals_are_low() {
         "must state that totals are under-reported, not just that a model is unknown: {banner}"
     );
 }
+
+// --- Staged-root union (archived-session-spend Phase 4) ---
+
+/// `Config` with an explicit staged root. Tests must always pin this: an unset `staged-dir` paired
+/// with no `--path` resolves to the REAL `~/.local/share/clyde/staged`, which would let the
+/// developer's own transcripts leak into a fixture's hand-computed totals.
+fn fixture_config_with_staged(staged: &Path) -> Config {
+    Config {
+        staged_dir: Some(staged.to_path_buf()),
+        ..Config::default()
+    }
+}
+
+/// A reaped session's spend is recovered from its staged copy, and a session with bytes in BOTH roots
+/// is counted exactly once.
+///
+/// BITES: swap `find_session_files_with_staged` back to `find_session_files` and the staged-only
+/// session's $0.025 vanishes (the ~50% undercount); drop the live-id precedence check and the
+/// both-roots session's entry count doubles.
+#[test]
+fn staged_only_session_is_priced_and_a_both_roots_session_is_counted_once() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged = tmp.path().join("staged");
+
+    const REAPED_UUID: &str = "22222222-2222-4222-8222-222222222222";
+    const BOTH_UUID: &str = "33333333-3333-4333-8333-333333333333";
+
+    // A session whose live transcript is GONE: only the staged copy exists.
+    //   input 1000 * 5 / 1e6 = 0.005 ; output 800 * 25 / 1e6 = 0.02  -> 0.025
+    write_jsonl(
+        &staged.join(REAPED_UUID).join(format!("{REAPED_UUID}.jsonl")),
+        &[
+            r#"{"type":"assistant","sessionId":"session-reaped","timestamp":"2026-06-15T10:00:00Z","requestId":"r9","message":{"id":"m9","model":"claude-opus-4-7","usage":{"input_tokens":1000,"output_tokens":800}}}"#,
+        ],
+    );
+
+    // A session that is live AND staged: the same record in both roots. Precedence must take the live
+    // copy only, so this contributes ONE entry.
+    //   input 1000 * 5 / 1e6 = 0.005 ; output 200 * 25 / 1e6 = 0.005 -> 0.01
+    let both_line = r#"{"type":"assistant","sessionId":"session-both","timestamp":"2026-06-16T10:00:00Z","requestId":"r8","message":{"id":"m8","model":"claude-opus-4-7","usage":{"input_tokens":1000,"output_tokens":200}}}"#;
+    write_jsonl(
+        &projects.join("proj-b").join(format!("{BOTH_UUID}.jsonl")),
+        &[both_line],
+    );
+    write_jsonl(&staged.join(BOTH_UUID).join(format!("{BOTH_UUID}.jsonl")), &[both_line]);
+
+    // `path` is NOT set here: an explicit --path deliberately suppresses the default staged root, and
+    // this test needs both roots. The staged root is pinned via config instead.
+    let args = CostArgs {
+        config: None,
+        path: Some(projects.clone()),
+        model: None,
+        no_cache: true,
+        offline: false,
+        command: None,
+    };
+    let config = fixture_config_with_staged(&staged);
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let sessions = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
+
+    assert_eq!(sessions.len(), 2, "the reaped session is recovered: {sessions:?}");
+
+    let reaped = sessions
+        .iter()
+        .find(|s| s.session_id == "session-reaped")
+        .expect("the staged-only session must be priced");
+    assert_eq!(reaped.entries, 1);
+    assert!(
+        (reaped.cost - 0.025).abs() < 1e-9,
+        "staged-only spend must be recovered exactly: got {}",
+        reaped.cost
+    );
+
+    let both = sessions
+        .iter()
+        .find(|s| s.session_id == "session-both")
+        .expect("the both-roots session must be present");
+    assert_eq!(both.entries, 1, "counted ONCE, not twice: {both:?}");
+    assert!(
+        (both.cost - 0.01).abs() < 1e-9,
+        "a both-roots session must not be double-billed: got {}",
+        both.cost
+    );
+}
+
+/// An explicit `--path` with no configured `staged-dir` scans ONLY the named tree: the default staged
+/// root is not silently unioned in, so `--path` stays predictable (and a fixture tree cannot pick up
+/// the developer's real staged transcripts).
+#[test]
+fn an_explicit_path_does_not_union_the_default_staged_root() {
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    write_jsonl(
+        &projects.join("proj-a").join(format!("{FIXTURE_UUID}.jsonl")),
+        &[
+            r#"{"type":"assistant","sessionId":"session-a","timestamp":"2026-06-15T10:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-7","usage":{"input_tokens":1000,"output_tokens":800}}}"#,
+        ],
+    );
+
+    let args = fixture_args(&projects);
+    // staged_dir unset AND --path given -> no staged pass at all.
+    let config = Config::default();
+    let pricing = Pricing::embedded();
+    let start = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+    let sessions = compute_summaries(&args, &config, &pricing, start, end, false, None)
+        .unwrap()
+        .sessions;
+
+    assert_eq!(
+        sessions.len(),
+        1,
+        "only the fixture tree is scanned, never the real staged root: {sessions:?}"
+    );
+    assert_eq!(sessions[0].session_id, "session-a");
+}

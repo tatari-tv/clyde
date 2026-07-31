@@ -108,6 +108,18 @@ impl Paths {
     fn clyde_timer(&self) -> PathBuf {
         self.systemd_dir().join("clyde-enrich.timer")
     }
+    /// The reindex sweep's service unit. Separate from the enrich unit on purpose: enrich makes
+    /// off-machine LLM calls and is work-scoped, while reindex is a local index + stage + price pass
+    /// with no network dependency, so they get different schedules and must fail independently.
+    pub(crate) fn clyde_reindex_unit(&self) -> PathBuf {
+        self.systemd_dir().join(CLYDE_REINDEX_SERVICE)
+    }
+    pub(crate) fn clyde_reindex_timer(&self) -> PathBuf {
+        self.systemd_dir().join(CLYDE_REINDEX_TIMER)
+    }
+    pub(crate) fn clyde_reindex_wants_link(&self) -> PathBuf {
+        self.wants_dir().join(CLYDE_REINDEX_TIMER)
+    }
     fn wants_dir(&self) -> PathBuf {
         self.systemd_dir().join("timers.target.wants")
     }
@@ -132,6 +144,8 @@ pub trait Systemd {
     fn daemon_reload(&self);
     /// `systemctl --user start <timer>`.
     fn start_enrich_timer(&self);
+    /// `systemctl --user start clyde-reindex.timer`.
+    fn start_reindex_timer(&self);
 }
 
 /// Production [`Systemd`]: the real best-effort `systemctl --user` shell-outs. Warns on failure;
@@ -144,6 +158,9 @@ impl Systemd for SystemctlCli {
     }
     fn start_enrich_timer(&self) {
         start_enrich_timer();
+    }
+    fn start_reindex_timer(&self) {
+        start_timer(CLYDE_REINDEX_TIMER);
     }
 }
 
@@ -180,6 +197,11 @@ pub fn run_paths<S: Systemd>(paths: &Paths, args: &BootstrapArgs, systemd: &S) -
         // inactive until next boot otherwise. Arm it now (only if the timer unit actually exists).
         if paths.clyde_timer().exists() {
             systemd.start_enrich_timer();
+        }
+        // Same for the reindex timer, gated on this run having actually installed it: an enrich-unit
+        // repair alone sets `systemd_changed`, and starting a nonexistent timer just logs a failure.
+        if outcome.reindex_timer_changed && paths.clyde_reindex_timer().exists() {
+            systemd.start_reindex_timer();
         }
     }
 
@@ -247,6 +269,11 @@ fn print_stale_env_file_warning(outcome: &Outcome) {
 pub struct Outcome {
     pub completed: Vec<String>,
     pub systemd_changed: bool,
+    /// Whether the reindex service/timer was installed this run. Tracked separately from
+    /// `systemd_changed` so `run()` only arms the reindex timer when its unit was actually written:
+    /// `systemd_changed` is also set by an enrich-unit repair, and starting a timer whose unit does
+    /// not exist is a spurious failure in the operator's log.
+    pub reindex_timer_changed: bool,
     pub failed: Option<(String, String)>,
     /// Present when a stale `~/.config/clyde/enrich.env` is still on disk (G6). Nothing reads it any
     /// more, but clyde does not delete it -- see [`check_stale_env_file`]. `run()` surfaces this as an
@@ -332,6 +359,21 @@ pub fn bootstrap(paths: &Paths, args: &BootstrapArgs) -> Result<Outcome> {
             Ok(false) => {}
             Err(e) => {
                 out.failed = Some(("enrich systemd unit (installed or repaired)".into(), format!("{e:?}")));
+                return Ok(out);
+            }
+        }
+        // The reindex sweep's own unit. Installed alongside the enrich unit but tracked separately:
+        // it is the scheduled staging pass that closes the reap-before-stage race, and a host with a
+        // healthy enrich timer and no reindex timer is still silently losing sessions to the TTL.
+        match ensure_reindex_unit(paths, args.install_timer, dry) {
+            Ok(true) => {
+                out.completed.push("reindex systemd unit + timer (installed)".into());
+                out.systemd_changed = true;
+                out.reindex_timer_changed = true;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                out.failed = Some(("reindex systemd unit + timer (installed)".into(), format!("{e:?}")));
                 return Ok(out);
             }
         }
@@ -1162,6 +1204,90 @@ fn install_clyde_timer(paths: &Paths) -> Result<bool> {
 /// The enrich timer unit, as named by [`ensure_enrich_unit`] and the `Paths::clyde_timer` helper.
 const CLYDE_ENRICH_TIMER: &str = "clyde-enrich.timer";
 
+/// The reindex sweep's unit names, as installed by [`install_clyde_reindex_timer`] and reported by
+/// `doctor`.
+pub(crate) const CLYDE_REINDEX_SERVICE: &str = "clyde-reindex.service";
+pub(crate) const CLYDE_REINDEX_TIMER: &str = "clyde-reindex.timer";
+
+/// The reindex service body. `ExecStart` is `clyde session reindex`, which (as of the
+/// archived-session-spend design) indexes, then STAGES every dormant transcript, then prices the
+/// un-annotated rows. Staging on a schedule is what actually closes the reap-before-stage race:
+/// without it a transcript can age past Claude Code's TTL before any manual `clyde session stage`
+/// runs, and that session's spend is unrecoverable forever.
+///
+/// No `network-online.target` dependency, unlike the enrich unit: this pass reads local transcripts
+/// and writes the local catalog. Nothing here makes an off-machine call, so nothing should wait on
+/// the network to fire.
+fn clyde_reindex_service_body() -> String {
+    "[Unit]\n\
+     Description=clyde session reindex sweep (index, stage dormant transcripts, price)\n\
+     Documentation=https://github.com/tatari-tv/clyde\n\n\
+     [Service]\n\
+     Type=oneshot\n\
+     # Staging beats Claude Code's transcript TTL: a dormant session gets a durable copy under\n\
+     # ~/.local/share/clyde/staged before its live JSONL can age off disk.\n\
+     ExecStart=%h/.cargo/bin/clyde --log-level info session reindex\n\
+     Nice=10\n"
+        .to_string()
+}
+
+/// Install the reindex service + timer + enable symlink. Harvested from [`install_clyde_timer`]
+/// rather than reimplemented, so both units share the atomic-write and dangling-symlink handling.
+///
+/// Fires more often than the enrich sweep (every 6h vs daily) because the thing it is racing is a
+/// TTL: the more often a durable copy is taken, the smaller the window in which a transcript can be
+/// reaped before it is staged. It is cheap to repeat -- `copy_if_newer` compares mtimes, so a sweep
+/// with nothing newly dormant is one stat per candidate.
+pub(crate) fn install_clyde_reindex_timer(paths: &Paths) -> Result<bool> {
+    debug!("install_clyde_reindex_timer: paths={paths:?}");
+    write_atomic(&paths.clyde_reindex_unit(), &clyde_reindex_service_body())?;
+
+    let tmr = paths.clyde_reindex_timer();
+    let tmr_body = "[Unit]\n\
+        Description=Periodic clyde session reindex + transcript staging sweep\n\n\
+        [Timer]\n\
+        OnCalendar=*-*-* 00/6:15:00\n\
+        Persistent=true\n\
+        RandomizedDelaySec=300\n\n\
+        [Install]\n\
+        WantedBy=timers.target\n";
+    write_atomic(&tmr, tmr_body)?;
+
+    let link = paths.clyde_reindex_wants_link();
+    fs::create_dir_all(paths.wants_dir())
+        .with_context(|| format!("failed to create {}", paths.wants_dir().display()))?;
+    // `symlink_metadata`, never `exists()`: the latter follows the link and reports false for a
+    // dangling one, which would leave a stale link in place and the timer un-enabled.
+    if fs::symlink_metadata(&link).is_ok() {
+        fs::remove_file(&link).with_context(|| format!("failed to replace enable symlink {}", link.display()))?;
+    }
+    unixfs::symlink(&tmr, &link).with_context(|| format!("failed to create enable symlink {}", link.display()))?;
+    info!("installed clyde reindex service + timer + enable symlink");
+    Ok(true)
+}
+
+/// Ensure the reindex service + timer are present, under `--install-timer`. Mirrors
+/// [`ensure_enrich_unit`]'s incomplete-timer detection: a host with the service but a missing timer
+/// (or a missing/dangling `timers.target.wants` link) has a dead scheduler, and the sweep silently
+/// never fires. Returns whether anything changed.
+fn ensure_reindex_unit(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<bool> {
+    debug!("ensure_reindex_unit: install_timer={install_timer} dry_run={dry_run}");
+    if !install_timer {
+        return Ok(false);
+    }
+    let complete = paths.clyde_reindex_unit().exists()
+        && paths.clyde_reindex_timer().exists()
+        && fs::symlink_metadata(paths.clyde_reindex_wants_link()).is_ok();
+    if complete {
+        return Ok(false);
+    }
+    if dry_run {
+        // WOULD install the reindex service + timer + enable symlink. Report without writing.
+        return Ok(true);
+    }
+    install_clyde_reindex_timer(paths)
+}
+
 /// Best-effort `systemctl --user daemon-reload`. Warns on failure; never aborts bootstrap. Lives
 /// outside the hermetic core so tests never shell out.
 fn daemon_reload() {
@@ -1180,13 +1306,19 @@ fn daemon_reload() {
 /// not start them -- so the daily enrich would not arm until the next boot. Start it now. Warns on
 /// failure; never aborts bootstrap. Lives outside the hermetic core so tests never shell out.
 fn start_enrich_timer() {
+    start_timer(CLYDE_ENRICH_TIMER);
+}
+
+/// Best-effort `systemctl --user start <timer>`, shared by both timers so neither can drift to a
+/// different failure policy. Warns on failure; never aborts bootstrap.
+fn start_timer(timer: &str) {
     match std::process::Command::new("systemctl")
-        .args(["--user", "start", CLYDE_ENRICH_TIMER])
+        .args(["--user", "start", timer])
         .status()
     {
-        Ok(status) if status.success() => info!("systemctl --user start {CLYDE_ENRICH_TIMER} ok"),
-        Ok(status) => warn!("systemctl --user start {CLYDE_ENRICH_TIMER} exited {status}"),
-        Err(e) => warn!("systemctl --user start {CLYDE_ENRICH_TIMER} failed to spawn: {e}"),
+        Ok(status) if status.success() => info!("systemctl --user start {timer} ok"),
+        Ok(status) => warn!("systemctl --user start {timer} exited {status}"),
+        Err(e) => warn!("systemctl --user start {timer} failed to spawn: {e}"),
     }
 }
 

@@ -13,7 +13,6 @@
 //! the SAME computed [`SessionEfficiency`] that is serialized into `efficiency_json`, so an indexed
 //! scalar can never diverge from the JSON it was materialized from (single computation path).
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use common::EfficiencyConfig;
@@ -22,21 +21,23 @@ use log::{debug, info};
 use serde::Serialize;
 use sessions::{Db, EfficiencyWrite};
 
-use crate::collect::{CollectedSession, collect_ids};
+use crate::collect::{CollectedSession, collect_layouts};
 
 /// Outcome of one [`reindex_efficiency`] pass. `Serialize` (kebab-case) so the clyde binary can emit
 /// it as JSON on a piped `session reindex`, mirroring `ReindexStats`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct PersistStats {
-    /// Rows the catalog reported as un-annotated (`efficiency_json IS NULL`, non-archived).
+    /// Rows the catalog reported as un-annotated (`efficiency_json IS NULL`), archived or not.
     pub candidates: usize,
-    /// Of those, the sessions actually found on disk and computed (a candidate whose transcript has
-    /// vanished but is not yet reconciled contributes a candidate with no computed result).
+    /// Of those, the sessions whose bytes resolved live-or-staged and were computed.
     pub computed: usize,
     /// Rows actually updated by the write (equals `computed` in the normal case; a computed session
     /// whose id is no longer in the catalog would update 0 rows).
     pub written: usize,
+    /// Candidates with NO readable transcript, live or staged: nothing left to price, ever.
+    /// Reported so `computed < candidates` is never a silent delta.
+    pub unrecoverable: usize,
 }
 
 /// One computed session's efficiency + outcomes in owned form, so the borrowing [`EfficiencyWrite`]s
@@ -95,26 +96,22 @@ impl OwnedEfficiency {
 /// `Outcomes::repos_touched` (repo attribution's rule 3). That coupling is why the single
 /// `efficiency_json IS NULL` predicate is enough for steady state: a grown transcript NULLs
 /// efficiency, this pass re-picks the row, and `repos_touched` is recomputed with it.
-pub fn reindex_efficiency(
-    db: &Db,
-    projects_dir: &Path,
-    config: &EfficiencyConfig,
-    repo_root: &Path,
-) -> Result<PersistStats> {
-    debug!(
-        "reindex_efficiency: projects_dir={} repo_root={}",
-        projects_dir.display(),
-        repo_root.display()
-    );
-    let missing: BTreeSet<String> = db
+///
+/// Takes no `projects_dir`: each candidate row carries its own `transcript_path` / `project_dir` /
+/// `staged_path`, and `collect_layouts` resolves the bytes per row (live layout first, staged
+/// second). That is what lets an ARCHIVED row be priced from its staged copy, which the previous
+/// whole-tree scan structurally could not do. Candidates with no bytes anywhere are counted in
+/// [`PersistStats::unrecoverable`] rather than silently vanishing from the total.
+pub fn reindex_efficiency(db: &Db, config: &EfficiencyConfig, repo_root: &Path) -> Result<PersistStats> {
+    debug!("reindex_efficiency: repo_root={}", repo_root.display());
+    let candidates = db
         .sessions_missing_efficiency()
-        .context("reindex_efficiency: failed to query sessions missing efficiency")?
-        .into_iter()
-        .collect();
-    debug!("reindex_efficiency: candidates={}", missing.len());
+        .context("reindex_efficiency: failed to query sessions missing efficiency")?;
+    debug!("reindex_efficiency: candidates={}", candidates.len());
 
-    let sessions: Vec<CollectedSession> = collect_ids(projects_dir, &missing, config, repo_root)?;
-    let owned: Vec<OwnedEfficiency> = sessions
+    let collected = collect_layouts(&candidates, config, repo_root)?;
+    let owned: Vec<OwnedEfficiency> = collected
+        .sessions
         .iter()
         .map(OwnedEfficiency::from_session)
         .collect::<Result<_>>()?;
@@ -124,13 +121,14 @@ pub fn reindex_efficiency(
         .context("reindex_efficiency: failed to persist efficiency annotations")?;
 
     let stats = PersistStats {
-        candidates: missing.len(),
-        computed: sessions.len(),
+        candidates: candidates.len(),
+        computed: collected.sessions.len(),
         written,
+        unrecoverable: collected.unrecoverable.len(),
     };
     info!(
-        "reindex_efficiency: candidates={} computed={} written={} (updated_at unchanged)",
-        stats.candidates, stats.computed, stats.written
+        "reindex_efficiency: candidates={} computed={} written={} unrecoverable={} (updated_at unchanged)",
+        stats.candidates, stats.computed, stats.written, stats.unrecoverable
     );
     Ok(stats)
 }

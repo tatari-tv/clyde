@@ -535,3 +535,60 @@ fn v1_report_json_is_refused_by_merge() {
     assert!(run(&cfg).is_err(), "a v1 artifact must be refused, not merged");
     assert!(!out.exists(), "no merged artifact on a refused input");
 }
+
+/// A per-host unrecoverable disclosure SURVIVES the merge, host-attributed, and `WINDOW_NOTE` appears
+/// exactly once.
+///
+/// Found by the review panel: `merge_reports` used to hardcode `notes: vec![WINDOW_NOTE]`, discarding
+/// every input's notes. A per-host report correctly stating "64 sessions excluded, unrecoverable"
+/// therefore merged into a multi-host report that KEPT the partial spend and dropped the statement
+/// that it was partial. That defeats the `notes` channel on exactly the multi-host path the team uses.
+///
+/// BITES: restore `notes: vec![WINDOW_NOTE.to_string()]` and the disclosure disappears here.
+#[test]
+fn merge_preserves_per_host_unrecoverable_disclosure() {
+    let disclosure = "64 session(s) in this window have no transcript on disk (live transcript \
+                      reaped, no staged copy), so their spend is permanently unrecoverable and they \
+                      are EXCLUDED from these totals. The reported spend is a PARTIAL total for the \
+                      window.";
+
+    let mut r1 = report(
+        "desk",
+        SID_SHARED,
+        "2026-04-01T00:00:00Z",
+        "2026-04-30T00:00:00Z",
+        "claude-opus-4-7",
+        model_tokens(100, Some(1.50)),
+    );
+    r1.notes.push(disclosure.to_string());
+
+    // The second host lost nothing, so it carries only the standard window note.
+    let r2 = report(
+        "lappy",
+        SID_UNIQUE,
+        "2026-04-01T00:00:00Z",
+        "2026-04-30T00:00:00Z",
+        "claude-opus-4-7",
+        model_tokens(10, Some(0.50)),
+    );
+
+    let merged = merge_reports(vec![r1, r2]).unwrap();
+
+    let window_notes = merged.notes.iter().filter(|n| n.as_str() == WINDOW_NOTE).count();
+    assert_eq!(window_notes, 1, "exactly one WINDOW_NOTE: {:?}", merged.notes);
+
+    let kept = merged
+        .notes
+        .iter()
+        .find(|n| n.contains("unrecoverable"))
+        .expect("the per-host disclosure must survive the merge");
+    assert!(
+        kept.starts_with("[desk]"),
+        "the note is attributed to the host that lost the sessions: {kept}"
+    );
+    assert!(kept.contains("64"), "the count rides through: {kept}");
+
+    // And the partial spend is still there, so the disclosure is not describing a total that vanished.
+    assert!(merged.totals.spend_usd > 0.0);
+    assert_eq!(merged.totals.sessions, 2);
+}

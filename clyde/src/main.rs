@@ -224,7 +224,9 @@ fn run(cli: Cli) -> Result<()> {
                 // The bare-date `--since` convention is configurable via clyde.yml (default UTC).
                 // Config is loaded lazily here, inside the commands that actually consume a tz, so
                 // that a malformed clyde.yml never breaks commands that don't read dates
-                // (search, resume, tag, reindex, doctor, bootstrap).
+                // (search, resume, tag, doctor, bootstrap). `reindex` DOES consume a span now (the
+                // staging sweep's dormancy cutoff) but takes its tz from the config load it already
+                // performs itself, so it needs no `load_date_tz()` here and pays no second load.
                 SessionsCommand::Ls(args) => {
                     let tz = load_date_tz()?;
                     cmd_ls(&db, args, tz)
@@ -674,12 +676,34 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     };
 
     let stats = sessions::reindex(db, &projects_dir, cfg.repo_root())?;
+
+    // Close the reap-before-stage race: copy every dormant session's transcript to the staged root
+    // BEFORE the efficiency pass prices it, so a durable copy exists before Claude Code's TTL can
+    // win. Staging used to be a manual `clyde session stage` only, so a session whose transcript aged
+    // off disk before anyone remembered to run it lost its spend PERMANENTLY (64 such rows on
+    // desk.lan, with 1,486 live-but-dormant sessions carrying no durable copy on the same path).
+    // Without this the unrecoverable count keeps growing and the fix is not causal closure.
+    //
+    // Wired to the EXPLICIT reindex, NOT `lazy_reindex`: that helper runs from six sites covering
+    // search, list, export, resume, stage and enrich, so a sweep there would make an incidental
+    // `clyde session ls` pay for copying the whole dormant backlog. `reindex_efficiency` below is
+    // wired here for exactly the same stated reason; this follows that precedent rather than
+    // inventing a second cost policy.
+    //
+    // Ordering does not affect recovery (a session already reaped has nothing left to copy either
+    // way), but index -> durable copy -> price is the readable sequence. `clyde session stage` stays
+    // the tunable entry point (`--dormant-after`, `--all`); this is the safety net. Both are
+    // idempotent: `copy_if_newer` compares mtimes, so a second sweep is one stat per candidate.
+    let staged_root = session::paths::staged_dir();
+    let dormant_before = sessions::parse_since(cli::DEFAULT_STAGE_DORMANT_AFTER, cfg.date_tz())?;
+    let stage = sessions::stage_dormant(db, Some(dormant_before), &staged_root)?;
+
     // Phase 6: after the content reindex, annotate every un-annotated session (`efficiency_json
     // IS NULL`) with its computed efficiency signals. This writes a derived read-side annotation and
     // deliberately does NOT advance the export `updated_at` cursor. Wired here (the explicit reindex),
     // not into `lazy_reindex`, so a query's cheap incremental refresh never pays the transcript
     // re-read the efficiency compute costs.
-    let eff = efficiency::reindex_efficiency(db, &projects_dir, cfg.efficiency(), cfg.repo_root())?;
+    let eff = efficiency::reindex_efficiency(db, cfg.efficiency(), cfg.repo_root())?;
     // Repo attribution's rule 3 reads `Outcomes::repos_touched`, which the efficiency pass above is
     // what writes. Re-run the chain now that those blobs exist, so a session whose cwd is `$HOME` or
     // a temp dir is attributed within THIS command rather than on some later reindex. Scoped to
@@ -694,7 +718,7 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
         sessions::resolve_repos(db, cfg.repo_root())?
     };
     debug!("cmd_reindex: post-efficiency repo pass evaluated {reresolved} session(s)");
-    print_reindex(&stats, &eff);
+    print_reindex(&stats, &stage, &eff);
     Ok(())
 }
 
@@ -1006,7 +1030,7 @@ fn msgs_column_width(counts: impl Iterator<Item = i64>) -> usize {
 /// summary lines; piped -> ONE combined JSON object (`{"reindex": ..., "efficiency": ...}`). Emitting
 /// a single object matters: two separate `print_json` calls would concatenate two top-level JSON
 /// documents to stdout, which is not valid JSON a consumer can parse in one read.
-fn print_reindex(reindex: &ReindexStats, eff: &efficiency::PersistStats) {
+fn print_reindex(reindex: &ReindexStats, stage: &StageStats, eff: &efficiency::PersistStats) {
     if std::io::stdout().is_terminal() {
         println!(
             "{} scanned {}, upserted {}, skipped {}, archived {}",
@@ -1016,15 +1040,31 @@ fn print_reindex(reindex: &ReindexStats, eff: &efficiency::PersistStats) {
             reindex.skipped_unchanged,
             reindex.archived,
         );
+        // `unrecoverable` is printed unconditionally, not only when non-zero: it is the accounting
+        // half of `candidates` (candidates == computed + unrecoverable), and a count that appears
+        // only sometimes reads as an error rather than as a standing ledger line.
+        // The staging sweep is reported so the first run's dormant-backlog copy is visible rather
+        // than a mysterious pause. A separate object in the JSON shape (a sibling of `reindex` and
+        // `efficiency`) rather than folded into `ReindexStats`: `sessions::reindex` does not stage, so
+        // a staging field on its own result struct would be one its producer never fills.
         println!(
-            "{} efficiency: candidates {}, computed {}, written {}",
+            "{} staging: considered {}, staged {}, up-to-date {} ({} files copied)",
+            "✓".green(),
+            stage.considered,
+            stage.staged,
+            stage.up_to_date,
+            stage.files_copied,
+        );
+        println!(
+            "{} efficiency: candidates {}, computed {}, written {}, unrecoverable {}",
             "✓".green(),
             eff.candidates,
             eff.computed,
             eff.written,
+            eff.unrecoverable,
         );
     } else {
-        print_json(&serde_json::json!({ "reindex": reindex, "efficiency": eff }));
+        print_json(&serde_json::json!({ "reindex": reindex, "staging": stage, "efficiency": eff }));
     }
 }
 

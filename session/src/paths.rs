@@ -92,8 +92,12 @@ pub fn reports_dir() -> PathBuf {
 }
 
 /// Where Phase 1.5 stages durable copies of transcripts to beat the 30-day TTL.
+///
+/// Delegates to [`common::scan::default_staged_dir`], which is THE definition of this path, so the
+/// scanner's staged root and this one can never name different directories. Panics only when that
+/// returns `None` (see [`data_root`] for why we never fabricate a `~/`-prefixed fallback).
 pub fn staged_dir() -> PathBuf {
-    data_root().join("staged")
+    common::scan::default_staged_dir().expect("xdg_data_dir() returned None (set HOME or XDG_DATA_HOME)")
 }
 
 /// The Claude-owned session transcript root: `~/.claude/projects`. `dirs::home_dir()` is

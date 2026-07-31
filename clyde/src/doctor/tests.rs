@@ -520,3 +520,57 @@ fn a_bare_klod_service_unit_is_unhealthy_and_names_its_path() {
         "this must route to the pre-retirement-clyde remedy, not `run clyde bootstrap`"
     );
 }
+
+/// `clyde doctor` names the reindex timer, and reports it ABSENT on a host where it was never
+/// installed. That absence is the difference between the reap-before-stage race being closed and
+/// being silently open, so it must be visible rather than inferred.
+#[test]
+fn doctor_reports_the_reindex_timer_absent_when_never_installed() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+
+    let report = diagnose(&paths).unwrap();
+    assert_eq!(report.reindex_timer, Target::Absent);
+    // Absence is a NOTE, not an unhealthy verdict: scheduling is a host policy choice, and doctor
+    // must not fail over one.
+    assert!(
+        report.healthy(),
+        "a missing reindex timer is reported, not treated as unhealthy"
+    );
+}
+
+/// With the service, timer, and enable symlink all present, doctor reports the timer as clyde-owned.
+#[test]
+fn doctor_reports_the_reindex_timer_present_when_fully_installed() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    crate::bootstrap::install_clyde_reindex_timer(&paths).unwrap();
+
+    let report = diagnose(&paths).unwrap();
+    assert_eq!(report.reindex_timer, Target::Clyde);
+}
+
+/// Every one of the three pieces is load-bearing: a service with no timer never fires, and a timer
+/// with no enable symlink is not armed. Removing any single piece must drop the report to `Absent`.
+#[test]
+fn doctor_reports_absent_when_any_single_reindex_piece_is_missing() {
+    for victim in ["service", "timer", "link"] {
+        let dir = TempDir::new().unwrap();
+        let paths = paths_under(dir.path());
+        crate::bootstrap::install_clyde_reindex_timer(&paths).unwrap();
+
+        let path = match victim {
+            "service" => paths.clyde_reindex_unit(),
+            "timer" => paths.clyde_reindex_timer(),
+            _ => paths.clyde_reindex_wants_link(),
+        };
+        fs::remove_file(&path).unwrap();
+
+        let report = diagnose(&paths).unwrap();
+        assert_eq!(
+            report.reindex_timer,
+            Target::Absent,
+            "removing the {victim} must read as a dead scheduler"
+        );
+    }
+}

@@ -137,6 +137,8 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
     let mut hosts: BTreeSet<String> = BTreeSet::new();
     let mut since: Option<DateTime<Utc>> = None;
     let mut until: Option<DateTime<Utc>> = None;
+    let mut extra_notes: Vec<String> = Vec::new();
+    let mut seen_notes: BTreeSet<String> = BTreeSet::new();
 
     for report in reports {
         hosts.insert(report.host.clone());
@@ -148,6 +150,22 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
             Some(cur) => cur.max(report.until),
             None => report.until,
         });
+        // Union the inputs' notes, each attributed to the host that produced it. This used to be a
+        // hardcoded `vec![WINDOW_NOTE]` that discarded every input note, which meant a per-host
+        // report correctly stating "N sessions excluded, unrecoverable" merged into a multi-host
+        // report that kept the PARTIAL spend and dropped the statement that it was partial. That
+        // defeats `notes`, the one channel carrying "stated, never silently zeroed", on exactly the
+        // multi-host path the team uses. `WINDOW_NOTE` is skipped here and re-added exactly once
+        // below, since every input carries its own copy.
+        for note in &report.notes {
+            if note == WINDOW_NOTE {
+                continue;
+            }
+            let attributed = format!("[{}] {note}", report.host);
+            if seen_notes.insert(attributed.clone()) {
+                extra_notes.push(attributed);
+            }
+        }
         for (sid, entry) in report.sessions {
             // Keep-both: re-key by host so same-id-different-host sessions both survive.
             // Per-session `outcomes` fields ride through untouched -- only the rollup is gated.
@@ -174,9 +192,10 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
         // v2 merge disposition (design Phase 4): every per-session field (agent-type costs,
         // by-skill/by-mcp, cache/tool signals, the full `efficiency` passthrough) rides through
         // untouched under the re-keyed `<host>/<sid>` session, and the global ratios recompute from
-        // the unioned raw counters (see `recompute_totals`). Nothing in v2 is un-mergeable, so the
-        // merged report carries only the standard M2 window note -- no field is silently zeroed.
-        notes: vec![WINDOW_NOTE.to_string()],
+        // the unioned raw counters (see `recompute_totals`). Nothing in v2 is un-mergeable, so no
+        // field is silently zeroed -- and every input's own disclosures ride through host-attributed,
+        // so an exclusion one machine reported cannot go missing from the merged artifact.
+        notes: std::iter::once(WINDOW_NOTE.to_string()).chain(extra_notes).collect(),
         totals,
         sessions,
     })

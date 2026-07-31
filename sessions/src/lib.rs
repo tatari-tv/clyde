@@ -30,8 +30,8 @@ pub use index::{reindex, resolve_repos};
 pub use llm::{ClaudeCli, Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION, LlmEnrichment, NARRATE_MODEL, Narrator};
 pub use mcp::{SessionsMcpServer, build_server};
 pub use model::{
-    CatalogEntry, EnrichDetail, EnrichStats, EnrichSummary, Fallback, Filters, MatchSource, ReindexStats, SearchHit,
-    SearchResults, SessionRecord, SortBy, StageStats,
+    CatalogEntry, EfficiencyCandidate, EnrichDetail, EnrichStats, EnrichSummary, Fallback, Filters, MatchSource,
+    ReindexStats, SearchHit, SearchResults, SessionRecord, SortBy, StageStats,
 };
 pub use since::{DateTz, parse_since};
 pub use stage::stage_dormant;

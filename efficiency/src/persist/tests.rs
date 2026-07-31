@@ -112,8 +112,14 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
     db.upsert_session(&parsed, "host-01").unwrap();
 
     // Before: the row is a backfill candidate, and its export record has no efficiency.
+    let candidate_ids: Vec<String> = db
+        .sessions_missing_efficiency()
+        .unwrap()
+        .into_iter()
+        .map(|c| c.session_id)
+        .collect();
     assert_eq!(
-        db.sessions_missing_efficiency().unwrap(),
+        candidate_ids,
         vec![SID.to_string()],
         "the freshly-indexed row must report as missing efficiency"
     );
@@ -130,7 +136,7 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
     );
 
     // Run the backfill pass.
-    let stats = reindex_efficiency(&db, &projects, &config(), Path::new("/repos")).unwrap();
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
     assert_eq!(stats.candidates, 1, "one un-annotated session");
     assert_eq!(stats.computed, 1, "it is found on disk and computed");
     assert_eq!(stats.written, 1, "and written");
@@ -140,6 +146,7 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
         db.sessions_missing_efficiency().unwrap().is_empty(),
         "the backfilled session must no longer report as missing efficiency"
     );
+    assert_eq!(stats.unrecoverable, 0, "the live transcript was there to price");
     let after = db.export(&ExportFilters::default(), &ctx).unwrap();
     assert_eq!(
         after.sessions[0].updated_at, updated_at_before,
@@ -160,7 +167,7 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
     );
 
     // A second pass is a no-op (idempotent): nothing left to annotate, cursor still unchanged.
-    let again = reindex_efficiency(&db, &projects, &config(), Path::new("/repos")).unwrap();
+    let again = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
     assert_eq!(again.candidates, 0, "second pass finds nothing to do");
     assert_eq!(again.written, 0);
     let after2 = db.export(&ExportFilters::default(), &ctx).unwrap();
@@ -223,7 +230,7 @@ fn reindex_persists_per_model_tokens_and_outcomes() {
     };
     db.upsert_session(&parsed, "host-01").unwrap();
 
-    let stats = reindex_efficiency(&db, &projects, &config(), Path::new("/repos")).unwrap();
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
     assert_eq!(stats.written, 1, "the session is annotated");
 
     // Per-model tokens are inside efficiency_json (aggregate.raw.by-model), kebab-case.
@@ -249,4 +256,186 @@ fn reindex_persists_per_model_tokens_and_outcomes() {
     assert_eq!(outcomes.commits, vec!["abc123".to_string()], "committed sha persisted");
     assert_eq!(outcomes.files_edited, 1, "one confirmed Edit persisted");
     assert!(outcomes.prs.is_empty());
+}
+
+const SID_ARCHIVED: &str = "22222222-2222-4222-8222-2222222222ab";
+const SID_GONE: &str = "33333333-3333-4333-8333-3333333333cd";
+
+/// A catalog row for `session_id` whose transcript is `transcript` inside `project`.
+fn parsed_row(session_id: &str, project: &Path, transcript: &Path) -> ParsedSession {
+    ParsedSession {
+        session_id: session_id.to_string(),
+        cwd: Some(PathBuf::from("/home/alice/repos/example-org/widget")),
+        project_dir: project.to_path_buf(),
+        ai_title: Some("widget work".to_string()),
+        first_prompt: Some("first".to_string()),
+        command_name: None,
+        git_branch: Some("main".to_string()),
+        model: Some("claude-opus-4-8".to_string()),
+        n_msgs: 11,
+        created: Some(dt("2026-06-20T10:00:00Z")),
+        modified: dt("2026-06-21T10:00:00Z"),
+        body: "indexed body".to_string(),
+        jsonl_paths: vec![transcript.to_path_buf()],
+    }
+}
+
+/// THE regression this design doc exists for: an ARCHIVED row with a staged copy MUST be priced.
+///
+/// `archived` means the live transcript was TTL-reaped, not that the session cost nothing, and clyde
+/// staged a durable copy precisely so the spend survives. On `desk.lan` 199 of June's 558 catalog
+/// rows were in exactly this state, every one with `cost_usd IS NULL`, which is what made
+/// `report collect` read 51.8% under the settled Analytics ground truth.
+///
+/// BITES: re-add `AND archived = 0` to `Db::sessions_missing_efficiency` and `candidates` drops to 0,
+/// so `computed` does too and the staged spend stays unpriced forever.
+#[test]
+fn reindex_prices_an_archived_row_from_its_staged_copy() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let project = projects.join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let transcript = project.join(format!("{SID_ARCHIVED}.jsonl"));
+    std::fs::copy(MULTI_SUBAGENT, &transcript).unwrap();
+
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed_row(SID_ARCHIVED, &project, &transcript), "host-01")
+        .unwrap();
+
+    // Stage a durable copy, then reap the live transcript: exactly the sequence the 30-day TTL
+    // produces on a machine where `clyde session stage` ran first.
+    let staged = tmp.path().join("staged").join(SID_ARCHIVED);
+    std::fs::create_dir_all(&staged).unwrap();
+    std::fs::copy(MULTI_SUBAGENT, staged.join(format!("{SID_ARCHIVED}.jsonl"))).unwrap();
+    db.set_staged_path(SID_ARCHIVED, &staged).unwrap();
+    std::fs::remove_file(&transcript).unwrap();
+    assert_eq!(
+        db.reconcile_archived().unwrap(),
+        1,
+        "the reaped row is flagged archived"
+    );
+
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    assert_eq!(stats.candidates, 1, "an archived row is still a candidate");
+    assert_eq!(stats.computed, 1, "and it is PRICED, from the staged copy");
+    assert_eq!(stats.unrecoverable, 0, "its bytes were recoverable");
+    assert_eq!(stats.written, 1);
+
+    // efficiency_json is populated, and carries a real cost (the scalar `cost_usd` column is
+    // materialized from this same aggregate; `from_session_scalars_match_the_serialized_json` pins
+    // that equality, so asserting the JSON here asserts the column too).
+    let eff_json = db
+        .get_efficiency_json(SID_ARCHIVED)
+        .unwrap()
+        .expect("the archived row must be annotated");
+    let eff: serde_json::Value = serde_json::from_str(&eff_json).unwrap();
+    assert_eq!(eff["session-id"].as_str(), Some(SID_ARCHIVED));
+    assert!(
+        eff["aggregate"]["raw"]["cost-usd"].is_number(),
+        "a priced archived row carries a numeric cost-usd: {eff_json}"
+    );
+    assert!(
+        db.sessions_missing_efficiency().unwrap().is_empty(),
+        "no longer a backfill candidate"
+    );
+}
+
+/// The genuinely unrecoverable residue: archived with NO staged copy. Its transcript aged off disk
+/// before any staging sweep ran, so its dollars are gone permanently (64 such rows on `desk.lan`,
+/// all May 2026). It must be COUNTED, not silently dropped, so `computed < candidates` is always
+/// accounted for.
+///
+/// BITES: treat an empty `pricing_files` result as "just skip it" and `unrecoverable` reads 0 while
+/// a candidate vanishes from the ledger with no accounting anywhere.
+#[test]
+fn reindex_counts_an_archived_row_with_no_staged_copy_as_unrecoverable() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let project = projects.join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let transcript = project.join(format!("{SID_GONE}.jsonl"));
+    std::fs::copy(MULTI_SUBAGENT, &transcript).unwrap();
+
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed_row(SID_GONE, &project, &transcript), "host-01")
+        .unwrap();
+
+    // Reap the live transcript WITHOUT ever staging it.
+    std::fs::remove_file(&transcript).unwrap();
+    assert_eq!(db.reconcile_archived().unwrap(), 1);
+
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    assert_eq!(stats.candidates, 1, "it is still offered as a candidate");
+    assert_eq!(stats.computed, 0, "but there are no bytes anywhere to price");
+    assert_eq!(stats.unrecoverable, 1, "so it is COUNTED, never silently dropped");
+    assert_eq!(stats.written, 0);
+    assert_eq!(
+        stats.candidates,
+        stats.computed + stats.unrecoverable,
+        "every candidate is accounted for (acceptance criterion A1)"
+    );
+
+    assert!(
+        db.get_efficiency_json(SID_GONE).unwrap().is_none(),
+        "nothing was invented for a session with no readable bytes"
+    );
+}
+
+const SID_DORMANT: &str = "44444444-4444-4444-8444-4444444444ef";
+
+/// The Phase 5 sequence at the library seam `cmd_reindex` drives: index -> STAGE dormant -> price.
+///
+/// A dormant session gets a durable copy BEFORE the TTL can reap it, so its spend is still priceable
+/// after its live transcript is gone. This is the causal closure for the 64 unrecoverable rows on
+/// desk.lan: without a scheduled staging pass, the 1,486 live-but-dormant sessions with no durable
+/// copy were all on track to join them.
+///
+/// BITES: remove the `stage_dormant` call from `cmd_reindex` and a session reaped before anyone runs
+/// `clyde session stage` by hand becomes permanently unpriceable -- `computed` drops to 0 and
+/// `unrecoverable` rises to 1 here.
+#[test]
+fn staging_before_the_efficiency_pass_survives_a_reap() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let project = projects.join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let transcript = project.join(format!("{SID_DORMANT}.jsonl"));
+    std::fs::copy(MULTI_SUBAGENT, &transcript).unwrap();
+
+    let db = Db::open_memory().unwrap();
+    // `parsed_row`'s `modified` is 2026-06-21, comfortably past any 7d dormancy cutoff.
+    db.upsert_session(&parsed_row(SID_DORMANT, &project, &transcript), "host-01")
+        .unwrap();
+
+    let staged_root = tmp.path().join("staged");
+    let cutoff = dt("2026-07-01T00:00:00Z");
+
+    // First sweep copies the dormant session.
+    let first = sessions::stage_dormant(&db, Some(cutoff), &staged_root).unwrap();
+    assert_eq!(first.considered, 1);
+    assert_eq!(first.staged, 1, "the dormant session is staged: {first:?}");
+    assert!(first.files_copied >= 1);
+    assert!(
+        staged_root
+            .join(SID_DORMANT)
+            .join(format!("{SID_DORMANT}.jsonl"))
+            .is_file()
+    );
+
+    // Second sweep is idempotent: `copy_if_newer` compares mtimes, so nothing is re-copied.
+    let second = sessions::stage_dormant(&db, Some(cutoff), &staged_root).unwrap();
+    assert_eq!(second.staged, 0, "no re-copy on the second sweep: {second:?}");
+    assert_eq!(second.up_to_date, 1, "it is reported as already current");
+    assert_eq!(second.files_copied, 0);
+
+    // Now the TTL wins: the live transcript is reaped.
+    std::fs::remove_file(&transcript).unwrap();
+    assert_eq!(db.reconcile_archived().unwrap(), 1);
+
+    // The spend survives, because the staging sweep beat the reap.
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    assert_eq!(stats.candidates, 1);
+    assert_eq!(stats.computed, 1, "priced from the staged copy after the reap");
+    assert_eq!(stats.unrecoverable, 0, "nothing was lost");
+    assert!(db.get_efficiency_json(SID_DORMANT).unwrap().is_some());
 }

@@ -256,10 +256,15 @@ pub struct ExportArgs {
     pub no_reindex: bool,
 }
 
+/// Default dormancy span for staging. ONE definition, shared by `clyde session stage`'s
+/// `--dormant-after` and the in-reindex safety-net sweep, so the explicit command and the automatic
+/// one can never drift to different cutoffs.
+pub const DEFAULT_STAGE_DORMANT_AFTER: &str = "7d";
+
 #[derive(clap::Args, Debug)]
 pub struct StageArgs {
     /// Treat a session as dormant once idle this long (e.g. 7d, 24h).
-    #[arg(long, default_value = "7d")]
+    #[arg(long, default_value = DEFAULT_STAGE_DORMANT_AFTER)]
     pub dormant_after: String,
     /// Stage every non-archived session regardless of dormancy.
     #[arg(long)]

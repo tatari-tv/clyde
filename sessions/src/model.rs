@@ -189,6 +189,21 @@ pub struct CatalogEntry {
     pub cost_usd: Option<f64>,
 }
 
+/// One un-annotated catalog row plus the three path fields the pricing resolver needs.
+///
+/// Returned by `Db::sessions_missing_efficiency` so the efficiency backfill resolves each row's
+/// bytes live-or-staged (`common::scan::pricing_files`) instead of walking the whole projects tree
+/// and filtering it down to the candidate ids. Archived rows are INCLUDED: `archived` records that
+/// the live transcript was reaped, never that the session cost nothing, and the staged copy is
+/// exactly what it is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EfficiencyCandidate {
+    pub session_id: String,
+    pub transcript_path: PathBuf,
+    pub project_dir: String,
+    pub staged_path: Option<PathBuf>,
+}
+
 /// Counts from a reindex pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]

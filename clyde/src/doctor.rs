@@ -57,6 +57,15 @@ pub struct Report {
     pub timer_unit: Option<String>,
     /// The active enrich unit's `ExecStart=` line, if readable.
     pub timer_execstart: Option<String>,
+    /// State of the reindex sweep's timer: `Clyde` when its service, timer, and `timers.target.wants`
+    /// enable symlink are all present, `Absent` otherwise.
+    ///
+    /// Reported because the reindex sweep is what STAGES dormant transcripts before Claude Code's TTL
+    /// reaps them, and an absent timer means that race is silently open: sessions keep aging into the
+    /// permanently-unpriceable state with nothing in any output saying so. The timer only exists on a
+    /// host where `clyde bootstrap --install-timer` ran, so this check is what makes its absence
+    /// VISIBLE rather than silent. Never `Legacy`: the unit is new, so no pre-rename spelling exists.
+    pub reindex_timer: Target,
     pub events_db_at_clyde: bool,
     pub events_db_at_legacy: bool,
     pub events_db_rows: Option<i64>,
@@ -100,6 +109,7 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
     let hook_global = hook_target(&paths.home.join(".claude").join("settings.json"));
     let hook_local = hook_target(&paths.home.join(".claude").join("settings.local.json"));
     let (timer, timer_unit, timer_execstart) = timer_state(paths);
+    let reindex_timer = reindex_timer_state(paths);
 
     let clyde_db = paths.clyde_events_db();
     let legacy_db = paths.xdg_data.join("claude-permit").join("events.db");
@@ -159,6 +169,7 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
         timer,
         timer_unit,
         timer_execstart,
+        reindex_timer,
         events_db_at_clyde,
         events_db_at_legacy,
         events_db_rows,
@@ -286,6 +297,21 @@ fn timer_state(paths: &Paths) -> (Target, Option<String>, Option<String>) {
 
 /// Legacy `klod-*` enrich residue, each entry naming the exact PATH to remove.
 ///
+/// State of the reindex sweep's systemd units: `Clyde` only when the service, the timer, AND the
+/// `timers.target.wants` enable symlink are ALL present.
+///
+/// All three, because any one of them missing is a dead scheduler: a service with no timer never
+/// fires, and a timer with no enable symlink is not armed. `symlink_metadata` for the link rather
+/// than `exists()`, which follows the link and reports false for a dangling one -- the same reason
+/// [`legacy_timer_residue`] uses it.
+fn reindex_timer_state(paths: &Paths) -> Target {
+    let complete = paths.clyde_reindex_unit().exists()
+        && paths.clyde_reindex_timer().exists()
+        && std::fs::symlink_metadata(paths.clyde_reindex_wants_link()).is_ok();
+    debug!("reindex_timer_state: complete={complete}");
+    if complete { Target::Clyde } else { Target::Absent }
+}
+
 /// Separate from [`timer_state`], which is left byte-identical to the version that detects correctly
 /// today, so retiring the migration needs no new proof that detection still works.
 ///
@@ -347,6 +373,18 @@ fn print_report(paths: &Paths, report: &Report) {
     }
     if let Some(exec) = &report.timer_execstart {
         println!("    {exec}");
+    }
+    println!("  reindex timer: {}", report.reindex_timer.label());
+    if report.reindex_timer == Target::Absent {
+        // Not a `healthy()` failure: a host can legitimately choose not to schedule the sweep, and
+        // clyde must not fail a diagnostic over a policy choice. But it IS the difference between the
+        // reap-before-stage race being closed and being open, so it is never silent.
+        println!(
+            "    {} dormant transcripts are only staged when `clyde session reindex` runs; without \
+             this timer a session can be TTL-reaped before it is staged and its spend is then \
+             unrecoverable. Install with `clyde bootstrap --install-timer`.",
+            "note:".yellow()
+        );
     }
     match (report.events_db_at_clyde, report.events_db_rows) {
         (true, Some(n)) => println!("  events DB:     {} ({} rows)", "clyde".green(), n),
