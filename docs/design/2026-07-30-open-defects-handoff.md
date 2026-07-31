@@ -2,7 +2,9 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-30
-**Status:** Open register. Diagnosed, deliberately unfixed. Do not re-derive.
+**Status:** SUPERSEDED by `docs/design/2026-07-31-open-defects-handoff.md` (2026-07-31). C shipped in
+v0.20.0; A, B, D, E, F, G are carried forward there with a concrete fix per item. Keep this file for
+the original diagnosis and the addendum at the bottom; do the work from the newer one.
 **Audience:** the next agent picking up `tatari-tv/clyde`
 
 Everything below is diagnosed to file and line and was left alone on purpose: none of it was in
