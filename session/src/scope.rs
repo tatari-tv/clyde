@@ -2,26 +2,36 @@
 //!
 //! Phase 2 is the first clyde phase to send session content off-machine, to the **work** Anthropic
 //! account. The routing invariant is absolute: *no `personal`-scoped session content is ever sent
-//! to the work account*. This module is the sole source of that classification, derived purely
-//! from the session's stored `cwd` (a pure function of metadata, unit-testable, run before any
-//! payload is built).
+//! to the work account*. This module is the sole source of that classification, derived from
+//! metadata the catalog already holds (a pure function, unit-testable, run before any payload is
+//! built).
+//!
+//! Three signals, in [`classify_with_evidence`]'s documented precedence: the session's `cwd`, the
+//! GIT REMOTE its repo was attributed from, and the set of repos whose files it edited.
 //!
 //! The repo-identity convention (`~/repos/<org>/<repo>`, per `~/repos/CLAUDE.md`): the **org**
-//! is the component immediately under `repos/`. A session is `work` iff its org slot is a work
+//! is the component immediately under `repos/`. A cwd is `work` iff its org slot is a work
 //! org (`tatari-tv`); everything else -- a personal org, a path with no `repos/` anchor, an
-//! unclassifiable path, or a missing `cwd` -- is `personal`. The default is **fail-safe**: an
-//! unknown session is never assumed shippable to the work account.
+//! unclassifiable path, or a missing `cwd` -- is `personal` on this signal alone. The default is
+//! **fail-safe**: an unknown session is never assumed shippable to the work account.
 //!
 //! Classification keys off the org *slot*, not any matching component anywhere in the path. That
 //! is deliberately stricter than a "contains `tatari-tv`" test: a personal repo merely *named*
 //! `tatari-tv` (`~/repos/scottidler/tatari-tv`) or a scratchpad under `/tmp/tatari-tv/` is
-//! **personal** -- the safe direction. The cost is that a genuine work session run outside a
-//! `~/repos/tatari-tv/` path is classified personal and skipped (un-enriched), which is the
-//! acceptable failure direction (never the reverse).
+//! **personal** -- the safe direction.
+//!
+//! **That convention is one person's, and the path signal is only ever a proxy for the remote.**
+//! Measured 2026-07-31: four teammates run four different layouts (`~/code/work/<repo>`,
+//! `~/Projects/<repo>`, `~/git/tatari/<repo>`, `~`), none of which has an org slot to read, and all
+//! four sat at 0% enrichment coverage with their reports' prose sections empty. The `git-origin`
+//! branch answers the same question authoritatively and without caring where the checkout lives, so
+//! the path walk is now the fallback rather than the whole story. A session that no signal can place
+//! is still `personal` -- that failure direction is unchanged and still the acceptable one.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use common::repo::RepoSource;
 use log::trace;
 
 /// Version of the CLASSIFIER below. Bumped whenever the rules change in a way that could give a
@@ -33,13 +43,49 @@ use log::trace;
 /// classifier change read as a prompt change.
 ///
 /// v1 is [`classify_with_evidence`], the widening from cwd-only to cwd-plus-repo-evidence.
-pub const SCOPE_VERSION: i64 = 1;
+/// v2 adds the `git-origin` branch, so every row v1 recorded as `skipped-personal` on a path
+/// convention it could not read gets re-offered and re-decided against the remote.
+pub const SCOPE_VERSION: i64 = 2;
 
 /// The org names that mark a session as work-scoped, matched only in the org slot.
 const WORK_ORGS: &[&str] = &["tatari-tv"];
 /// The path component that, by the `~/repos/<org>/<repo>` convention, immediately precedes the
 /// org. Classification reads the component right after this, never an org name found elsewhere.
 const REPOS_ANCHOR: &str = "repos";
+
+/// Which signal decided a classification.
+///
+/// Exists so the caller can distinguish a SETTLED decision from one that merely had no evidence to
+/// consult, without re-deriving [`classify_with_evidence`]'s precedence. Getting that distinction wrong
+/// in either direction is a real defect: mark a settled row provisional and the widened
+/// `enrich_candidates` predicate re-offers it on every pass forever (and `record_enrich_skip`'s bare
+/// UPDATE bumps the export revision each time); mark a provisional row settled and it is excluded until
+/// the next `SCOPE_VERSION` bump, which on a never-fully-reindexed catalog is every row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Basis {
+    /// The cwd's `repos/<org>` anchor. Reads only the stored `cwd`.
+    CwdAnchor,
+    /// The repo attributed from the git remote. Reads only `repo`/`repo_source`.
+    GitOrigin,
+    /// The set of repos whose files the session edited. The ONLY basis that reads `outcome_json`, so
+    /// the only one whose decision can be provisional for want of a reindex.
+    TouchSet,
+}
+
+impl Basis {
+    /// True only for [`Basis::TouchSet`]: the one basis whose inputs come from `outcome_json` and are
+    /// therefore absent until the efficiency pass has reached the row.
+    pub fn reads_stored_evidence(self) -> bool {
+        matches!(self, Basis::TouchSet)
+    }
+}
+
+/// A classification and the signal that produced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decision {
+    pub scope: Scope,
+    pub basis: Basis,
+}
 
 /// Work/personal classification of a session, decided from its `cwd`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,10 +124,15 @@ pub fn classify(cwd: Option<&Path>) -> Scope {
 }
 
 /// Classify with the repo evidence the catalog already holds, for the sessions `cwd` alone cannot
-/// place. Work iff EITHER the cwd's org slot is a work org (the existing rule, unchanged), OR all four
-/// hold: the cwd carries no `repos/<org>` anchor at all, the session touched at least one repo, EVERY
-/// repo it touched is under a work org, and the touch counts account for EVERY file the session edited
-/// (`repos_touched.values().sum() == files_edited`).
+/// place. Decided in four steps, first match wins:
+///
+/// 1. The cwd's org slot is a work org -> Work (the original rule, unchanged).
+/// 2. The cwd carries a `repos/<org>` anchor whose org is not a work org -> Personal.
+/// 3. The session's repo was attributed from the GIT REMOTE ([`RepoSource::GitOrigin`]) -> Work or
+///    Personal from that slug's org. Authoritative and layout-independent; see the branch's comment.
+/// 4. Otherwise the touch set decides, and only when all of: the session touched at least one repo,
+///    EVERY repo it touched is under a work org, and the counts account for EVERY file the session
+///    edited (`repos_touched.values().sum() == files_edited`).
 ///
 /// That fourth condition is what makes the unanimity real rather than nominal. `repos_touched`
 /// (`efficiency::outcome`) silently DROPS any edited path that does not resolve to
@@ -97,13 +148,22 @@ pub fn classify(cwd: Option<&Path>) -> Scope {
 /// `repos_touched` is clyde's own parse of the session's transcript (tool-result file paths), not
 /// remote input and not user config, so the hazard is ABSENCE, not forgery: see the caller's
 /// provisional-`scope_version` rule for why an evidence-free decision must not be recorded.
-pub fn classify_with_evidence(cwd: Option<&Path>, repos_touched: &BTreeMap<String, u64>, files_edited: u64) -> Scope {
+pub fn classify_with_evidence(
+    cwd: Option<&Path>,
+    repo: Option<&str>,
+    repo_source: Option<RepoSource>,
+    repos_touched: &BTreeMap<String, u64>,
+    files_edited: u64,
+) -> Decision {
     // The existing cwd-only rule wins outright: a work-anchored cwd is work.
     if let Some(path) = cwd
         && has_work_org(path)
     {
         trace!("scope::classify_with_evidence: cwd={cwd:?} work by cwd anchor");
-        return Scope::Work;
+        return Decision {
+            scope: Scope::Work,
+            basis: Basis::CwdAnchor,
+        };
     }
     // A cwd anchored to ANY org has already been judged by that anchor. Only an unanchored cwd (or no
     // cwd at all) is "unclassifiable", and only there does the evidence get a say.
@@ -111,7 +171,41 @@ pub fn classify_with_evidence(cwd: Option<&Path>, repos_touched: &BTreeMap<Strin
         && has_repos_anchor(path)
     {
         trace!("scope::classify_with_evidence: cwd={cwd:?} anchored to a non-work org -> personal");
-        return Scope::Personal;
+        return Decision {
+            scope: Scope::Personal,
+            basis: Basis::CwdAnchor,
+        };
+    }
+    // The git remote, which is the AUTHORITATIVE answer to the question the cwd anchor above only
+    // approximates: "what repo is this session's working directory in?". `RepoSource::GitOrigin` means
+    // clyde ran `git remote get-url origin` IN THE CWD and parsed `<org>/<repo>` out of it
+    // (`common::repo`, rule 1, rank 0), so it is a statement about this session's own directory and it
+    // does not care where on disk the checkout lives.
+    //
+    // This is the fix for the `~/repos/<org>/<repo>` layout assumption. That convention is the
+    // maintainer's; measured 2026-07-31, four teammates run four different layouts
+    // (`~/code/work/<repo>`, `~/Projects/<repo>`, `~/git/tatari/<repo>`, `~`) and NONE of them carries
+    // an org slot a path walk could read, so all four sat at 0% enrichment coverage. The remote knows
+    // the org in every one of those layouts.
+    //
+    // DEFINITIVE IN BOTH DIRECTIONS, and gated on `GitOrigin` alone. A personal remote returns Personal
+    // rather than falling through, which is strictly safer than today: it stops the touch-set path below
+    // from widening a session whose own checkout is provably personal. The other three sources are
+    // deliberately excluded -- `KnownPath`/`PathGuess` are path conventions (the thing being fixed) and
+    // `FilesTouched` is the touch set, which the totality-checked branch below already handles under its
+    // own rules. Trusting it here would bypass that check.
+    if repo_source == Some(RepoSource::GitOrigin)
+        && let Some(slug) = repo
+    {
+        let scope = if is_work_slug(slug) { Scope::Work } else { Scope::Personal };
+        trace!(
+            "scope::classify_with_evidence: repo={slug} via git-origin -> {}",
+            scope.as_str()
+        );
+        return Decision {
+            scope,
+            basis: Basis::GitOrigin,
+        };
     }
     // A CHECKED sum that fails closed on overflow. `repos_touched` is a STORED blob, so a corrupt or
     // hand-edited one can carry counts whose sum wraps `u64` in a release build, and a wrapped total
@@ -134,7 +228,10 @@ pub fn classify_with_evidence(cwd: Option<&Path>, repos_touched: &BTreeMap<Strin
         repos_touched.len(),
         scope.as_str()
     );
-    scope
+    Decision {
+        scope,
+        basis: Basis::TouchSet,
+    }
 }
 
 /// True iff the path's org slot -- the component immediately after a `repos` component -- is a work

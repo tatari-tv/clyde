@@ -66,9 +66,21 @@ fn touched(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
     pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
 }
 
+/// The touch-set cases: no repo attribution at all, so the classifier must fall through to the evidence
+/// branch. Returns the scope alone; the basis is asserted separately in
+/// `classify_with_evidence_reports_the_deciding_basis`.
 fn with_evidence(cwd: Option<&str>, pairs: &[(&str, u64)], files_edited: u64) -> Scope {
     let path = cwd.map(PathBuf::from);
-    classify_with_evidence(path.as_deref(), &touched(pairs), files_edited)
+    classify_with_evidence(path.as_deref(), None, None, &touched(pairs), files_edited).scope
+}
+
+/// The same, with a repo attribution present. `source` is the stored `repo_source` spelling, parsed the
+/// way `sessions::enrich` parses it, so a typo'd variant name fails here rather than silently becoming
+/// `None` in production.
+fn with_repo(cwd: Option<&str>, repo: &str, source: &str, pairs: &[(&str, u64)], files_edited: u64) -> Decision {
+    let path = cwd.map(PathBuf::from);
+    let parsed: RepoSource = source.parse().expect("the test names a real RepoSource spelling");
+    classify_with_evidence(path.as_deref(), Some(repo), Some(parsed), &touched(pairs), files_edited)
 }
 
 /// The Phase 4 table test. Five rows, one per branch of the widened rule.
@@ -253,6 +265,149 @@ fn has_repos_anchor_detects_any_org_slot_not_just_work() {
     assert!(!has_repos_anchor(&PathBuf::from("/home/saidler/notes")));
     assert!(!has_repos_anchor(&PathBuf::from("/tmp/scratch")));
     assert!(!has_repos_anchor(&PathBuf::from("/home/saidler/repos")));
+}
+
+/// The git-origin branch, which is the fix for the `~/repos/<org>/<repo>` layout assumption.
+///
+/// Each row is one of the four layouts measured on 2026-07-31, none of which has an org slot a path walk
+/// can read. Before this branch every one of them classified Personal and sat at 0% coverage.
+///
+/// BITES: delete the `RepoSource::GitOrigin` branch and every Work row here flips to Personal.
+#[test]
+fn git_origin_classifies_every_real_world_layout() {
+    for cwd in [
+        "/Users/stephen/code/work/philo", // Stephen
+        "/Users/luke/Projects/philo",     // Luke
+        "/home/keegan/git/tatari/philo",  // Keegan: an org slot, but it reads `tatari`, not `tatari-tv`
+        "/home/patrick",                  // Patrick: no structure at all
+        "/Users/someone/wt/philo",        // a bare worktree root
+    ] {
+        let d = with_repo(Some(cwd), "tatari-tv/philo", "git-origin", &[], 0);
+        assert_eq!(d.scope, Scope::Work, "the remote must place a session run from {cwd}");
+        assert_eq!(d.basis, Basis::GitOrigin);
+    }
+}
+
+/// The branch is definitive in BOTH directions, and that is the safe choice.
+///
+/// A personal remote returns Personal outright rather than falling through to the touch set. That is
+/// strictly safer than today: without it, a session whose own checkout is provably personal could still
+/// be widened to Work by a unanimous work touch set.
+///
+/// BITES: make the branch fall through on a non-work slug instead of returning, and the second case
+/// flips to Work.
+#[test]
+fn git_origin_refuses_a_personal_remote_and_outranks_the_touch_set() {
+    let d = with_repo(
+        Some("/Users/luke/Projects/claude"),
+        "scottidler/claude",
+        "git-origin",
+        &[],
+        0,
+    );
+    assert_eq!(d.scope, Scope::Personal);
+    assert_eq!(d.basis, Basis::GitOrigin);
+
+    // A personal remote, and a touch set that WOULD satisfy unanimity + totality on its own.
+    let d = with_repo(
+        Some("/Users/luke/Projects/claude"),
+        "scottidler/claude",
+        "git-origin",
+        &[("tatari-tv/philo", 2)],
+        2,
+    );
+    assert_eq!(
+        d.scope,
+        Scope::Personal,
+        "a provably personal checkout must not be widened by its touch set"
+    );
+}
+
+/// Only `git-origin` confers scope. The other three sources must not.
+///
+/// `known-path` and `path-guess` are path conventions, which is the thing being fixed, and
+/// `files-touched` is the touch set -- routing it through here would bypass the unanimity and totality
+/// checks the touch-set branch applies. Each is asserted with a WORK slug and an empty touch set, so a
+/// Work answer could only come from the source being wrongly trusted.
+///
+/// BITES: widen the branch's condition to `repo_source.is_some()` and all three flip to Work.
+#[test]
+fn only_git_origin_confers_scope() {
+    for source in ["known-path", "files-touched", "path-guess"] {
+        let d = with_repo(
+            Some("/Users/stephen/code/work/philo"),
+            "tatari-tv/philo",
+            source,
+            &[],
+            0,
+        );
+        assert_eq!(
+            d.scope,
+            Scope::Personal,
+            "{source} must not confer work scope on its own"
+        );
+        assert_eq!(d.basis, Basis::TouchSet, "{source} must fall through to the touch set");
+    }
+}
+
+/// A work-anchored cwd still wins outright, and a personal-anchored cwd is still judged by its anchor
+/// before the remote is consulted. The precedence in the doc comment is the precedence in the code.
+#[test]
+fn cwd_anchor_outranks_the_remote_in_both_directions() {
+    // Work anchor + personal remote -> Work by the anchor, unchanged from before this branch existed.
+    let d = with_repo(
+        Some("/home/saidler/repos/tatari-tv/clyde"),
+        "scottidler/claude",
+        "git-origin",
+        &[],
+        0,
+    );
+    assert_eq!(d.scope, Scope::Work);
+    assert_eq!(d.basis, Basis::CwdAnchor);
+
+    // Personal anchor + work remote -> Personal by the anchor. This is the conservative placement: the
+    // remote never overturns a positive personal signal, matching the touch set's own restriction.
+    let d = with_repo(
+        Some("/home/saidler/repos/scottidler/claude"),
+        "tatari-tv/philo",
+        "git-origin",
+        &[],
+        0,
+    );
+    assert_eq!(d.scope, Scope::Personal);
+    assert_eq!(d.basis, Basis::CwdAnchor);
+}
+
+/// The basis is what the caller's provisional-`scope_version` rule keys on, so a wrong basis is a real
+/// defect and not a cosmetic label. Only `TouchSet` may report that it read stored evidence.
+///
+/// BITES: return `Basis::TouchSet` from the git-origin branch and `sessions::enrich` marks those
+/// decisions provisional, re-offering every such row on every pass forever.
+#[test]
+fn classify_with_evidence_reports_the_deciding_basis() {
+    assert!(Basis::TouchSet.reads_stored_evidence());
+    assert!(!Basis::GitOrigin.reads_stored_evidence());
+    assert!(!Basis::CwdAnchor.reads_stored_evidence());
+
+    // No cwd and no attribution: the touch set is the only signal left.
+    let path: Option<PathBuf> = None;
+    let d = classify_with_evidence(path.as_deref(), None, None, &touched(&[]), 0);
+    assert_eq!(d.basis, Basis::TouchSet);
+    assert_eq!(d.scope, Scope::Personal, "no signal at all must stay fail-safe");
+
+    // A malformed slug on an otherwise-trusted source fails closed rather than panicking or widening.
+    let d = with_repo(
+        Some("/Users/stephen/code/work/philo"),
+        "tatari-tv",
+        "git-origin",
+        &[],
+        0,
+    );
+    assert_eq!(
+        d.scope,
+        Scope::Personal,
+        "a slug with no repo segment is not a work slug"
+    );
 }
 
 #[test]
