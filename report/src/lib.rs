@@ -22,11 +22,13 @@ pub mod tools;
 use crate::config::{CollectConfig, Output};
 use claude_pricing::Pricing;
 use common::repo::RepoSource;
+use common::scan::pricing_files;
 use efficiency::{Outcomes, SessionEfficiency};
 use eyre::{Context, Result};
 use log::{LevelFilter, debug};
 use sessions::{CatalogEntry, Db, Filters};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 pub use cli::ReportArgs;
@@ -206,10 +208,14 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
     let filters = Filters {
         since: Some(cfg.since),
         until: Some(cfg.until),
-        include_archived: false,
+        // `archived` records that the session's LIVE transcript was reaped, never that the session
+        // did not happen or cost nothing, and clyde stages a durable copy exactly so the spend
+        // survives. Excluding archived rows here dropped 199 of June's 558 rows on `desk.lan`, which
+        // is most of a 51.8% undercount against settled ground truth.
+        include_archived: true,
         ..Default::default()
     };
-    let entries = db
+    let mut entries = db
         .catalog(&filters)
         .context("failed to read the session catalog window")?;
     log::info!("run_collect: catalog returned {} sessions in the window", entries.len());
@@ -239,8 +245,63 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
         log::info!("run_collect: window is empty but the catalog holds {indexed} sessions; emitting an empty report");
     }
 
-    // Fail closed: any windowed session not yet reindexed (NULL efficiency_json) means the catalog
-    // is incomplete. Never zero-fill or emit a partial artifact; point the operator at the remedy.
+    // Where each windowed session's bytes actually are, resolved ONCE through the same predicate the
+    // efficiency backfill branches on (`common::scan::pricing_files`), so "unrecoverable" means the
+    // same thing on both sides. Deliberately NOT the `staged_path` column: `stage_dormant` sets that
+    // whenever any file was copied, so it can be non-NULL for a session with no staged PARENT, and
+    // this doc does not branch on proxies. These are stats, not reads -- no JSONL is parsed here.
+    let resolved: BTreeMap<String, Vec<PathBuf>> = entries
+        .iter()
+        .map(|e| {
+            let rec = &e.record;
+            let paths = pricing_files(
+                &rec.session_id,
+                &rec.transcript_path,
+                Path::new(&rec.project_dir),
+                rec.staged_path.as_deref(),
+            )
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+            (rec.session_id.clone(), paths)
+        })
+        .collect();
+
+    // A NULL `efficiency_json` now has two causes that need opposite handling:
+    //
+    //   RECOVERABLE (bytes still on disk, live or staged) -- `clyde session reindex` can price it, so
+    //   the fail-closed contract is exactly as before: remedy on stderr, no artifact, non-zero exit.
+    //
+    //   UNRECOVERABLE (no bytes anywhere) -- no reindex will EVER price it, so failing closed would
+    //   permanently brick `report collect` for the window while naming a remedy that cannot work.
+    //   Exclude the row, STATE the count in `notes`, exit 0. This is the one place the design
+    //   deliberately departs from fail-closed, and it does so because the unhappy path has no fix.
+    let unrecoverable_ids: BTreeSet<String> = entries
+        .iter()
+        .filter(|e| e.efficiency_json.is_none())
+        .filter(|e| resolved.get(&e.record.session_id).is_none_or(|paths| paths.is_empty()))
+        .map(|e| e.record.session_id.clone())
+        .collect();
+
+    // Excluded, never zero-filled: a row with no readable transcript has no tokens, no models and no
+    // efficiency, so an all-zero entry would corrupt every ratio-of-sums total in the report. Its
+    // existence is disclosed; its dollars are unknowable and are not invented.
+    let mut extra_notes: Vec<String> = Vec::new();
+    if !unrecoverable_ids.is_empty() {
+        entries.retain(|e| !unrecoverable_ids.contains(&e.record.session_id));
+        let note = format!(
+            "{} session(s) in this window have no transcript on disk (live transcript reaped, no \
+             staged copy), so their spend is permanently unrecoverable and they are EXCLUDED from \
+             these totals. The reported spend is a PARTIAL total for the window.",
+            unrecoverable_ids.len()
+        );
+        log::warn!("run_collect: {note}");
+        eprintln!("warning: {note}");
+        extra_notes.push(note);
+    }
+
+    // Fail closed: any RETAINED windowed session not yet reindexed (NULL efficiency_json) means the
+    // catalog is incomplete and a reindex is the remedy. Never zero-fill or emit a partial artifact.
     let missing = entries.iter().filter(|e| e.efficiency_json.is_none()).count();
     if missing > 0 {
         // Remedy to STDERR (status channel) so a piped stdout JSON stream is never poisoned; NO
@@ -257,7 +318,10 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
 
     let outcomes_enabled = !cfg.no_outcomes;
 
-    // Same fail-closed contract as the efficiency guard above, for the other blob. With outcomes
+    // Same fail-closed contract as the efficiency guard above, for the other blob, and over the same
+    // RETAINED set: an unrecoverable row was already excluded above, so this guard can no longer
+    // demand a reindex that is impossible. That split is what stops `--no-outcomes` from being
+    // required to report an old window. With outcomes
     // ON, a NULL `outcome_json` is a session the reindex never reached, and quietly treating it as
     // "no outcomes" would understate the window's output AND silently strip its `repos-touched`
     // (rule 3's input), so `by-repo` would decay for a reason the artifact never states. The v10
@@ -283,7 +347,13 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
 
     let mut collected: Vec<report::CollectedSession> = Vec::with_capacity(entries.len());
     for entry in &entries {
-        collected.push(to_collected(entry, outcomes_enabled)?);
+        // The paths `pricing_files` actually resolved, so the artifact never names a file that does
+        // not exist: for an archived row `transcript_path` points at the reaped live location, and
+        // anyone auditing a session's number could not open the file its dollars came from. EMPTY,
+        // not the stale path, when nothing resolves (an annotated row whose bytes were reaped after
+        // it was priced): naming an unreadable file would defeat the point of carrying paths at all.
+        let jsonl_paths = resolved.get(&entry.record.session_id).cloned().unwrap_or_default();
+        collected.push(to_collected(entry, outcomes_enabled, jsonl_paths)?);
     }
 
     let host = gethostname::gethostname().to_string_lossy().into_owned();
@@ -298,6 +368,7 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
                 pricing,
                 outcomes_enabled,
                 cfg.no_rollup,
+                &extra_notes,
             )?;
             (count, OutputDest::File(path.clone()))
         }
@@ -310,6 +381,7 @@ fn run_collect(cfg: &CollectConfig, pricing: &Pricing) -> Result<RunResult> {
                 pricing,
                 outcomes_enabled,
                 cfg.no_rollup,
+                &extra_notes,
             )?;
             // Stream the JSON to stdout (and only the JSON -- the "wrote N" note is on stderr).
             use std::io::Write;
@@ -362,7 +434,11 @@ fn enrichment_warning(entries: &[CatalogEntry], floor: f64) -> Option<String> {
 /// `summary`/`tags` (design Phase 9, narrative evidence), repo, and the window timestamps all come
 /// from the catalog row -- no JSONL is read and no resolver runs. The repo was resolved at INDEX
 /// time, when the filesystem could still answer for it.
-fn to_collected(entry: &CatalogEntry, outcomes_enabled: bool) -> Result<report::CollectedSession> {
+fn to_collected(
+    entry: &CatalogEntry,
+    outcomes_enabled: bool,
+    jsonl_paths: Vec<PathBuf>,
+) -> Result<report::CollectedSession> {
     let rec = &entry.record;
     let json = entry.efficiency_json.as_deref().ok_or_else(|| {
         eyre::eyre!(
@@ -426,7 +502,7 @@ fn to_collected(entry: &CatalogEntry, outcomes_enabled: bool) -> Result<report::
         repo_source,
         begin,
         end,
-        jsonl_paths: vec![rec.transcript_path.clone()],
+        jsonl_paths,
         efficiency,
         outcomes,
     })

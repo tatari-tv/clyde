@@ -245,6 +245,7 @@ pub fn build_json(
     pricing: &Pricing,
     outcomes_enabled: bool,
     no_rollup: bool,
+    extra_notes: &[String],
 ) -> Result<(String, usize)> {
     debug!(
         "report::build_json: sessions={} since={} until={} host={} outcomes-enabled={} no-rollup={}",
@@ -255,7 +256,16 @@ pub fn build_json(
         outcomes_enabled,
         no_rollup
     );
-    let report = build_report(sessions, since, until, host, pricing, outcomes_enabled, no_rollup)?;
+    let report = build_report(
+        sessions,
+        since,
+        until,
+        host,
+        pricing,
+        outcomes_enabled,
+        no_rollup,
+        extra_notes,
+    )?;
     let json = serde_json::to_string_pretty(&report).context("failed to serialize report to JSON")?;
     Ok((json, report.totals.sessions))
 }
@@ -270,6 +280,7 @@ pub fn write_json(
     pricing: &Pricing,
     outcomes_enabled: bool,
     no_rollup: bool,
+    extra_notes: &[String],
 ) -> Result<usize> {
     debug!(
         "report::write_json: path={} sessions={} since={} until={} host={} outcomes-enabled={} no-rollup={}",
@@ -282,7 +293,16 @@ pub fn write_json(
         no_rollup
     );
 
-    let (json, count) = build_json(sessions, since, until, host, pricing, outcomes_enabled, no_rollup)?;
+    let (json, count) = build_json(
+        sessions,
+        since,
+        until,
+        host,
+        pricing,
+        outcomes_enabled,
+        no_rollup,
+        extra_notes,
+    )?;
 
     let dir = path
         .parent()
@@ -322,6 +342,7 @@ pub fn build_report(
     pricing: &Pricing,
     outcomes_enabled: bool,
     no_rollup: bool,
+    extra_notes: &[String],
 ) -> Result<Report> {
     debug!(
         "report::build_report: sessions={} host={} outcomes-enabled={} no-rollup={}",
@@ -387,7 +408,13 @@ pub fn build_report(
         since,
         until,
         outcomes_enabled: Some(outcomes_enabled),
-        notes: vec![WINDOW_NOTE.to_string()],
+        // The M2 window note, then any caller-supplied disclosure (today: the count of sessions in
+        // the window whose transcripts are gone, so a partial total is never read as a complete one).
+        // `notes` is the "stated, never silently zeroed" channel, so anything excluded from `totals`
+        // has to arrive here or the exclusion is invisible.
+        notes: std::iter::once(WINDOW_NOTE.to_string())
+            .chain(extra_notes.iter().cloned())
+            .collect(),
         totals,
         sessions: entries,
     })

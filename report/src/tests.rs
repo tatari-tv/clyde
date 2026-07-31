@@ -80,6 +80,35 @@ fn insert_indexed(db: &Db, sid: &str, modified: &str, usage: TokenUsage, outcome
     .unwrap();
 }
 
+/// A catalog row with NULL efficiency whose transcript REALLY EXISTS under `projects`, so
+/// `common::scan::pricing_files` resolves bytes for it. This is the "not yet reindexed but
+/// RECOVERABLE" state the fail-closed guard exists for, and it must be distinguishable from the
+/// "no bytes anywhere, no remedy possible" state, which collect discloses instead of failing on.
+fn insert_unindexed_live(db: &Db, sid: &str, modified: &str, projects: &Path) {
+    let project_dir = projects.join("-home-saidler-repos-tatari-tv-clyde");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let transcript = project_dir.join(format!("{sid}.jsonl"));
+    std::fs::write(&transcript, "{\"type\":\"assistant\"}\n").unwrap();
+    let mut p = parsed(sid, modified);
+    p.project_dir = project_dir;
+    // `upsert_session` derives `transcript_path` from `jsonl_paths[0]`.
+    p.jsonl_paths = vec![transcript];
+    db.upsert_session(&p, "desk").unwrap();
+}
+
+/// A fully-priced row whose LIVE transcript is gone but whose STAGED copy is on disk: the archived
+/// state 199 of June's 558 rows were in on `desk.lan`. `staged_path` is the session's staging dir.
+fn insert_indexed_staged_only(db: &Db, sid: &str, modified: &str, usage: TokenUsage, staged_root: &Path) -> PathBuf {
+    let staged = staged_root.join(sid);
+    std::fs::create_dir_all(&staged).unwrap();
+    let staged_parent = staged.join(format!("{sid}.jsonl"));
+    std::fs::write(&staged_parent, "{\"type\":\"assistant\"}\n").unwrap();
+    // The row's `transcript_path` intentionally points at a live location that does NOT exist.
+    insert_indexed(db, sid, modified, usage, &Outcomes::default());
+    db.set_staged_path(sid, &staged).unwrap();
+    staged_parent
+}
+
 fn usage(input: u64, output: u64, cache_read: u64) -> TokenUsage {
     TokenUsage {
         input_tokens: input,
@@ -246,8 +275,10 @@ fn collect_fails_closed_on_null_efficiency_and_writes_no_artifact() {
         usage(10, 5, 0),
         &Outcomes::default(),
     );
-    db.upsert_session(&parsed(SID_B, "2026-06-16T10:00:00Z"), "desk")
-        .unwrap(); // no set_efficiency -> NULL
+    // Its transcript is really on disk, so the row is RECOVERABLE: a reindex genuinely fixes it, and
+    // the fail-closed contract applies. (An unrecoverable row is disclosed instead -- see
+    // `collect_excludes_and_discloses_an_unrecoverable_row`.)
+    insert_unindexed_live(&db, SID_B, "2026-06-16T10:00:00Z", &tmp.path().join("projects"));
     drop(db);
 
     let output = tmp.path().join("claude-report.json");
@@ -264,6 +295,124 @@ fn collect_fails_closed_on_null_efficiency_and_writes_no_artifact() {
         "error must name the reindex remedy: {err}"
     );
     assert!(!output.exists(), "no artifact may be written on the fail-closed path");
+}
+
+/// THE headline regression: an ARCHIVED session that has been priced is counted in the window, and
+/// its spend is in `totals.spend-usd`. Excluding archived rows dropped 199 of June's 558 rows on
+/// `desk.lan`, most of a 51.8% undercount against settled Analytics ground truth.
+///
+/// BITES: set `include_archived: false` back in `run_collect`'s `Filters` and the archived session
+/// vanishes from both the count and the spend.
+#[test]
+fn collect_counts_an_archived_but_priced_session() {
+    let tmp = TempDir::new().unwrap();
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    // A live, priced session.
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
+    );
+    // An archived, priced session: live transcript gone, staged copy present.
+    insert_indexed_staged_only(
+        &db,
+        SID_B,
+        "2026-06-16T10:00:00Z",
+        usage(1000, 500, 0),
+        &tmp.path().join("staged"),
+    );
+    db.reconcile_archived().unwrap();
+    drop(db);
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T23:59:59Z",
+        false,
+    );
+    run(&cfg).unwrap();
+
+    let report: Report = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(report.totals.sessions, 2, "the archived session is counted");
+    assert!(
+        report.sessions.contains_key(SID_B),
+        "the archived session has a row: {:?}",
+        report.sessions.keys().collect::<Vec<_>>()
+    );
+    // Its spend is real, and dominates: SID_B carries 100x SID_A's tokens.
+    let archived_spend = report.sessions[SID_B].spend_usd.unwrap();
+    let live_spend = report.sessions[SID_A].spend_usd.unwrap();
+    assert!(archived_spend > live_spend, "the archived row's spend is counted");
+    assert!(report.totals.spend_usd >= archived_spend + live_spend - 0.01);
+    // Its paths point at the STAGED copy, the bytes actually read, not the reaped live location.
+    let paths = &report.sessions[SID_B].jsonl_paths;
+    assert_eq!(paths.len(), 1, "the staged parent transcript: {paths:?}");
+    assert!(
+        paths[0].starts_with(tmp.path().join("staged")),
+        "jsonl_paths must name readable bytes: {paths:?}"
+    );
+    // Nothing was excluded, so there is no unrecoverable disclosure.
+    assert!(
+        !report.notes.iter().any(|n| n.contains("unrecoverable")),
+        "notes: {:?}",
+        report.notes
+    );
+}
+
+/// The unrecoverable residue: archived, unpriced, and no staged copy, so NO reindex can ever price
+/// it. Collect must exit 0, EXCLUDE the row, and STATE the count in `notes`.
+///
+/// Failing closed here would permanently brick `report collect` for the window while naming a remedy
+/// that cannot work (the 64 such rows on `desk.lan` are gone forever). Silently zero-filling would
+/// corrupt every ratio-of-sums total. Excluded-and-stated is the honest third option.
+///
+/// BITES: treat unrecoverable like not-yet-indexed and this errors instead of reporting; drop the
+/// `notes` push and a partial total ships with nothing saying it is partial -- which is exactly the
+/// May-2026 behavior where 79 real sessions rendered as `{"sessions": 0, "spend-usd": 0.0}`, exit 0.
+#[test]
+fn collect_excludes_and_discloses_an_unrecoverable_row() {
+    let tmp = TempDir::new().unwrap();
+    let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
+    insert_indexed(
+        &db,
+        SID_A,
+        "2026-06-15T10:00:00Z",
+        usage(10, 5, 0),
+        &Outcomes::default(),
+    );
+    // NULL efficiency AND no bytes anywhere: `/tmp/<sid>.jsonl` does not exist and nothing is staged.
+    db.upsert_session(&parsed(SID_B, "2026-06-16T10:00:00Z"), "desk")
+        .unwrap();
+    db.reconcile_archived().unwrap();
+    drop(db);
+
+    let output = tmp.path().join("claude-report.json");
+    let cfg = collect_config(
+        &tmp.path().join("sessions.db"),
+        &output,
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T23:59:59Z",
+        false,
+    );
+    run(&cfg).expect("an unrecoverable row must not fail the run: no reindex can fix it");
+
+    let report: Report = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(report.totals.sessions, 1, "the unrecoverable row is excluded");
+    assert!(!report.sessions.contains_key(SID_B));
+    let disclosure = report
+        .notes
+        .iter()
+        .find(|n| n.contains("unrecoverable"))
+        .expect("the exclusion must be STATED in notes, never silent");
+    assert!(disclosure.contains('1'), "the note names the count: {disclosure}");
+    assert!(
+        disclosure.contains("PARTIAL"),
+        "the note says the total is partial: {disclosure}"
+    );
 }
 
 /// An empty window (zero sessions) is a VALID empty v2 artifact, exit 0 -- distinct from the

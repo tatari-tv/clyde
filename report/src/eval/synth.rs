@@ -381,7 +381,7 @@ pub fn build(kind: Kind, pricing: &Pricing) -> Result<Report> {
         Kind::MediumPrior => medium_prior(&mut rng, pricing),
         Kind::Pathological => pathological(&mut rng, pricing),
     };
-    let mut report = build_report(&sessions, since, until, HOST, pricing, true, false)?;
+    let mut report = build_report(&sessions, since, until, HOST, pricing, true, false, &[])?;
     // Freeze the clock (see `GENERATED`). Parsing a const is infallible in practice; a broken const
     // would be caught by `tests::generated_const_parses`.
     report.generated = ts(GENERATED);
