@@ -10,7 +10,7 @@
 //! derived values. `extract`/`fold` populate and union these; `metrics` never touches the
 //! filesystem.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use claude_pricing::{AssistantEntry, Pricing, TokenUsage};
@@ -126,6 +126,21 @@ pub struct RawCounters {
     pub by_skill: BTreeMap<String, WorkloadCost>,
     /// Tokens/`$` grouped by `attributionMcpTool`.
     pub by_mcp_tool: BTreeMap<String, WorkloadCost>,
+    /// Models this scope's turns named that the EMBEDDED feed could not price, so their tokens
+    /// contributed $0 to `cost_usd`. Populated only for turns carrying non-zero tokens: a zero-token
+    /// unpriced model (`<synthetic>`) costs $0 correctly and is dropped here exactly as
+    /// `report::has_tokens` drops it, so the two paths agree on what counts as a real gap.
+    ///
+    /// `#[serde(default)]` so an `efficiency_json` blob written before this field existed
+    /// deserializes to an empty set. That is why this phase takes NO `SCHEMA_VERSION` bump: the set
+    /// would be empty on every existing row anyway (see the design's Resolved Decisions).
+    ///
+    /// Deliberately NOT unioned into report's `untracked_models`: this set is computed against the
+    /// embedded feed at reindex time, while report prices against a FETCHED feed at read time
+    /// (`common/src/metrics.rs` documents that split), so a model unpriced here and priced by the
+    /// live feed would be named untracked in an artifact that priced it correctly.
+    #[serde(default)]
+    pub unpriced_models: BTreeSet<String>,
 }
 
 /// The pricing source efficiency's catalog reindex path prices against -- ALWAYS
@@ -139,6 +154,20 @@ pub struct RawCounters {
 fn embedded_pricing() -> &'static Pricing {
     static PRICING: OnceLock<Pricing> = OnceLock::new();
     PRICING.get_or_init(Pricing::embedded)
+}
+
+/// Does this turn carry any tokens at all? The same predicate as `report::has_tokens` (which reads
+/// `TokenTotals::total`, itself the sum of these five fields), stated over the pre-aggregation
+/// `TokenUsage` shape because [`RawCounters::add_usage`] decides per turn, before anything is folded.
+/// The two definitions must agree: that agreement is what makes `unpriced-models` and report's
+/// `untracked_models` count the same thing as a real pricing gap.
+fn usage_has_tokens(usage: &TokenUsage) -> bool {
+    usage.input_tokens
+        + usage.output_tokens
+        + usage.cache_read_tokens
+        + usage.cache_5m_write_tokens
+        + usage.cache_1h_write_tokens
+        != 0
 }
 
 impl RawCounters {
@@ -170,10 +199,27 @@ impl RawCounters {
         self.by_model.entry(model.to_string()).or_default().add(usage);
         // Shared with `report` via `common::metrics::price` (Phase 1); `pricing` here is always
         // `embedded_pricing()`, never a fetched feed -- see that function's doc for why.
-        let cost = common::metrics::price(model, usage, embedded_pricing()).unwrap_or_else(|| {
-            warn!("metrics::add_usage: unpriced model `{model}`, contributing $0 to cost_usd");
-            0.0
-        });
+        // An unpriced model is DISCLOSED, not just logged. The bare `unwrap_or_else(|| 0.0)` this
+        // replaces laundered the failure into a $0 that reads as a real price on every surface that
+        // consumes the blob's `cost-usd` (`clyde efficiency session`, `--narrate`, MCP
+        // `session_efficiency`) and into the indexed-but-unread `cost_usd` column any future ranking
+        // feature would trust. `cost::oracle` is the in-house precedent for matching this call rather
+        // than `.ok()`-ing it.
+        //
+        // The insert is gated on the turn carrying tokens, mirroring `report::has_tokens`: a
+        // zero-token unpriced model (`<synthetic>`, measured at 72 rows all-zero) contributes $0
+        // CORRECTLY and is not a gap. Recording it would make the set noise on every host and hide
+        // the one case it exists to surface.
+        let cost = match common::metrics::price(model, usage, embedded_pricing()) {
+            Some(cost) => cost,
+            None => {
+                warn!("metrics::add_usage: unpriced model `{model}`, contributing $0 to cost_usd");
+                if usage_has_tokens(usage) {
+                    self.unpriced_models.insert(model.to_string());
+                }
+                0.0
+            }
+        };
         self.cost_usd += cost;
         cost
     }
@@ -220,6 +266,9 @@ impl RawCounters {
         for (tool, wc) in &other.by_mcp_tool {
             self.by_mcp_tool.entry(tool.clone()).or_default().merge(wc);
         }
+        // A set union, which is the additive operation for a set: the aggregate discloses every model
+        // ANY scope failed to price, so a gap in a subagent cannot vanish from the whole-session view.
+        self.unpriced_models.extend(other.unpriced_models.iter().cloned());
     }
 }
 

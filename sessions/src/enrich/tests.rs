@@ -14,6 +14,7 @@ use crate::llm::{Completer, LlmEnrichment};
 const WORK_CWD: &str = "/home/saidler/repos/tatari-tv/marquee";
 const PERSONAL_CWD: &str = "/home/saidler/repos/scottidler/loopr";
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
+const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
 
 fn dt(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
@@ -103,6 +104,7 @@ fn parsed_record(dir: &Path, id: &str, cwd: &str, parent: &Path) -> ParsedSessio
         model: Some("claude-opus-4-8".into()),
         n_msgs: 4,
         created: Some(dt("2026-06-20T10:00:00Z")),
+        activity_at: None,
         modified: dt("2026-06-21T10:00:00Z"),
         body: "indexed body".into(),
         jsonl_paths: vec![parent.to_path_buf()],
@@ -511,4 +513,185 @@ fn raising_max_attempts_recovers_rows_sitting_at_the_cap() {
 /// how attempts are really spent.
 fn db_record_failure(db: &Db, id: &str) {
     db.record_enrich_failure(id, "work", "simulated").unwrap();
+}
+
+/// A `cwd`-hostile session -- no `repos/<org>` anchor at all -- is the whole cohort item A is about.
+/// Under the cwd-only rule it classified personal and got 0% enrichment coverage. With the catalog's own
+/// repo evidence in hand it is classified WORK and enriched, end to end through the real pass.
+///
+/// BITES: revert `sessions::enrich` to `session::classify` and this session goes back to
+/// `skipped_personal` with `fake.calls() == 0`.
+#[test]
+fn an_unanchored_cwd_with_unanimous_work_evidence_is_enriched() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "we set up the marquee bucket in us-east-1");
+    let db = Db::open_memory().unwrap();
+    // The cohort's shape: a cwd with no `repos/<org>` anchor, so `classify` cannot place it.
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+    set_scope_evidence(&db, UUID_A, &[("tatari-tv/marquee", 3)], 3);
+
+    let fake = Fake::ok(&["terraform", "s3"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(stats.enriched, 1, "the evidence places the session: {stats:?}");
+    assert_eq!(stats.skipped_personal, 0);
+    assert_eq!(fake.calls(), 1);
+    let rec = db.get(UUID_A).unwrap().unwrap();
+    assert_eq!(rec.summary.as_deref(), Some("a durable summary"));
+}
+
+/// The mixed session (`2b163b4e` in the measured cohort: `scottidler/claude | tatari-tv/terraform-modules`)
+/// stays personal and its body never reaches the work account. This is the unanimity rule doing the work
+/// it exists for, on the shape that is actually present in the live catalog.
+#[test]
+fn an_unanchored_cwd_with_a_mixed_touch_set_stays_personal() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "mixed personal and work content");
+    let db = Db::open_memory().unwrap();
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+    set_scope_evidence(
+        &db,
+        UUID_A,
+        &[("tatari-tv/terraform-modules", 2), ("scottidler/claude", 1)],
+        3,
+    );
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(
+        fake.calls(),
+        0,
+        "one personal repo in the set refuses the whole session"
+    );
+    assert_eq!(stats.skipped_personal, 1);
+    assert!(db.get(UUID_A).unwrap().unwrap().summary.is_none());
+    // Decided WITH evidence, so the skip is SETTLED: a second pass does not reconsider it. This is the
+    // observable form of "the current scope_version was recorded" (the column itself is asserted in
+    // `db/tests/scope.rs`, which can reach the connection).
+    let second = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        second.considered, 0,
+        "an evidence-backed personal skip is not reconsidered: {second:?}"
+    );
+}
+
+/// The fail-open the review panel caught, exercised through the real pass: 3 files edited, only 1
+/// attributed (the other 2 were outside `repo_root` and silently dropped by `repos_touched`). Without the
+/// totality check this session -- personal content and all -- would have been sent to the work account.
+#[test]
+fn an_unaccounted_for_edit_keeps_the_session_off_the_work_account() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "notes about taxes plus one work file");
+    let db = Db::open_memory().unwrap();
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+    set_scope_evidence(&db, UUID_A, &[("tatari-tv/philo", 1)], 3);
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(fake.calls(), 0, "unanimity over a FILTERED set is not unanimity");
+    assert_eq!(stats.skipped_personal, 1);
+}
+
+/// The evidence-availability failure the panel caught, end to end. With NO `outcome_json` (a catalog that
+/// has never run a full `clyde session reindex`, which is every teammate's on day one), the decision is
+/// PROVISIONAL: the row is skipped personal but records no `scope_version`, so it is still a candidate on
+/// the next pass. Once the evidence lands, the same pass classifies it work.
+///
+/// BITES: record `Some(SCOPE_VERSION)` on the evidence-free skip and the second pass finds 0 candidates,
+/// so the row stays personal until the next const bump. That is the "ships and changes nothing on exactly
+/// the host it exists for" failure.
+#[test]
+fn an_evidence_free_skip_is_provisional_and_self_heals_on_the_next_pass() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "we set up the marquee bucket in us-east-1");
+    let db = Db::open_memory().unwrap();
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+
+    // Pass 1: no evidence at all -> personal, and deliberately no recorded classifier version.
+    let fake = Fake::ok(&["x"]);
+    let first = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(first.skipped_personal, 1);
+    assert_eq!(fake.calls(), 0);
+
+    // The full reindex lands the evidence. Pass 2 reconsiders the row and gets it right.
+    set_scope_evidence(&db, UUID_A, &[("tatari-tv/marquee", 3)], 3);
+    let fake2 = Fake::ok(&["terraform"]);
+    let second = enrich(&db, Some(&fake2), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        second.considered, 1,
+        "the provisional row is still a candidate: {second:?}"
+    );
+    assert_eq!(second.enriched, 1);
+    assert_eq!(fake2.calls(), 1);
+}
+
+/// Write an `outcome_json` carrying repo evidence, as `efficiency::reindex_efficiency` does.
+fn set_scope_evidence(db: &Db, session_id: &str, repos: &[(&str, u64)], files_edited: u64) {
+    let touched: serde_json::Map<String, serde_json::Value> = repos
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), serde_json::json!(v)))
+        .collect();
+    let outcome = serde_json::json!({ "repos-touched": touched, "files-edited": files_edited }).to_string();
+    db.set_efficiency_many(&[crate::db::EfficiencyWrite {
+        session_id,
+        efficiency_json: r#"{"session-id":"x","aggregate":{}}"#,
+        cache_read_share: None,
+        tool_errors: 0,
+        cost_usd: 0.0,
+        outcome_json: &outcome,
+    }])
+    .unwrap();
+}
+
+/// A session that EDITED NOTHING is settled after one pass, not reconsidered forever.
+///
+/// `Db::scope_evidence` returns an empty `repos_touched` in two different states: no evidence stored
+/// yet (provisional), and evidence stored recording zero edits (settled). Keying the provisional rule
+/// on emptiness conflates them, so a zero-edit session's `scope_version` stays NULL forever, the
+/// widened predicate re-offers it every pass, and `record_enrich_skip`'s bare UPDATE bumps the export
+/// revision each time. Zero-edit sessions are common, so that is permanent cursor churn across a large
+/// set of rows.
+///
+/// Asserted through the REAL orchestrator, because that is where the gate lives. An earlier version of
+/// this test called `Db::scope_evidence` and `Db::record_enrich_skip` directly and therefore did not
+/// bite when the gate was reverted.
+///
+/// BITES: change the gate back to `(!evidence.repos_touched.is_empty())` and the second pass reports
+/// `considered: 1` instead of 0, forever.
+#[test]
+fn a_zero_edit_session_is_settled_after_one_pass() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "a read-only question and answer session");
+    let db = Db::open_memory().unwrap();
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+    // Evidence IS stored and records zero edits: the efficiency pass ran, this session edited nothing.
+    set_scope_evidence(&db, UUID_A, &[], 0);
+
+    let fake = Fake::ok(&["x"]);
+    let first = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(first.considered, 1, "the row is a candidate on the first pass");
+    assert_eq!(first.skipped_personal, 1, "no work evidence, so it is personal");
+    assert_eq!(fake.calls(), 0);
+
+    // The decision was made WITH evidence, so it is settled: no later pass reconsiders it, which is
+    // what stops both the pointless re-skip and the export-cursor churn it would cause.
+    let second = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        second.considered, 0,
+        "a zero-edit session with stored evidence must be settled, not reconsidered: {second:?}"
+    );
+
+    // Contrast: with NO evidence stored at all, the row IS provisional and stays a candidate.
+    let db2 = Db::open_memory().unwrap();
+    let parent2 = write_transcript(tmp.path(), UUID_B, "same shape, but never reindexed");
+    insert(&db2, tmp.path(), UUID_B, "/home/saidler/notes", &parent2);
+    let p1 = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(p1.skipped_personal, 1);
+    let p2 = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        p2.considered, 1,
+        "an evidence-FREE decision stays provisional and is reconsidered: {p2:?}"
+    );
 }

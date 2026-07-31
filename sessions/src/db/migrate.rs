@@ -23,14 +23,44 @@ use super::{SCHEMA_SQL, SCHEMA_VERSION, V5_TRIGGERS_SQL};
 /// v10 or later (this predicate can never match again once the migration below bumps the version, so
 /// the snapshot fires exactly once per DB, ever).
 pub(super) fn snapshot_before_v10(conn: &Connection, path: &Path) -> Result<()> {
+    snapshot_before(conn, path, 10)
+}
+
+/// Snapshot the on-disk DB to `<path>.pre-v11.bak` before the v11 migration's first run. Same
+/// contract and same one-shot guarantee as [`snapshot_before_v10`], gated on a PRE-migration
+/// `user_version` in `1..11`.
+///
+/// A DB at v10 gets BOTH a `.pre-v10.bak` (from an earlier upgrade) and a `.pre-v11.bak` (from this
+/// one); a DB coming from v9 in a single hop gets both from the same open, which is correct: each file
+/// is the state immediately before the step named on it.
+pub(super) fn snapshot_before_v11(conn: &Connection, path: &Path) -> Result<()> {
+    snapshot_before(conn, path, 11)
+}
+
+/// Snapshot the on-disk DB to `<path>.pre-v12.bak` before the v12 migration's first run. Same
+/// contract and same one-shot guarantee as [`snapshot_before_v10`], gated on a PRE-migration
+/// `user_version` in `1..12`.
+pub(super) fn snapshot_before_v12(conn: &Connection, path: &Path) -> Result<()> {
+    snapshot_before(conn, path, 12)
+}
+
+/// Copy the DB file plus any `-wal`/`-shm` sidecars to `<path>.pre-v<target>.bak`, but only when the
+/// PRE-migration `user_version` is in `1..target` -- real pre-migration state worth protecting. A
+/// brand-new catalog (`user_version == 0`, nothing written) is skipped, and so is a DB already at
+/// `target` or later, so each snapshot fires exactly once per DB, ever.
+///
+/// One implementation shared by every `snapshot_before_vN`: the copy logic is identical and only the
+/// version differs, so duplicating it per version would be four chances to get the sidecar handling
+/// subtly different.
+fn snapshot_before(conn: &Connection, path: &Path, target: i64) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    debug!("snapshot_before_v10: pre-migration user_version={version}");
-    if !(1..10).contains(&version) || !path.exists() {
+    debug!("snapshot_before: target=v{target} pre-migration user_version={version}");
+    if !(1..target).contains(&version) || !path.exists() {
         return Ok(());
     }
-    let snapshot = PathBuf::from(format!("{}.pre-v10.bak", path.display()));
+    let snapshot = PathBuf::from(format!("{}.pre-v{target}.bak", path.display()));
     debug!(
-        "snapshot_before_v10: snapshotting {} -> {}",
+        "snapshot_before: snapshotting {} -> {}",
         path.display(),
         snapshot.display()
     );
@@ -95,6 +125,10 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
     // invalidate the efficiency/outcome blobs so `Outcomes::repos_touched` (rule 3's input, new in
     // this version) is computed for every session. Idempotent; the reset is version-gated.
     migrate_v10_repo(&tx, version)?;
+    // v11: add the parse-derived `activity_at` / `parse_version` columns. Column-add only, no reset.
+    migrate_v11_activity(&tx)?;
+    // v12: add `scope_version`. Its OWN step, never appended to v11's: see the function's doc.
+    migrate_v12_scope(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -346,6 +380,48 @@ fn migrate_v10_repo(conn: &Connection, from_version: i64) -> Result<()> {
     conn.execute_batch(V5_TRIGGERS_SQL)
         .context("v10: restore the revision UPDATE trigger")?;
     debug!("migrate_v10_repo: invalidated efficiency+outcomes on {reset} rows (updated_at unchanged)");
+    Ok(())
+}
+
+/// Apply the schema v11 extension inside the caller's migration transaction: `activity_at` (MAX
+/// message timestamp, real activity time) and `parse_version` (the gate that drains its own backfill).
+/// Both default to `NULL`.
+///
+/// Idempotent (`ensure_column` probes `pragma_table_info`) and safe to run on every migration.
+///
+/// **No invalidation, deliberately, unlike v7 through v10.** Those steps NULLed `efficiency_json`
+/// because the efficiency SHAPE changed and the stored blobs were a field short. Nothing about the
+/// blobs changed here, and NULLing them would force a full recompute that re-reads every transcript in
+/// the catalog to populate two columns the reindex already has in hand.
+///
+/// Nor is there a SQL backfill: no query can compute `activity_at`, because the value exists only in
+/// the JSONL. `session::PARSE_VERSION` is what makes the fill happen exactly once -- every existing
+/// row has `parse_version IS NULL`, so `Db::upsert_session` reports it `Backfilled`, the caller fills
+/// it through `Db::set_activity_many`, and the row is skipped from then on.
+fn migrate_v11_activity(conn: &Connection) -> Result<()> {
+    debug!("migrate_v11_activity: add activity_at + parse_version (column-add only, no reset)");
+    ensure_column(conn, "sessions", "activity_at", "TEXT")?;
+    ensure_column(conn, "sessions", "parse_version", "INTEGER")?;
+    Ok(())
+}
+
+/// Apply the schema v12 extension inside the caller's migration transaction: `scope_version`, the
+/// classifier version a row's stored `scope` was decided at. Defaults to `NULL`, which is what makes
+/// every existing row eligible for one re-evaluation by the widened classifier.
+///
+/// Idempotent (`ensure_column` probes `pragma_table_info`) and safe to run on every migration. No
+/// invalidation: `scope` itself is still whatever it was, and re-deciding it is `clyde session
+/// enrich`'s job, gated by `Db::enrich_candidates`' predicate.
+///
+/// **Its own step, deliberately NOT appended to `migrate_v11_activity`.** [`migrate`] returns early
+/// once `user_version >= SCHEMA_VERSION`, so a column added to the v11 step AFTER a host has already
+/// migrated to v11 is never created there: the host would carry v11's columns, skip the ladder
+/// entirely, and every query naming `scope_version` would fail. Since these phases are independently
+/// shippable and may land separately, that host is a real one. One `SCHEMA_VERSION` bump per
+/// schema-touching change is what keeps them independent.
+fn migrate_v12_scope(conn: &Connection) -> Result<()> {
+    debug!("migrate_v12_scope: add scope_version (column-add only, no reset)");
+    ensure_column(conn, "sessions", "scope_version", "INTEGER")?;
     Ok(())
 }
 

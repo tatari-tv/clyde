@@ -13,15 +13,40 @@ tasks:
       whitespace -r
       echo ""
       echo "=== Deny _variable binding pattern ==="
-      if grep -rn --include='*.rs' -P '(\blet\s+(mut\s+)?|[(,]\s*|\|\s*|\bfor\s+)_[a-zA-Z]' */src/; then
-        echo ""
-        echo "❌ Found _variable binding pattern."
-        echo "   Use _ to discard or use the variable, never _varname."
-        exit 1
-      fi
-      echo "✅ No _variable patterns found"
+      # Scope is the whole tree with only `target` excluded, matching the em-dash lint below. The
+      # narrow `*/src/` form this replaces never walked `*/tests/` or `*/build.rs`, and a lint
+      # narrower than the rule is a hole the tree drifts back through where CI cannot see it.
+      #
+      # Status is checked EXPLICITLY, never via `if grep ...`. grep exits 0 on a match, 1 on no
+      # match, 2+ on an error, and 127 when the binary is missing; a bare `if` reads every non-zero
+      # exit as "clean". That is the exact fail-open that made the em-dash lint below a no-op in CI
+      # from the day it landed, caught on PR #78 by the status check this one copies.
+      #
+      # Drop-guard carve-out, deliberately absent: `rules/rust.md` permits `let _guard = ...` for an
+      # RAII guard whose whole purpose is `Drop`, and this pattern rejects that form. Zero such
+      # bindings exist in the tree today. If one is ever added, WIDEN THIS LINT to admit it. Do not
+      # rename the binding to satisfy a lint that is narrower than the rule it enforces.
+      var_status=0
+      grep -rn --include='*.rs' --exclude-dir=target -P '(\blet\s+(mut\s+)?|[(,]\s*|\|\s*|\bfor\s+)_[a-zA-Z]' . || var_status=$?
+      case "$var_status" in
+        0)
+          echo ""
+          echo "❌ Found _variable binding pattern."
+          echo "   Use _ to discard or use the variable, never _varname."
+          exit 1
+          ;;
+        1)
+          echo "✅ No _variable patterns found"
+          ;;
+        *)
+          echo ""
+          echo "❌ grep exited $var_status scanning for _variable patterns (not 0=found / 1=clean)."
+          echo "   The scan did not complete, so this is a lint FAILURE, not a pass."
+          exit 1
+          ;;
+      esac
       echo ""
-      echo "=== Deny em dash in Rust source ==="
+      echo "=== Deny em dash in Rust source and slot templates ==="
       # `grep`, NOT `rg`: ripgrep is NOT installed on the CI runner, and the first version of this
       # lint used it. `rg: command not found` exits 127, which an `if rg ...; then` reads as
       # "no match", so the lint printed its success line having scanned NOTHING. It was a no-op in
@@ -33,24 +58,29 @@ tasks:
       # depend on the runner's locale. The raw-byte form `\xe2\x80\x94` was tried first and matches
       # NOTHING under -P, which is why the pattern is written this way.
       # Scope stays the whole tree with only `target` excluded: 17 of the 369 original occurrences
-      # lived in `*/tests/`, which the sibling `*/src/` lint above never walks. A lint narrower than
-      # the rule is a hole the tree drifts back through where CI cannot see it.
+      # lived in `*/tests/`, which the sibling lint above used to miss and now covers too.
+      #
+      # `*.pmt` is scanned alongside `*.rs` because the 5 slot templates
+      # (`report/templates/slots/*.pmt`) are compiled in via `include_str!` and sent verbatim to a
+      # model, so an em dash in one reaches the same place an em dash in a Rust string literal would.
+      # `--include='*.rs'` alone cannot see them. `report/src/render/slots/tests.rs` also asserts
+      # `!prompt.contains('\u{2014}')` per slot: prompts that go to a model get both checks.
       #
       # Status is checked EXPLICITLY, never via `if grep ...`. grep exits 0 on a match, 1 on no
       # match, and 2+ on an error (and 127 if the binary is missing). A bare `if` treats every
       # non-zero as "clean", which is the fail-open this comment exists to document.
       em_status=0
-      grep -rn --include='*.rs' --exclude-dir=target -P '\x{2014}' . || em_status=$?
+      grep -rn --include='*.rs' --include='*.pmt' --exclude-dir=target -P '\x{2014}' . || em_status=$?
       case "$em_status" in
         0)
           echo ""
-          echo "❌ Found em dash in Rust source."
+          echo "❌ Found em dash in Rust source or slot template."
           echo "   Use --, a colon, parens, or split the sentence (rules/voice.md)."
           echo "   To assert an em dash is ABSENT, write '\\u{2014}' rather than the literal."
           exit 1
           ;;
         1)
-          echo "✅ No em dashes in Rust source"
+          echo "✅ No em dashes in Rust source or slot templates"
           ;;
         *)
           echo ""

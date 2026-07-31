@@ -38,6 +38,12 @@ pub struct PersistStats {
     /// Candidates with NO readable transcript, live or staged: nothing left to price, ever.
     /// Reported so `computed < candidates` is never a silent delta.
     pub unrecoverable: usize,
+    /// Of the computed sessions, those whose aggregate names at least one model the embedded feed
+    /// could not price (`RawCounters::unpriced_models` non-empty). Every one of those sessions has a
+    /// `cost_usd` that is LOW by an unknown amount, so this is the count of catalog rows whose
+    /// dollars cannot be trusted. Zero-token unpriced models are excluded upstream, so a non-zero
+    /// count here always means real tokens went unpriced.
+    pub unpriced: usize,
 }
 
 /// One computed session's efficiency + outcomes in owned form, so the borrowing [`EfficiencyWrite`]s
@@ -125,10 +131,15 @@ pub fn reindex_efficiency(db: &Db, config: &EfficiencyConfig, repo_root: &Path) 
         computed: collected.sessions.len(),
         written,
         unrecoverable: collected.unrecoverable.len(),
+        unpriced: collected
+            .sessions
+            .iter()
+            .filter(|cs| !cs.efficiency.aggregate.raw.unpriced_models.is_empty())
+            .count(),
     };
     info!(
-        "reindex_efficiency: candidates={} computed={} written={} unrecoverable={} (updated_at unchanged)",
-        stats.candidates, stats.computed, stats.written, stats.unrecoverable
+        "reindex_efficiency: candidates={} computed={} written={} unrecoverable={} unpriced={} (updated_at unchanged)",
+        stats.candidates, stats.computed, stats.written, stats.unrecoverable, stats.unpriced
     );
     Ok(stats)
 }

@@ -27,19 +27,25 @@ fn stage_dormant_filters_by_cutoff_and_records_path() {
 
     let proj_a = projects.join("-home-saidler-repos-a");
     let proj_b = projects.join("-home-saidler-repos-b");
+    // Dormancy is measured from ACTIVITY time (schema v11), so the two sessions are distinguished by
+    // their message timestamps, not by file mtime. Both timestamps are now-relative: a hardcoded date
+    // is a fresh session only until the calendar passes it, and this test's whole point is a 7-day
+    // cutoff. A: last spoke 30 days ago (dormant). B: 1 hour ago (fresh).
     write(
         &proj_a.join(format!("{UUID_A}.jsonl")),
-        &session_line("2026-06-21T10:00:00Z"),
+        &session_line(&(Utc::now() - Duration::days(30)).to_rfc3339()),
     );
     write(
         &proj_b.join(format!("{UUID_B}.jsonl")),
-        &session_line("2026-06-21T10:00:00Z"),
+        &session_line(&(Utc::now() - Duration::hours(1)).to_rfc3339()),
     );
 
     let db = Db::open_memory().unwrap();
     reindex(&db, &projects, &repo_root).unwrap();
 
-    // Make session A look dormant (old mtime) and B fresh, by setting file mtimes then reindexing.
+    // Age A's file mtime too, so the row is dormant by BOTH clocks. B keeps a fresh mtime AND a fresh
+    // activity time, so it is fresh either way: this test is about the cutoff filter, and the
+    // mtime-vs-activity divergence has its own tests in `db/tests`.
     set_old_mtime(&proj_a.join(format!("{UUID_A}.jsonl")), Duration::days(30));
     reindex(&db, &projects, &repo_root).unwrap();
 

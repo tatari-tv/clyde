@@ -1032,12 +1032,17 @@ fn msgs_column_width(counts: impl Iterator<Item = i64>) -> usize {
 /// documents to stdout, which is not valid JSON a consumer can parse in one read.
 fn print_reindex(reindex: &ReindexStats, stage: &StageStats, eff: &efficiency::PersistStats) {
     if std::io::stdout().is_terminal() {
+        // `backfilled` is its own count, not folded into `upserted`: those rows' transcripts did not
+        // change at all, only a previously-unstored parse-derived column (`activity_at`) was filled.
+        // Reporting it separately is what makes a one-time v11 backfill run legible instead of looking
+        // like a mass content change.
         println!(
-            "{} scanned {}, upserted {}, skipped {}, archived {}",
+            "{} scanned {}, upserted {}, skipped {}, backfilled {}, archived {}",
             "✓".green(),
             reindex.scanned,
             reindex.upserted,
             reindex.skipped_unchanged,
+            reindex.backfilled,
             reindex.archived,
         );
         // `unrecoverable` is printed unconditionally, not only when non-zero: it is the accounting
@@ -1055,13 +1060,19 @@ fn print_reindex(reindex: &ReindexStats, stage: &StageStats, eff: &efficiency::P
             stage.up_to_date,
             stage.files_copied,
         );
+        // `unpriced` is printed unconditionally for the same reason `unrecoverable` is: it is a
+        // standing ledger line, and a count that appears only when non-zero reads as an error rather
+        // than as accounting. A non-zero value names sessions whose stored `cost_usd` is LOW because
+        // the embedded feed could not price a model their turns actually used; the model ids
+        // themselves are in each session's blob (`clyde efficiency session <id>`).
         println!(
-            "{} efficiency: candidates {}, computed {}, written {}, unrecoverable {}",
+            "{} efficiency: candidates {}, computed {}, written {}, unrecoverable {}, unpriced {}",
             "✓".green(),
             eff.candidates,
             eff.computed,
             eff.written,
             eff.unrecoverable,
+            eff.unpriced,
         );
     } else {
         print_json(&serde_json::json!({ "reindex": reindex, "staging": stage, "efficiency": eff }));

@@ -1,0 +1,548 @@
+# Implementation Notes: Close the Open Register
+
+Running record of decisions, deviations, tradeoffs, and open questions while executing
+`docs/design/2026-07-31-close-the-open-register.md`. Append-only: a later entry supersedes an earlier
+one rather than rewriting it.
+
+## Phase 1: Widen both lints and kill the fail-open (E + F)
+
+### Design decisions
+
+- **The widened `_variable` lint got the em-dash lint's full comment treatment, not just its status
+  shape** (`.otto.yml`, `lint` task). The plan said "copy the explicit status shape verbatim from
+  `:42-61`"; the copy also carries a scope rationale and the drop-guard note the plan asked for, so a
+  reader of either block finds the same three facts (why the scope is the whole tree, why the status
+  is checked explicitly, what to do when the pattern is wrong). Two lints that behave identically now
+  read identically.
+- **The em-dash lint's user-facing strings were retitled, not left alone** (`.otto.yml`, `lint`
+  task). Adding `--include='*.pmt'` made `=== Deny em dash in Rust source ===`, `❌ Found em dash in
+  Rust source.`, and `✅ No em dashes in Rust source` all understate what the scan covers. They now
+  say "Rust source and slot templates" / "Rust source or slot template". House rule: names tell the
+  truth. AC1's recorded pre-state quotes the old success line, which is a pre-state observation, not
+  a post-condition.
+- **`var_status` is the new variable name**, mirroring `em_status`, so the two `case` blocks are
+  symmetric.
+
+### Deviations
+
+- None. All five plan bullets landed as specified: `.` plus `--exclude-dir=target` on the
+  `_variable` scan, the explicit status `case`, `--include='*.pmt'` on the em-dash scan, the
+  `report/src/render/slots/tests.rs:531` assertion left in place, and the drop-guard comment.
+
+### Tradeoffs
+
+- **`--include='*.pmt'` on the existing em-dash `grep` vs. a second scan for templates.** One `grep`
+  with two `--include` filters keeps one status `case` and one pass over the tree; a separate scan
+  would need its own status block and could drift from the first. Cost: the failure message cannot
+  name which of the two file kinds matched, so it names both. `grep -rn` prints the offending path on
+  the line above, so the operator is not actually left guessing.
+- **Widening the `_variable` scan to `.` vs. enumerating `*/src/ */tests/ */build.rs`.** The
+  enumeration is narrower and would need editing every time a crate grows a new top-level target;
+  `.` plus `--exclude-dir=target` is what the em-dash lint already does and needs no maintenance.
+  Measured zero new violations either way.
+
+### Open questions
+
+- None.
+
+### Success criteria, executed
+
+- `otto lint` exits **0** unchanged, printing `✅ No _variable patterns found` and `✅ No em dashes
+  in Rust source or slot templates`.
+- Planting `fn _plant() { let _foo = 1; }` in `clyde/tests/collect.rs` makes `otto lint` exit **1**
+  with `❌ Found _variable binding pattern.`; `git checkout` of that file restores **0**. This is the
+  half the old `*/src/` scope could not see.
+- Planting an em dash in `report/templates/slots/closing.pmt` makes `otto lint` exit **1** with
+  `❌ Found em dash in Rust source or slot template.`; restoring the file returns **0**.
+- Full `otto ci` exits **0**.
+
+## Phase 2: Stop laundering an unpriceable model into $0 (D)
+
+### Design decisions
+
+- **`usage_has_tokens` is a named free function in `efficiency/src/metrics.rs`, not an inline
+  comparison.** The plan said "gate the insert on the turn carrying non-zero tokens" and pointed at
+  `report::has_tokens` for the definition. `has_tokens` reads `TokenTotals::total`, which does not
+  exist yet at the point `add_usage` decides (it decides per turn, on a raw `TokenUsage`), so the
+  predicate is restated over the pre-aggregation shape with a doc comment naming the pairing. The two
+  definitions agreeing is the whole reason `unpriced-models` and report's `untracked_models` count the
+  same thing as a real gap, so it is stated once and named rather than open-coded.
+- **`add_usage` now `match`es the `Option` instead of `unwrap_or_else`.** `unwrap_or_else` cannot
+  carry a second statement cleanly, and the design named `cost/src/oracle.rs:326` as the in-house
+  precedent for matching this call rather than `.ok()`-ing it. The `warn!` is preserved verbatim.
+- **`clyde efficiency session` and MCP `session_efficiency` needed NO code change.** The plan listed
+  "surface it in the `clyde efficiency session` rendering" as its own bullet, which implied an edit.
+  Measured: `efficiency/src/output.rs`'s `SessionJson` borrows `&EfficiencySignals` whole and
+  `render` emits YAML or JSON with no hand-rolled human table anywhere, so a new `RawCounters` field
+  appears on that surface the moment it is on the struct, exactly as the plan already predicted for
+  MCP. Verified by `reindex_discloses_and_counts_a_session_whose_model_could_not_be_priced`, which
+  asserts the field in the persisted blob those surfaces pass through.
+- **`efficiency/src/narrate.rs` was left alone.** Correction 1 names `--narrate` as a consumer of the
+  blob's `cost-usd`, but no Phase 2 bullet asks for a narrate change, and the narrator's foreign-number
+  check (`narrate_rejects_prose_that_invents_a_number`) makes feeding it a new set a design question
+  of its own. Out of scope for this phase, and flagged here rather than done quietly.
+
+### Deviations
+
+- **The three committed report fixtures were regenerated**, which no plan bullet mentions.
+  `fixtures/report/{small,medium,pathological}/report.json` and `medium/prior.json` embed each
+  session's efficiency blob verbatim at `sessions.<id>.efficiency.aggregate.raw`, so
+  `report/src/eval/tests.rs`'s `the_committed_fixtures_match_the_generator` went red the moment the
+  struct grew a field. Regenerated with the generator the test itself names
+  (`cargo run -p report --bin fixtures -- fixtures/report`). Verified additive-only: every changed
+  line is either the new `"unpriced-models": []` or a trailing comma on what used to be the last
+  field. No number moved, and no golden needed re-rendering, because `report` does not read the field.
+  This is mechanical fallout of a serialized-struct change, not a design change, and the design's
+  Non-Goal about the export contract (`EXPORT_SCHEMA_VERSION`, the `dormant` flag) is untouched.
+
+### Tradeoffs
+
+- **A `BTreeSet<String>` on `RawCounters` vs. a count.** A set names the models, so an operator can
+  act (add the model to the feed); a count would only say "some dollars are missing." Cost: the blob
+  grows by a key on every row, and `merge` gains a union. The design already specified the set; the
+  measured cost is one empty array per session in the fixtures.
+- **`unpriced` counts SESSIONS, not models.** `PersistStats::unpriced` is the number of catalog rows
+  whose dollars cannot be trusted, which is the actionable number for a reindex summary line; the model
+  ids live in each row's blob. A cross-session union of model names was considered and dropped: it
+  would be a second definition of the same thing, derivable from the blobs, and `PersistStats` is a
+  per-run ledger, not a catalog query.
+- **No `SCHEMA_VERSION` bump, per the design's Resolved Decision.** Cost: an existing row's blob keeps
+  an absent key until something else recomputes it, so `unpriced-models` is empty there by default
+  rather than by measurement. Accepted because the set would be empty on every existing row anyway
+  (all 9 measured catalog models either price or carry zero tokens), and the alternative forces a full
+  recompute of ~1,800 rows. Pinned by `blob_without_the_field_deserializes_to_an_empty_set`.
+
+### Open questions
+
+- None.
+
+### Success criteria, executed
+
+- `RawCounters` fed `claude-not-in-any-feed-9` with 1,500 tokens: the model is in `unpriced-models`,
+  the turn returns `0.0`, and `cost_usd` is unchanged from the priced control turn
+  (`unpriced_model_with_tokens_is_disclosed_and_contributes_zero`).
+- The same fed `<synthetic>` with all-zero tokens leaves `unpriced-models` **empty** while still
+  counting the turn and the model mix (`zero_token_unpriced_model_is_not_disclosed`).
+- `rg -n 'unpriced_models' --type rust -g '!target' -g '!*tests*' .` returns **5** production lines
+  (AC2 requires at least one), up from **0** on `main`.
+- Every test verified to BITE, each on its own behavior:
+  - restoring the fail-open (`if false && usage_has_tokens(..)`) fails exactly
+    `unpriced_model_with_tokens_is_disclosed_and_contributes_zero` and
+    `reindex_discloses_and_counts_a_session_whose_model_could_not_be_priced` (117 pass, 2 fail);
+  - dropping the zero-token gate (`if true || ..`) fails exactly
+    `zero_token_unpriced_model_is_not_disclosed` (118 pass, 1 fail);
+  - removing `#[serde(default)]` fails exactly
+    `blob_without_the_field_deserializes_to_an_empty_set`.
+- Full `otto ci` exits **0** (119 efficiency tests, whole workspace green).
+- AC2's second half, `clyde session reindex` printing an `unpriced` count on every run, is asserted at
+  the library seam (`reindex_populates_null_sessions_without_bumping_updated_at` pins `unpriced == 0`;
+  the new persist test pins `== 1`) and is verified at the live CLI surface during the Rollout run,
+  not mid-phase: exercising it against the real catalog writes staging copies and efficiency blobs.
+
+## Phase 3: Dormancy off activity time, not filesystem mtime (B)
+
+### Design decisions
+
+- **`SessionRecord::activity_at` is `#[serde(skip)]`, like `id`.** Found by a test, not by reading:
+  `mcp::tests::sessions_search_clamps_limit_to_hard_max` went from 100 hits to 99. Root cause, not a
+  guess: `sessions_search` caps its whole response at `SEARCH_RESPONSE_MAX_CHARS` (60,000) and drops
+  whole hits from the end when it would exceed that, so ~20 extra bytes per hit for
+  `"activity_at":null` came straight out of the hit budget. `activity_at` is an internal input to the
+  dormancy decision, read only through `dormancy_at()`; it was never part of the public/JSON surface
+  and `id` already sets the precedent for skipping such a field. This also keeps every MCP and CLI
+  JSON response byte-identical, which sits well beside the design's Non-Goal of not touching published
+  contracts.
+- **`skip_key_of` returns a named `SkipKey` struct, not the tuple the plan wrote.** The plan said
+  "widen that helper to return the stored `(modified, parse_version)` pair and rename it".
+  `Result<Option<(Option<DateTime<Utc>>, Option<i64>)>>` trips `clippy::type_complexity` under
+  `-D warnings`, and two same-typed `Option`s in a tuple are swappable at a call site. A struct fixes
+  both and matches the house rule about typed values at seams.
+- **`COLS_LEN` is a const, and both trailing-index sites derive from it.** The plan said to "bump both
+  queries' trailing indices in the same commit," which is correct but leaves the next person doing the
+  same four-site edit by hand. `map_catalog_entry` now reads `COLS_LEN + n` and `search_table` reads
+  `COLS_LEN` / `COLS_LEN + 1`, so growing `COLS` again is a two-site edit (the string and the const)
+  and the consumers follow. `COLS`'s doc comment names all four sites and which one fails silently.
+- **`snapshot_before_v10` and `snapshot_before_v11` share one `snapshot_before(conn, path, target)`
+  implementation.** The plan said "add `snapshot_before_v11` mirroring `snapshot_before_v10`". A
+  literal copy would be a second place to get the `-wal`/`-shm` sidecar handling subtly different, and
+  the only difference between them is an integer.
+- **`row_exists` is `skip_key.is_some()`, not `existing.is_some()`.** The old code derived
+  "row exists" from a parsed `Option<DateTime>`; with the widened helper that would send a row whose
+  stored `modified` is unparseable down the INSERT arm and trip the UNIQUE constraint. Row existence
+  and timestamp parseability are now separate questions, because they are.
+- **`sessions/src/db/activity.rs` is a new submodule.** `db.rs` hit **1566** lines with the v11 write
+  side inline, over the 1500 limit (`otto bloat` caught it). Extracted `SkipKey`, `skip_key_of`, and
+  `set_activity_many` into `db/activity.rs`, mirroring the existing `catalog`/`query`/`repo` split.
+  `db.rs` is now **1492**. **This is a live constraint for Phase 4**, which adds `scope_version` writes
+  at three sites in `db.rs`: it will need its own extraction, not a raise of the limit.
+- **New tests live in `db/tests/activity.rs`**, following the `db/tests/efficiency.rs` precedent, for
+  the same reason: `db/tests.rs` was already at 1474 lines.
+
+### Deviations
+
+- **`sessions/src/stage/tests.rs::stage_dormant_filters_by_cutoff_and_records_path` was rewritten,
+  not just extended.** It distinguished a dormant session from a fresh one purely by file mtime, with
+  both transcripts carrying a hardcoded `2026-06-21` message timestamp. Under the new definition BOTH
+  are dormant, and correctly so: today is 2026-07-31, so both conversations are 40 days stale and only
+  a freshly-written file made one look current. That is precisely the defect. The fixture now uses
+  now-relative message timestamps (A: 30 days ago, B: 1 hour ago), which also removes a latent time
+  bomb -- a hardcoded date is a "fresh" session only until the calendar passes it.
+- **Three `SCHEMA_VERSION` pins in `db/tests/efficiency.rs` were raised 10 -> 11.** They carry
+  `"bump me deliberately"` / `"raise me deliberately"` messages, so this is the mechanism working as
+  designed rather than an unplanned edit. One stale comment (`// Reopen: migrate v7 -> current (v10).`)
+  and one stale message (`"pins the v9->v10 hop"`) were corrected to say "current" instead of naming a
+  version they no longer pin.
+- **Twelve test fixtures across seven crates gained `activity_at: None`.** Mechanical fallout of a new
+  required field on `ParsedSession` / `SessionRecord`. `None` is the right default for every one of
+  them: it exercises the `dormancy_at()` fallback, i.e. the behavior those tests were already
+  asserting.
+
+### Tradeoffs
+
+- **`Upsert::Backfilled` + a caller-side collect vs. writing inside `upsert_session`.** Writing in
+  place would be less plumbing (no `pending_activity` vec, no new variant, no `ReindexStats` field) but
+  would put a trigger DROP/CREATE pair inside a per-session function that runs bare `conn.execute` with
+  no transaction. The review panel's finding stands: a crash between the two would leave
+  `sessions_updated_at_update` permanently dropped and silently freeze `export_meta.revision` forever.
+  Cost of the chosen shape: one `Vec<(String, Option<DateTime<Utc>>)>` held across the reindex loop
+  (2,111 entries worst case on desk.lan, a few hundred KB).
+- **`parse_version` as an integer const vs. `activity_at IS NOT NULL` as the gate.** The const costs a
+  column and a bump ritual on every future parse-derived field. `IS NOT NULL` costs nothing but never
+  terminates for a transcript with no parseable timestamp, and each non-termination is a content-arm
+  UPDATE that NULLs that row's efficiency blob. Pinned by
+  `a_transcript_with_no_timestamps_is_backfilled_once_then_skipped`.
+- **`activity_at` stays `None` on an unparseable stored value** rather than falling back to
+  `MIN_UTC` the way `modified` does. `modified` sinks a corrupt row under `ORDER BY modified DESC`,
+  where `MIN_UTC` is the fail-closed answer; here `MIN_UTC` would mean "dormant since the dawn of
+  time" and sweep the row on the strength of a corrupt column. `None` degrades to exactly today's
+  behavior instead.
+
+### Open questions
+
+- None.
+
+### Success criteria, executed
+
+All in `sessions/src/db/tests/activity.rs` unless noted; 8 new tests there plus 2 in
+`session/src/parse/tests.rs`.
+
+- A fixture with messages 30 days old and every mtime set to `now` is returned by BOTH
+  `staging_candidates(now - 7d)` and `enrich_candidates(now - 7d, ..)`
+  (`a_wholesale_mtime_reset_does_not_hide_a_dormant_session`). Reverting `enrich_candidates` to
+  `r.modified` fails exactly that test; reverting `staging_candidates` fails it plus
+  `a_recently_active_session_is_fresh_even_with_an_ancient_mtime` (7 pass / 1 fail and 6 pass / 2 fail
+  respectively).
+- A row whose `activity_at` is NULL is filtered exactly as today
+  (`a_null_activity_at_falls_back_to_mtime_exactly_as_today`), asserting both directions: fresh mtime
+  is not swept, old mtime is.
+- `PRAGMA user_version` is **>= 11** after open (stated as `>=` on purpose, per the criterion) and a
+  v10 DB gets a `.pre-v11.bak` exactly once, verified by mtime across a reopen
+  (`opening_an_on_disk_db_migrates_to_v11_and_snapshots_once`). A brand-new catalog gets no snapshot.
+- A backfill leaves `efficiency_json` and `updated_at` UNCHANGED, and a second pass reports
+  `SkippedUnchanged` (`the_backfill_leaves_efficiency_and_the_export_cursor_untouched`). Dropping the
+  trigger sandwich in `set_activity_many` fails exactly that test.
+- A transcript with no parseable `timestamp` is backfilled once then skipped with `activity_at` still
+  NULL (`a_transcript_with_no_timestamps_is_backfilled_once_then_skipped`). Swapping the gate to an
+  `activity_at IS NOT NULL` probe fails 3 tests.
+- The `COLS` growth is pinned from both ends: an off-by-one in `map_catalog_entry` fails
+  `the_catalog_round_trips_both_blobs_after_cols_grew` plus the two existing catalog round-trip tests
+  (the new one uses a row with BOTH blobs populated, as the panel required), and shifting `COLS_LEN`
+  fails **10** tests including 7 ranking tests -- confirming the panel's severity split: `search_table`
+  fails loudly, the catalog site is the silent one.
+- `activity_at` is a MAX fold independent of record order, and `None` when no record carries a
+  timestamp (`session/src/parse/tests.rs`).
+- Full `otto ci` exits **0**.
+
+## Phase 4: Scope reads the repo evidence the catalog already has (A)
+
+### Design decisions
+
+- **`Db::scope_evidence` returns a `ScopeEvidence { repos_touched, files_edited }` from ONE query and
+  ONE parse.** The plan said to pass `db.repos_touched(&rec.session_id)?`, but the totality check needs
+  `files_edited` as well, and it compares the two against each other. Reading them in two calls would be
+  comparing values that are only incidentally from the same row. New method rather than widening
+  `repos_touched`, whose four existing callers want only the map.
+- **`has_repos_anchor` is the new sibling `has_work_org` needed.** The plan called for "a new sibling
+  [that] answers 'is this cwd anchored to any `repos/<org>` at all'". It is the gate deciding whether
+  the evidence gets a say, which is what preserves the fail-safe direction: a cwd anchored to a personal
+  org is judged by that anchor and evidence cannot overturn it.
+- **The totality check is `==`, not `>=`.** A touch set claiming MORE edits than the session made is as
+  incoherent as one claiming fewer, and incoherent evidence is not trusted. Pinned by the third
+  assertion in `an_unaccounted_for_edit_refuses_the_widening`.
+- **`is_work_slug` fails closed on a key with no `/`.** A `repos_touched` key is an `<org>/<repo>` slug
+  by construction, but the classifier reads a stored blob, so a malformed key is possible. `None` from
+  `split_once('/')` yields `false`: an unrecognized shape is never work.
+- **`record_enrich_skip` gained a `scope_version: Option<i64>` parameter; the other two write sites use
+  `session::SCOPE_VERSION` directly.** Only the skip path can be provisional. `set_enrichment` and
+  `record_enrich_failure` are reached only by a row that already cleared the routing gate as work, so
+  its decision had either a cwd anchor or a unanimous, total touch set: never evidence-free.
+- **The provisional rule is `!evidence.repos_touched.is_empty()`, exactly as the plan wrote it**, rather
+  than the tighter "personal AND no evidence". A Work-by-cwd row with an empty touch set therefore also
+  records NULL, which is unobservable: it gets enriched, so `enrich_status = 'ok'` and the clause's
+  first disjunct (`!= 'skipped-personal'`) is already true. Kept the plan's simpler rule.
+- **`sessions/src/db/enrich.rs` is a new submodule.** See the deviation below.
+- **Storage-level assertions live in `db/tests/scope.rs`, behavior-level ones in `enrich/tests.rs`.**
+  `Db::conn` is private to the `db` module, so the enrich tests cannot read `scope_version` directly. A
+  public `scope_version_of` accessor was written and then removed: it would have been production API
+  existing only for a test. The enrich tests assert the observable consequence instead (a settled row is
+  not reconsidered; a provisional row is), which is the stronger assertion anyway.
+
+### Deviations
+
+- **The enrichment write side was extracted into `sessions/src/db/enrich.rs` before Phase 4's changes
+  went in.** `db.rs` was at **1492** lines after Phase 3, and Phase 4 adds `scope_version` to three
+  UPDATE statements plus the widened predicate plus `scope_evidence` -- comfortably over the 1500-line
+  `otto bloat` limit, which is a hard CI gate. Moved `set_enrichment`, `record_enrich_skip`,
+  `record_enrich_failure`, `enrich_candidates`, `tags_are_manual`, and `enrich_summary` into their own
+  file, mirroring the existing `catalog`/`query`/`repo`/`activity` split. Verified behavior-neutral (210
+  sessions tests green) BEFORE any Phase 4 logic was added, so the two changes cannot be confused in the
+  diff. `db.rs` is now **1316**. This is the same class of in-phase fallout as Phase 2's fixture
+  regeneration: mechanical, forced by a CI gate, and the alternative (raising `BLOAT_MAX_LINES`) is
+  explicitly forbidden by `.otto.yml`'s own comment.
+- **Three `SCHEMA_VERSION` pins raised 11 -> 12** in `db/tests/efficiency.rs`, plus one comment. Same
+  deliberate mechanism as Phase 3.
+- **Five `record_enrich_skip` call sites in tests** gained `Some(session::SCOPE_VERSION)`. Mechanical.
+
+### Tradeoffs
+
+- **Trusting `files-touched` attribution vs. restricting to `git-origin` / `known-path`.** Measured in
+  the design: all 30 cohort rows are `files-touched` and ZERO are the higher-confidence sources, so
+  source-rank restriction flips nothing. The source that helps is the source that carries the risk, so
+  the safety comes from the unanchored-cwd requirement plus unanimity plus totality instead of from
+  rank. Residual risk (a session whose every edited file is under a work repo but whose conversation
+  also covers personal matters) is stated and accepted in the design's Security section.
+- **`scope_version` as its own v12 step vs. riding v11.** One extra migration step and one extra
+  snapshot file per host. The alternative is broken: `migrate` returns early once `user_version >=
+  SCHEMA_VERSION`, so a host that landed Phase 3 alone would skip the ladder and never get the column.
+  Pinned by `a_v11_db_gains_scope_version_because_v12_is_its_own_step`, which rewinds a real on-disk DB
+  to v11 and reopens it.
+- **One `scope_evidence` query per enrich candidate.** Same query shape the reindex path already runs
+  per session, and it replaces nothing, so it is a strict addition. Bounded by the candidate count.
+
+### Open questions
+
+- None.
+
+### Success criteria, executed
+
+- **The five-row table test** (`session/src/scope/tests.rs::classify_with_evidence_table`): unanchored +
+  all-work -> Work; unanchored + mixed -> Personal; personal-anchored + all-work -> Personal;
+  work-anchored + anything -> Work; unanchored + empty -> Personal. Plus no-cwd + empty -> Personal.
+- Each condition verified to BITE independently: dropping the totality check fails
+  `an_unaccounted_for_edit_refuses_the_widening`; dropping the unanchored-cwd requirement fails the
+  table test; dropping the non-empty requirement fails the table test.
+- **The predicate placement**, the failure mode the design flagged as the obvious silent no-op:
+  appending the `scope_version` terms as a separate `AND (...)` instead of inside the
+  `skipped-personal` clause fails **6** tests (3 in `db/tests/scope.rs`, 3 existing enrich tests).
+- **The sibling clause does not re-exclude these rows**, checked explicitly rather than assumed
+  (`the_prompt_version_clause_does_not_re_exclude_a_skipped_personal_row` asserts `enriched_at IS NULL`
+  holds after a skip).
+- **End to end through the real pass** (`sessions/src/enrich/tests.rs`, 4 new tests): an unanchored cwd
+  with unanimous work evidence IS enriched and the completer IS called; a mixed touch set is skipped
+  with `calls() == 0`; an unaccounted-for edit is skipped with `calls() == 0`; an evidence-free skip is
+  provisional and self-heals on the next pass once `outcome_json` lands. Reverting the orchestrator to
+  `session::classify` fails 2 of those; recording `Some(SCOPE_VERSION)` unconditionally fails the
+  self-heal test, which is the "ships and changes nothing on a teammate's catalog" failure.
+- **The v12 migration**: a DB rewound to v11 gains `scope_version`, reaches `user_version >= 12`, gets a
+  `.pre-v12.bak`, and the column is writable through the real `record_enrich_skip` path.
+- Full `otto ci` exits **0**.
+- **AC4's live half is NOT verified here.** It requires an enrich pass that SENDS 29 session bodies to
+  the work Anthropic account, which is one-way. Per the criterion's own instruction the unit tests above
+  are green first, and `clyde session enrich --dry-run` confirms the classifier's answer for the cohort
+  before any real pass. That runs at finalization, not mid-phase.
+
+## Phase 5: One XDG helper (housekeeping)
+
+### Design decisions
+
+- **`common::scan`'s private copy delegates to `crate::paths::xdg_data_dir`, not to `common::paths::`
+  spelled out.** Same crate, so the intra-crate path is the honest one.
+- **The four public wrappers keep their names and signatures**, per the plan, so no caller in any crate
+  changes. Their doc comments now say they are delegations and point at the one real implementation;
+  the `dirs::data_local_dir()` rationale lives once, with that implementation, instead of five times.
+- **`common/src/scan.rs`'s doc comment was DELETED, not edited.** It explained why it could not call
+  `session::paths::xdg_data_dir` (`common` must not depend on `session`). That reason no longer applies
+  now that the definition moved DOWN into `common`, and the plan explicitly called for deleting it
+  rather than leaving it to contradict the edge that now exists. Replaced with two sentences recording
+  what changed and why, so the next reader does not re-derive it.
+- **`session/src/paths/tests.rs`'s test became a DELEGATION check, renamed
+  `xdg_data_dir_delegates_to_common`.** It asserts `xdg_data_dir() == common::paths::xdg_data_dir()` on
+  both the env-set and the fallback path. This is the test that actually guards the consolidation: AC5's
+  `rg` count still passes if a wrapper regrows its own body using `dirs::home_dir()` directly (measured:
+  the count stays 1), so the count alone is not sufficient and the equality assertion is what bites.
+
+### Deviations
+
+- None. All five plan bullets landed: `common/src/paths.rs` with `pub fn xdg_data_dir()` declared via
+  `pub mod paths;`, all four public definitions plus `common::scan`'s private one delegating, the
+  env-honoring test moved to `common/src/paths/tests.rs`, the delegation keeping its own check, and
+  exactly five crates touched with nothing else riding along.
+
+### Tradeoffs
+
+- **Keeping the four wrappers vs. deleting them and updating callers.** Keeping them means the function
+  NAME still exists five times, which reads like duplication until you see the bodies -- and it is why
+  AC5 counts `env::var("XDG_DATA_HOME")` bodies rather than `fn xdg_data_dir` definitions. Deleting them
+  would touch every call site in four crates and put an unrelated import churn in a housekeeping commit.
+  The design already chose keeping, and AC5 is written to match.
+- **A new `common::paths` module vs. adding to `common::config`.** `common/src/config.rs` exists and
+  loads `clyde.yml`; path resolution is not config loading, and `paths` is the single-word name the house
+  rule asks for. It also gives the next XDG helper (`xdg_config_dir`, which still has its own copies) an
+  obvious home.
+
+### Open questions
+
+- `xdg_config_dir` and `xdg_cache_dir` still have multiple copies (`session::paths`, `cost::config`,
+  `permit::config`). Out of scope: the register's item is the `xdg_data_dir` consolidation specifically,
+  and `common::paths` is now the obvious place for them whenever that is asked for. Flagged rather than
+  done quietly, and NOT presented as a defect this phase left behind.
+
+### Success criteria, executed
+
+- **AC5**: `rg -n 'env::var\("XDG_DATA_HOME"\)' --type rust -g '!target' -g '!*tests*' . | wc -l`
+  returns **1** (`common/src/paths.rs:32`), down from **5** on `main`.
+- The DEFINITION count went **5 -> 6** as the design predicted (the four kept delegations plus
+  `common::scan`'s, plus the new real one), which is why it is not the criterion.
+- `dirs::data_local_dir` CALLS: **0**, unchanged. The 8 textual occurrences are all doc comments
+  explaining why it is not used; the call count is what the criterion is about.
+- Tests verified to BITE: giving the `session` wrapper its own body again fails
+  `xdg_data_dir_delegates_to_common` (plus 2 collateral path tests) while AC5's count still reads 1 --
+  which is exactly why the delegation test exists; dropping the `path.is_absolute()` guard fails
+  `a_relative_xdg_data_home_is_ignored` and `xdg_data_dir_honors_env_and_falls_back`.
+- Full `otto ci` exits **0**, and `git status` shows exactly the five crates the plan named
+  (`common`, `cost`, `permit`, `report`, `session`) with nothing else riding along.
+
+## Phase 6: Correct the register, and G
+
+### Design decisions
+
+- **Each of the four register corrections is marked IN PLACE, not silently rewritten.** The timer
+  paragraph and D's justification carry an explicit "corrected 2026-07-31" note with the measurement
+  that refutes the original claim; the cohort count says it drifted from 21; the `parse.rs:388` bullet
+  records that an earlier draft's "correction" to `:387` was itself wrong and is withdrawn. A register is
+  a diagnosis document that the next reader will compare against their own measurements, so a silent
+  edit destroys the one thing that makes a correction trustworthy: knowing what was wrong.
+- **D's "why it matters more after v0.20.0" bullet is struck through rather than deleted**, because the
+  original sentence is the specific thing that was wrong (report does not read the catalog's scalar
+  `cost_usd`) and a reader who remembers it needs to see it refuted, not vanish.
+- **Six per-item pointers, one per `###` heading, including G.** The criterion checks per ITEM, so each
+  item's own body carries the slug. G got one too, even though its commit lands in another repo, so the
+  register names exactly one owner for every item rather than five plus a gap.
+- **G was staged through the object database, never the working tree.** `HOME/.claude/settings.json` is
+  the symlink target of the LIVE `~/.claude/settings.json`. The obvious way to do a selective commit
+  (write an intermediate file, `git add`, restore) would briefly replace Scott's running configuration,
+  and any hook firing in that window would read the wrong file. Instead: build the
+  HEAD-plus-only-this-entry content in memory, `git hash-object -w --stdin`, `git update-index
+  --cacheinfo`, commit. The working tree is untouched throughout and its 98 remaining insertions of
+  unrelated in-flight work are undisturbed.
+- **The selection is STRUCTURAL, not a text patch.** The entry is inserted by parsing HEAD's JSON,
+  finding the one `PreToolUse` block whose matcher is `Bash` and which already carries
+  `branch-pr-title-guard.sh`, and appending at the same index the entry occupies in the working tree.
+  A text patch could have landed it in a different matcher block that happens to look similar --
+  and there ARE two blocks carrying `branch-pr-title-guard.sh`, which is exactly the ambiguity that
+  would have bitten. Serialization fidelity was verified FIRST: a `json.dumps(indent=2)` round-trip of
+  HEAD is byte-identical to HEAD, so the commit is the entry and not a whole-file reformat.
+
+### Deviations
+
+- **G is committed on `main` in `~/repos/scottidler/claude`, not on a branch.** The design doc specifies
+  "a separate commit in `~/repos/scottidler/claude`, home persona, not gated on anything here" -- a
+  commit, not a PR. It is a personal config repo, the change is one JSON object, and branching would
+  leave an unpushed branch plus a PR to babysit for it. Nothing is pushed, so this stays local and
+  reversible until the finalization checkpoint.
+
+### Tradeoffs
+
+- **Correcting the register in place vs. superseding it with a new file.** In place keeps one register
+  at one path that every prior doc already links to; the cost is that the file now mixes original
+  diagnosis with dated corrections. Mitigated by marking every correction with its date and its
+  measurement, so the two are never confused.
+
+### Open questions
+
+- None.
+
+### Success criteria, executed
+
+- `rg -Uc 'reports it absent' docs/design/2026-07-31-open-defects-handoff.md` prints **nothing** and
+  exits 1, i.e. **zero** occurrences. (Recording the exact behavior: `rg -c` with no match prints no
+  line rather than printing `0`. The criterion asks for zero occurrences and that is what holds.)
+- Per-ITEM pointer check, run as the criterion specifies rather than as a hit count: each of `### D`,
+  `### E`, `### F`, `### B`, `### A` -- and `### G` besides -- has
+  `2026-07-31-close-the-open-register` inside its own section body. All **6** print 1.
+- `git -C ~/repos/scottidler/claude diff HEAD -- HOME/.claude/settings.json | grep -c codex-stdin-guard`
+  returns **0**: the entry is committed. The file still shows 98 insertions of unrelated in-flight work,
+  which is correct and is what "selective commit" means here.
+- The staged diff before committing was inspected and contained **only** the 4-line hook entry.
+- Full `otto ci` exits **0** (this phase is documentation in this repo, so CI is unchanged by it).
+
+## Implementation audit, 2026-07-31 (Architect/Gemini + Staff Engineer/Codex, Mode 2)
+
+Run after all six phases were committed, on Scott's call. Both reviewers walked the Implementation Plan
+bullet-by-bullet against the committed code. **Three findings, all accepted and fixed; nothing deferred,
+nothing dropped.**
+
+### Accepted and fixed
+
+- **The Phase 6 section was MISSING from this file, and its text had been written into a stray untracked
+  file in ANOTHER repo.** The Architect's primary finding, and the reality was worse than it described.
+  Root cause, not a guess: the Phase 6 `cat >>` ran with the shell's working directory still pointing at
+  `~/repos/scottidler/claude`, carried over from the G commit two calls earlier. The `otto ci` in that
+  same command failed with `No ottofile found`, which is exactly the symptom, and it was read as a
+  transient and re-run from the right directory instead of as evidence about where the WRITE had landed.
+  The append therefore created
+  `~/repos/scottidler/claude/docs/design/2026-07-31-close-the-open-register-implementation-notes.md`,
+  polluting a second repo, and `git add docs/design/` in clyde staged only two files rather than three --
+  visible in that commit's own output and not noticed. Fixed: the content is appended here where it
+  belongs, and the stray is archived via `rkvr rmrf` (never `rm`), leaving the other repo clean.
+  **Structural remedy, not a resolution to be more careful:** every `cd` into another repo is now
+  followed by an explicit `cd` back before any relative-path write, and a commit's own `git status`
+  output is read as a check rather than as decoration.
+- **`is_work_slug` fail-open on a malformed slug that still contains a slash.** The Staff Engineer's
+  finding, and the reviewers DISAGREED here: the Architect asserted malformed slugs "fail closed
+  (`None => false`)", which is true only for a slug with NO slash. `"tatari-tv/"` splits to
+  `("tatari-tv", "")`, so the original code passed the org test on an EMPTY repo name. Measured
+  unreachable from clyde's own writer (`common::repo::slug_under_root` requires two
+  `Component::Normal`, so it can never emit an empty segment or a second slash), but this function reads
+  a STORED blob and it is the gate that decides whether a session body leaves the machine. Narrowed to
+  require a non-empty, slash-free repo segment. The Staff Engineer was right and the Architect was not
+  careful; recorded that way rather than split down the middle.
+- **A zero-count touch set widened to Work.** Also the Staff Engineer. This one is a genuine deviation
+  from the doc, not merely hardening: the API contract in the design says "**the session touched at
+  least one repo**", and `{"tatari-tv/philo": 0}` with `files-edited: 0` satisfies
+  `!repos_touched.is_empty()` structurally while representing no touch at all -- so a session that
+  edited NOTHING classified Work. Fixed by requiring a positive count on every entry, which combined
+  with the totality check also forces `files_edited > 0`. The same review pass took the count sum from
+  `values().sum()` to a checked fold: `sum::<u64>()` wraps silently in release, and a wrapped total that
+  happened to equal `files_edited` would satisfy the totality check on nonsense evidence.
+
+All three code fixes verified to BITE: restoring the org-only slug test fails
+`a_malformed_slug_with_a_slash_fails_closed`; dropping the positive-count conjunct fails
+`a_zero_count_touch_set_never_widens_to_work`; restoring an unchecked (wrapping) sum fails
+`an_overflowing_count_sum_fails_closed` in a `--release` build, which is the only build where it wraps.
+
+- **`Status: Implemented` was overstated.** The Staff Engineer's second finding. This doc's own AC6
+  defines done as including the Rollout steps (install, one reindex, one enrich, AC3/AC4 numbers
+  recorded), and "Green CI is not done" is the doc's own sentence. None of those had run. Status is now
+  `Code Complete`, spelling out what remains and when it may flip. AC1/AC2/AC5 are checked off with a
+  post-implementation observed line beside their `main` pre-state; AC3, AC4, AC6 and AC7 stay unchecked
+  because their live halves genuinely have not run.
+
+### Recorded as already-correct rather than actioned
+
+Both reviewers independently confirmed CLOSED in code, with file:line, every hazard the DESIGN panel had
+flagged: the Phase 4 totality check and the `has_repos_anchor` gate that stops evidence overturning a
+personal-anchored cwd; the batched `set_activity_many` with no trigger DDL anywhere in
+`upsert_session`; the `scope_version` terms INSIDE the `skipped-personal` parenthesized clause; the
+provisional-NULL rule; all `COLS` trailing-index consumers deriving from `COLS_LEN`; v11 and v12 as
+separate steps with separate snapshots and no blob invalidation; and `parse_version` written in all
+three paths. Both also found **no unrequested scope**, confirmed the two `db.rs` extractions
+behavior-neutral, and confirmed the Phase 2 fixture regeneration additive-only with no number moved.
+
+### A note on the audit run itself
+
+The panel agent went idle without reconciling. The reviewer output was recovered from
+`/tmp/review-panel/pfJcdLhW/` (`staff.out`, and `arch2.out` after Gemini errored on the first attempt
+with `result=error` and was retried) and reconciled by hand. Worth knowing for the next audit: an idle
+panel agent does NOT mean the reviewers produced nothing, and `.last-run` is a pointer FILE, not a
+directory.

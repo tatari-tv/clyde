@@ -30,6 +30,7 @@ fn base_record(transcript_path: PathBuf) -> SessionRecord {
         model: None,
         n_msgs: 0,
         created: None,
+        activity_at: None,
         modified: Utc::now(),
         cost: None,
         host: "testhost".to_string(),

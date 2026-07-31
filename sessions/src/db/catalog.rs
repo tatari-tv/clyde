@@ -13,7 +13,7 @@
 use eyre::Result;
 use log::debug;
 
-use super::{COLS, Db, append_filters, map_record};
+use super::{COLS, COLS_LEN, Db, append_filters, map_record};
 use crate::model::{CatalogEntry, Filters};
 
 impl Db {
@@ -47,17 +47,23 @@ impl Db {
     }
 }
 
-/// Map one row to a [`CatalogEntry`]: [`map_record`] consumes the [`COLS`] prefix (indices 0..=20,
-/// per its own doc comment), and the five catalog columns this query appends land at the fixed
-/// trailing indices 21..=25, in the same order as the `SELECT` above.
+/// Map one row to a [`CatalogEntry`]: [`map_record`] consumes the [`COLS`] prefix (indices
+/// `0..COLS_LEN`), and the five catalog columns this query appends land immediately after, in the same
+/// order as the `SELECT` above.
+///
+/// Indices are DERIVED from [`COLS_LEN`], never restated as literals. This is the silent one of the
+/// two trailing-index sites: `efficiency_json` / `outcome_json` are both `Option<String>`, so a
+/// one-column shift still type-checks and simply reads the wrong column. Only `cache_read_share`
+/// errors, and only when `outcome_json` happens to be non-NULL -- which is why the round-trip test
+/// pinning this uses a row with BOTH blobs populated.
 fn map_catalog_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogEntry> {
     Ok(CatalogEntry {
         record: map_record(row)?,
-        efficiency_json: row.get(21)?,
-        outcome_json: row.get(22)?,
-        cache_read_share: row.get(23)?,
-        tool_errors: row.get(24)?,
-        cost_usd: row.get(25)?,
+        efficiency_json: row.get(COLS_LEN)?,
+        outcome_json: row.get(COLS_LEN + 1)?,
+        cache_read_share: row.get(COLS_LEN + 2)?,
+        tool_errors: row.get(COLS_LEN + 3)?,
+        cost_usd: row.get(COLS_LEN + 4)?,
     })
 }
 

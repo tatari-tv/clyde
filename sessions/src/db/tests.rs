@@ -25,6 +25,7 @@ fn parsed(session_id: &str, transcript: &str) -> ParsedSession {
         model: Some("claude-opus-4-8".into()),
         n_msgs: 12,
         created: Some(dt("2026-06-20T10:00:00Z")),
+        activity_at: None,
         modified: dt("2026-06-21T10:00:00Z"),
         body: "the Marquee S3 bucket lives in us-east-1".into(),
         jsonl_paths: vec![PathBuf::from(transcript)],
@@ -1140,8 +1141,13 @@ fn v5_enrich_skip_write_advances_cursor_once() {
 
     let before = revision_counter(&db);
     assert!(
-        db.record_enrich_skip(UUID_A, "personal", crate::export::EnrichStatus::SkippedPersonal)
-            .unwrap()
+        db.record_enrich_skip(
+            UUID_A,
+            "personal",
+            Some(session::SCOPE_VERSION),
+            crate::export::EnrichStatus::SkippedPersonal
+        )
+        .unwrap()
     );
     assert_eq!(
         revision_counter(&db),
@@ -1364,8 +1370,13 @@ fn v5_migration_from_v4_backfills_in_rowid_order_and_seeds_counter() {
 
     // First post-migration write is MAX+1 = 4 (no collision, strictly greater than every backfill).
     assert!(
-        db.record_enrich_skip(UUID_A, "work", crate::export::EnrichStatus::SkippedEmpty)
-            .unwrap()
+        db.record_enrich_skip(
+            UUID_A,
+            "work",
+            Some(session::SCOPE_VERSION),
+            crate::export::EnrichStatus::SkippedEmpty
+        )
+        .unwrap()
     );
     assert_eq!(revision_counter(&db), 4, "the first write after migration is MAX+1");
     assert_eq!(updated_at_of(&db, UUID_A), 4);
@@ -1471,3 +1482,12 @@ fn v5_migration_is_idempotent_on_reopen() {
 // line-count limit (they are a self-contained surface: schema v6 columns, the trigger-suppressed
 // efficiency write, and the v5->v6 migration).
 mod efficiency;
+
+// Schema v11 (`activity_at` / `parse_version`) tests live in their own submodule for the same reason
+// the efficiency ones do: this file is near the 1500-line limit, and dormancy-off-activity-time plus
+// the narrow backfill is a self-contained surface.
+mod activity;
+
+// Schema v12 (`scope_version`) tests: the widened `enrich_candidates` predicate, the provisional-NULL
+// rule, and the `scope_evidence` read. Own submodule, same line-count reason as the two above.
+mod scope;
