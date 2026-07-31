@@ -189,7 +189,7 @@ fn a_stale_parse_version_reports_backfilled_not_skipped() {
 /// `session export --cursor` consumer re-fetch the entire catalog.
 ///
 /// BITES both ways: route the fill through the content arm and `efficiency_json` goes NULL; drop the
-/// sandwich in `set_activity_many` and `updated_at` advances.
+/// sandwich in `set_parse_derived_many` and `updated_at` advances.
 #[test]
 fn the_backfill_leaves_efficiency_and_the_export_cursor_untouched() {
     use crate::db::EfficiencyWrite;
@@ -227,7 +227,12 @@ fn the_backfill_leaves_efficiency_and_the_export_cursor_untouched() {
         .unwrap();
     let activity = Utc::now() - Duration::days(30);
     assert_eq!(
-        db.set_activity_many(&[(UUID_A.to_string(), Some(activity))]).unwrap(),
+        db.set_parse_derived_many(&[crate::db::ParseDerivedWrite {
+            session_id: UUID_A.to_string(),
+            activity_at: Some(activity),
+            title: row.title(),
+        }])
+        .unwrap(),
         1
     );
 
@@ -275,7 +280,15 @@ fn a_transcript_with_no_timestamps_is_backfilled_once_then_skipped() {
 
     assert_eq!(db.upsert_session(&row, "host-01").unwrap(), Upsert::Backfilled);
     // The batch write records `parse_version` even though the value is NULL. That is the termination.
-    assert_eq!(db.set_activity_many(&[(UUID_A.to_string(), None)]).unwrap(), 1);
+    assert_eq!(
+        db.set_parse_derived_many(&[crate::db::ParseDerivedWrite {
+            session_id: UUID_A.to_string(),
+            activity_at: None,
+            title: row.title(),
+        }])
+        .unwrap(),
+        1
+    );
     assert_eq!(
         db.get(UUID_A).unwrap().unwrap().activity_at,
         None,
@@ -389,4 +402,81 @@ fn opening_an_on_disk_db_migrates_to_v11_and_snapshots_once() {
         stamp,
         "the snapshot predicate can never match again once the version is bumped"
     );
+}
+
+/// `title` is re-derived by the same narrow backfill, and the FTS index moves WITH the column.
+///
+/// The stored title for a session Claude never titled was the raw `first_prompt`, capped at 2,000 chars
+/// (61 such rows on desk.lan). `PARSE_VERSION` 2 re-offers those rows so the new derivation lands
+/// without a migration and without re-reading any transcript.
+///
+/// `sessions_fts` is a standalone FTS5 table maintained by explicit writes, NOT by triggers, so the
+/// backfill has to update it too. Skipping that leaves search matching the old 2,000-char title while
+/// every display surface shows the new one -- a silent desync, since nothing fails.
+///
+/// BITES: drop the `sessions_fts` UPDATE and the FTS assertion fails while the column assertion passes,
+/// which is exactly the shape of the bug it guards.
+#[test]
+fn the_backfill_re_derives_the_title_and_keeps_fts_in_step() {
+    let db = Db::open_memory().unwrap();
+    let mut row = parsed(UUID_A, Some(Utc::now() - Duration::days(30)), Utc::now());
+    // A session Claude never titled, whose first prompt is a multi-line agent launch: the reported shape.
+    row.ai_title = None;
+    row.first_prompt = Some(format!(
+        "Implement exactly **Phase 2** of the design doc at:\n{}",
+        "x".repeat(1_900)
+    ));
+    db.upsert_session(&row, "host-01").unwrap();
+
+    // Plant the pre-v2 stored state: the raw untruncated prompt, in the column AND in the FTS row.
+    let raw = row.first_prompt.clone().unwrap();
+    db.conn
+        .execute(
+            "UPDATE sessions SET parse_version = NULL, title = ?1 WHERE session_id = ?2",
+            rusqlite::params![raw, UUID_A],
+        )
+        .unwrap();
+    let rowid: i64 = db
+        .conn
+        .query_row("SELECT id FROM sessions WHERE session_id = ?1", [UUID_A], |r| r.get(0))
+        .unwrap();
+    db.conn
+        .execute(
+            "UPDATE sessions_fts SET title = ?1 WHERE rowid = ?2",
+            rusqlite::params![raw, rowid],
+        )
+        .unwrap();
+
+    assert_eq!(
+        db.upsert_session(&row, "host-01").unwrap(),
+        crate::db::Upsert::Backfilled
+    );
+    let want = row.title().unwrap();
+    assert_eq!(
+        db.set_parse_derived_many(&[crate::db::ParseDerivedWrite {
+            session_id: UUID_A.to_string(),
+            activity_at: row.activity_at,
+            title: Some(want.clone()),
+        }])
+        .unwrap(),
+        1
+    );
+
+    // The column carries the shaped title, not the 1,900-char blob.
+    let stored: String = db
+        .conn
+        .query_row("SELECT title FROM sessions WHERE session_id = ?1", [UUID_A], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(stored, want);
+    assert_eq!(stored, "Implement exactly **Phase 2** of the design doc at:");
+    assert!(stored.chars().count() < 200, "the 2,000-char title is gone: {stored:?}");
+
+    // And so does the FTS row, so search and display agree.
+    let indexed: String = db
+        .conn
+        .query_row("SELECT title FROM sessions_fts WHERE rowid = ?1", [rowid], |r| r.get(0))
+        .unwrap();
+    assert_eq!(indexed, want, "the FTS title must be re-indexed with the column");
 }

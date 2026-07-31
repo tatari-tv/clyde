@@ -25,6 +25,36 @@ pub struct SessionFile {
     pub kind: SessionFileKind,
 }
 
+/// Cap on the DISPLAY title (see [`ParsedSession::title`]). Deliberately far below
+/// `parse::MAX_FIRST_PROMPT_CHARS`: `first_prompt` is a stored prompt and legitimately wants 2,000
+/// chars, a title is one line in a table.
+const MAX_TITLE_CHARS: usize = 120;
+
+/// The marker appended to a truncated title. ASCII, so it survives every terminal, FTS tokenizer, and
+/// JSON consumer without an encoding question.
+const TITLE_ELLIPSIS: &str = "...";
+
+/// `s` bounded to `max` CHARACTERS, cutting at the last word boundary that fits and marking the cut.
+///
+/// Counts chars, never bytes: `&s[..max]` panics the moment a multibyte character straddles the
+/// boundary, and session titles carry plenty (em-dashes, box drawing, CJK, emoji). Falls back to a hard
+/// char-boundary cut when the text has no space inside the cap, so a single enormous token is still
+/// bounded.
+fn shorten(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    // `rsplit_once` on the accumulated HEAD, so the boundary search never reads past the cap.
+    let cut = match head.rsplit_once(char::is_whitespace) {
+        // Guard against a boundary so early that the title becomes useless: a word break in the first
+        // quarter of the cap loses more than the ragged edge costs, so take the hard cut instead.
+        Some((left, _)) if left.chars().count() > max / 4 => left.trim_end().to_string(),
+        _ => head,
+    };
+    format!("{cut}{TITLE_ELLIPSIS}")
+}
+
 /// One navigational record per session, parsed and rolled up from the parent transcript plus
 /// any subagent transcripts. The `sessions` layer maps this into a `sessions.db` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,11 +100,29 @@ pub struct ParsedSession {
 impl ParsedSession {
     /// The display title: Claude's `ai-title` when present, else the first genuine user prompt,
     /// else the invoked command/skill name (for command-opened sessions Claude never titled).
-    pub fn title(&self) -> Option<&str> {
-        self.ai_title
+    ///
+    /// Shaped as a TITLE, which the raw source often is not. Claude emits no `ai-title` for ~4% of
+    /// sessions, and the `first_prompt` fallback is a whole prompt capped at
+    /// `parse::MAX_FIRST_PROMPT_CHARS` (2,000) -- so an agent-launch prompt or a context-compaction
+    /// summary became a 2,000-character "title" that rendered as a wall of text in the report's outlier
+    /// table and in every search hit. Measured on desk.lan 2026-07-31: 61 rows over 200 chars, the worst
+    /// sitting exactly at the 2,000 cap.
+    ///
+    /// Two transforms, both needed. The FIRST NON-BLANK LINE handles the multi-line case (a compaction
+    /// summary's later paragraphs are not title material at any length), then [`MAX_TITLE_CHARS`] bounds
+    /// what a single very long line can do. Truncation prefers the last word boundary inside the cap so
+    /// the result does not end mid-word, and marks itself with an ellipsis.
+    ///
+    /// Applied to whichever source wins, not just the fallback: a short `ai_title` passes through
+    /// unchanged, so a uniform rule costs nothing and cannot be defeated by a future source.
+    pub fn title(&self) -> Option<String> {
+        let raw = self
+            .ai_title
             .as_deref()
             .or(self.first_prompt.as_deref())
-            .or(self.command_name.as_deref())
+            .or(self.command_name.as_deref())?;
+        let line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
+        Some(shorten(line, MAX_TITLE_CHARS))
     }
 }
 
@@ -100,3 +148,6 @@ pub struct Message {
     /// can label it distinctly.
     pub subagent: bool,
 }
+
+#[cfg(test)]
+mod tests;

@@ -27,7 +27,14 @@ use crate::model::{Message, ParsedSession, Role, SessionFile, SessionFileKind};
 ///
 /// v1 is `activity_at` (MAX message timestamp), the first parse-derived column to need this gate.
 /// A NULL `parse_version` means "written before the gate existed" and is always a candidate.
-pub const PARSE_VERSION: i64 = 1;
+///
+/// v2 re-derives `title`. The derivation gained a first-line rule and a length cap
+/// (`session::model::ParsedSession::title`), so every row indexed under v1 carries the old raw-prompt
+/// title -- 61 of them over 200 chars on desk.lan, the worst at the full 2,000-char `first_prompt` cap.
+/// Bumping here re-offers those rows to the same narrow backfill, which is the whole point of versioning
+/// the parse rather than the schema: no migration, no re-read of any transcript beyond the parse the
+/// reindex already does, and it self-drains.
+pub const PARSE_VERSION: i64 = 2;
 
 /// Cap on the stored first-prompt (some first prompts paste whole files).
 const MAX_FIRST_PROMPT_CHARS: usize = 2_000;

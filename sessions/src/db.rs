@@ -211,7 +211,7 @@ pub enum Upsert {
     /// The transcript is byte-identical but the row's parse-derived columns are stale
     /// (`parse_version` below `session::PARSE_VERSION`). `upsert_session` writes NOTHING for this
     /// case: the caller collects these and fills them through the narrow, trigger-suppressed
-    /// [`Db::set_activity_many`]. Routing them through the content UPDATE arm instead would NULL every
+    /// [`Db::set_parse_derived_many`]. Routing them through the content UPDATE arm instead would NULL every
     /// efficiency blob and bump every row's export revision, neither of which a byte-identical
     /// transcript has earned.
     Backfilled,
@@ -307,7 +307,7 @@ impl Db {
     /// Skips when the parent transcript mtime is unchanged from the stored value AND the row's
     /// `parse_version` is current. When the mtime matches but `parse_version` is stale, returns
     /// [`Upsert::Backfilled`] and writes NOTHING: the caller collects those and fills the
-    /// parse-derived columns through [`Self::set_activity_many`].
+    /// parse-derived columns through [`Self::set_parse_derived_many`].
     ///
     /// The gate is `parse_version`, NOT `activity_at IS NOT NULL`. A transcript with no parseable
     /// `timestamp` on any record yields `activity_at = None` legitimately, and an `IS NULL` gate would
@@ -337,7 +337,7 @@ impl Db {
             .first()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let title = parsed.title().map(str::to_string);
+        let title = parsed.title();
         let created = parsed.created.map(|d| d.to_rfc3339());
         let modified = parsed.modified.to_rfc3339();
         let cwd = parsed.cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
@@ -1311,10 +1311,10 @@ mod enrich;
 pub use enrich::ScopeEvidence;
 
 /// Schema v11 parse-derived columns: the `(modified, parse_version)` skip key (`Db::skip_key_of`) and
-/// the narrow trigger-suppressed backfill write (`Db::set_activity_many`). Split out for file-size
+/// the narrow trigger-suppressed backfill write (`Db::set_parse_derived_many`). Split out for file-size
 /// discipline, mirroring `catalog`/`query`/`repo`.
 mod activity;
-pub use activity::SkipKey;
+pub use activity::{ParseDerivedWrite, SkipKey};
 
 /// Schema v10 repo attribution: `Db::upsert_repo`, `Db::record_repo_path`, `Db::clear_repo`, and the
 /// catalog-backed `common::repo::PathMap` impl. Split out for file-size discipline, mirroring
