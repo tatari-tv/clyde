@@ -113,13 +113,21 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
             &evidence.repos_touched,
             evidence.files_edited,
         );
-        // PROVISIONAL when there was no evidence to consult at all. Recording the current
-        // `SCOPE_VERSION` on an evidence-free decision would exclude the row from the widened
-        // predicate until the next const bump -- and on a catalog that has never run a full
-        // `clyde session reindex`, `outcome_json` is NULL for EVERY row, so that is the default path,
-        // not an edge case. Leaving the column NULL keeps the row a candidate for the next pass, and
-        // re-consideration is free (the gate below records a skip without reaching the transport).
-        let scope_version = (!evidence.repos_touched.is_empty()).then_some(session::SCOPE_VERSION);
+        // PROVISIONAL when the efficiency pass has not REACHED this row, so there was no evidence to
+        // consult at all. Recording the current `SCOPE_VERSION` on an evidence-free decision would
+        // exclude the row from the widened predicate until the next const bump -- and on a catalog that
+        // has never run a full `clyde session reindex`, `outcome_json` is NULL for EVERY row, so that
+        // is the default path, not an edge case. Leaving the column NULL keeps the row a candidate for
+        // the next pass, and re-consideration spends no tokens (the gate below records a skip without
+        // reaching the transport).
+        //
+        // The gate is `evidence.present`, NOT `repos_touched.is_empty()`. A session that edited nothing
+        // has PRESENT evidence and an empty touch set, and is a settled decision: keying on emptiness
+        // would leave its `scope_version` NULL forever, so the widened predicate would re-offer it every
+        // pass and `record_enrich_skip`'s bare UPDATE would bump the export revision every time.
+        // Zero-edit sessions are common, so that is a permanent cursor churn for a large set of rows --
+        // the same hazard Phase 3 took a batched trigger sandwich to avoid.
+        let scope_version = evidence.present.then_some(session::SCOPE_VERSION);
 
         // --- Routing gate: personal content never leaves the machine. ---
         if !scope.is_work() {

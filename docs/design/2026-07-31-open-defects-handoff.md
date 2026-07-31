@@ -49,8 +49,15 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
      `RawCounters` already carries `by_model`, so the shape and the kebab-case serde are established.
   2. Surface it in `PersistStats` and in `print_reindex`, exactly as Phase 2 did for
      `unrecoverable`: a count that is always printed, so `cost_usd` is never quietly low.
-  3. `report collect` unions it into the artifact's existing `untracked_models` so the two paths
-     agree instead of one being blind.
+  3. ~~`report collect` unions it into the artifact's existing `untracked_models` so the two paths
+     agree instead of one being blind.~~ **SUPERSEDED, declined 2026-07-31.** Measured, the union would
+     MISLEAD: the blob's set is computed against the EMBEDDED feed at reindex time, while report prices
+     against a FETCHED feed at read time (`common/src/metrics.rs:125-131` documents that split
+     deliberately), so a model unpriced at reindex and priced by the live feed would be named untracked
+     in an artifact that priced it correctly. The blindness is one-directional and lives on the catalog
+     side, so the disclosure does too. See the Resolved Decisions in
+     [`docs/design/2026-07-31-close-the-open-register.md`](2026-07-31-close-the-open-register.md). Do
+     NOT implement this step.
 - **The precedent to copy:** `cost/src/oracle.rs:326` handles the same call with an explicit `match`.
   Phase 3 of the archived-session-spend doc is the shape for the disclosure half: split the guard,
   exclude or flag the row, state the count, never ship a silently-wrong total.
@@ -58,9 +65,13 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
   `pricing/data/pricing.json` gets a non-empty `unpriced-models` in its stored blob and a non-zero
   count in the reindex output. Break it by restoring the bare `unwrap_or_else(|| 0.0)` and the count
   goes to zero while `cost_usd` stays low.
-- **Risk:** touches the `efficiency_json` shape. Decide whether that needs a `SCHEMA_VERSION` bump;
-  the archived-session-spend doc declined one because only WHICH ROWS reached the report changed, and
-  this is different: the blob itself grows a field.
+- **Risk:** touches the `efficiency_json` shape. ~~Decide whether that needs a `SCHEMA_VERSION` bump~~
+  **DECIDED 2026-07-31: no bump.** With `#[serde(default)]` an old blob reads as an empty set, and the
+  set would be empty on every existing row anyway (all 9 measured catalog models either price or carry
+  zero tokens), so a v8-style invalidation would force a full recompute of ~1,800 rows to populate a
+  field with nothing in it. The bump becomes the right move the first time an unpriced model with real
+  tokens appears, and it stays available. Recorded in the Resolved Decisions of
+  [`docs/design/2026-07-31-close-the-open-register.md`](2026-07-31-close-the-open-register.md).
 
 ### E. The `_variable` lint only walks `*/src/`
 

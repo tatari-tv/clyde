@@ -14,6 +14,7 @@ use crate::llm::{Completer, LlmEnrichment};
 const WORK_CWD: &str = "/home/saidler/repos/tatari-tv/marquee";
 const PERSONAL_CWD: &str = "/home/saidler/repos/scottidler/loopr";
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
+const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
 
 fn dt(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
@@ -642,4 +643,55 @@ fn set_scope_evidence(db: &Db, session_id: &str, repos: &[(&str, u64)], files_ed
         outcome_json: &outcome,
     }])
     .unwrap();
+}
+
+/// A session that EDITED NOTHING is settled after one pass, not reconsidered forever.
+///
+/// `Db::scope_evidence` returns an empty `repos_touched` in two different states: no evidence stored
+/// yet (provisional), and evidence stored recording zero edits (settled). Keying the provisional rule
+/// on emptiness conflates them, so a zero-edit session's `scope_version` stays NULL forever, the
+/// widened predicate re-offers it every pass, and `record_enrich_skip`'s bare UPDATE bumps the export
+/// revision each time. Zero-edit sessions are common, so that is permanent cursor churn across a large
+/// set of rows.
+///
+/// Asserted through the REAL orchestrator, because that is where the gate lives. An earlier version of
+/// this test called `Db::scope_evidence` and `Db::record_enrich_skip` directly and therefore did not
+/// bite when the gate was reverted.
+///
+/// BITES: change the gate back to `(!evidence.repos_touched.is_empty())` and the second pass reports
+/// `considered: 1` instead of 0, forever.
+#[test]
+fn a_zero_edit_session_is_settled_after_one_pass() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "a read-only question and answer session");
+    let db = Db::open_memory().unwrap();
+    insert(&db, tmp.path(), UUID_A, "/home/saidler/notes", &parent);
+    // Evidence IS stored and records zero edits: the efficiency pass ran, this session edited nothing.
+    set_scope_evidence(&db, UUID_A, &[], 0);
+
+    let fake = Fake::ok(&["x"]);
+    let first = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(first.considered, 1, "the row is a candidate on the first pass");
+    assert_eq!(first.skipped_personal, 1, "no work evidence, so it is personal");
+    assert_eq!(fake.calls(), 0);
+
+    // The decision was made WITH evidence, so it is settled: no later pass reconsiders it, which is
+    // what stops both the pointless re-skip and the export-cursor churn it would cause.
+    let second = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        second.considered, 0,
+        "a zero-edit session with stored evidence must be settled, not reconsidered: {second:?}"
+    );
+
+    // Contrast: with NO evidence stored at all, the row IS provisional and stays a candidate.
+    let db2 = Db::open_memory().unwrap();
+    let parent2 = write_transcript(tmp.path(), UUID_B, "same shape, but never reindexed");
+    insert(&db2, tmp.path(), UUID_B, "/home/saidler/notes", &parent2);
+    let p1 = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(p1.skipped_personal, 1);
+    let p2 = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        p2.considered, 1,
+        "an evidence-FREE decision stays provisional and is reconsidered: {p2:?}"
+    );
 }

@@ -293,3 +293,83 @@ fn a_v11_db_gains_scope_version_because_v12_is_its_own_step() {
         .unwrap();
     assert_eq!(stored, Some(session::SCOPE_VERSION));
 }
+
+/// A session that EDITED NOTHING is a settled, evidence-backed decision, not a provisional one.
+///
+/// `Db::scope_evidence` returns an empty `repos_touched` in two different states, and keying the
+/// provisional rule on emptiness alone conflates them:
+///
+/// 1. `outcome_json` is absent, so no evidence exists yet. Genuinely provisional.
+/// 2. `outcome_json` is present and records a session that edited no files. Settled.
+///
+/// Recording state 2 provisional leaves `scope_version` NULL forever, so the widened predicate
+/// re-offers the row on EVERY pass, `record_enrich_skip` rewrites it every time, and because that is a
+/// bare UPDATE the v5 revision trigger fires and bumps `export_meta.revision`. Every
+/// `session export --cursor` consumer then re-fetches these rows after every enrich pass, indefinitely.
+/// Sessions that edit no files are common, so the affected set is not small. This is the exact
+/// cursor-churn hazard Phase 3 took a batched trigger sandwich to avoid, reintroduced through another
+/// door.
+///
+/// BITES: key the provisional rule on `repos_touched.is_empty()` instead of `ScopeEvidence::present`
+/// and the row below is re-offered and its revision climbs on every pass.
+#[test]
+fn a_session_that_edited_nothing_is_settled_not_provisional() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/home/saidler/notes"), "host-01")
+        .unwrap();
+    // Evidence IS stored, and it records zero edits: `reindex_efficiency` has run, and this session
+    // simply edited no files.
+    set_evidence(&db, UUID_A, &[], 0);
+
+    let evidence = db.scope_evidence(UUID_A).unwrap();
+    assert!(evidence.repos_touched.is_empty());
+    assert_eq!(evidence.files_edited, 0);
+    assert!(
+        evidence.present,
+        "an outcome_json that exists and parses is PRESENT evidence, even when it records no edits"
+    );
+
+    // A row with no evidence at all is the only provisional case.
+    db.upsert_session(&parsed(UUID_B, "/home/saidler/notes"), "host-01")
+        .unwrap();
+    assert!(
+        !db.scope_evidence(UUID_B).unwrap().present,
+        "an absent outcome_json is NOT present evidence"
+    );
+}
+
+/// The consequence, asserted at the cursor: re-skipping a settled row must not advance the export
+/// revision, because the row must not be re-offered at all.
+///
+/// BITES: revert the `present` gate and `revision` climbs by one on every pass, forever.
+#[test]
+fn a_settled_skip_does_not_churn_the_export_cursor() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/home/saidler/notes"), "host-01")
+        .unwrap();
+    set_evidence(&db, UUID_A, &[], 0);
+
+    // Record the skip the way the orchestrator would for PRESENT evidence: settled.
+    db.record_enrich_skip(
+        UUID_A,
+        "personal",
+        Some(session::SCOPE_VERSION),
+        EnrichStatus::SkippedPersonal,
+    )
+    .unwrap();
+    let rev_after_first: i64 = db
+        .conn
+        .query_row("SELECT revision FROM export_meta WHERE id = 0", [], |r| r.get(0))
+        .unwrap();
+
+    // The row is no longer a candidate, so no later pass can re-skip it and bump the cursor again.
+    assert!(
+        candidate_ids(&db).is_empty(),
+        "a settled row must not be re-offered: that is what stops the churn"
+    );
+    let rev_now: i64 = db
+        .conn
+        .query_row("SELECT revision FROM export_meta WHERE id = 0", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rev_now, rev_after_first, "no further revision bumps");
+}

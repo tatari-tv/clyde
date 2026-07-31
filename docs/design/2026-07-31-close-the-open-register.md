@@ -13,7 +13,9 @@ Implemented when they have.
 `docs/design/2026-07-31-open-defects-handoff.md` is an open register of six items left after v0.20.0:
 three targeted fixes (D, E, F), two that were routed to design docs (B, A), and one housekeeping
 consolidation. This doc is the single execution plan for all of them, in the register's own order,
-with one commit per item. Every anchor in the register was re-verified against `main`, and four of
+with one commit per PHASE: six commits in this repo (E and F share Phase 1, the register correction and
+G share Phase 6) plus one external commit for G in `~/repos/scottidler/claude`. AC6 records the same
+split. Every anchor in the register was re-verified against `main`, and four of
 its claims were measured wrong; the corrections are recorded below and the plan is built on the
 measurements, not the register's prose.
 
@@ -122,7 +124,9 @@ remains for Phase 6 to fix there.
 
 ### Overview
 
-Six commits, in the register's order, each independently committable and `otto ci` green on its own.
+Six commits in this repo, in the register's order, each independently committable and `otto ci` green on
+its own, plus G's separate commit in `~/repos/scottidler/claude`. One commit per PHASE, not per register
+item: E and F share Phase 1 and the register correction shares Phase 6 with G.
 Phases 1, 2, 5 and 6 are fully independent. Phases 3 and 4 are independent to LAND but ordered to
 REVERT: Phase 4 sets `SCHEMA_VERSION` to 12 and appends `migrate_v12_scope` to the ladder Phase 3
 creates, so reverting Phase 3 after Phase 4 has landed would leave `SCHEMA_VERSION = 12` with no v11
@@ -286,7 +290,9 @@ pub fn classify_with_evidence(
 **Model:** opus
 
 - `session/src/parse.rs`: add an `activity: Option<DateTime<Utc>>` field to `Acc` (`:320`) and fold
-  MAX at `:387`, beside the MIN that already produces `created` from the same parsed `timestamp`.
+  MAX at `:387-388`, beside the MIN that already produces `created` from the same parsed `timestamp`.
+  Stated as a RANGE on purpose: `:387` extracts the `timestamp` and `:388` is the MIN fold, per
+  Correction 4 above, so naming `:387` alone would reintroduce the very drift that correction withdrew.
   Carry it out through `finalize` (`:443`) onto `ParsedSession`.
 - `sessions/src/db.rs:55`: `SCHEMA_VERSION` 10 -> 11. Add `migrate_v11_activity` to the ladder in
   `sessions/src/db/migrate.rs` with `ensure_column` for BOTH `activity_at TEXT` and
@@ -496,8 +502,13 @@ pub fn classify_with_evidence(
     count: for each of `### D`, `### E`, `### F`, `### B`, `### A`, the section body contains
     `2026-07-31-close-the-open-register`. A bare `rg | wc -l` would pass on one cross-reference, so it
     is not the check.
-  - `git -C ~/repos/scottidler/claude diff --stat HEAD -- HOME/.claude/settings.json` no longer shows
-    the `codex-stdin-guard.sh` entry as uncommitted.
+  - The hook entry is present in `HEAD` of the other repo, checked for the ENTRY rather than for the
+    file: `git -C ~/repos/scottidler/claude show HEAD:HOME/.claude/settings.json | rg -c
+    'codex-stdin-guard'` returns 1, and `git -C ~/repos/scottidler/claude diff HEAD --
+    HOME/.claude/settings.json | rg -c 'codex-stdin-guard'` returns 0.
+    A `git diff --stat` check would NOT work here and is deliberately not used: that file also carries
+    unrelated in-flight changes, so its diff stays non-empty after a correct selective commit and would
+    prove nothing either way.
 
 ## Acceptance Criteria
 
@@ -518,7 +529,7 @@ below holds for both. Where a criterion is a delta, the pre-state is what makes 
       `clyde/tests/collect.rs` takes it to **1**; removing it restores **0**. Planting an em dash in
       `report/templates/slots/closing.pmt` takes it to **1**; removing it restores **0**. PASS.
 
-- [x] **AC2 (Phase 2).** An unpriceable model with real tokens is disclosed, never silently $0.
+- [x] **AC2a (Phase 2, code).** An unpriceable model with real tokens is disclosed, never silently $0.
       `rg -n 'unpriced_models' --type rust -g '!target' -g '!*tests*' .` returns at least one hit
       (test-only hits excluded on purpose, so the criterion cannot be satisfied by a test alone), and
       `clyde session reindex` prints an `unpriced` count on every run, including when it is 0.
@@ -527,10 +538,14 @@ below holds for both. Where a criterion is a delta, the pre-state is what makes 
       carries all-zero tokens in all **72** rows it appears in, so today's measured dollar impact is
       **$0.00**. This criterion guards the next unpriced model, and the doc says so rather than
       claiming a recovery.
-      *Observed after Phase 2 (`7ddf667`):* that `rg` returns **5** production lines. The printed-count
-      half is pinned at the library seam (`PersistStats::unpriced` asserted 0 on an all-priced fixture
-      and 1 on an unpriced-with-tokens fixture); the live CLI line is exercised by the Rollout reindex.
-      PASS on the symbol half.
+      *Observed after Phase 2:* that `rg` returns **5** production lines, and the count is pinned at the
+      library seam (`PersistStats::unpriced` asserted 0 on an all-priced fixture, 1 on an
+      unpriced-with-tokens fixture). PASS.
+
+- [ ] **AC2b (Phase 2, live).** `clyde session reindex` prints an `unpriced` count on every run,
+      including when it is 0. Split from AC2a because it is a ROLLOUT assertion: it needs the installed
+      binary run against the real catalog, and the doc must not show a checked box for something that
+      has not been executed. Unchecked until the Rollout reindex runs.
 
 - [ ] **AC3 (Phase 3).** Dormancy survives a wholesale mtime reset.
       A session whose messages are 30 days old but whose files were all touched `now` is still
@@ -799,8 +814,13 @@ quality bar. Specifically:
 - Six commits, one per phase, each `otto ci` green, in the register's order.
 - PR flow (this repo is gated), then `bump --tag-only` on the merged commit per `rules/git.md`.
 - After install on desk.lan: run `clyde session reindex` once (Phase 3's backfill plus Phase 2's new
-  count), then `clyde session enrich` once (Phase 4's re-evaluation), then record AC3 and AC4's
-  observed numbers in this doc.
+  count), then **`clyde session enrich --dry-run` and REVIEW its per-session routing decisions**, then
+  `clyde session enrich` once (Phase 4's re-evaluation), then record AC3 and AC4's observed numbers in
+  this doc.
+- The dry run is not optional and not a formality. It is the pre-send gate the Security section and AC4
+  both require, and it is the last point at which the classifier's answer for the cohort can be checked
+  before 29 session bodies go to the work account irreversibly. An operator following this list without
+  it would skip the only review step this plan has.
 - Phase 6's G half is a separate commit in `~/repos/scottidler/claude`, home persona, not gated on
   anything here.
 

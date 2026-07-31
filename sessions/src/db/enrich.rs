@@ -39,6 +39,17 @@ pub struct ScopeEvidence {
     /// Distinct file paths across the session's successful Edit/Write calls. The denominator of the
     /// totality check.
     pub files_edited: u64,
+    /// Whether `outcome_json` existed and parsed at all, i.e. whether the efficiency pass has REACHED
+    /// this row. This is NOT derivable from the other two fields, and conflating it with
+    /// `repos_touched.is_empty()` is a bug: an empty touch set means either "no evidence stored yet"
+    /// (provisional) or "evidence stored, and this session edited nothing" (settled, and common).
+    ///
+    /// Keying the caller's provisional rule on emptiness would leave every zero-edit session's
+    /// `scope_version` NULL forever, so the widened `enrich_candidates` predicate would re-offer it on
+    /// every pass, `record_enrich_skip` would rewrite it every time, and that bare UPDATE fires the v5
+    /// revision trigger -- making every `session export --cursor` consumer re-fetch those rows after
+    /// every enrich pass, indefinitely.
+    pub present: bool,
 }
 
 impl Db {
@@ -48,6 +59,12 @@ impl Db {
     /// yet", which is a legitimate state, and the all-empty answer it yields makes the classifier fall
     /// through to `personal` -- the fail-safe direction. A malformed blob is warned about rather than
     /// propagated, mirroring `Db::repos_touched`, so one corrupt row cannot abort an enrich pass.
+    ///
+    /// [`ScopeEvidence::present`] distinguishes "the efficiency pass has not reached this row" from
+    /// "it has, and this session edited nothing". Both yield an empty `repos_touched`, and only the
+    /// first is provisional. A MALFORMED blob counts as NOT present: it is unreadable, so this row
+    /// genuinely has no usable evidence, and treating it as settled would freeze a wrong answer behind
+    /// a recorded `scope_version`. A reindex rewrites the blob and the row self-heals.
     pub fn scope_evidence(&self, session_id: &str) -> Result<ScopeEvidence> {
         let blob: Option<String> = self
             .conn
@@ -85,6 +102,7 @@ impl Db {
             repos_touched.len()
         );
         Ok(ScopeEvidence {
+            present: true,
             repos_touched,
             files_edited,
         })
