@@ -547,13 +547,24 @@ cost canary.
 
 ### 1. Decomposed `common/src/llm/cli/tests.rs`
 
-1,353 lines (1,322 at drafting, plus Phase 2's new test) split into a 128-line entry point and seven
-submodules. `otto bloat` exits 0; largest submodule is 266 lines against the 700-line criterion:
+The former single 1,353-line `cli/tests.rs` (1,322 at drafting, plus Phase 2's new test) became an
+entry point plus seven submodules. `otto bloat` exits 0 and every submodule is far under the 700-line
+criterion.
+
+Counts are the CURRENT tree, re-measured with `wc -l` after the implementation-audit fixes and
+`cargo fmt` moved several by a few lines:
 
 ```
-tests.rs   128 (helpers + mod decls)
-argv       106   env 259   envelope 182   guards 275   usage 132   fatal 260   kinds 107
+tests.rs   127 (helpers + mod decls)
+argv 105   envelope 172   env 258   fatal 259   guards 265   kinds 107   usage 114
+total 1,407 across all 8 files
 ```
+
+The total EXCEEDS the original 1,353 because every submodule carries its own `#![allow]`, module doc
+comment, and `use super::*;` header. That is expected overhead from splitting, not duplicated or lost
+tests: the `#[test]` count is 63 before and 63 after, which is the invariant that actually matters.
+*Corrected after CodeRabbit flagged the drift on PR #78. Its own figures (1,449 total, guards 275)
+were stale too, so both were re-measured rather than one trusted.*
 
 Test count unchanged, which is the criterion that matters: `#[test]` attributes are **63 before and 63
 after** (`git show HEAD:...` vs the split tree). The plan said 62 because Phase 2 added one since
@@ -585,8 +596,9 @@ Exactly as the doc predicted. No code, no ignore file.
 **What came back, and why AC6 is still open:**
 
 - **Keyless is CONFIRMED by a teammate.** Patrick Shelby: "v0.18.0 ran clean for me, keyless
-  confirmed. `report render` worked with no `ANTHROPIC_API_KEY` in env." 131 sessions, $948.43 for
-  July. That is the half of AC6 the excision was actually about, and it passes.
+  confirmed. `report render` worked with no `ANTHROPIC_API_KEY` in env." 131 sessions reported for
+  July; the billing total is redacted, being another operator's Anthropic spend in a committed doc.
+  That is the half of AC6 the excision was actually about, and it passes.
 - **The 50% enrichment floor was never measured, by either of them.** Patrick got **0%**: all 131
   sessions gate `skipped-personal`, so nothing reaches the LLM call at all. Keegan re-ran it and
   commented on his reports' content, but reported no enrichment percentage either.
@@ -702,7 +714,7 @@ rather than guessing at it.
 | site | before | after |
 |---|---|---|
 | `bootstrap.rs` x2 | `(nothing to migrate — already on clyde...)` | `: ` |
-| `bootstrap.rs` | `stale credential file found: {} — clyde no longer...` | `.` + sentence split (the line already had a colon) |
+| `bootstrap.rs` | `stale credential file found: {} <em-dash> clyde no longer...` | `.` + sentence split (line already had a colon) |
 | `doctor.rs` | `can no longer migrate it — install a...` | `.` + sentence split |
 | `doctor.rs` | `legacy targets/state remain — run \`clyde bootstrap\`` | `: ` |
 | `report/tests.rs` | `parts sum to the aggregate — no double count` | `, ` |

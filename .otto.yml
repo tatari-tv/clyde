@@ -27,14 +27,30 @@ tasks:
       # is a hole the tree drifts back through where CI cannot see it. Using rg also makes this command
       # and the design's acceptance criterion literally the same one, so they cannot diverge.
       # `\x{2014}` (not the character) keeps this file em-dash-free too.
-      if rg -n --type rust -g '!target' '\x{2014}' .; then
-        echo ""
-        echo "❌ Found em dash in Rust source."
-        echo "   Use --, a colon, parens, or split the sentence (rules/voice.md)."
-        echo "   To assert an em dash is ABSENT, write '\\u{2014}' rather than the literal."
-        exit 1
-      fi
-      echo "✅ No em dashes in Rust source"
+      # Status is checked EXPLICITLY, not via `if rg ...`. ripgrep exits 0 on a match, 1 on no
+      # match, and 2 on an error (bad glob, unreadable path, broken regex). A bare `if` treats 2
+      # like 1, so a lint that silently stopped scanning would report success: fail-open, in the one
+      # place that exists to fail closed.
+      em_status=0
+      rg -n --type rust -g '!target' '\x{2014}' . || em_status=$?
+      case "$em_status" in
+        0)
+          echo ""
+          echo "❌ Found em dash in Rust source."
+          echo "   Use --, a colon, parens, or split the sentence (rules/voice.md)."
+          echo "   To assert an em dash is ABSENT, write '\\u{2014}' rather than the literal."
+          exit 1
+          ;;
+        1)
+          echo "✅ No em dashes in Rust source"
+          ;;
+        *)
+          echo ""
+          echo "❌ ripgrep exited $em_status scanning for em dashes (not 0=found / 1=clean)."
+          echo "   The scan did not complete, so this is a lint FAILURE, not a pass."
+          exit 1
+          ;;
+      esac
 
   bloat:
     help: "Fail if any source file exceeds BLOAT_MAX_LINES (default 1500)"

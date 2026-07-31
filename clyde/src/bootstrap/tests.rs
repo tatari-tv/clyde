@@ -1132,3 +1132,64 @@ fn mentions_retired_credential_is_scoped_to_comments_and_env_file() {
         "the canonical comment must not match"
     );
 }
+
+/// CodeRabbit, PR #78: `--install-timer` was unreachable once the `.service` existed, because
+/// `ensure_enrich_unit` repaired the service and returned. A host whose `clyde-enrich.timer` or
+/// enable symlink went missing therefore had a DEAD SCHEDULER with no way back: the sweep silently
+/// never fires again and `bootstrap` keeps reporting success.
+#[test]
+fn install_timer_restores_a_missing_timer_even_when_the_service_exists() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    fs::create_dir_all(paths.systemd_dir()).unwrap();
+    // A canonical service, so the repair path has nothing to do and would return false.
+    fs::write(paths.clyde_unit(), clyde_service_body(None)).unwrap();
+    assert!(!paths.clyde_timer().exists(), "fixture: the timer is missing");
+
+    assert!(
+        ensure_enrich_unit(&paths, true, false).unwrap(),
+        "--install-timer must restore a missing timer even though the service exists"
+    );
+    assert!(paths.clyde_timer().exists(), "the timer unit must be written");
+    assert!(
+        fs::symlink_metadata(paths.clyde_wants_link()).is_ok(),
+        "the enable symlink must be created, or the timer is installed but not armed"
+    );
+}
+
+/// The other half: the enable symlink is what actually arms the timer, so a present timer with a
+/// MISSING link is the same dead-scheduler state.
+#[test]
+fn install_timer_restores_a_missing_enable_symlink() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    fs::create_dir_all(paths.systemd_dir()).unwrap();
+    fs::write(paths.clyde_unit(), clyde_service_body(None)).unwrap();
+    fs::write(paths.clyde_timer(), "[Timer]\nOnCalendar=daily\n").unwrap();
+    assert!(
+        fs::symlink_metadata(paths.clyde_wants_link()).is_err(),
+        "fixture: no link"
+    );
+
+    assert!(ensure_enrich_unit(&paths, true, false).unwrap());
+    assert!(fs::symlink_metadata(paths.clyde_wants_link()).is_ok());
+}
+
+/// And without `--install-timer` a canonical service plus a missing timer is still a NO-OP, so the
+/// fix above cannot turn every plain `bootstrap` into a timer installer.
+#[test]
+fn a_missing_timer_is_not_installed_without_the_flag() {
+    let dir = TempDir::new().unwrap();
+    let paths = paths_under(dir.path());
+    fs::create_dir_all(paths.systemd_dir()).unwrap();
+    fs::write(paths.clyde_unit(), clyde_service_body(None)).unwrap();
+
+    assert!(
+        !ensure_enrich_unit(&paths, false, false).unwrap(),
+        "no flag, nothing to repair: must stay a no-op"
+    );
+    assert!(
+        !paths.clyde_timer().exists(),
+        "no timer may be created without the flag"
+    );
+}

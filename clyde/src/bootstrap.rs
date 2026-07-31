@@ -928,6 +928,23 @@ fn rewrite_hook_commands(root: &mut Value) -> bool {
 fn ensure_enrich_unit(paths: &Paths, install_timer: bool, dry_run: bool) -> Result<bool> {
     debug!("ensure_enrich_unit: install_timer={install_timer} dry_run={dry_run}");
     let clyde_svc = paths.clyde_unit();
+    // Checked BEFORE the repair branch, because the repair only ever rewrites the .service. A host
+    // with a service but a missing `clyde-enrich.timer` (or a missing `timers.target.wants` link) has
+    // a dead scheduler, and the early return below meant `--install-timer` could never reach it: the
+    // service exists, so it repaired the service and returned. The sweep then silently never fires.
+    // `symlink_metadata` for the link, never `exists()`, which follows it and reports false for a
+    // dangling one -- the same reason `doctor::legacy_timer_residue` uses it.
+    let timer_incomplete =
+        install_timer && (!paths.clyde_timer().exists() || fs::symlink_metadata(paths.clyde_wants_link()).is_err());
+    if timer_incomplete {
+        if dry_run {
+            // WOULD restore the timer + enable symlink. Report without writing.
+            return Ok(true);
+        }
+        // Writes service + timer + link. Rewriting the service is harmless and idempotent: it is
+        // `clyde_service_body` either way.
+        return install_clyde_timer(paths);
+    }
     // An already-installed unit may predate the `sessions`->`session` rename, still carry the retired
     // `EnvironmentFile=` directive, or still refer to a credential clyde no longer reads. Repair it.
     if clyde_svc.exists() {

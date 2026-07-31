@@ -21,8 +21,9 @@ thread are corrected below, and one of mine is a null result. Do not re-measure 
 ## What the thread actually established (the good news first)
 
 **Keyless works, confirmed by a teammate with no key.** Patrick Shelby, on v0.18.0: "ran clean for me,
-keyless confirmed. `report render` worked with no `ANTHROPIC_API_KEY` in env." 131 sessions, $948.43
-for July. That is the half of AC6 the excision was about, and it passes. Keegan Ferrando re-ran it too
+keyless confirmed. `report render` worked with no `ANTHROPIC_API_KEY` in env." 131 sessions reported
+for July. (Billing total redacted: another operator's Anthropic spend, in a committed doc.) That is
+the half of AC6 the excision was about, and it passes. Keegan Ferrando re-ran it too
 and commented on his reports' content.
 
 What neither of them produced is the **enrichment percentage**, and Finding A is why.
@@ -207,7 +208,7 @@ steps.
 Keegan: `ccu` used to land within 5-10% of the web UI (always low), but after the recent fixes "all the
 tooling you've made is usually like at least 30% lower than the web UI shows". Scott, in-thread: "maybe
 my accounting is off then ... its been very difficult to nail down. maybe there is more work to be
-done." Patrick separately could not reconcile his own `$948.43` against the web UI.
+done." Patrick separately could not reconcile his own July total against the web UI.
 
 ### Refuted: it is not missing model pricing
 

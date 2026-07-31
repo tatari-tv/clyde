@@ -5,6 +5,29 @@
 **Status:** Handoff brief. Findings are diagnosed, do not re-derive.
 **Audience:** the next agent picking up `tatari-tv/clyde`
 
+> **HISTORICAL SNAPSHOT, superseded. Read this for the evidence, not for the remediation advice.**
+> Written 2026-07-30 against `v0.18.0`. **All six items below have since been executed** by
+> `docs/design/2026-07-30-excise-api-key-followups.md` (`Status: Implemented`), shipped in the release
+> after `v0.18.0`. Per-item outcomes are in
+> `docs/design/2026-07-30-excise-api-key-followups-implementation-notes.md`:
+>
+> | item | outcome |
+> |---|---|
+> | 1, `rewrite_unit` orphaned comment | Fixed. The repair now writes one canonical body; the live desk.lan unit was repaired. Notes, Phase 1 |
+> | 2, eight enrich JSON failures | **All 8 recovered.** No row in the DB is attempt-retired. The cause was a payload-captured model, not the transport. Notes, Phases 0 and 2 |
+> | 3, em-dashes | Rule amended and all occurrences removed, plus a CI lint. Notes, Phase 3 |
+> | 4, retire the klod migration | Migration deleted, `doctor`'s tripwire retained and extended. Notes, Phase 4 |
+> | 5, acceptance-criteria defect class | Execution gate added to `create-design-doc` / `how-to-execute-a-plan`. Notes, Phase 5 |
+> | 6, smaller items | `cli/tests.rs` decomposed; dependabot alert already `fixed`; cost canary in the README. Notes, Phase 6 |
+>
+> Two things here are **stale as remediation guidance** and must not be acted on: item 1's proposed
+> "drop the contiguous comment block" fix was REJECTED (see the design doc's Alternative 1, the
+> ordering is unrecoverable), and item 2's "raise `--max-attempts`" was ruled out as retrying a
+> deterministic failure. Item 4's "check `ltl-7007` and `mini` first" was waived by Scott.
+>
+> Still open, and moved to its own brief: the excision's AC6 enrichment percentage, which is blocked
+> by a defect found after this was written. See `docs/design/2026-07-30-scope-dormancy-cost-handoff.md`.
+
 `v0.18.0` shipped the api-key excision ([#77](https://github.com/tatari-tv/clyde/pull/77), design doc
 `docs/design/2026-07-29-excise-api-key.md`, phase-by-phase record in
 `docs/design/2026-07-29-excise-api-key-implementation-notes.md`). That work is done, live, and

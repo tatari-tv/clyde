@@ -207,7 +207,12 @@ fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
         ("ANTHROPIC_API_KEY", "planted-api-key-must-not-leak"),
         ("CLAUDECODE", "planted-claudecode-must-not-leak"),
     ];
-    // SAFETY: serialized behind ENV_LOCK; every planted var is removed below.
+    // Capture BEFORE planting and restore after, rather than unconditionally removing. `CLAUDECODE`
+    // and `ANTHROPIC_API_KEY` can legitimately be set in the runner's parent environment, and
+    // removing them outright leaked into every later test in this binary: a permanent wipe, not a
+    // cleanup. Same reasoning (and same shape) as the proxy test above.
+    let prior: Vec<(&str, Option<String>)> = planted.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
+    // SAFETY: serialized behind ENV_LOCK; every planted var is restored below.
     for (k, v) in planted {
         unsafe { std::env::set_var(k, v) };
     }
@@ -219,8 +224,14 @@ fn built_command_gives_the_child_only_the_allowlist_and_no_inherited_secret() {
     spawn.args.clear();
     let output = spawn.to_command().output().expect("/usr/bin/env must be spawnable");
 
-    for (k, _) in planted {
-        unsafe { std::env::remove_var(k) };
+    // Restore, never blanket-remove: only vars that were genuinely ABSENT before get removed.
+    unsafe {
+        for (name, value) in &prior {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
     }
     // `child_env` READS the environment (`dirs::home_dir()`, `PATH`), so it must be called while
     // the lock is still held. Reading the environ block concurrently with another test's `set_var` is
