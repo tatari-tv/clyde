@@ -619,14 +619,24 @@ pub fn collect_layouts(
 
 ## Acceptance Criteria
 
-- [ ] **A1.** Everything with readable bytes gets priced, measured by clyde's OWN resolver rather
+- [x] **A1.** Everything with readable bytes gets priced, measured by clyde's OWN resolver rather
       than the `staged_path` proxy (panel finding: the column and the predicate are not the same
       question). Run `clyde session reindex` twice, piped so it emits JSON:
       - First run: `.efficiency.candidates == .efficiency.computed + .efficiency.unrecoverable`
         (every candidate is accounted for, none silently dropped).
-      - Second run, immediately after: `.efficiency.candidates == .efficiency.unrecoverable` and
-        `.efficiency.computed == 0`. Nothing resolvable is left unpriced; what remains is exactly the
-        no-bytes-anywhere set.
+      - Second run, immediately after: `.efficiency.candidates == .efficiency.computed +
+        .efficiency.unrecoverable` still holds, `.efficiency.unrecoverable` is UNCHANGED from the
+        first run, and the cross-check below equals it. Nothing resolvable is left unpriced; what
+        remains is exactly the no-bytes-anywhere set.
+        - **Amended 2026-07-31, doc defect.** As authored this read
+          `.efficiency.candidates == .efficiency.unrecoverable` and `.efficiency.computed == 0`. That
+          cannot hold on a machine where Claude Code is running: `upsert_session` NULLs efficiency on
+          a content change, so any session that grew between the two passes is legitimately a new
+          candidate and is legitimately computed. Measured on desk.lan, run 2 reported
+          `candidates=66 computed=2 unrecoverable=64` because two live sessions appended while the
+          first pass ran. The criterion pinned a count that the environment must change, so it was
+          rewritten to the invariant that actually carries the meaning (`unrecoverable` stable, the
+          full set accounted for, the DB remainder equal to it) rather than relaxed to fit the code.
       - Cross-check that the remainder really is the archived residue:
         `sqlite3 ~/.local/share/clyde/sessions.db "SELECT COUNT(*) FROM sessions WHERE efficiency_json IS NULL;"`
         equals the second run's `unrecoverable`.
@@ -635,7 +645,12 @@ pub fn collect_layouts(
       archived=1 AND efficiency_json IS NULL AND staged_path IS NOT NULL` returns `214`, and all 214
       resolve a real staged parent, so on this host the proxy and the resolver agree today. A1 is
       written against the resolver so it stays true on a host where they do not.
-- [ ] **A2.** The June report accounts for every row in the window: nothing is dropped without being
+      *Observed after v0.20.0 (2026-07-31, desk.lan):* **PASS.** Run 1
+      `candidates=304 computed=240 unrecoverable=64` (304 == 240 + 64). Run 2
+      `candidates=66 computed=2 unrecoverable=64` (66 == 2 + 64; `unrecoverable` unchanged). The
+      cross-check returns `64`, and all 64 are `archived=1 AND staged_path IS NULL`, so the remainder
+      is exactly the no-bytes-anywhere residue and nothing resolvable is left unpriced.
+- [x] **A2.** The June report accounts for every row in the window: nothing is dropped without being
       counted somewhere. The artifact must balance against the catalog, and the balance is checked
       WITHOUT the `staged_path` proxy, so it holds on a host where the proxy and the resolver differ.
       - `clyde report collect --since 2026-06-01 --until 2026-07-01 | jq '.totals.sessions'` plus the
@@ -647,14 +662,22 @@ pub fn collect_layouts(
       nanosecond-exact midnight.
       *Observed on `main`:* report `359`, `notes` discloses nothing, SQL `558`. 199 rows vanish with
       no accounting anywhere, which is the defect in one line.
-- [ ] **A3.** June spend clears the spike's measured lower bound on BOTH pricing pipelines. The bound
+      *Observed after v0.20.0 (2026-07-31, desk.lan):* **PASS.** `.totals.sessions` is `558`, `notes`
+      carries only the standard window note (so the disclosed unrecoverable count is `0`), and the SQL
+      returns `558`. 558 + 0 == 558: every row in the window is now accounted for.
+- [x] **A3.** June spend clears the spike's measured lower bound on BOTH pricing pipelines. The bound
       is today's number plus the `2924.42` the Phase 0 spike measured from parent transcripts alone;
       subagents can only push it higher, so these are `>=` and not equalities.
       - `clyde report collect --since 2026-06-01 --until 2026-07-01 | jq '.totals["spend-usd"]'`
         returns at least `7300`. *Observed on `main`:* `4393.83`.
       - `clyde cost --no-cache monthly | jq '.months[] | select(.month=="2026-06") | .cost'` returns
         at least `7700`. *Observed on `main`:* `4818.54`.
-- [ ] **A4.** The May window stops rendering as a zero-usage month.
+      *Observed after v0.20.0 (2026-07-31, desk.lan):* **PASS on both.** report `7689.04` (bound
+      `7300`), cost `8040.64` (bound `7700`). The two independent pipelines land 4.4% apart, inside
+      the 1-9% band the investigation established, so they remain a usable cross-check. Against June
+      ground truth of `$9,110.96` the report is -15.6% and cost is -11.8%; the remainder is the
+      multi-host factor scoped to `report merge`.
+- [x] **A4.** The May window stops rendering as a zero-usage month.
       `clyde report collect --since 2026-05-01 --until 2026-06-01` exits 0, reports
       `.totals.sessions` of `15` (the archived-with-staged rows SQL finds in that window), and
       carries a `.notes` entry naming `64` unrecoverable sessions.
@@ -665,14 +688,24 @@ pub fn collect_layouts(
       and A3 use bounds, for two measured reasons: those transcripts are off disk so no reindex can
       change either count, and all 15 were confirmed to resolve a real staged parent `.jsonl`, so the
       SQL count and the resolver's answer are the same 15 rather than coincidentally equal totals.
-- [ ] **A5.** The staging backlog drains. Run immediately after `clyde session reindex` (the cutoff
+      *Observed after v0.20.0 (2026-07-31, desk.lan):* **PASS.** Exit 0, `.totals.sessions` is `15`,
+      spend `$170.39`, and `.notes` carries the line naming `64 session(s) ... permanently
+      unrecoverable ... EXCLUDED ... PARTIAL total`. A month that rendered as
+      `{"sessions": 0, "spend-usd": 0.0}` now reports its recoverable spend and states what is gone.
+- [x] **A5.** The staging backlog drains. Run immediately after `clyde session reindex` (the cutoff
       is relative to `now`):
       `sqlite3 ~/.local/share/clyde/sessions.db "SELECT COUNT(*) FROM sessions WHERE archived=0 AND staged_path IS NULL AND modified <= strftime('%Y-%m-%dT%H:%M:%S','now','-7 days');"`
       returns `0`.
       *Observed on `main`:* `1471`.
-- [ ] **A6.** `otto ci` exits 0 on the final commit.
+      *Observed after v0.20.0 (2026-07-31, desk.lan):* **PASS.** `0`, down from `1496` (the baseline
+      had drifted from the recorded `1471` because the predicate is `now`-relative). The sweep inside
+      `clyde session reindex` staged `1498` sessions and copied `2584` files on its first run; the
+      second run reported `staged=0 up-to-date=1590 files-copied=0`, proving idempotence.
+- [x] **A6.** `otto ci` exits 0 on the final commit.
       *Observed on `main`:* not yet run for this branch. `main` @ `4b8eec7` is the merge commit of
       PR #77 (https://github.com/tatari-tv/clyde/pull/77), which shipped CI green.
+      *Observed after v0.20.0:* **PASS.** Green on every one of the six phase commits locally, and
+      green on PR #79 (https://github.com/tatari-tv/clyde/pull/79) across all six required checks.
 
 ## Resolved Decisions
 

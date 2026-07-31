@@ -153,24 +153,38 @@ numbers are against `main` at v0.20.0. The named symbols are the durable anchors
 - **Action:** commit it with your own batch. The hook script itself IS committed and symlinked.
   Different repo; nothing in `clyde` blocks on it.
 
-## Outstanding measurements, not defects
+## Acceptance criteria: DONE, all six pass
 
-`docs/design/2026-07-30-archived-session-spend.md`'s acceptance criteria A1, A2, A4 and A5 were never
-run, because each needs a write-side `clyde session reindex` against the real catalog. A3's `clyde
-cost` half and A6 both PASSED. Run the rest after install and record the numbers in that doc:
+Run on desk.lan 2026-07-31 against the installed v0.20.0, after `clyde session reindex`. Numbers are
+recorded per criterion in `docs/design/2026-07-30-archived-session-spend.md`; summary here so this
+file stands alone.
 
-- **A1:** `clyde session reindex` twice, piped for JSON. First run:
-  `.efficiency.candidates == .efficiency.computed + .efficiency.unrecoverable`. Second run:
-  `.efficiency.candidates == .efficiency.unrecoverable` and `.efficiency.computed == 0`.
-- **A2:** June `.totals.sessions` plus the disclosed unrecoverable count equals the catalog's 558.
-- **A3 (report half):** June `.totals["spend-usd"]` >= `7300`.
-- **A4:** the May window exits 0, reports 15 sessions, and discloses 64 unrecoverable.
-- **A5:** the staging backlog query returns 0 immediately after a reindex. Its recorded baseline
-  (1471) is `now`-relative and had already drifted to 1486 by 2026-07-31; expect it to keep moving.
+| | result |
+|---|---|
+| **A1** everything with bytes gets priced | PASS. Run 1 `304 = 240 + 64`, run 2 `66 = 2 + 64`, `unrecoverable` stable at 64. DB remainder is exactly 64 rows, all `archived=1 AND staged_path IS NULL` |
+| **A2** June accounts for every row | PASS. `.totals.sessions` 558, 0 disclosed, SQL 558 |
+| **A3** June clears the bound on both pipelines | PASS. report `$7,689.04` (bound 7300), cost `$8,040.64` (bound 7700) |
+| **A4** May stops reading as zero-usage | PASS. Exit 0, 15 sessions, `$170.39`, notes names 64 unrecoverable |
+| **A5** staging backlog drains | PASS. `0`, from a `1496` baseline. First sweep staged 1498 sessions / 2584 files; second reported `staged=0 up-to-date=1590` |
+| **A6** `otto ci` | PASS. Green on all six phase commits and on PR #79's six required checks |
 
-Note that until that reindex runs, `report collect --since 2026-06-01 --until 2026-07-01` exits 1
-with `199 session(s) ... not yet indexed`. That is the fail-closed contract working: those rows are
-classified RECOVERABLE, which is itself live proof the resolver reads the staged copies.
+Two things that came out of running them, both already folded into the design doc:
+
+- **A1's second-run wording was a doc defect and was amended.** It pinned
+  `.efficiency.computed == 0`, which cannot hold on a machine where Claude Code is running:
+  `upsert_session` NULLs efficiency on a content change, so a session that grows between the two
+  passes is legitimately a new candidate. Two did. The criterion now asserts the invariant that
+  carries the meaning (`unrecoverable` stable, full set accounted for, DB remainder equal to it)
+  rather than a count the environment must change.
+- **The two pricing pipelines land 4.4% apart** (`$7,689.04` report vs `$8,040.64` cost), inside the
+  1-9% band the investigation established, so the independent cross-check is still usable. Against
+  June ground truth of `$9,110.96` that is -15.6% and -11.8%; the remainder is multi-host, which
+  `clyde report merge` covers.
+
+**The 64 unrecoverable rows are now a fixed, closed set**, not a leading edge: the staging backlog is
+0 and the sweep runs inside every reindex. It only stays closed if the `clyde-reindex` timer is
+installed (`clyde doctor` reports it absent on this host as of 2026-07-31) and if B is fixed, since B
+can suppress the sweep that keeps it closed.
 
 ## Suggested order
 
