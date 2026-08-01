@@ -9,6 +9,7 @@
 mod bootstrap;
 mod cli;
 mod doctor;
+mod projects;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -87,7 +88,9 @@ fn main() -> Result<()> {
     if let Command::Mcp(cmd) = &cli.command {
         let cfg = common::config::load().context("failed to load clyde config")?;
         let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
-        let projects_dir = cfg.projects_dir();
+        // `mcp serve` is spawned by an MCP host with FIXED args, so there is no flag to pass; it
+        // still goes through the shared resolver so all three callers read one precedence.
+        let projects_dir = projects::resolve(None, &cfg)?;
         let reindex_on_start = cfg.reindex_on_start();
         let io = mcp_io::mcp_io!();
         std::process::exit(cmd.run(&io, || {
@@ -651,15 +654,16 @@ fn cmd_tag(db: &Db, args: TagArgs) -> Result<()> {
 }
 
 fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
-    let projects_dir = args
-        .projects_dir
-        .or_else(session::paths::claude_projects_dir)
-        .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects (set HOME)"))?;
     // Load and validate clyde.yml BEFORE the content reindex mutates the catalog: an invalid
     // `efficiency:` section (a typo'd key, an out-of-range threshold) must fail closed, before any
     // write happens, not after the catalog has already been rewritten. Config supplies the scoring
-    // thresholds for the efficiency pass below, and `repo-root` for repo attribution's rule 4.
+    // thresholds for the efficiency pass below, `repo-root` for repo attribution's rule 4, and
+    // `projects-dir` for the resolver on the next line.
     let cfg = common::config::load().context("failed to load clyde config for the efficiency pass")?;
+    // Loaded FIRST, then resolved: this call used to skip config entirely and jump from the flag to
+    // the platform default, so a configured `projects-dir` was ignored and reindex scanned the real
+    // `~/.claude/projects` (register item 8).
+    let projects_dir = projects::resolve(args.projects_dir.as_deref(), &cfg)?;
 
     if args.session.is_some() && !args.reresolve_repo {
         eyre::bail!("--session requires --reresolve-repo");
@@ -880,10 +884,6 @@ fn lazy_reindex(db: &Db, skip: bool) {
     if skip {
         return;
     }
-    let Some(projects_dir) = session::paths::claude_projects_dir() else {
-        warn!("lazy_reindex: cannot resolve ~/.claude/projects; querying stored data only");
-        return;
-    };
     // A broken clyde.yml SKIPS the refresh entirely rather than falling back to the default
     // repo-root. Reindexing writes repo attribution, and that write is strictly-improving: rule 4
     // resolving a session against the WRONG root persists an answer of equal rank that no later
@@ -892,13 +892,24 @@ fn lazy_reindex(db: &Db, skip: bool) {
     //
     // "Stale data beats no answer" still holds for the QUERY (it proceeds against stored data); it
     // does not license a persistent wrong write on the way there.
-    let repo_root = match common::config::load() {
-        Ok(cfg) => cfg.repo_root().to_path_buf(),
+    let cfg = match common::config::load() {
+        Ok(cfg) => cfg,
         Err(e) => {
             warn!(
                 "lazy_reindex: failed to load clyde config, skipping the incremental refresh so a \
                  default repo-root cannot persist wrong attribution; querying stored data only: {e}"
             );
+            return;
+        }
+    };
+    let repo_root = cfg.repo_root().to_path_buf();
+    // Through the shared resolver, which is what makes a configured `projects-dir` reach the lazy
+    // refresh at all. It previously read the platform default unconditionally, so on a host with
+    // `projects-dir` set, every `ls`/`search`/`enrich` silently reindexed the WRONG tree.
+    let projects_dir = match projects::resolve(None, &cfg) {
+        Ok(dir) => dir,
+        Err(e) => {
+            warn!("lazy_reindex: {e}; querying stored data only");
             return;
         }
     };

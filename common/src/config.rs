@@ -479,10 +479,22 @@ impl Config {
         self.render.slot_max_output_tokens
     }
 
-    /// The resolved projects root for `clyde mcp serve`: the configured `projects-dir`, else the
-    /// platform default `~/.claude/projects`.
+    /// The resolved projects root: the configured `projects-dir`, else the platform default
+    /// `~/.claude/projects`.
     pub fn projects_dir(&self) -> PathBuf {
         self.projects_dir.clone().unwrap_or_else(default_projects_dir)
+    }
+
+    /// The `projects-dir` AS CONFIGURED, with no platform fallback substituted. `None` means the key
+    /// is absent from `clyde.yml`.
+    ///
+    /// [`Self::projects_dir`] cannot answer this: it folds the config value and the platform default
+    /// into one `PathBuf`, so a caller that must place config STRICTLY between a CLI flag and the
+    /// platform default has no way to tell "the operator set this" from "nobody set anything". That
+    /// three-level precedence is the whole point of `clyde::projects::resolve`, and collapsing it is
+    /// how `cmd_reindex` came to skip config entirely while `mcp serve` honored it (register item 8).
+    pub fn configured_projects_dir(&self) -> Option<&Path> {
+        self.projects_dir.as_deref()
     }
 
     /// Whether `clyde mcp serve` runs a one-shot incremental reindex at startup (default `true`).

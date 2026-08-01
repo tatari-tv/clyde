@@ -8,6 +8,10 @@
 //! (config loading, `--since` parsing, atomic writes, and external-tool `--help` advertising).
 
 pub mod atomic;
+/// The shared checkout matrix, behind the `testkit` feature so it never ships in a release binary.
+/// See `docs/design/2026-07-31-attribution-and-routing.md` (Testing Strategy).
+#[cfg(any(test, feature = "testkit"))]
+pub mod checkout;
 pub mod config;
 pub mod llm;
 pub mod metrics;
