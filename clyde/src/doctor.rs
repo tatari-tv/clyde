@@ -45,14 +45,21 @@ pub fn run(db_path: &Path) -> Result<i32> {
 struct Attribution {
     /// The resolved config file path, or `None` when no config file exists.
     config_path: Option<PathBuf>,
-    /// The effective `repo-root`, and whether it exists on disk.
-    repo_root: PathBuf,
-    repo_root_exists: bool,
-    /// Whether `repo-root` contains at least one `<org>/<repo>` pair. When it does not, rule 4 is
-    /// INERT on this host and says so, rather than looking like it is simply not firing.
-    repo_root_has_org_repo: bool,
+    /// One entry per effective `repo-roots` entry, in configured order. Reported PER ROOT rather
+    /// than folded into a single verdict: with two roots, a summary line saying "exists" cannot say
+    /// WHICH one exists, and a teammate whose second root is typo'd would read a healthy line.
+    repo_roots: Vec<RepoRootState>,
     work_remote_hosts: Vec<String>,
     routing: sessions::RoutingSummary,
+}
+
+/// One configured root's own diagnosis. Every field is about THAT root; nothing here is a rollup.
+struct RepoRootState {
+    path: PathBuf,
+    exists: bool,
+    /// Whether this root contains at least one `<org>/<repo>` pair. When it does not, rule 4 is
+    /// INERT for this root and says so, rather than looking like it is simply not firing.
+    has_org_repo: bool,
 }
 
 /// Read the attribution picture, or `Ok(None)` when there is no catalog to read.
@@ -62,14 +69,20 @@ fn attribution(db_path: &Path) -> Result<Option<Attribution>> {
     }
     let cfg = common::config::load().context("failed to load clyde config")?;
     let db = sessions::Db::open_at(db_path)?;
-    let repo_root = cfg.repo_root().to_path_buf();
+    let repo_roots: Vec<RepoRootState> = cfg
+        .repo_roots()
+        .iter()
+        .map(|path| RepoRootState {
+            exists: path.is_dir(),
+            has_org_repo: has_org_repo_pair(path),
+            path: path.clone(),
+        })
+        .collect();
     Ok(Some(Attribution {
         config_path: common::config::config_file_path().filter(|p| p.exists()),
-        repo_root_exists: repo_root.is_dir(),
-        repo_root_has_org_repo: has_org_repo_pair(&repo_root),
+        repo_roots,
         work_remote_hosts: cfg.work_remote_hosts().to_vec(),
         routing: db.routing_summary(cfg.work_remote_hosts())?,
-        repo_root,
     }))
 }
 
@@ -98,19 +111,25 @@ fn print_attribution(a: &Attribution) {
         Some(path) => println!("  config:        {}", path.display()),
         None => println!("  config:        {} (all defaults)", "none".dimmed()),
     }
-    let root_state = if a.repo_root_exists {
-        "".to_string()
-    } else {
-        format!(" {}", "(does not exist)".red())
-    };
-    println!("  repo-root:     {}{}", a.repo_root.display(), root_state);
-    if a.repo_root_exists && !a.repo_root_has_org_repo {
-        // Not a failure: plenty of hosts have no `<org>/<repo>` layout at all. But rule 4 silently
-        // never firing looks identical to rule 4 being broken, and this is the difference.
-        println!(
-            "    {} no <org>/<repo> pair under this root, so rule 4 (path-guess) is INERT on this host",
-            "note:".yellow()
-        );
+    // One line per root, not one line for "the root". A folded verdict cannot name WHICH of two
+    // roots is missing, which is the whole reason the key became a list.
+    for (i, root) in a.repo_roots.iter().enumerate() {
+        let label = if i == 0 { "  repo-roots:  " } else { "               " };
+        let state = if root.exists {
+            String::new()
+        } else {
+            format!(" {}", "(does not exist)".red())
+        };
+        println!("{label}  {}{}", root.path.display(), state);
+        if root.exists && !root.has_org_repo {
+            // Not a failure: plenty of hosts have no `<org>/<repo>` layout at all. But rule 4
+            // silently never firing looks identical to rule 4 being broken, and this is the
+            // difference. Per root, because one root can be inert while another is not.
+            println!(
+                "    {} no <org>/<repo> pair under this root, so rule 4 (path-guess) is INERT for it",
+                "note:".yellow()
+            );
+        }
     }
     if a.work_remote_hosts.is_empty() {
         // An empty allowlist is fail-closed at the GATE (`HostPolicy::confers_work` matches nothing,

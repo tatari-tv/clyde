@@ -194,21 +194,21 @@ impl Resolver {
     /// The full chain: rules 1 through 4, first match wins, provenance recorded.
     ///
     /// `paths` is the learned map (rule 2), `repos_touched` the per-repo edited-file counts for
-    /// THIS session (rule 3; empty until the caller has them), `repo_root` the configured clone
-    /// root (rule 4). `None` means every rule declined, which is the honest answer for a `$HOME` or
+    /// THIS session (rule 3; empty until the caller has them), `roots` the configured clone roots
+    /// (rule 4). `None` means every rule declined, which is the honest answer for a `$HOME` or
     /// temp-dir cwd with no other evidence.
     pub fn resolve<M: PathMap>(
         &mut self,
         cwd: &Path,
         paths: &M,
         repos_touched: &BTreeMap<String, u64>,
-        repo_root: &Path,
+        roots: &[PathBuf],
     ) -> Option<Resolved> {
         debug!(
-            "repo::Resolver::resolve: cwd={} repos-touched={} repo-root={}",
+            "repo::Resolver::resolve: cwd={} repos-touched={} roots={}",
             cwd.display(),
             repos_touched.len(),
-            repo_root.display()
+            roots.len()
         );
 
         if let Some(repo) = self.detect(cwd) {
@@ -218,7 +218,7 @@ impl Resolver {
 
         let resolved = from_known_path(cwd, paths, &self.blocked)
             .or_else(|| from_files_touched(repos_touched))
-            .or_else(|| from_path_guess(cwd, repo_root));
+            .or_else(|| from_path_guess(cwd, roots));
 
         match &resolved {
             Some(r) => debug!(
@@ -809,49 +809,61 @@ pub fn from_files_touched(repos_touched: &BTreeMap<String, u64>) -> Option<Resol
     }
 }
 
-/// Rule 4: the last-resort pattern guess, `<repo-root>/<org>/<repo>[/...]`.
+/// Rule 4: the last-resort pattern guess, `<root>/<org>/<repo>[/...]`, against every configured root.
 ///
 /// This is the only rule that can FABRICATE a slug (a vanished sibling worktree
 /// `<root>/tatari-tv/clyde-ft` guesses `tatari-tv/clyde-ft`, which never existed), so it runs last
 /// and its output is marked [`RepoSource::PathGuess`] everywhere it is rendered. It is kept because
 /// on a cold start it is the only rule that can serve a path never seen alive, and it resolves the
 /// dominant such case correctly.
-pub fn from_path_guess(cwd: &Path, repo_root: &Path) -> Option<Resolved> {
-    debug!(
-        "repo::from_path_guess: cwd={} repo-root={}",
-        cwd.display(),
-        repo_root.display()
-    );
-    let slug = slug_under_root(cwd, repo_root)?;
+pub fn from_path_guess(cwd: &Path, roots: &[PathBuf]) -> Option<Resolved> {
+    debug!("repo::from_path_guess: cwd={} roots={}", cwd.display(), roots.len());
+    let slug = slug_under_roots(cwd, roots)?;
     debug!("repo::from_path_guess: {} -> {slug} (guessed)", cwd.display());
     Some(Resolved::new(slug, RepoSource::PathGuess))
 }
 
-/// The `<org>/<repo>` slug named by the first two path components under `repo_root`, or `None` when
-/// `path` is not under the root or does not carry two plain directory names there.
+/// The `<org>/<repo>` slug named by the first two path components under the LONGEST matching root,
+/// or `None` when `path` is under no root or does not carry two plain directory names there.
+///
+/// Longest match wins. `de_repo_roots` refuses a nested pair of CONFIGURED roots, so the only way
+/// two roots can both match is the symlink expansion it performs (a root's configured spelling can
+/// sit under another root's real path), and there the longer one is the one that names the repo.
 ///
 /// PURE path parsing, no filesystem and no catalog: this is the one definition of the
-/// `<repo-root>/<org>/<repo>` shape, and rule 4 ([`from_path_guess`], which reads a session's cwd) is
-/// its ONLY caller. It used to be shared with `efficiency::outcome::union`, and is not since v0.23.0
+/// `<root>/<org>/<repo>` shape, and rule 4 ([`from_path_guess`], which reads a session's cwd) is its
+/// ONLY caller. It used to be shared with `efficiency::outcome::union`, and is not since v0.23.0
 /// moved rule 3 off the path shape onto the git-backed resolver (Problem 5). Nothing in
 /// `efficiency` calls this, so nothing there constrains its signature.
-pub fn slug_under_root(path: &Path, repo_root: &Path) -> Option<String> {
-    let rest = match path.strip_prefix(repo_root) {
-        Ok(rest) => rest,
-        Err(_) => {
+///
+/// Being lexical is also why the roots arrive pre-expanded to both spellings: this function cannot
+/// resolve a symlink, and rule 4's whole population is cwds that no longer exist to resolve.
+pub fn slug_under_roots(path: &Path, roots: &[PathBuf]) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for root in roots {
+        let Ok(rest) = path.strip_prefix(root) else {
             trace!(
-                "repo::slug_under_root: {} is not under the repo root {}",
+                "repo::slug_under_roots: {} is not under the root {}",
                 path.display(),
-                repo_root.display()
+                root.display()
             );
-            return None;
+            continue;
+        };
+        let mut components = rest.components();
+        let Some(org) = next_normal(&mut components) else {
+            continue;
+        };
+        let Some(repo) = next_normal(&mut components) else {
+            continue;
+        };
+        // Compare by component count, not by string length: a root with more components is the
+        // deeper one regardless of how its names happen to be spelled.
+        let depth = root.components().count();
+        if best.as_ref().is_none_or(|(seen, _)| depth > *seen) {
+            best = Some((depth, format!("{org}/{repo}")));
         }
-    };
-
-    let mut components = rest.components();
-    let org = next_normal(&mut components)?;
-    let repo = next_normal(&mut components)?;
-    Some(format!("{org}/{repo}"))
+    }
+    best.map(|(_, slug)| slug)
 }
 
 /// The next plain directory name under the repo root, or `None` for an exhausted path or anything

@@ -131,7 +131,7 @@ fn dispatch(cli: Cli, log_path: &Path) -> Result<()> {
         let reindex_on_start = cfg.reindex_on_start();
         let io = mcp_io::mcp_io!();
         std::process::exit(cmd.run(&io, || {
-            sessions::build_server(&db_path, &projects_dir, reindex_on_start, cfg.repo_root())
+            sessions::build_server(&db_path, &projects_dir, reindex_on_start, cfg.repo_roots())
         }));
     }
 
@@ -762,7 +762,7 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
         );
     }
 
-    let stats = sessions::reindex(db, &projects_dir, cfg.repo_root())?;
+    let stats = sessions::reindex(db, &projects_dir, cfg.repo_roots())?;
 
     // Close the reap-before-stage race: copy every dormant session's transcript to the staged root
     // BEFORE the efficiency pass prices it, so a durable copy exists before Claude Code's TTL can
@@ -800,9 +800,9 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     // rank, so it waits until the last possible moment -- every fallible step above has already
     // succeeded, and the only step left is the one that repopulates what the clear erased.
     let reresolved = if args.reresolve_repo {
-        reresolve_repo(db, targets.as_deref(), cfg.repo_root())?
+        reresolve_repo(db, targets.as_deref(), cfg.repo_roots())?
     } else {
-        sessions::resolve_repos(db, cfg.repo_root())?
+        sessions::resolve_repos(db, cfg.repo_roots())?
     };
     debug!("cmd_reindex: post-efficiency repo pass evaluated {reresolved} session(s)");
     print_reindex(&stats, &stage, &eff);
@@ -819,8 +819,8 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
 /// erased, and no later reindex able to notice anything is missing. A restore failure is reported
 /// alongside the original error rather than replacing it -- the cause of the run failing is the more
 /// useful of the two.
-fn reresolve_repo(db: &Db, targets: Option<&[String]>, repo_root: &std::path::Path) -> Result<usize> {
-    debug!("reresolve_repo: targets={targets:?} repo_root={}", repo_root.display());
+fn reresolve_repo(db: &Db, targets: Option<&[String]>, roots: &[PathBuf]) -> Result<usize> {
+    debug!("reresolve_repo: targets={targets:?} roots={}", roots.len());
     let snapshot = match targets {
         Some(ids) => {
             let mut rows = Vec::new();
@@ -847,7 +847,7 @@ fn reresolve_repo(db: &Db, targets: Option<&[String]>, repo_root: &std::path::Pa
         cleared
     );
 
-    match sessions::resolve_repos(db, repo_root) {
+    match sessions::resolve_repos(db, roots) {
         Ok(evaluated) => Ok(evaluated),
         Err(e) => {
             warn!(
@@ -1106,7 +1106,7 @@ fn lazy_reindex(db: &Db, skip: bool) {
             return;
         }
     };
-    let repo_root = cfg.repo_root().to_path_buf();
+    let repo_roots = cfg.repo_roots().to_vec();
     // Through the shared resolver, which is what makes a configured `projects-dir` reach the lazy
     // refresh at all. It previously read the platform default unconditionally, so on a host with
     // `projects-dir` set, every `ls`/`search`/`enrich` silently reindexed the WRONG tree.
@@ -1117,7 +1117,7 @@ fn lazy_reindex(db: &Db, skip: bool) {
             return;
         }
     };
-    if let Err(e) = sessions::reindex(db, &projects_dir, &repo_root) {
+    if let Err(e) = sessions::reindex(db, &projects_dir, &repo_roots) {
         warn!("lazy_reindex: reindex failed, querying stored data only: {e}");
     }
 }

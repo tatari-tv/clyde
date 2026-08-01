@@ -57,8 +57,8 @@ fn reindex_ingests_then_skips_unchanged() {
     );
 
     let db = Db::open_memory().unwrap();
-    let repo_root = tmp.path().join("repos");
-    let stats = reindex(&db, &projects, &repo_root).unwrap();
+    let repo_roots = vec![tmp.path().join("repos")];
+    let stats = reindex(&db, &projects, &repo_roots).unwrap();
     assert_eq!(stats.scanned, 1);
     assert_eq!(stats.upserted, 1);
     assert_eq!(stats.skipped_unchanged, 0);
@@ -83,7 +83,7 @@ fn reindex_ingests_then_skips_unchanged() {
     assert_eq!(rec.git_branch.as_deref(), Some("main"));
 
     // A second reindex with no file changes skips everything.
-    let stats2 = reindex(&db, &projects, &repo_root).unwrap();
+    let stats2 = reindex(&db, &projects, &repo_roots).unwrap();
     assert_eq!(stats2.scanned, 1);
     assert_eq!(stats2.upserted, 0);
     assert_eq!(stats2.skipped_unchanged, 1);
@@ -100,8 +100,8 @@ fn reindex_preserves_tags_across_runs() {
     );
 
     let db = Db::open_memory().unwrap();
-    let repo_root = tmp.path().join("repos");
-    reindex(&db, &projects, &repo_root).unwrap();
+    let repo_roots = vec![tmp.path().join("repos")];
+    reindex(&db, &projects, &repo_roots).unwrap();
     db.set_tags(UUID_A, &["keepme".into()]).unwrap();
 
     // Rewrite with new content; whether the second reindex re-upserts (mtime advanced) or
@@ -110,7 +110,7 @@ fn reindex_preserves_tags_across_runs() {
         &path,
         &[r#"{"type":"user","timestamp":"2026-06-21T11:00:00Z","message":{"content":"hello again"}}"#],
     );
-    reindex(&db, &projects, &repo_root).unwrap();
+    reindex(&db, &projects, &repo_roots).unwrap();
 
     let rec = db.get(UUID_A).unwrap().unwrap();
     assert_eq!(rec.tags, vec!["keepme".to_string()], "tags survive reindex");
@@ -120,7 +120,7 @@ fn reindex_preserves_tags_across_runs() {
 fn reindex_empty_projects_is_ok() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db = Db::open_memory().unwrap();
-    let stats = reindex(&db, &tmp.path().join("nonexistent"), &tmp.path().join("repos")).unwrap();
+    let stats = reindex(&db, &tmp.path().join("nonexistent"), &[tmp.path().join("repos")]).unwrap();
     assert_eq!(stats, crate::ReindexStats::default());
 }
 
@@ -146,8 +146,8 @@ fn reindex_persists_repo_attribution_for_a_live_worktree() {
     );
 
     let db = Db::open_memory().unwrap();
-    let repo_root = tmp.path().join("repos");
-    reindex(&db, &projects, &repo_root).unwrap();
+    let repo_roots = vec![tmp.path().join("repos")];
+    reindex(&db, &projects, &repo_roots).unwrap();
 
     let row = db.repo_of(UUID_LIVE).unwrap().unwrap();
     assert_eq!(row.repo.as_deref(), Some("tatari-tv/clyde"));
@@ -185,8 +185,8 @@ fn reindex_decay_regression_keeps_prior_repo_and_resolves_new_session_via_known_
     );
 
     let db = Db::open_memory().unwrap();
-    let repo_root = tmp.path().join("repos");
-    reindex(&db, &projects, &repo_root).unwrap();
+    let repo_roots = vec![tmp.path().join("repos")];
+    reindex(&db, &projects, &repo_roots).unwrap();
 
     let row = db.repo_of(UUID_A).unwrap().unwrap();
     assert_eq!(row.repo.as_deref(), Some("tatari-tv/clyde"));
@@ -202,7 +202,7 @@ fn reindex_decay_regression_keeps_prior_repo_and_resolves_new_session_via_known_
         &[&user_message(&repo_dir, UUID_VANISHED_NEW, "2026-06-25T10:00:00Z")],
     );
 
-    reindex(&db, &projects, &repo_root).unwrap();
+    reindex(&db, &projects, &repo_roots).unwrap();
 
     // UUID_A's transcript did not change, but repo resolution ran again anyway (it is not gated
     // behind the content-mtime skip) -- rule 1 now fails (dir gone), so rule 2 would answer
@@ -250,8 +250,8 @@ fn resolve_repos_attributes_a_cold_cwd_session_by_the_files_it_edited() {
     );
 
     let db = Db::open_memory().unwrap();
-    let repo_root = tmp.path().join("repos");
-    reindex(&db, &projects, &repo_root).unwrap();
+    let repo_roots = vec![tmp.path().join("repos")];
+    reindex(&db, &projects, &repo_roots).unwrap();
     assert_eq!(
         db.repo_of(UUID_A).unwrap().unwrap().rank,
         99,
@@ -270,7 +270,7 @@ fn resolve_repos_attributes_a_cold_cwd_session_by_the_files_it_edited() {
     }])
     .unwrap();
 
-    let evaluated = resolve_repos(&db, &repo_root).unwrap();
+    let evaluated = resolve_repos(&db, &repo_roots).unwrap();
     assert_eq!(evaluated, 1, "only the unresolved session is re-evaluated");
 
     let row = db.repo_of(UUID_A).unwrap().unwrap();
@@ -294,8 +294,8 @@ fn resolve_repos_abstains_when_the_files_touched_argmax_ties() {
     );
 
     let db = Db::open_memory().unwrap();
-    let repo_root = tmp.path().join("repos");
-    reindex(&db, &projects, &repo_root).unwrap();
+    let repo_roots = vec![tmp.path().join("repos")];
+    reindex(&db, &projects, &repo_roots).unwrap();
     db.set_efficiency_many(&[crate::EfficiencyWrite {
         session_id: UUID_A,
         efficiency_json: "{}",
@@ -306,7 +306,7 @@ fn resolve_repos_abstains_when_the_files_touched_argmax_ties() {
     }])
     .unwrap();
 
-    resolve_repos(&db, &repo_root).unwrap();
+    resolve_repos(&db, &repo_roots).unwrap();
 
     let row = db.repo_of(UUID_A).unwrap().unwrap();
     assert_eq!(row.repo, None, "a tie attributes to nothing, not to the first slug");
@@ -335,8 +335,8 @@ fn resolve_repos_skips_sessions_already_resolved_at_a_better_rank() {
     );
 
     let db = Db::open_memory().unwrap();
-    let repo_root = tmp.path().join("repos");
-    reindex(&db, &projects, &repo_root).unwrap();
+    let repo_roots = vec![tmp.path().join("repos")];
+    reindex(&db, &projects, &repo_roots).unwrap();
     // Even with a files-touched signal pointing somewhere ELSE, the rank-0 answer stands.
     db.set_efficiency_many(&[crate::EfficiencyWrite {
         session_id: UUID_LIVE,
@@ -348,7 +348,7 @@ fn resolve_repos_skips_sessions_already_resolved_at_a_better_rank() {
     }])
     .unwrap();
 
-    assert_eq!(resolve_repos(&db, &repo_root).unwrap(), 0, "nothing left to improve");
+    assert_eq!(resolve_repos(&db, &repo_roots).unwrap(), 0, "nothing left to improve");
     assert_eq!(
         db.repo_of(UUID_LIVE).unwrap().unwrap().repo.as_deref(),
         Some("tatari-tv/clyde")

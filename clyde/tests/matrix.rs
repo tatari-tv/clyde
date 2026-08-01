@@ -230,14 +230,14 @@ impl Sandbox {
         sandbox
     }
 
-    /// Write `clyde.yml` with `projects-dir` and `repo-root` pointed into the fixture.
+    /// Write `clyde.yml` with `projects-dir` and `repo-roots` pointed into the fixture.
     fn write_config(&self) {
         let dir = self.config_home.path().join("clyde");
         std::fs::create_dir_all(&dir).expect("create config dir");
         std::fs::write(
             dir.join("clyde.yml"),
             format!(
-                "projects-dir: {}\nrepo-root: {}\nreindex-on-start: false\n",
+                "projects-dir: {}\nrepo-roots: [{}]\nreindex-on-start: false\n",
                 self.matrix.projects_dir().display(),
                 self.matrix.repo_root().display(),
             ),
@@ -381,7 +381,7 @@ fn matrix_mcp_serve_reads_a_projects_dir_set_only_in_config() {
     std::fs::write(
         dir.join("clyde.yml"),
         format!(
-            "projects-dir: {}\nrepo-root: {}\nreindex-on-start: true\n",
+            "projects-dir: {}\nrepo-roots: [{}]\nreindex-on-start: true\n",
             s.matrix.projects_dir().display(),
             s.matrix.repo_root().display(),
         ),
