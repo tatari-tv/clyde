@@ -294,3 +294,62 @@ fn is_debug_level_selects_debug_form_only_for_debug_and_trace() {
     // Unparseable levels fall back to the non-debug (clean) form.
     assert!(!is_debug_level("nonsense"));
 }
+
+// ---------------------------------------------------------------------------
+// format_error / render_error: one rendering for the whole binary
+// ---------------------------------------------------------------------------
+
+/// A `.context()`-chained report, the shape every real clyde failure has by the time it reaches
+/// `main`: an inner cause plus the outer context the caller attached.
+fn chained_report() -> eyre::Report {
+    eyre::eyre!("no session matches \"deadbeef-0000\"").wrap_err("failed to set scope override")
+}
+
+#[test]
+fn format_error_at_default_verbosity_is_the_cause_chain_with_no_location() {
+    let rendered = format_error(&chained_report(), false);
+
+    // The whole chain reaches the user -- Display alone would drop the inner cause.
+    assert!(
+        rendered.contains("failed to set scope override"),
+        "outer context missing from {rendered:?}"
+    );
+    assert!(
+        rendered.contains("no session matches \"deadbeef-0000\""),
+        "inner cause missing from {rendered:?}"
+    );
+
+    // This is the defect Phase 1 removes: a CLI user must never see a source location, and the
+    // line number must not move with unrelated edits to main.rs.
+    assert!(
+        !rendered.contains("Location:"),
+        "default rendering leaked a source location: {rendered:?}"
+    );
+    // eyre's own `Error: ` prefix is dropped for parity with report/cost/permit/efficiency.
+    assert!(
+        !rendered.starts_with("Error:"),
+        "default rendering kept eyre's Error: prefix: {rendered:?}"
+    );
+}
+
+#[test]
+fn format_error_under_debug_keeps_the_location_escape_hatch() {
+    let rendered = format_error(&chained_report(), true);
+
+    // `--log-level debug|trace` is the diagnosis path; the location capture is the point of it.
+    assert!(
+        rendered.contains("Location:"),
+        "debug rendering lost the location capture: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("no session matches \"deadbeef-0000\""),
+        "debug rendering dropped the inner cause: {rendered:?}"
+    );
+
+    // The two forms must actually differ, or the escape hatch is a dead branch that looks alive.
+    assert_ne!(
+        rendered,
+        format_error(&chained_report(), false),
+        "debug and default renderings are identical"
+    );
+}
