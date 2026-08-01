@@ -8,8 +8,10 @@
 //!
 //! The chain is deterministic, first match wins, and every hit records WHICH rule fired:
 //!
-//! 1. [`RepoSource::GitOrigin`] - the cwd exists, `git remote get-url origin` parses to
-//!    `<org>/<repo>`. Layout-agnostic: every worktree shape shares one origin.
+//! 1. [`RepoSource::GitOrigin`] - the cwd exists, `git config --local --get remote.origin.url`
+//!    parses to `<org>/<repo>`. Layout-agnostic: every worktree shape shares one origin. The
+//!    primitive is deliberate and load-bearing; see [`detect_with_blocked_roots`] for why it is
+//!    not `git remote get-url`.
 //! 2. [`RepoSource::KnownPath`] - longest-prefix hit in the learned path map, for a directory that
 //!    has since been deleted. Learned, never pattern-matched, because a pattern fabricates a slug
 //!    for a sibling worktree (`<root>/tatari-tv/clyde-ft` is `tatari-tv/clyde`, not
@@ -35,7 +37,7 @@ use std::str::FromStr;
 /// low-confidence answer can never outlive a better one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RepoSource {
-    /// Rule 1: cwd exists, `git remote get-url origin` parsed to `<org>/<repo>`.
+    /// Rule 1: cwd exists, `git config --local --get remote.origin.url` parsed to `<org>/<repo>`.
     GitOrigin,
     /// Rule 2: longest-prefix hit in the learned path map (the directory is gone).
     KnownPath,

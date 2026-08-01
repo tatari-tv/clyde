@@ -914,6 +914,30 @@ this branch (release):         10.43 s / 10.48 s / 10.47 s
 
 No regression. The branch is marginally faster and noticeably more consistent.
 
+> **CORRECTED 2026-08-01 by the implementation audit.** The 8.6x claim above is correctly retracted,
+> but "no regression / marginally faster" does NOT reproduce. Re-measured release-to-release on the
+> same host, both binaries against fresh copies of the same `sessions.db.pre-v13.bak` (2,165 rows),
+> branch copies pre-migrated so the timed section is the reindex and not the migration:
+>
+> ```
+> interleaved A/B, 5 runs each, cold (fresh v13, no repo_host populated):
+>   v0.22.0 (installed):  11.99 / 12.02 / 12.08 / 12.09 / 12.19    median 12.08
+>   this branch:          14.32 / 14.41 / 14.52 / 14.67 / 14.70    median 14.52
+>
+> steady state, same copy reindexed repeatedly (passes 2-4):
+>   v0.22.0 (installed):  10.46 / 10.50 / 10.57
+>   this branch:          12.05 / 12.42 / 12.44
+> ```
+>
+> The installed-binary numbers reproduce the row above almost exactly (10.46-10.57 against
+> 10.32-10.47), which validates the harness; the divergence is entirely in the branch measurement.
+> **There is a consistent steady-state cost of roughly 1.8 s, about 17%.** The distributions do not
+> overlap and it reproduced across two independent harnesses.
+>
+> The mechanism is NOT established. The likely candidate is the added per-cwd origin probe and host
+> recording, but that was not measured and is not asserted here. Sizing the cost, deciding whether
+> 17% on a background reindex is acceptable, and finding the mechanism are open.
+
 **The repository-wide collapse still earns its place, measured the same way:**
 
 ```

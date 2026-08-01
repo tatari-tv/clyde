@@ -9,11 +9,6 @@
 
 use super::*;
 use std::cell::Cell;
-use std::sync::Mutex;
-
-/// Serializes the two env-var-mutating tests below; env mutation is not safe under Rust's default
-/// parallel test execution.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Test-only panic injection points inside [`run_inner`]. `Setup` fires at the very top of
 /// `run_inner`, BEFORE `setup_logging` (so it never initializes `env_logger`); `Dispatch` fires at
@@ -98,7 +93,7 @@ fn run_contains_dispatch_panic() {
     // open / stdin read). Isolate XDG so `setup_logging` writes into a temp dir, never the real
     // home. Whether setup_logging succeeds or its own init were to fail, both run inside the
     // boundary, so the contract still yields exit 0.
-    let guard = ENV_LOCK.lock().expect("env lock");
+    let guard = crate::ENV_LOCK.lock().expect("env lock");
     let dir = tempfile::TempDir::new().expect("temp dir");
     let prior_data = std::env::var("XDG_DATA_HOME").ok();
     let prior_config = std::env::var("XDG_CONFIG_HOME").ok();
@@ -128,7 +123,7 @@ fn run_contains_dispatch_panic() {
 fn log_file_path_resolves_under_unified_clyde_logs_dir() {
     // Phase 8 (D3): permit's log moves off the legacy `claude-permit/logs/` dir onto the unified
     // `<xdg-data>/clyde/logs/permit.log` location shared with cost and report.
-    let guard = ENV_LOCK.lock().expect("env lock");
+    let guard = crate::ENV_LOCK.lock().expect("env lock");
     let prior_data = std::env::var("XDG_DATA_HOME").ok();
     let dir = tempfile::TempDir::new().expect("temp dir");
     unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };

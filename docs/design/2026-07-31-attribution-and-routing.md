@@ -824,9 +824,30 @@ the backstop that catches the whole class mechanically.
 - [ ] **AC2.** `cargo test -p sessions a_transient_git_failure_never_stamps` reports `1 passed`, AND
       deleting the `ProbeOutcome::Indeterminate` arm makes it fail.
       `Observed on main:` `0 passed` (does not exist; `ProbeOutcome` does not exist).
-- [ ] **AC3.** `cargo test -p common parse_slug_refuses_a_non_allowlisted_host` reports `1 passed`,
-      AND matrix row 20 (ssh alias to `github.com`) still confers Work.
+- [ ] **AC3. AMENDED 2026-08-01 during the implementation audit; the original is preserved below.**
+      `cargo test -p common parse_slug_refuses_a_non_allowlisted_host` reports `1 passed`, AND the
+      ssh-alias case is covered by BOTH halves of a deliberate split:
+
+      | half | test | asserts |
+      |---|---|---|
+      | through the real command path | `matrix_row_20_an_ssh_alias_host_is_recorded_verbatim_for_later_resolution` | the alias reaches the catalog un-mangled |
+      | against an injected resolver | `common::repo::host::tests::an_ssh_alias_resolving_to_an_allowlisted_host_still_confers_work` | resolution confers Work |
+
+      **Why the original could not be met as written.** It required matrix row 20 itself to show the
+      alias "still confers Work". It cannot: resolving an alias runs `ssh -G`, which reads the
+      INVOKING USER's real `~/.ssh/config` -- a file a test must neither depend on nor modify. So the
+      conferral half is asserted against an injected resolver instead, and row 20 asserts the half
+      that IS reproducible in a sandbox. Neither test alone is sufficient and the reasoning is
+      recorded at `clyde/tests/matrix.rs:723-727`.
+
       `Observed on main:` `0 passed; ... 213 filtered out` (does not exist).
+
+      <details><summary>Original AC3</summary>
+
+      > `cargo test -p common parse_slug_refuses_a_non_allowlisted_host` reports `1 passed`,
+      > AND matrix row 20 (ssh alias to `github.com`) still confers Work.
+
+      </details>
 - [ ] **AC4.** `cargo test -p common detect_resolves_at_a_bare_repo_container_root` reports `1 passed`,
       AND deleting the `--git-common-dir` fallback makes it fail.
       `Observed on main:` `0 passed; ... 213 filtered out` (does not exist).
@@ -979,6 +1000,45 @@ one was found by RUNNING something, and each is measured in
   rayon's `par_iter`, so a `Sync` sibling (`SharedResolver`) was needed. Its memo collapses per
   REPOSITORY rather than per directory, which is this doc's own "cache key moves to the git common
   dir" remedy reached without an extra `git` call.
+
+### Found by the implementation audit, 2026-08-01
+
+- **There IS a reindex performance regression, roughly 17%.** The implementation notes originally
+  concluded "no regression; the branch is marginally faster and noticeably more consistent". That does
+  not reproduce. Re-measured release-to-release on one host, both binaries against fresh copies of the
+  same 2,165-row catalog, branch copies pre-migrated so the timed section is the reindex and not the
+  v13 migration:
+
+  | | v0.22.0 (installed) | this branch |
+  |---|---|---|
+  | interleaved A/B, 5 runs, cold | median **12.08 s** | median **14.52 s** |
+  | steady state, passes 2-4 | 10.46 / 10.50 / 10.57 | 12.05 / 12.42 / 12.44 |
+
+  A consistent **~1.8 s, about 17%** in steady state. The distributions do not overlap and it
+  reproduced across two independent harnesses. The installed-binary numbers land on the notes' own
+  v0.22.0 figures (10.32-10.47), which is what establishes the harness is sound and puts the
+  divergence entirely in the original branch measurement.
+
+  The earlier 8.6x retraction was correct and stands: that one WAS a debug-against-release artifact.
+  This is a different, smaller, real cost that the corrected measurement still missed.
+
+  **The mechanism is NOT established.** The likely candidate is the added per-cwd origin probe and
+  host recording, but that was not measured and is not asserted. Accepted for this release on the
+  owner's call: 1.8 s on a background reindex that already takes 10 s is not worth holding the
+  security fix for. Sizing it and finding the mechanism are open, and tracked as such rather than
+  silently dropped.
+- **Three crates carried a live env-lock race the phase work missed.** Phase 5 fixed `cost`'s
+  `cache`-against-`tests` pair and called it the general form. It was not: `cost/src/config.rs` kept
+  its own mutex in the same crate whose doc says ONE lock, `common/src/paths/tests.rs` sat outside the
+  crate lock four other modules already used, and `permit` had two module-local mutexes and no crate
+  lock at all. Every crate now has exactly one; `session` and `pricing` were single-module and got the
+  same shape prophylactically. This is the general form the house rule already documented.
+- **AC3 could not be met as written.** Amended above. Matrix row 20 cannot show an alias "still
+  confers Work" because resolving one runs `ssh -G` against the invoking user's real `~/.ssh/config`.
+  The conferral half is asserted against an injected resolver instead.
+- **`repo.rs`'s own module doc contradicted its security boundary.** The header and
+  `RepoSource::GitOrigin` still described rule 1 as `git remote get-url origin`, the exact primitive
+  the `insteadOf` defense 400 lines below exists to avoid.
 
 ## Review Panel: findings and disposition
 

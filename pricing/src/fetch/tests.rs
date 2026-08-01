@@ -1,16 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
 use std::cell::RefCell;
-use std::sync::{Mutex, Once};
+use std::sync::Once;
 use std::time::Duration;
 
 use super::*;
-
-// Serialize every env-var-touching test (XDG_CONFIG_HOME, XDG_CACHE_HOME) so they cannot race
-// their own set/restore or each other. Other fetch tests only ever read the env indirectly and
-// never plant a "test-app" override, so their embedded-fallback assertions hold regardless of
-// these tests' transient windows.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 // A capturing logger for the single-warn assertion (AC4/F5). The global logger
 // is installed once, but capture is THREAD-LOCAL: each test runs on its own
@@ -704,12 +698,12 @@ fn stale_feed_falls_through_to_user_override() {
     // The staleness guard routes rejection through the existing fallback_chain,
     // which keeps the user override ahead of embedded. A stale fetch with no
     // cache but a present override must resolve to the override, not embedded.
-    let guard = ENV_LOCK.lock().unwrap();
+    let guard = crate::ENV_LOCK.lock().unwrap();
     let prior = std::env::var("XDG_CONFIG_HOME").ok();
 
     let app = "stale-override-chain-app";
     let cfg_home = tempfile::TempDir::new().unwrap();
-    // SAFETY: serialized behind ENV_LOCK; restored before the lock is dropped.
+    // SAFETY: serialized behind crate::ENV_LOCK; restored before the lock is dropped.
     unsafe { std::env::set_var("XDG_CONFIG_HOME", cfg_home.path()) };
 
     let override_dir = cfg_home.path().join(app);
@@ -739,7 +733,7 @@ fn stale_feed_falls_through_to_user_override() {
     let result = auto_with_config(app, &cfg);
     mock.assert();
 
-    // SAFETY: serialized behind ENV_LOCK.
+    // SAFETY: serialized behind crate::ENV_LOCK.
     match prior {
         Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
         None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
@@ -1040,10 +1034,10 @@ fn refresh_persists_sidecar_on_stale_and_returns_stale_error() {
 fn stale_marker_wrapper_is_none_when_no_sidecar() {
     // AC6 offline surfacing depends on this returning None cleanly (not erroring)
     // when nothing has ever been written, e.g. a brand-new XDG_CACHE_HOME.
-    let guard = ENV_LOCK.lock().unwrap();
+    let guard = crate::ENV_LOCK.lock().unwrap();
     let prior = std::env::var("XDG_CACHE_HOME").ok();
     let dir = tempfile::TempDir::new().unwrap();
-    // SAFETY: serialized behind ENV_LOCK; restored before the lock is dropped.
+    // SAFETY: serialized behind crate::ENV_LOCK; restored before the lock is dropped.
     unsafe { std::env::set_var("XDG_CACHE_HOME", dir.path()) };
 
     let result = stale_marker();
@@ -1064,10 +1058,10 @@ fn stale_marker_wrapper_reads_the_exact_path_a_shell_script_would_build() {
     // (`${XDG_CACHE_HOME:-$HOME/.cache}/clyde/pricing/stale_feed.json`) using plain std::fs, NOT
     // via write_stale_marker/FetchConfig, and asserts the public wrapper reads it back. That
     // proves the two paths are the same path, not just "both call the same Rust helper."
-    let guard = ENV_LOCK.lock().unwrap();
+    let guard = crate::ENV_LOCK.lock().unwrap();
     let prior = std::env::var("XDG_CACHE_HOME").ok();
     let dir = tempfile::TempDir::new().unwrap();
-    // SAFETY: serialized behind ENV_LOCK; restored before the lock is dropped.
+    // SAFETY: serialized behind crate::ENV_LOCK; restored before the lock is dropped.
     unsafe { std::env::set_var("XDG_CACHE_HOME", dir.path()) };
 
     // The exact path a statusline segment script builds by hand.
