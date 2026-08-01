@@ -727,3 +727,117 @@ concurrently:
 `prune_cache` deletes files a sibling test is about to read. cargo-mutants runs dozens of copies of the
 suite at once, all pointed at that one directory. After the fix, `cargo test -p cost cache::` passed
 five consecutive runs with 56 concurrent cargo-mutants processes hammering the same path.
+
+## Phase 6: Rule 1 resolves at a bare-repo container root
+
+### Design decisions
+
+- **The root is computed once, from either source, and the containment and blocked checks run after
+  it** (`common/src/repo.rs`). The design writes the fallback as a second copy of both checks inside
+  the `None` arm; folding them means the two branches cannot drift, and it is why the mirrored
+  containment check the design asks for is simply the same check.
+- **`contains` and `same_path` canonicalize both sides.** The blocked-root comparison needs it too,
+  not just containment: `$HOME` can itself be a symlink, and a blocked root that fails to match
+  because of one is a silently disabled guard.
+- **Canonicalization falls back to the given path** when it fails (a deleted cwd, a permission
+  error), preserving the old lexical behavior rather than panicking.
+- **`no_work_tree_root` returns `Result<PathBuf, ProbeOutcome>`**, so the "here is the root" and
+  "here is the answer, stop" cases are distinguishable at the call site instead of being smuggled
+  through an `Option` the caller has to reinterpret.
+
+### Deviations
+
+- **The `common == cwd` branch consults `--is-bare-repository`, which the design's snippet does not.**
+  This is an amendment to the amendment, and it closes a hole the phase would otherwise have
+  INTRODUCED rather than one it exposes. Measured against git 2.53.0:
+
+  | cwd | `--git-common-dir` | `--is-bare-repository` | correct root |
+  |---|---|---|---|
+  | plain bare repo | `.` | true | `<cwd>` |
+  | cwd inside a NON-bare `.git` | `.` | **false** | **`<cwd>`'s PARENT** |
+
+  The design maps `common == cwd` to `root = cwd` unconditionally. For a cwd inside a normal repo's
+  `.git` that roots at `<repo>/.git`, and the blocked check compares the root, so a repo at `$HOME`
+  probed from `$HOME/.git` would compute `$HOME/.git`, MISS the guard, and attribute the dotfiles
+  repo. Today that path is unreachable (the old code declined the moment `--show-toplevel` failed),
+  so the fallback is what would have opened it. `detect_blocks_a_cwd_inside_a_blocked_repos_git_dir`
+  is the test, and deleting the `--is-bare-repository` branch is what makes it fail.
+
+- **Row 8 asserts a RESOLVE, not the decline its prescribed test name implies.** Flagged in Phase 1's
+  open question and settled here by measurement: `git -C <container>/.bare/refs rev-parse
+  --git-common-dir` returns `<container>/.bare`, so the root is `<container>`, the cwd is under it,
+  and containment passes. That is the correct answer. Both behaviors are asserted rather than one
+  being picked: `detect_resolves_from_inside_the_bare_dir` for the measured row-8 shape, and
+  `detect_declines_a_repo_found_outside_the_cwd` (a `.git` pointer into a SIBLING tree) for the
+  genuine containment rejection the phase's named test wanted.
+
+### Tradeoffs
+
+- **`has_git_marker` stays more generous than git's own discovery.** It ignores mount points and
+  `GIT_CEILING_DIRECTORIES`, so it can report a marker git would not have used. Every disagreement
+  yields `Indeterminate`, which records nothing: under-recording costs one re-probe, over-recording
+  is a permanent refusal of work scope.
+
+### Open questions
+
+- None. Phase 1's row-8 question is closed above.
+
+### Measured
+
+**Every change bites, verified by deletion:**
+
+| deletion | fails |
+|---|---|
+| the `--git-common-dir` fallback | all five no-work-tree rows |
+| the `--is-bare-repository` branch | `detect_blocks_a_cwd_inside_a_blocked_repos_git_dir` |
+| canonicalized containment | `detect_resolves_a_symlinked_cwd` |
+
+**`clyde session reindex --reresolve-repo` on a copy of the live 2,150-row catalog, this branch
+versus installed v0.22.0 running the SAME repair:**
+
+```
+                v0.22.0    this branch
+git-origin         1330           1431
+known-path          243            254
+files-touched       196            148
+path-guess           84             20
+(unresolved)        309            309
+
+rows git-origin here but not under v0.22.0:  101
+regressions (the reverse):                     0
+```
+
+**101 sessions, across exactly 7 cwds, and ALL SEVEN are bare-repo container roots.** Every one:
+`--show-toplevel` fails, `--git-common-dir` names a `.bare`, `is-bare-repository` is true.
+
+```
+/home/saidler/repos/scottidler/second-brain          86
+/home/saidler/repos/scottidler/slack-dashboard        6
+/home/saidler/repos/scottidler/git-tools/clone        4
+/home/saidler/repos/tatari-tv/drata-cli               2
+/home/saidler/repos/tatari-tv/slack-cli               1
+/home/saidler/repos/scottidler/second-brain/voice     1
+/home/saidler/repos/scottidler/ralph-wiggum-loop      1
+```
+
+**This corrects two claims in the design, and the correction is in the design's favour.**
+
+1. The design counts THREE bare containers on desk.lan (`okta/okta-cli-client`, `nvidia/skillspector`,
+   `qdrant/qdrant`) and concludes Problem 4 is invisible here. Those three exist and are bare, but
+   they carry 0, 1 and 1 sessions between them. The seven that DO carry sessions are different
+   directories the count missed.
+2. "**Problem 4 is invisible on desk.lan**" and "desk.lan cannot validate Problem 4 end to end" are
+   both too strong. What is true is the narrower claim the design also makes: rule 4 MASKED it. No
+   session moved from unresolved to `git-origin` (the phase's stated criterion, confirmed at exactly
+   0), because a container under `<repo-root>/<org>/<repo>` gets a path-guess. What was lost was not
+   coverage but PROVENANCE: 101 sessions were attributed by the lowest-confidence rule instead of by
+   their remote, and two of the seven containers are `tatari-tv` work repos.
+
+So the phase's success criterion holds as written (0 from unresolved, a genuine null result) while
+the framing around it understated the defect. desk.lan CAN validate Problem 4; it just cannot
+validate it in the population the criterion looked at.
+
+**`docs/design/2026-07-26-report-story-fidelity.md` corrected.** Its four-row table claimed rule 1 was
+"already layout-agnostic, verified 2026-07-26"; every row was a cwd inside a work tree. The fifth row
+(the container ROOT, `fatal: this operation must be run in a work tree`, rc=128) is added, with
+Keegan's cost and a pointer to this design.

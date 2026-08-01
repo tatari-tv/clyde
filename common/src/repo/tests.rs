@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::checkout::Matrix;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -906,5 +907,124 @@ fn detect_declines_a_toplevel_that_does_not_contain_the_cwd() {
     assert!(
         !outcome.is_conclusive_negative(),
         "and it must not stamp: a containment rejection says nothing about a remote"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 6: rule 1 resolves where there is no work tree, and stops declining symlinked cwds.
+// ---------------------------------------------------------------------------------------------
+
+/// Matrix row 6, and Problem 4. At the root of a bare-repo container there is no work tree, so
+/// `rev-parse --show-toplevel` fails and rule 1 used to give up BEFORE the call that answers.
+///
+/// Not exotic: it is what `git init --bare` plus branch directories produces, and clyde's own
+/// `build.rs` already resolves it. Cost on Keegan's catalog: 12 sessions, $326.87 of July spend, and
+/// `tatari-tv/airflow-dags` absent from every by-repo table in his month's report.
+///
+/// BITES: delete the `--git-common-dir` fallback and this declines again.
+#[test]
+fn detect_resolves_at_a_bare_repo_container_root() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.container_root, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/airflow-dags")
+    );
+}
+
+/// Matrix row 7. A plain bare repo reports `.` for its common dir, which is the case the design's
+/// own snippet got wrong: `cwd.join(common).parent()` walks one level too high.
+///
+/// BITES: delete the `common == cwd` branch and the root becomes the cwd's PARENT, which fails
+/// containment and declines.
+#[test]
+fn detect_resolves_at_a_plain_bare_repo() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.bare_mirror, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/mirror")
+    );
+}
+
+/// Matrix row 8. A cwd inside the container's `.bare` resolves through the container, because the
+/// common dir's parent IS the container and the cwd is under it.
+///
+/// The design labels this row "containment" and Phase 6 names its test
+/// `detect_declines_a_repo_found_above_the_cwd`, but measurement says it RESOLVES: git's discovery
+/// walks up, so whatever it finds is an ancestor by construction. The genuine decline needs a
+/// gitdir pointer out of the tree, which is
+/// `detect_declines_a_repo_found_outside_the_cwd` below. Both are asserted rather than picking one.
+#[test]
+fn detect_resolves_from_inside_the_bare_dir() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.inside_bare, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/airflow-dags")
+    );
+}
+
+/// The containment check, on the NO-WORK-TREE branch. A `.git` FILE pointing at a bare repo in a
+/// SIBLING tree resolves to a root that is not an ancestor of the cwd, and must be refused rather
+/// than attributed.
+///
+/// BITES: drop the mirrored containment check from the fallback and this attributes
+/// `tatari-tv/detached` to a directory that has nothing to do with it.
+#[test]
+fn detect_declines_a_repo_found_outside_the_cwd() {
+    let m = Matrix::build();
+    let outcome = detect_with_blocked_roots(&m.outside_root, &m.blocked());
+    assert_eq!(outcome, ProbeOutcome::OutsideRoot);
+    assert!(
+        !outcome.is_conclusive_negative(),
+        "a containment rejection says nothing about a remote, so it must never stamp"
+    );
+}
+
+/// Matrix row 13, and the reason the fallback needs the `--is-bare-repository` refinement. A BARE
+/// repo at `$HOME` must still be refused: the blocked-root guard is what stops a git-tracked home
+/// attributing every session to the dotfiles repo.
+///
+/// BITES: root the `common == cwd` case at the cwd's parent unconditionally and the computed root
+/// stops equalling `$HOME`, so the guard misses and this resolves.
+#[test]
+fn detect_still_blocks_a_bare_repo_at_a_blocked_root() {
+    let m = Matrix::build();
+    m.make_home_a_bare_repo();
+    assert_eq!(
+        detect_with_blocked_roots(&m.home(), &m.blocked()),
+        ProbeOutcome::Blocked
+    );
+}
+
+/// The OTHER half of the same refinement, and a hole this phase would have introduced rather than
+/// exposed. A cwd inside a NON-bare repo's `.git` also reports `.` for its common dir, so the
+/// design's unconditional `common == cwd -> root = cwd` would root at `<repo>/.git`. The blocked
+/// check compares the root, so a repo at `$HOME` probed from `$HOME/.git` would compute
+/// `$HOME/.git`, MISS the guard, and attribute the dotfiles repo.
+///
+/// BITES: drop the `--is-bare-repository` branch and this resolves instead of being blocked.
+#[test]
+fn detect_blocks_a_cwd_inside_a_blocked_repos_git_dir() {
+    let m = Matrix::build();
+    m.make_home_a_repo();
+    let git_dir = m.home().join(".git");
+    assert_eq!(
+        detect_with_blocked_roots(&git_dir, &m.blocked()),
+        ProbeOutcome::Blocked,
+        "a cwd inside $HOME/.git must root at $HOME and hit the guard"
+    );
+}
+
+/// Matrix row 24, a CONFIRMED pre-existing bug rather than one this design introduced.
+/// `--show-toplevel` returns the CANONICAL path, so the lexical containment check rejected every
+/// session whose cwd was reached through a symlink, silently.
+///
+/// BITES: revert `contains` to a lexical comparison and this declines.
+#[test]
+fn detect_resolves_a_symlinked_cwd() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.symlinked, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/philo"),
+        "a symlink-reached cwd must resolve; the toplevel is canonical and the cwd is not"
     );
 }

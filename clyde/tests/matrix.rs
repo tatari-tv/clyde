@@ -14,9 +14,9 @@
 //! 3. **Sequences, not snapshots.** [`Sandbox`] can reindex, mutate the world, and reindex again,
 //!    which is the shape Problem 1 lives in and which no test in the tree had.
 //!
-//! Rows are turned on by the phase that fixes them, so every phase stays green. The ones NOT
-//! asserted here are named in `no_phase_one_assertion_for_the_known_broken_rows` with their phase, so
-//! a reader can tell a deliberate gap from an oversight.
+//! Rows are turned on by the phase that fixes them, so every phase stays green. A row still awaiting
+//! its phase is asserted at its CURRENT (wrong) answer and named with the phase that must break it,
+//! so a reader can tell a deliberate gap from an oversight.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -154,27 +154,47 @@ fn matrix_row_30_an_empty_repo_is_conclusively_no_origin() {
     assert_eq!(probe(&m, &m.empty_repo), ProbeOutcome::NoOrigin);
 }
 
-/// The deliberate gaps, named with the phase that closes each, so an absent row reads as scheduled
-/// rather than forgotten. This test asserts the CURRENT behavior of each so the phase that fixes it
-/// has something to break.
+/// Rows 6, 7, 8 and 24, turned ON by Phase 6: every shape with no work tree, plus the
+/// symlink-reached cwd, now resolves through the shipped binary's own resolver.
+///
+/// These were asserted at their WRONG answers through Phases 1 to 5 so the fix had something to
+/// break. `common::repo::tests` proves each one bites; this is the same claim at the integration
+/// altitude, over the shared fixture.
 #[test]
-fn no_phase_one_assertion_for_the_known_broken_rows() {
+fn matrix_rows_06_07_08_and_24_resolve_without_a_work_tree() {
     let m = Matrix::build();
-    // Rows 6, 7, 8: no work tree, so `--show-toplevel` fails and rule 1 gives up before the call
-    // that would answer. Phase 6.
-    assert_eq!(detect(&m, &m.container_root), None, "row 6, fixed in Phase 6");
-    assert_eq!(detect(&m, &m.bare_mirror), None, "row 7, fixed in Phase 6");
-    assert_eq!(detect(&m, &m.inside_bare), None, "row 8, fixed in Phase 6");
-    // Row 24: `--show-toplevel` returns the canonical path, so the lexical containment check
-    // rejects every symlink-reached cwd. Confirmed live bug, fixed in Phase 6.
-    assert_eq!(detect(&m, &m.symlinked), None, "row 24, fixed in Phase 6");
-    // Rows 19 and 21: the host is never validated, so a crafted remote confers a work slug today.
-    // Attribution is not what Phase 3 changes; the SCOPE it confers is.
+    assert_eq!(
+        detect(&m, &m.container_root).as_deref(),
+        Some("tatari-tv/airflow-dags"),
+        "row 6: Problem 4, the bare-repo container ROOT"
+    );
+    assert_eq!(
+        detect(&m, &m.bare_mirror).as_deref(),
+        Some("tatari-tv/mirror"),
+        "row 7: a plain bare repo, whose common dir is `.`"
+    );
+    assert_eq!(
+        detect(&m, &m.inside_bare).as_deref(),
+        Some("tatari-tv/airflow-dags"),
+        "row 8: a cwd inside the container's .bare resolves through the container"
+    );
+    assert_eq!(
+        detect(&m, &m.symlinked).as_deref(),
+        Some("tatari-tv/philo"),
+        "row 24: the toplevel is canonical and the cwd is not; a lexical check declined it"
+    );
+}
+
+/// The remaining deliberate gap, named with the phase that closes it.
+#[test]
+fn no_assertion_yet_for_the_rows_phase_7_owns() {
+    let m = Matrix::build();
+    // Rows 19 and 21: the host IS validated as of Phase 3, but only for the SCOPE it confers.
+    // Attribution is deliberately unchanged, so the slug still parses.
     assert_eq!(
         detect(&m, &m.host_not_allowed).as_deref(),
         Some("tatari-tv/x"),
-        "row 19: an `evil.example.com` remote yields a work slug today. Phase 3 stops it conferring \
-         work SCOPE; it still attributes"
+        "row 19: an `evil.example.com` remote still ATTRIBUTES; Phase 3 stopped it conferring work"
     );
 }
 

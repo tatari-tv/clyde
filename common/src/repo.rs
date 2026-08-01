@@ -339,9 +339,14 @@ pub fn detect_with_blocked_roots(cwd: &Path, blocked: &[PathBuf]) -> ProbeOutcom
         return ProbeOutcome::Indeterminate;
     }
 
-    let toplevel = match run_git(cwd, &["rev-parse", "--show-toplevel"]) {
+    let root = match run_git(cwd, &["rev-parse", "--show-toplevel"]) {
         GitRun::Answered(tl) => PathBuf::from(tl.trim()),
-        GitRun::Refused(_) => return no_work_tree(cwd),
+        // Problem 4. No work tree does NOT mean no repository: it is what `git init --bare` plus
+        // branch directories produces, and clyde's own `build.rs` already resolves that shape.
+        GitRun::Refused(_) => match no_work_tree_root(cwd) {
+            Ok(root) => root,
+            Err(outcome) => return outcome,
+        },
         GitRun::Unavailable => {
             warn!(
                 "repo::detect: git could not be run for {}; recording nothing",
@@ -351,19 +356,19 @@ pub fn detect_with_blocked_roots(cwd: &Path, blocked: &[PathBuf]) -> ProbeOutcom
         }
     };
 
-    if !(toplevel == cwd || cwd.starts_with(&toplevel)) {
+    if !contains(&root, cwd) {
         debug!(
-            "repo::detect: toplevel {} is not at or above cwd {}; rejecting",
-            toplevel.display(),
+            "repo::detect: root {} is not at or above cwd {}; rejecting",
+            root.display(),
             cwd.display()
         );
         return ProbeOutcome::OutsideRoot;
     }
 
-    if blocked.iter().any(|b| b == &toplevel) {
+    if blocked.iter().any(|b| same_path(b, &root)) {
         debug!(
-            "repo::detect: toplevel {} matches a blocked root (e.g. $HOME); rejecting",
-            toplevel.display()
+            "repo::detect: root {} matches a blocked root (e.g. $HOME); rejecting",
+            root.display()
         );
         return ProbeOutcome::Blocked;
     }
@@ -371,45 +376,103 @@ pub fn detect_with_blocked_roots(cwd: &Path, blocked: &[PathBuf]) -> ProbeOutcom
     read_origin(cwd)
 }
 
-/// `rev-parse --show-toplevel` failed. Two very different worlds share that failure, and telling
-/// them apart is what keeps Phase 6 safe to land later.
+/// Whether `root` is `cwd` or an ancestor of it, comparing CANONICAL paths on both sides.
 ///
-/// A cwd with no WORK TREE but a real git dir (a bare-repo container root, a plain bare mirror) is
-/// the shape Phase 6 teaches rule 1 to resolve. If this returned the conclusive `NotARepo` for it,
-/// every such session would be stamped with a negative NOW and would keep refusing work scope even
-/// after Phase 6 made it resolvable, because a stamp is never cleared by a later success. So it is
-/// `Indeterminate` until the fallback exists.
+/// **The canonicalization is a bug fix, not tidiness.** `--show-toplevel` returns the canonical path
+/// while the recorded cwd is whatever the session ran in, so a cwd reached through a symlink fails a
+/// LEXICAL `starts_with` and rule 1 declines. Measured 2026-07-31:
 ///
-/// A cwd where BOTH probes fail genuinely is not a repository, which is conclusive.
-fn no_work_tree(cwd: &Path) -> ProbeOutcome {
-    match run_git(cwd, &["rev-parse", "--git-common-dir"]) {
-        GitRun::Answered(_) => {
-            debug!(
-                "repo::detect: {} has a git dir but no work tree; recording nothing (Phase 6 resolves this)",
-                cwd.display()
-            );
-            ProbeOutcome::Indeterminate
-        }
+/// ```text
+/// $ ln -s <real>/proj <link>
+/// $ git -C <link> rev-parse --show-toplevel
+/// <real>/proj                      # canonical, NOT <link>
+/// ```
+///
+/// So `toplevel == cwd` and `cwd.starts_with(&toplevel)` were both false and **rule 1 declined for
+/// every session whose cwd was reached through a symlink**, silently, before this. Matrix row 24, and
+/// a pre-existing defect rather than one this design introduced.
+///
+/// Falls back to the given path when canonicalization fails (a deleted cwd, a permission error), which
+/// preserves the old lexical behavior rather than crashing.
+fn contains(root: &Path, cwd: &Path) -> bool {
+    let root = canonical(root);
+    let cwd = canonical(cwd);
+    root == cwd || cwd.starts_with(&root)
+}
+
+/// Canonical-path equality, for the blocked-root check. `$HOME` itself can be a symlink, and a
+/// blocked root that fails to match because of it is a silently disabled guard.
+fn same_path(a: &Path, b: &Path) -> bool {
+    canonical(a) == canonical(b)
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The repository root for a cwd with NO work tree, or the [`ProbeOutcome`] to return instead.
+///
+/// This is Problem 4: `detect_with_blocked_roots` used to `?`-return the moment
+/// `rev-parse --show-toplevel` failed, so at the root of a bare-repo container it gave up BEFORE the
+/// call that answers. Keegan's `tatari-tv/airflow-dags` is absent from every by-repo table in his
+/// month's report because of it: 12 sessions, $326.87 of July spend, coverage 49% -> 72%.
+///
+/// **Do NOT simply read `origin` first instead.** That drops the blocked-root guard, which is what
+/// stops a session run from a git-tracked `$HOME` being attributed to the dotfiles repo. The root has
+/// to be computed either way; only its SOURCE changes.
+///
+/// The mapping from `--git-common-dir` to a root, measured against git 2.53.0:
+///
+/// | shape | `--git-common-dir` | root |
+/// |---|---|---|
+/// | bare container root | `<cwd>/.bare` | `<cwd>` (the common dir's parent) |
+/// | cwd inside `.bare/refs` | `<container>/.bare` | `<container>` |
+/// | plain bare repo | `.` | `<cwd>` |
+/// | cwd inside a NON-bare `.git` | `.` | `<cwd>`'s PARENT |
+///
+/// **The last row is an amendment to the design's snippet and it is load-bearing.** The design maps
+/// `common == cwd` to `root = cwd` unconditionally, which is right for a bare repo and WRONG for a
+/// cwd sitting in a normal repo's `.git`: it would root at `<repo>/.git`, and the blocked check
+/// compares `b == root`, so a repo at `$HOME` probed from `$HOME/.git` would compute `$HOME/.git`,
+/// miss the guard, and attribute the dotfiles repo. `--is-bare-repository` is what separates them.
+/// Today that path is unreachable (the old code declined the moment `--show-toplevel` failed), so
+/// this fallback would have INTRODUCED the hole rather than exposing an existing one.
+///
+/// The design's own correction to the marquee report is preserved: `cwd.join(common).parent()` alone
+/// walks one level too high for a plain bare repo, which is the `common == cwd` case.
+fn no_work_tree_root(cwd: &Path) -> Result<PathBuf, ProbeOutcome> {
+    let common = match run_git(cwd, &["rev-parse", "--git-common-dir"]) {
+        // `Path::join` with an absolute path replaces, so this handles both the relative (`.bare`,
+        // `.`) and absolute forms git emits.
+        GitRun::Answered(cd) => cwd.join(cd.trim()),
         GitRun::Refused(_) if has_git_marker(cwd) => {
-            // A repository IS present and git could not use it. Measured 2026-07-31: an unreadable
-            // `.git/config` and a `.git` file pointing at a vanished gitdir BOTH exit 128 from both
-            // probes, byte-identically to a plain directory, so the exit code cannot tell them apart
-            // and the design's own arm table has no row that separates them.
-            //
-            // The filesystem can, and it answers the exact question the `NotARepo` arm claims to
-            // ("not a work tree AND NOT A GIT DIR"). Matrix rows 23 and 29.
             warn!(
                 "repo::detect: {} carries a git marker git could not use (check `safe.directory` \
                  and .git permissions); recording nothing",
                 cwd.display()
             );
-            ProbeOutcome::Indeterminate
+            return Err(ProbeOutcome::Indeterminate);
         }
         GitRun::Refused(_) => {
             debug!("repo::detect: {} is not a git repository", cwd.display());
-            ProbeOutcome::NotARepo
+            return Err(ProbeOutcome::NotARepo);
         }
-        GitRun::Unavailable => ProbeOutcome::Indeterminate,
+        GitRun::Unavailable => return Err(ProbeOutcome::Indeterminate),
+    };
+
+    if common != cwd {
+        // `<root>/.bare` or `<root>/.git`: the work-tree root is the common dir's parent.
+        return common
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or(ProbeOutcome::Indeterminate);
+    }
+
+    // `.`: the cwd IS the git dir. Which root that implies depends on whether it is BARE.
+    match run_git(cwd, &["rev-parse", "--is-bare-repository"]) {
+        GitRun::Answered(bare) if bare.trim() == "true" => Ok(cwd.to_path_buf()),
+        GitRun::Answered(_) => cwd.parent().map(Path::to_path_buf).ok_or(ProbeOutcome::Indeterminate),
+        _ => Err(ProbeOutcome::Indeterminate),
     }
 }
 
