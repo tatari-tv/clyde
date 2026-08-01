@@ -476,10 +476,11 @@ pub struct Disagreement {
 /// makes `~/repos/scottidler/tatari-tv` personal. Both consult the same [`WORK_ORGS`]; only the
 /// extraction differs, and each has its own test.
 /// Every departure from the exact `<org>/<repo>` shape fails CLOSED, because this function is consulted
-/// by the gate that decides whether a session body leaves the machine. `slug_under_root` (the only
-/// writer) requires two normal path components, so it can never produce an empty segment or a second
-/// slash -- these guards exist for a corrupt or hand-edited `outcome_json`, which is a STORED blob this
-/// function reads rather than something it computes.
+/// by the gate that decides whether a session body leaves the machine. `efficiency::outcome::union`
+/// (the only writer) takes its keys from the shared rule-1 resolver, which emits a git-observed
+/// `<org>/<repo>` slug, so it can never produce an empty segment or a second slash -- these guards
+/// exist for a corrupt or hand-edited `outcome_json`, which is a STORED blob this function reads
+/// rather than something it computes.
 fn is_work_slug(slug: &str) -> bool {
     match slug.split_once('/') {
         // The repo segment must be present and must itself be a single component. `"tatari-tv/"` would

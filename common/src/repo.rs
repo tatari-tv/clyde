@@ -831,9 +831,10 @@ pub fn from_path_guess(cwd: &Path, repo_root: &Path) -> Option<Resolved> {
 /// `path` is not under the root or does not carry two plain directory names there.
 ///
 /// PURE path parsing, no filesystem and no catalog: this is the one definition of the
-/// `<repo-root>/<org>/<repo>` shape, shared by rule 4 ([`from_path_guess`], which reads a session's
-/// cwd) and by `efficiency::outcome::union` (which reads the EDITED FILE paths that back rule 3).
-/// Two readers deriving the same shape independently is exactly how the two would drift.
+/// `<repo-root>/<org>/<repo>` shape, and rule 4 ([`from_path_guess`], which reads a session's cwd) is
+/// its ONLY caller. It used to be shared with `efficiency::outcome::union`, and is not since v0.23.0
+/// moved rule 3 off the path shape onto the git-backed resolver (Problem 5). Nothing in
+/// `efficiency` calls this, so nothing there constrains its signature.
 pub fn slug_under_root(path: &Path, repo_root: &Path) -> Option<String> {
     let rest = match path.strip_prefix(repo_root) {
         Ok(rest) => rest,

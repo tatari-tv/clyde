@@ -28,7 +28,7 @@ use crate::score::scored;
 /// scope), so the session's own files' mtime is the correct-seam substitute -- the same signal
 /// `common::scan::filter_by_date_range`'s date prefilter already uses.
 ///
-/// `outcomes` is populated ONLY on the reindex path ([`collect_layouts`], which passes a `repo_root`):
+/// `outcomes` is populated ONLY on the reindex path ([`collect_layouts`], which passes a resolver):
 /// the catalog persists per-session outcomes (Phase 2), but the live `clyde efficiency` surfaces
 /// (`session`/`daily`/`weekly`/`--worst`) do not render them, so [`collect_all`]/[`collect_matching`]
 /// skip the second per-file scan and leave this at its all-empty default.
@@ -118,18 +118,18 @@ pub struct Collected {
 ///
 /// This is the ONLY collector that extracts outcomes: the reindex path persists per-session outcomes
 /// into the catalog's `outcome_json` column (Phase 2), so it pays the second per-file scan the live
-/// surfaces skip. `repo_root` is the configured clone root the edited-file paths are bucketed
-/// against for `Outcomes::repos_touched` (repo attribution's rule 3).
+/// surfaces skip. `work_remote_hosts` is the allowlist the shared resolver applies when it asks git
+/// where each edited file lives, which is how `Outcomes::repos_touched` (repo attribution's rule 3)
+/// is bucketed. No clone root reaches here: rule 3 stopped being a path parse in v0.23.0.
 pub fn collect_layouts(
     candidates: &[EfficiencyCandidate],
     config: &EfficiencyConfig,
-    repo_root: &Path,
     work_remote_hosts: &[String],
 ) -> Result<Collected> {
     debug!(
-        "collect_layouts: candidates={} repo_root={}",
+        "collect_layouts: candidates={} work_remote_hosts={}",
         candidates.len(),
-        repo_root.display()
+        work_remote_hosts.len()
     );
     if candidates.is_empty() {
         return Ok(Collected::default());
@@ -200,9 +200,9 @@ fn group_by_session(files: &[SessionFile]) -> BTreeMap<String, Vec<&SessionFile>
 /// per-file scan entirely. One parameter rather than a `bool` plus a resolver, so asking for outcomes
 /// without one is not expressible.
 ///
-/// It replaces the `repo_root` this used to take. Rule 3 no longer reads the
-/// `<root>/<org>/<repo>` shape at all (Problem 5), so a root is no longer the thing it needs; rule 4
-/// still uses `repo_root`, but rule 4 lives in `common::repo` and never came through here.
+/// It replaces the clone root this used to take. Rule 3 no longer reads the `<root>/<org>/<repo>`
+/// shape at all (Problem 5), so a root is no longer the thing it needs; rule 4 still reads the
+/// configured roots, but rule 4 lives in `common::repo` and never came through here.
 fn build_session(
     session_id: &str,
     group_files: &[&SessionFile],
@@ -220,7 +220,7 @@ fn build_session(
         })
         .collect();
 
-    // Outcomes are extracted only for the reindex path (`outcomes_repo_root` is `Some`); a per-file
+    // Outcomes are extracted only for the reindex path (`slugs` is `Some`); a per-file
     // scan failure is warn-and-skipped (same robustness contract as efficiency extract) so one bad
     // file cannot fail the whole session's annotation. An empty session unions to the all-empty
     // default (a stored, non-NULL `outcome_json` distinct from "not yet reindexed").
