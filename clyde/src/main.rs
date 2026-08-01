@@ -1045,6 +1045,21 @@ fn cmd_scope(db: &Db, args: cli::ScopeArgs) -> Result<()> {
             stamp,
         );
     }
+    // The mirror case, same shape and for the same reason: forcing `personal` on a row that was
+    // ALREADY enriched cannot un-send the transcript. Not a hard failure -- an operator may
+    // legitimately want the catalog to record the correct scope going forward -- but they must not
+    // be able to do it believing they just recalled the data.
+    if scope.eq_ignore_ascii_case(sessions::OVERRIDE_PERSONAL)
+        && let Some(stamp) = db.enriched_at_of(&id)?
+    {
+        println!(
+            "{} {} was already enriched ({}). The transcript has been sent; forcing `personal` \
+             records the scope going forward but cannot un-send it.",
+            "warning:".yellow(),
+            short_id(&id),
+            stamp,
+        );
+    }
     let scope = scope.to_ascii_lowercase();
     if db.set_scope_override(&id, &scope, reason, &actor, chrono::Utc::now())? {
         println!(

@@ -110,6 +110,23 @@ impl Db {
         Ok(stamp.flatten())
     }
 
+    /// The `enriched_at` stamp for one session, or `None` when it has never been enriched.
+    ///
+    /// Read by `clyde session scope --set personal` to warn that the transcript has ALREADY been
+    /// sent and an override cannot un-send it. Presence, like [`Self::probe_of`], is the signal; the
+    /// timestamp is for the operator reading the warning.
+    pub fn enriched_at_of(&self, session_id: &str) -> Result<Option<String>> {
+        let stamp: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT enriched_at FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(stamp.flatten())
+    }
+
     /// Clear the probe record for the named sessions, so the next pass re-observes and re-stamps if
     /// the cwd still declines conclusively. The recovery path for a stamp that is wrong.
     ///
@@ -140,6 +157,26 @@ impl Db {
     ///
     /// Returns `false` when no such session exists. The caller resolves the id to exactly one session
     /// BEFORE calling, the same rule `--reresolve-repo --session` already enforces.
+    ///
+    /// **Also NULLs `scope_version`, and that is what makes the override take effect.** Without it
+    /// the write was a silent no-op on the exact population the command exists to rescue: every
+    /// wrongly-personal session carries `enrich_status = 'skipped-personal'` AND
+    /// `scope_version >= 3` (the gate that skipped it wrote both), and
+    /// [`Db::enrich_candidates`] excludes precisely that pair. So the classifier honored the
+    /// override at step 0 and the row never reached the classifier. `--all` was the only
+    /// workaround, and it sets `force`, which re-enriches the whole catalog and clobbers every
+    /// manual tag.
+    ///
+    /// The mechanism is copied verbatim from [`Db::record_enrich_skip`], which NULLs the same
+    /// column for the same reason and documents it: "Leaving the column NULL is what keeps such a
+    /// row a candidate for the next pass". An operator override IS new evidence, arriving after the
+    /// recorded decision was made, so NULL states the truth -- this row's stored scope decision no
+    /// longer describes it. No new predicate, no new flag, no new column.
+    ///
+    /// An ALREADY-ENRICHED row is not re-offered by this: the second candidacy clause
+    /// (`enriched_at IS NULL OR modified > enriched_modified OR prompt_version < ?`) still excludes
+    /// it, and `scope_version` is not one of its disjuncts. That is the property that keeps this
+    /// from becoming a re-enrich storm.
     pub fn set_scope_override(
         &self,
         session_id: &str,
@@ -157,7 +194,7 @@ impl Db {
         debug!("Db::set_scope_override: session_id={session_id} scope={scope} by={by}");
         let n = self.conn.execute(
             "UPDATE sessions SET scope_override = ?2, scope_override_reason = ?3, scope_override_by = ?4, \
-             scope_override_at = ?5 WHERE session_id = ?1",
+             scope_override_at = ?5, scope_version = NULL WHERE session_id = ?1",
             params![session_id, scope, reason, by, now.to_rfc3339()],
         )?;
         if n == 0 {
@@ -168,11 +205,29 @@ impl Db {
 
     /// Clear an operator scope override and its whole audit trail. Returns `false` when no such
     /// session exists.
+    ///
+    /// **NULLs `scope_version` only when an override was ACTUALLY present.** `--clear` has the same
+    /// blockage as `--set` in mirror image: force a row personal -> a normal pass records
+    /// `skipped-personal` + `scope_version = 3` -> `--clear` restores rule-based classification,
+    /// which may now say work, and the row is excluded from ever being asked. Re-offering it is the
+    /// point, for the reason [`Db::set_scope_override`] spells out.
+    ///
+    /// But this method updates ANY existing session, override or not, and its `Ok(n > 0)` means "the
+    /// session exists". An UNCONDITIONAL `scope_version = NULL` would therefore turn
+    /// `scope --clear` on a session with NO override into a hidden "re-offer this row" command --
+    /// reachable against every `skipped-personal` row in the catalog via a nominal no-op. Hence the
+    /// `CASE`.
+    ///
+    /// Adding `AND scope_override IS NOT NULL` to the `WHERE` instead was considered and rejected:
+    /// it would flip `Ok(n > 0)` from "session exists" to "an override existed", changing what the
+    /// CLI's "no session matches" path means.
     pub fn clear_scope_override(&self, session_id: &str) -> Result<bool> {
         debug!("Db::clear_scope_override: session_id={session_id}");
         let n = self.conn.execute(
             "UPDATE sessions SET scope_override = NULL, scope_override_reason = NULL, \
-             scope_override_by = NULL, scope_override_at = NULL WHERE session_id = ?1",
+             scope_override_by = NULL, scope_override_at = NULL, \
+             scope_version = CASE WHEN scope_override IS NOT NULL THEN NULL ELSE scope_version END \
+             WHERE session_id = ?1",
             params![session_id],
         )?;
         Ok(n > 0)

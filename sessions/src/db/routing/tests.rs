@@ -299,3 +299,201 @@ fn record_enrich_failure_reports_whether_the_session_exists() {
         "an absent session cannot be charged an attempt"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// The override re-offers its row: the F1 population, all five directions.
+//
+// Every test here seeds the state that IS the bug -- `enrich_status = 'skipped-personal'` AND
+// `scope_version = SCOPE_VERSION` -- because that pair is what `Db::enrich_candidates` excludes.
+// `a_scope_override_beats_a_refusal_in_both_directions` (`sessions/src/enrich/tests.rs`) sets an
+// override on a FRESH row whose `scope_version` is already NULL, so it exercises the classifier's
+// override branch and never the candidacy predicate that blocks in production.
+// ---------------------------------------------------------------------------------------------
+
+/// Enough of the enrich params that `enrich_candidates` is exercised the way a real pass calls it:
+/// `all = false` is the whole point, since `--all` is the broken workaround being replaced.
+const MAX_ATTEMPTS: i64 = 3;
+const PROMPT_VERSION: i64 = 1;
+
+/// Put a row into the exact state a normal enrich pass leaves a wrongly-personal session in.
+fn seed_skipped_personal(db: &Db, session_id: &str) {
+    seed(db, session_id);
+    db.record_enrich_skip(
+        session_id,
+        OVERRIDE_PERSONAL,
+        Some(session::SCOPE_VERSION),
+        crate::EnrichStatus::SkippedPersonal,
+    )
+    .unwrap();
+}
+
+/// Enrich the row for real, so `enriched_at` and `prompt_version` are both set -- the shape that
+/// must NOT be re-offered, or the fix becomes a re-enrich storm.
+fn seed_enriched(db: &Db, session_id: &str) {
+    seed(db, session_id);
+    db.set_enrichment(
+        session_id,
+        &crate::EnrichSuccess {
+            summary: "already sent",
+            tags: None,
+            scope: OVERRIDE_WORK,
+            enriched_modified: dt("2026-06-21T10:00:00Z"),
+            enrich_model: "test-model",
+            prompt_version: PROMPT_VERSION,
+            redaction_count: 0,
+            tokens_in: 0,
+            tokens_out: 0,
+        },
+        now(),
+    )
+    .unwrap();
+}
+
+fn is_candidate(db: &Db, session_id: &str) -> bool {
+    db.enrich_candidates(None, PROMPT_VERSION, MAX_ATTEMPTS, false)
+        .unwrap()
+        .iter()
+        .any(|r| r.session_id == session_id)
+}
+
+fn scope_version_of(db: &Db, session_id: &str) -> Option<i64> {
+    db.conn
+        .query_row(
+            "SELECT scope_version FROM sessions WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .unwrap()
+}
+
+/// F1 itself. Before the fix the override wrote four columns, the row stayed excluded, and the
+/// operator's only recourse was `--all` (which sets `force`, re-enriching the whole catalog and
+/// clobbering every manual tag).
+///
+/// BITES: drop `scope_version = NULL` from `set_scope_override` and this fails.
+#[test]
+fn setting_work_on_a_skipped_personal_row_re_offers_it_without_all() {
+    let db = Db::open_memory().unwrap();
+    seed_skipped_personal(&db, UUID_A);
+    assert!(
+        !is_candidate(&db, UUID_A),
+        "precondition: a skipped-personal row at the current scope_version is excluded"
+    );
+
+    assert!(
+        db.set_scope_override(UUID_A, OVERRIDE_WORK, "F1 repro", "tester@desk", now())
+            .unwrap()
+    );
+
+    assert_eq!(scope_version_of(&db, UUID_A), None);
+    assert!(
+        is_candidate(&db, UUID_A),
+        "an operator override must re-offer the row it exists to rescue"
+    );
+}
+
+/// The mirror direction the shakedown missed. Force personal -> a normal pass records
+/// `skipped-personal` + `scope_version` -> `--clear` restores rule-based classification, which may
+/// now say work, and without the fix the row is excluded from ever being asked.
+///
+/// BITES: drop the `CASE` clause from `clear_scope_override` and this fails.
+#[test]
+fn clearing_an_existing_override_re_offers_the_row() {
+    let db = Db::open_memory().unwrap();
+    seed_skipped_personal(&db, UUID_A);
+    db.set_scope_override(UUID_A, OVERRIDE_PERSONAL, "forced personal", "tester@desk", now())
+        .unwrap();
+    // Re-record the skip, as a normal pass would, so the row is back in the blocked state.
+    db.record_enrich_skip(
+        UUID_A,
+        OVERRIDE_PERSONAL,
+        Some(session::SCOPE_VERSION),
+        crate::EnrichStatus::SkippedPersonal,
+    )
+    .unwrap();
+    assert!(!is_candidate(&db, UUID_A), "precondition: blocked again");
+
+    assert!(db.clear_scope_override(UUID_A).unwrap());
+
+    assert_eq!(scope_version_of(&db, UUID_A), None);
+    assert!(
+        is_candidate(&db, UUID_A),
+        "clearing an override must re-offer the row, same as setting one"
+    );
+}
+
+/// The hole the review panel found. `clear_scope_override` updates ANY existing session, override
+/// or not, so an UNCONDITIONAL `scope_version = NULL` would turn `scope --clear` on a row with no
+/// override into a hidden "re-offer this row" command -- reachable against every `skipped-personal`
+/// row in the catalog (1018 of them on the live catalog, against 0 overrides) via a nominal no-op.
+///
+/// BITES: make `clear_scope_override`'s write unconditional and this fails.
+#[test]
+fn clearing_with_no_override_present_leaves_scope_version_untouched() {
+    let db = Db::open_memory().unwrap();
+    seed_skipped_personal(&db, UUID_A);
+    assert_eq!(scope_version_of(&db, UUID_A), Some(session::SCOPE_VERSION));
+
+    // Returns true because the SESSION exists -- the documented meaning of the bool, deliberately
+    // preserved rather than flipped to "an override existed".
+    assert!(db.clear_scope_override(UUID_A).unwrap());
+
+    assert_eq!(
+        scope_version_of(&db, UUID_A),
+        Some(session::SCOPE_VERSION),
+        "a no-op clear must not silently re-offer the row"
+    );
+    assert!(!is_candidate(&db, UUID_A), "a no-op clear must not re-offer the row");
+}
+
+/// The direction that already worked, asserted so the fix cannot regress it: forcing `personal` on
+/// a plain candidate leaves it a candidate, and the routing gate then skips it.
+#[test]
+fn setting_personal_on_a_plain_candidate_keeps_it_a_candidate() {
+    let db = Db::open_memory().unwrap();
+    seed(&db, UUID_A);
+    assert!(is_candidate(&db, UUID_A), "precondition: a fresh row is a candidate");
+
+    db.set_scope_override(UUID_A, OVERRIDE_PERSONAL, "forced personal", "tester@desk", now())
+        .unwrap();
+
+    assert!(is_candidate(&db, UUID_A));
+}
+
+/// The re-enrich-storm guard. `scope_version` is NOT one of the second candidacy clause's
+/// disjuncts (`enriched_at IS NULL OR modified > enriched_modified OR prompt_version < ?`), so
+/// NULLing it cannot resurrect a row whose transcript has already been sent. Both directions.
+#[test]
+fn an_already_enriched_row_is_not_re_offered_by_either_direction() {
+    let db = Db::open_memory().unwrap();
+    seed_enriched(&db, UUID_A);
+    seed_enriched(&db, UUID_B);
+    assert!(!is_candidate(&db, UUID_A), "precondition: an enriched row is excluded");
+
+    db.set_scope_override(UUID_A, OVERRIDE_PERSONAL, "wrong scope", "tester@desk", now())
+        .unwrap();
+    assert!(!is_candidate(&db, UUID_A), "--set must not re-offer an enriched row");
+
+    db.set_scope_override(UUID_B, OVERRIDE_WORK, "wrong scope", "tester@desk", now())
+        .unwrap();
+    db.clear_scope_override(UUID_B).unwrap();
+    assert!(!is_candidate(&db, UUID_B), "--clear must not re-offer an enriched row");
+}
+
+/// `--set personal` on an already-enriched row warns, because the transcript has already been sent
+/// and an override cannot un-send it. The CLI reads presence through this accessor.
+#[test]
+fn enriched_at_of_reports_presence_for_the_already_sent_warning() {
+    let db = Db::open_memory().unwrap();
+    seed(&db, UUID_A);
+    assert_eq!(db.enriched_at_of(UUID_A).unwrap(), None);
+
+    seed_enriched(&db, UUID_B);
+    assert_eq!(
+        db.enriched_at_of(UUID_B).unwrap().as_deref(),
+        Some("2026-07-31T12:00:00+00:00")
+    );
+
+    // An absent session is `None`, never an error.
+    assert_eq!(db.enriched_at_of("00000000-0000-0000-0000-000000000000").unwrap(), None);
+}
