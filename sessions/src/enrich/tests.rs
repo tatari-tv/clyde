@@ -29,6 +29,8 @@ struct Fake {
     fail: bool,
     tags: Vec<String>,
     summary: String,
+    /// `(tokens_in, tokens_out)` reported per call.
+    tokens: (u64, u64),
 }
 
 impl Fake {
@@ -38,6 +40,19 @@ impl Fake {
             fail: false,
             tags: tags.iter().map(|s| s.to_string()).collect(),
             summary: "a durable summary".to_string(),
+            tokens: (10, 5),
+        }
+    }
+
+    /// A completer that reports an explicit `(in, out)` token count.
+    ///
+    /// Needed because the default 10-in/5-out cannot distinguish `tokens_in + tokens_out` from
+    /// `tokens_in * tokens_out` in the budget guard: 15 and 50 both clear any budget the test would
+    /// pick. A zero `out` separates them (10 + 0 = 10, but 10 * 0 = 0).
+    fn with_tokens(tags: &[&str], tokens_in: u64, tokens_out: u64) -> Self {
+        Self {
+            tokens: (tokens_in, tokens_out),
+            ..Self::ok(tags)
         }
     }
     fn failing() -> Self {
@@ -46,6 +61,7 @@ impl Fake {
             fail: true,
             tags: vec![],
             summary: String::new(),
+            tokens: (10, 5),
         }
     }
     fn calls(&self) -> usize {
@@ -62,8 +78,8 @@ impl Completer for Fake {
         Ok(LlmEnrichment {
             tags: self.tags.clone(),
             summary: self.summary.clone(),
-            tokens_in: 10,
-            tokens_out: 5,
+            tokens_in: self.tokens.0,
+            tokens_out: self.tokens.1,
         })
     }
 }
@@ -1125,4 +1141,320 @@ fn a_cwd_anchor_disagreeing_with_the_remote_is_warned_and_still_decides() {
 /// hand-edited row or one written by a future clyde with a fifth rule.
 fn set_raw_repo_source(db: &Db, session_id: &str, raw: &str) {
     db.set_raw_repo_source_for_test(session_id, raw).unwrap();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mutation-driven coverage (Phase 5), part two: the arithmetic nobody had asserted.
+// ---------------------------------------------------------------------------------------------
+
+/// KILLS: `replace / with *` and `replace / with %` at `cap / 2`, and `replace - with +` and
+/// `replace - with /` at `cap - head_n`.
+///
+/// `head_tail` is the SEND-SIDE cap: the last thing between a body and the work Anthropic account.
+/// Nothing asserted that the two halves add up to the cap, so any of those four mutations produced a
+/// payload of the wrong size and no test noticed.
+///
+/// Char counts throughout, never byte lengths: the house UTF-8 rule, and the reason the function
+/// exists in this shape at all.
+#[test]
+fn head_tail_splits_the_cap_into_two_halves_that_add_up() {
+    // Below the cap: unchanged, and not flagged.
+    let (out, truncated) = head_tail("short", 100);
+    assert_eq!(out, "short");
+    assert!(!truncated);
+
+    // Exactly at the cap is NOT truncation.
+    let (out, truncated) = head_tail("abcde", 5);
+    assert_eq!(out, "abcde");
+    assert!(!truncated);
+
+    // Over the cap: head + tail must be exactly `cap` chars of ORIGINAL content, with the marker in
+    // between. `cap / 2` and `cap - head_n` are what make that true, in both parities.
+    for cap in [10usize, 11] {
+        let body: String = ('a'..='z').cycle().take(200).collect();
+        let (out, truncated) = head_tail(&body, cap);
+        assert!(truncated, "cap={cap}");
+
+        let marker = "\n...[truncated]...\n";
+        let (head, tail) = out.split_once(marker).expect("the marker separates the two halves");
+        assert_eq!(
+            head.chars().count() + tail.chars().count(),
+            cap,
+            "cap={cap}: the two halves must add up to exactly the cap"
+        );
+        assert_eq!(head.chars().count(), cap / 2, "cap={cap}: head is the floor half");
+        assert!(body.starts_with(head), "cap={cap}: the head is a PREFIX of the body");
+        assert!(body.ends_with(tail), "cap={cap}: the tail is a SUFFIX of the body");
+    }
+
+    // Multibyte, because the cap counts CHARS. A byte-based split would panic or mangle here.
+    let body: String = "\u{4f60}\u{597d}\u{4e16}\u{754c}".repeat(50);
+    let (out, truncated) = head_tail(&body, 9);
+    assert!(truncated);
+    let (head, tail) = out
+        .split_once("\n...[truncated]...\n")
+        .expect("the marker separates the two halves");
+    assert_eq!(head.chars().count() + tail.chars().count(), 9);
+}
+
+/// KILLS: `replace + with -`, `replace + with *`, and `replace >= with <` in the token-budget guard.
+///
+/// The guard is `stats.tokens_in + stats.tokens_out >= budget`, and it is what stops an unattended
+/// timer run from spending without limit. Nothing exercised it, so all three mutations passed.
+///
+/// The Fake charges 10 in + 5 out per call, so a budget of 12 is reached after ONE send and the
+/// second candidate is never sent.
+#[test]
+fn the_token_budget_halts_the_sweep_once_the_total_reaches_it() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let a = write_transcript(tmp.path(), UUID_A, "first work session");
+    let b = write_transcript(tmp.path(), UUID_B, "second work session");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &a);
+    insert(&db, tmp.path(), UUID_B, WORK_CWD, &b);
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(
+        &db,
+        Some(&fake),
+        &EnrichOptions {
+            token_budget: Some(12),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(stats.considered, 2, "both were candidates");
+    assert_eq!(
+        fake.calls(),
+        1,
+        "the budget must halt the sweep after the first send: 10 in + 5 out >= 12"
+    );
+    assert_eq!(stats.enriched, 1);
+    assert_eq!((stats.tokens_in, stats.tokens_out), (10, 5));
+
+    // And a budget the first send cannot reach does NOT halt.
+    let fake = Fake::ok(&["x"]);
+    let db2 = Db::open_memory().unwrap();
+    insert(&db2, tmp.path(), UUID_A, WORK_CWD, &a);
+    insert(&db2, tmp.path(), UUID_B, WORK_CWD, &b);
+    let stats = enrich(
+        &db2,
+        Some(&fake),
+        &EnrichOptions {
+            token_budget: Some(1_000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fake.calls(),
+        2,
+        "a budget nowhere near the total must not halt anything"
+    );
+    assert_eq!(stats.enriched, 2);
+}
+
+/// KILLS: `replace += with -=` and `replace += with *=` on `stats.skipped_empty`, and
+/// `replace += with *=` on `stats.redactions`.
+///
+/// Both are counters the operator reads to decide whether a sweep did what they expected, and both
+/// start at zero, so `*=` pins them at zero forever and `-=` underflows. Nothing asserted either
+/// across MORE THAN ONE session, which is what makes an accumulator distinguishable from an
+/// assignment.
+#[test]
+fn the_sweep_counters_accumulate_across_sessions() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    // Two body-less transcripts: both skip as empty, so the counter must reach 2, not 1 and not 0.
+    let a = write_empty_transcript(tmp.path(), UUID_A);
+    let b = write_empty_transcript(tmp.path(), UUID_B);
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &a);
+    insert(&db, tmp.path(), UUID_B, WORK_CWD, &b);
+
+    let stats = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        stats.skipped_empty, 2,
+        "the empty-skip counter must ACCUMULATE: {stats:?}"
+    );
+
+    // Two sessions each carrying one secret: the redaction counter must reach 2.
+    let db2 = Db::open_memory().unwrap();
+    let secret = "deploy with sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx and ship";
+    let c = write_transcript(tmp.path(), UUID_A, secret);
+    let d = write_transcript(tmp.path(), UUID_B, secret);
+    insert(&db2, tmp.path(), UUID_A, WORK_CWD, &c);
+    insert(&db2, tmp.path(), UUID_B, WORK_CWD, &d);
+
+    let stats = enrich(
+        &db2,
+        Some(&Fake::ok(&["x"])),
+        &EnrichOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(stats.redactions, 2, "one redaction per session, accumulated: {stats:?}");
+}
+
+/// KILLS: `replace || with &&` in the tag-preservation predicate.
+///
+/// `force || rec.tags.is_empty() || !db.tags_are_manual(..)` decides whether enrichment may overwrite
+/// tags. With `&&` it would take ALL THREE, so a session with existing manual tags and no force would
+/// still be overwritten only in cases nothing covered. The manual-tag preservation contract is the
+/// thing being protected: a post-enrichment retag must survive an ordinary sweep.
+#[test]
+fn manual_tags_survive_an_ordinary_sweep_but_not_an_explicit_one() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "work content");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
+    db.set_tags(UUID_A, &["hand-picked".to_string()]).unwrap();
+
+    // An ordinary sweep must PRESERVE them: not forced, tags non-empty, tags are manual.
+    enrich(&db, Some(&Fake::ok(&["machine"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        db.get(UUID_A).unwrap().unwrap().tags,
+        vec!["hand-picked".to_string()],
+        "a manual retag must survive an ordinary sweep"
+    );
+
+    // `--all` forces, so the same row IS overwritten.
+    enrich(
+        &db,
+        Some(&Fake::ok(&["machine"])),
+        &EnrichOptions {
+            all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        db.get(UUID_A).unwrap().unwrap().tags,
+        vec!["machine".to_string()],
+        "--all is the documented way to refresh the vocabulary"
+    );
+}
+
+/// KILLS: `replace + with *` in the token-budget guard.
+///
+/// The default Fake reports 10 in / 5 out, and 10+5 and 10*5 both clear any budget a test would pick,
+/// so `the_token_budget_halts_the_sweep_once_the_total_reaches_it` could not tell the two apart. A
+/// ZERO output count separates them: `10 + 0 = 10` reaches a budget of 10, while `10 * 0 = 0` never
+/// reaches any budget at all, so the sweep would run forever without halting.
+///
+/// A zero `tokens_out` is not contrived: a completer that returns an empty or refused completion
+/// reports exactly that.
+#[test]
+fn the_token_budget_sums_the_two_counts_rather_than_multiplying_them() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let a = write_transcript(tmp.path(), UUID_A, "first work session");
+    let b = write_transcript(tmp.path(), UUID_B, "second work session");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &a);
+    insert(&db, tmp.path(), UUID_B, WORK_CWD, &b);
+
+    let fake = Fake::with_tokens(&["x"], 10, 0);
+    let stats = enrich(
+        &db,
+        Some(&fake),
+        &EnrichOptions {
+            token_budget: Some(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(stats.considered, 2);
+    assert_eq!(
+        fake.calls(),
+        1,
+        "10 in + 0 out reaches a budget of 10 and must halt; multiplying gives 0 and never halts"
+    );
+}
+
+/// KILLS: `replace || with && ` at the SECOND disjunct of the tag-preservation predicate.
+///
+/// The predicate is `force || rec.tags.is_empty() || !db.tags_are_manual(..)`. My first attempt used
+/// a session with MANUAL tags, where the original and the mutant agree (both preserve), so it could
+/// not bite. The distinguishing case is tags that are non-empty and NOT manual, i.e. a session
+/// already enriched once:
+///
+/// - original: `false || false || !false` -> true  -> refresh
+/// - mutant:   `false || (false && true)` -> false -> preserve, and the vocabulary never updates
+///
+/// That is the real contract: enrichment OWNS the tags it wrote, so a later sweep refreshes them.
+/// Only a manual retag is protected.
+#[test]
+fn enrichment_owned_tags_are_refreshed_by_a_later_sweep() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "work content");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
+
+    // First sweep: enrichment writes the tags, so they are enrich-owned and non-empty.
+    enrich(&db, Some(&Fake::ok(&["first"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(db.get(UUID_A).unwrap().unwrap().tags, vec!["first".to_string()]);
+    assert!(
+        !db.tags_are_manual(UUID_A).unwrap(),
+        "the tags are enrich-owned, which is the precondition this test needs"
+    );
+
+    // Make the row a candidate again. The predicate needs `modified > enriched_modified`, and
+    // `parsed_record` pins `modified`, so the re-upsert carries a LATER one: growing the file alone
+    // is not enough, which is the same "grown since last enrichment" rule production uses.
+    let grown = ParsedSession {
+        modified: dt("2026-06-25T10:00:00Z"),
+        body: "indexed body, grown".into(),
+        ..parsed_record(tmp.path(), UUID_A, WORK_CWD, &parent)
+    };
+    db.upsert_session(&grown, "desk").unwrap();
+
+    enrich(&db, Some(&Fake::ok(&["second"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        db.get(UUID_A).unwrap().unwrap().tags,
+        vec!["second".to_string()],
+        "enrichment owns the tags it wrote, so a later sweep must refresh them"
+    );
+}
+
+/// KILLS: `replace += with -=` and `replace += with *=` on the `skipped_empty` counter in the
+/// NO-STAGED-COPY branch.
+///
+/// There are two `skipped_empty += 1` sites, and `the_sweep_counters_accumulate_across_sessions`
+/// only reaches the empty-BODY one. This is the other: an archived session whose transcript is gone
+/// from disk and which has no staged copy, so `transcript_layout` returns `None` and there is nothing
+/// to parse.
+///
+/// Reached through `--only`, deliberately: `enrich_candidates` excludes
+/// `archived = 1 AND staged_path IS NULL`, so the ordinary sweep never offers such a row and this
+/// branch is only reachable when an operator names the session explicitly.
+#[test]
+fn an_archived_session_with_no_staged_copy_counts_as_an_empty_skip() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "work content");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
+
+    // The transcript vanishes (TTL-reaped) and there is no staged copy.
+    std::fs::remove_file(&parent).unwrap();
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(
+        &db,
+        Some(&fake),
+        &EnrichOptions {
+            only: Some(UUID_A.to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(fake.calls(), 0, "there is no body to send");
+    assert_eq!(
+        stats.skipped_empty, 1,
+        "the no-staged-copy branch must COUNT its skip: {stats:?}"
+    );
 }

@@ -244,3 +244,58 @@ fn an_override_on_an_absent_session_reports_false_rather_than_erroring() {
             .unwrap()
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Mutation-driven coverage (Phase 5): the write methods' return values, which callers use to tell
+// "I changed something" from "there was nothing to change".
+// ---------------------------------------------------------------------------------------------
+
+/// KILLS: `replace > with >= in Db::record_enrich_skip`.
+///
+/// The bool is the observable difference between the guarded UPDATE and the bare one it replaced. A
+/// mutant returning `true` unconditionally would make the no-change guard untestable from the
+/// outside, which is how the original bare UPDATE went unnoticed in the first place.
+#[test]
+fn record_enrich_skip_reports_whether_it_actually_changed_anything() {
+    use crate::export::EnrichStatus;
+
+    let db = Db::open_memory().unwrap();
+    seed(&db, UUID_A);
+
+    assert!(
+        db.record_enrich_skip(UUID_A, "personal", Some(3), EnrichStatus::SkippedPersonal)
+            .unwrap(),
+        "the first write changes the row"
+    );
+    assert!(
+        !db.record_enrich_skip(UUID_A, "personal", Some(3), EnrichStatus::SkippedPersonal)
+            .unwrap(),
+        "an identical second write must report NO change, or the export cursor churns forever"
+    );
+    assert!(
+        db.record_enrich_skip(UUID_A, "personal", None, EnrichStatus::SkippedPersonal)
+            .unwrap(),
+        "a different scope_version IS a change, and `IS NOT` is what makes NULL compare correctly"
+    );
+    assert!(
+        !db.record_enrich_skip(UUID_B, "personal", None, EnrichStatus::SkippedPersonal)
+            .unwrap(),
+        "an absent session changes nothing"
+    );
+}
+
+/// KILLS: `replace > with >= in Db::record_enrich_failure`.
+///
+/// Unlike the skip writer this one has no no-change guard (it bumps `attempts` every call, which is
+/// the point), so its bool means "the session exists". A mutant returning `true` for an absent
+/// session would report a charged attempt that never happened.
+#[test]
+fn record_enrich_failure_reports_whether_the_session_exists() {
+    let db = Db::open_memory().unwrap();
+    seed(&db, UUID_A);
+    assert!(db.record_enrich_failure(UUID_A, "work", "boom").unwrap());
+    assert!(
+        !db.record_enrich_failure(UUID_B, "work", "boom").unwrap(),
+        "an absent session cannot be charged an attempt"
+    );
+}

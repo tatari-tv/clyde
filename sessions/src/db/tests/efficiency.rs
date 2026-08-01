@@ -775,3 +775,87 @@ fn v10_migration_does_not_reset_an_already_migrated_catalog() {
         "reopening an already-v10 catalog must not re-run the reset",
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Mutation-driven coverage (Phase 5): the version GATES on the destructive resets.
+//
+// Every `migrate_vN_reset_*` step NULLs efficiency across the whole table, and every one is gated on
+// the PRE-migration `user_version` so it fires exactly once. The existing tests all drive the hop the
+// gate admits, so nothing observed the gate REFUSING, and mutating each predicate survived. A wrong
+// gate is not cosmetic: it re-runs a full-table invalidation on every later upgrade, throwing away
+// annotation a previous reindex paid to compute.
+// ---------------------------------------------------------------------------------------------
+
+/// Build a DB at `version` carrying a populated efficiency annotation, so a reset is OBSERVABLE.
+///
+/// Reuses the v6 builder and then just moves the version marker: the columns are identical from v6
+/// on, and what these tests exercise is the GATE, not the schema.
+fn build_db_with_efficiency_at_version(path: &Path, version: i64) {
+    build_v6_db_with_efficiency(path);
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "user_version", version).unwrap();
+}
+
+/// Whether the efficiency annotation survived the migration.
+fn efficiency_present(path: &Path) -> bool {
+    let db = Db::open_at(path).unwrap();
+    let json: Option<String> = db
+        .conn
+        .query_row(
+            "SELECT efficiency_json FROM sessions WHERE session_id = ?1",
+            rusqlite::params![UUID_A],
+            |r| r.get(0),
+        )
+        .unwrap();
+    json.is_some()
+}
+
+/// KILLS: `replace != with == in migrate_v7_reset_efficiency`.
+///
+/// The gate is `from_version != 6 -> return`. Inverted, the reset fires on every hop EXCEPT v6->v7,
+/// which is precisely backwards: it would spare the one upgrade that needs it and wipe every other.
+#[test]
+fn the_v7_reset_fires_only_on_the_v6_hop() {
+    let tmp = tempfile::TempDir::new().unwrap();
+
+    // The hop it IS for: the annotation is invalidated.
+    let at6 = tmp.path().join("at6.db");
+    build_db_with_efficiency_at_version(&at6, 6);
+    assert!(!efficiency_present(&at6), "v6 -> current must invalidate");
+
+    // A hop it is NOT for. v10 is past every reset gate (v7 wants 6, v8 wants 6..8, v9 wants 8, v10
+    // wants 6..10), so the annotation must SURVIVE untouched.
+    let at10 = tmp.path().join("at10.db");
+    build_db_with_efficiency_at_version(&at10, 10);
+    assert!(
+        efficiency_present(&at10),
+        "a v10 catalog is past every reset gate; re-running one throws away work a reindex paid for"
+    );
+}
+
+/// KILLS: `replace != with == in migrate_v9_reset_efficiency` and `delete ! in
+/// migrate_v8_extend_efficiency`.
+///
+/// v8's gate is `!(6..8).contains(&from_version) -> return` and v9's is `from_version != 8 -> return`.
+/// Both are exercised here from the one direction the existing tests never drove: a version the gate
+/// must REFUSE.
+#[test]
+fn the_v8_and_v9_resets_refuse_a_version_outside_their_hop() {
+    let tmp = tempfile::TempDir::new().unwrap();
+
+    // v8's window is 6..8, so 8 itself is OUTSIDE it. v9's gate admits 8, so the annotation is still
+    // invalidated here -- by v9, not v8. The distinguishing case is below.
+    let at8 = tmp.path().join("at8.db");
+    build_db_with_efficiency_at_version(&at8, 8);
+    assert!(!efficiency_present(&at8), "v8 -> current invalidates via the v9 gate");
+
+    // v11 is outside EVERY reset window (v7: ==6, v8: 6..8, v9: ==8, v10: 6..10). Deleting the `!`
+    // from v8's gate turns `!(6..8).contains(11)` into `(6..8).contains(11)`, which is false, so v8
+    // stops refusing... and the reset runs. This is the row that catches it.
+    let at11 = tmp.path().join("at11.db");
+    build_db_with_efficiency_at_version(&at11, 11);
+    assert!(
+        efficiency_present(&at11),
+        "a v11 catalog is past every reset window; no step may invalidate it"
+    );
+}

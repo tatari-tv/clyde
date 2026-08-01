@@ -126,6 +126,19 @@ fn derive_repository_only_from_exact_github_pull_shape() {
     );
     assert_eq!(derive_repository("https://github.com/org/team/repo/pull/9"), None);
     assert_eq!(derive_repository("https://github.com/org/repo/pull/latest"), None);
+    // KILLS: `replace || with && in derive_repository` (the second one). `a || b || c || d` becomes
+    // `a || (b && c) || d`, which only differs when the repo segment is EMPTY and the `pull` literal
+    // is correct: the guard then stops rejecting and the function returns the malformed `org/`.
+    assert_eq!(
+        derive_repository("https://github.com/org//pull/1"),
+        None,
+        "an empty repo segment must not yield the slug `org/`"
+    );
+    assert_eq!(
+        derive_repository("https://github.com//repo/pull/1"),
+        None,
+        "an empty org"
+    );
 }
 
 // ---- extract (per-file), parity with report::outcome::extract over an unbounded window ----
@@ -521,5 +534,70 @@ fn union_repos_touched_is_empty_off_the_configured_root() {
     assert!(
         out.repos_touched.is_empty(),
         "nothing under /elsewhere; no slug invented"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mutation-driven coverage (Phase 5).
+// ---------------------------------------------------------------------------------------------
+
+/// A `log::Log` that appends every record to a shared buffer, so a LOG-ONLY behavior can be
+/// asserted. Same pattern as `sessions::enrich::tests`; tests share the buffer and filter by a
+/// needle unique to their own fixture.
+struct Capture;
+
+static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
+impl log::Log for Capture {
+    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        if let Ok(mut buf) = CAPTURED.lock() {
+            buf.push(record.args().to_string());
+        }
+    }
+    fn flush(&self) {}
+}
+
+fn captured_containing(needle: &str) -> Vec<String> {
+    CAPTURE_INIT.call_once(|| {
+        log::set_boxed_logger(Box::new(Capture)).expect("no other logger is installed in this test binary");
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+    let buf = CAPTURED.lock().expect("capture buffer");
+    buf.iter().filter(|l| l.contains(needle)).cloned().collect()
+}
+
+/// KILLS: `replace += with *= in extract` on `line_no`.
+///
+/// `line_no` feeds only diagnostics, and `*= 1` from a start of 0 pins it at 0 forever. That is
+/// exactly the failure the house logging rule exists to prevent: an operator sees "unparseable
+/// outcome record <path>:0" for every bad line in a 50,000-line transcript and cannot find any of
+/// them.
+///
+/// Annotating this with `mutants:skip` was the cheaper option and the wrong one. The line number IS
+/// the diagnostic; a counter that never counts makes the message worse than no message, because it
+/// looks like an answer.
+#[test]
+fn an_unparseable_record_is_warned_with_its_real_line_number() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("marker-9f3a2b.jsonl");
+
+    // Three lines, then a malformed one on line 4. The malformed line must carry a prescreen marker
+    // (`tool_use`), or `extract` skips it BEFORE the parser and no warning is emitted at all: the
+    // substring prescreen at `outcome.rs:285` is the gate. Found by this test capturing nothing.
+    let good = r#"{"type":"user","message":{"content":[]}}"#;
+    let bad = r#"{"tool_use" not json"#;
+    std::fs::write(&path, format!("{good}\n{good}\n{good}\n{bad}\n")).unwrap();
+
+    captured_containing("prime");
+    extract(&path).expect("a malformed line is skipped, never fatal");
+
+    let lines = captured_containing("marker-9f3a2b.jsonl");
+    assert!(
+        lines.iter().any(|l| l.contains("marker-9f3a2b.jsonl:4")),
+        "the warning must name the REAL line number (4), not 0. captured: {lines:?}"
     );
 }

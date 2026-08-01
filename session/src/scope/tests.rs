@@ -524,3 +524,113 @@ fn scope_tokens_are_stable() {
     assert!(Scope::Work.is_work());
     assert!(!Scope::Personal.is_work());
 }
+
+/// Register item 5's predicate, and the two mutants that survived the first mutation run.
+///
+/// KILLS: `delete ! in anchor_disagrees_with_remote` (which would report a disagreement for every
+/// UNANCHORED cwd and none for anchored ones, exactly inverting what is counted) and
+/// `replace != with == ` (which would report a disagreement whenever the two AGREE).
+///
+/// Both directions are asserted, because they mean different things to an operator: a work anchor
+/// with a personal remote is usually a fork, a personal anchor with a work remote is usually a
+/// misfiled clone.
+#[test]
+fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
+    // Work anchor, personal remote: the fork.
+    assert_eq!(
+        anchor_disagrees_with_remote(
+            &PathBuf::from("/home/saidler/repos/tatari-tv/clyde-fork"),
+            "scottidler/clyde-fork"
+        ),
+        Some(Disagreement {
+            anchor: Scope::Work,
+            remote: Scope::Personal
+        })
+    );
+    // Personal anchor, work remote: the misfiled clone.
+    assert_eq!(
+        anchor_disagrees_with_remote(
+            &PathBuf::from("/home/saidler/repos/scottidler/philo"),
+            "tatari-tv/philo"
+        ),
+        Some(Disagreement {
+            anchor: Scope::Personal,
+            remote: Scope::Work
+        })
+    );
+    // AGREEMENT is not a disagreement, in both directions.
+    assert_eq!(
+        anchor_disagrees_with_remote(&PathBuf::from("/home/saidler/repos/tatari-tv/clyde"), "tatari-tv/clyde"),
+        None
+    );
+    assert_eq!(
+        anchor_disagrees_with_remote(
+            &PathBuf::from("/home/saidler/repos/scottidler/loopr"),
+            "scottidler/loopr"
+        ),
+        None
+    );
+    // An UNANCHORED cwd expresses no opinion, so it can never disagree, however the remote reads.
+    assert_eq!(
+        anchor_disagrees_with_remote(&PathBuf::from("/Users/stephen/code/work/philo"), "tatari-tv/philo"),
+        None
+    );
+    assert_eq!(
+        anchor_disagrees_with_remote(&PathBuf::from("/Users/stephen/code/work/philo"), "scottidler/x"),
+        None,
+        "no anchor means nothing to conflict WITH, so this is silence rather than a conflict"
+    );
+}
+
+/// The operator override, in the classifier itself.
+///
+/// KILLS: `replace == with != in classify_with_evidence` at the override comparison. With `!=`, an
+/// override of `personal` reads as WORK, which is a leak introduced by the escape hatch meant to
+/// prevent one.
+///
+/// `sessions` asserts the same behavior end to end through the real gate, but a mutant in THIS crate
+/// is only checked by THIS crate's tests, so the end-to-end assertion cannot close it. That is the
+/// general lesson: the biting test has to live in the crate that owns the code.
+#[test]
+fn an_operator_override_decides_in_both_directions() {
+    let m = Matrix::build();
+    let work = RoutingFacts {
+        scope_override: Some("work"),
+        evidence_present: true,
+        ..Default::default()
+    };
+    let personal = RoutingFacts {
+        scope_override: Some("personal"),
+        evidence_present: true,
+        ..Default::default()
+    };
+
+    // `personal` over a cwd the anchor would call WORK.
+    let d = classify_at_with_facts(&m, &m.flat_ssh, &[], 0, &personal);
+    assert_eq!(
+        d.scope,
+        Scope::Personal,
+        "an override of `personal` must not read as work"
+    );
+    assert_eq!(d.basis, Basis::Override);
+    assert!(d.settled, "a human is the highest-confidence evidence there is");
+
+    // `work` over a cwd nothing else can place.
+    let d = classify_at_with_facts(&m, &m.home(), &[], 0, &work);
+    assert_eq!(d.scope, Scope::Work);
+    assert_eq!(d.basis, Basis::Override);
+
+    // An unrecognized token fails CLOSED. `Db::set_scope_override` rejects anything but the two
+    // legal spellings, so reaching this means a hand-edited catalog.
+    let garbage = RoutingFacts {
+        scope_override: Some("WORK"),
+        evidence_present: true,
+        ..Default::default()
+    };
+    let d = classify_at_with_facts(&m, &m.flat_ssh, &[], 0, &garbage);
+    assert_eq!(
+        d.scope,
+        Scope::Personal,
+        "an unrecognized override token must fail closed, never open"
+    );
+}

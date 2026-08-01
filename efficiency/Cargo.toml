@@ -27,5 +27,6 @@ serde_yaml.workspace = true
 sessions = { path = "../sessions" }
 
 [dev-dependencies]
+log = { workspace = true, features = ["std"] }
 session = { path = "../session" }
 tempfile.workspace = true

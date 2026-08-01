@@ -492,3 +492,238 @@ that Patrick's layout was fixed is wrong, and the test now says so.
 The fork case still classifies WORK through the real gate in both the unit suite
 (`cwd_anchor_outranks_the_remote_in_both_directions`, now over a real checkout) and the integration
 suite (`matrix_row_18_the_fork_in_a_work_directory_stays_work_through_the_real_gate`).
+
+## Phase 5: Make a non-biting test fail CI
+
+### Design decisions
+
+- **`cargo-mutants` is pinned to 27.1.0 and the task installs it if absent.** A toolchain refresh that
+  generates different mutants would change what "zero" means without anyone deciding to. The task
+  compares `cargo mutants --version` and installs `--locked` on a mismatch, so a fresh checkout is one
+  command away from the same gate.
+- **`otto mutants` is NOT a `before:` of `otto ci`, and that was decided by measurement, not by
+  guess.** See "Measured" for the numbers.
+- **Six paths, not two.** Both reviewers called the earlier draft's two-file scope too narrow, and
+  they were right: the surviving mutants landed in four different files across three crates.
+- **Zero unannotated survivors, and in the end zero ANNOTATIONS too.** Every survivor turned out to be
+  a genuine test gap rather than an unavoidable mutant, so the tree carries no `// mutants:skip` at
+  all. That is the better outcome: a skip is reviewable, but no skip is unarguable.
+
+### Deviations
+
+- **`Resolver::blocked_roots()` was DELETED rather than annotated.** Two of the twelve survivors were
+  mutations of it, and `rg` showed it has no callers anywhere in the tree. The house rule is that dead
+  code is removed, not silenced, and a `mutants:skip` on an unused accessor would have institutionalized
+  exactly the thing the phase is against.
+- **`--test-workspace true` was added, then REMOVED, and the reasoning for adding it was wrong.**
+  I read three runs reporting 12, then 4, then 1 survivors as evidence that per-package test scoping
+  made the verdict depend on scheduling. It did not: those were `grep -c MISSED` counts taken from
+  runs that DIED before finishing (disk exhaustion, then a killed background job), so they were
+  partial logs, not disagreeing verdicts. The first run to emit a summary line reported
+  `287 = 15 missed + 144 caught + 128 unviable`, which adds up, and that is the only tally in this
+  phase that can be trusted.
+
+  The shipped task uses the DEFAULT per-package scope. That is the stricter discipline rather than a
+  weaker one: each mutant is checked by its owning crate's tests, which forces the biting test to
+  live with the code. The `scope_override` mutant proves the point (see Measured) and its fix was a
+  unit test in `session`, not a wider flag. Dropping the flag also cuts the runtime roughly
+  five-fold.
+
+  Recorded at length because the wrong conclusion was load-bearing for a while: **a survivor count
+  read from an unfinished run is not a survivor count.**
+- **`cost::cache`'s tests were made hermetic, which is outside this design doc entirely.** Justified
+  because Phase 5's own task is what makes the pre-existing defect reliably fire: those tests read and
+  write the operator's REAL `~/.cache/clyde/cost/`, and `otto mutants` runs many copies of the suite
+  at once. Shipping a CI task that makes another suite flaky is shipping a defect. Details under
+  "Measured". The fix is a mutex plus `XDG_CACHE_HOME` pointed at a `TempDir`: the mutex alone fixes
+  only the in-process collision, and the cross-process one needs the redirect.
+
+### Tradeoffs
+
+- **The gate is a separate task, so it can be skipped.** The alternative was making `otto ci` take
+  ten-plus minutes on every commit, which would get the whole pipeline worked around rather than this
+  one task. The Rollout Plan already requires `/review-panel` before merge; this joins it as a
+  pre-merge step rather than a per-commit one.
+- **Tests written to kill a mutant are labelled as such.** Each carries a `KILLS:` line naming the
+  exact mutation. A reader can tell a coverage test from a behavior test, and if the mutation operator
+  ever changes, the stale label is a signal rather than a mystery.
+
+### Open questions
+
+- None.
+
+### Measured
+
+**Runtime, which is what decided `ci` versus a separate task:**
+
+```
+39 mutants (one file),   per-package, --jobs 6:   44 s
+287 mutants (six paths), per-package, --jobs 8:   18 min   (the complete run)
+287 mutants (six paths), --test-workspace:        > 5x that, and never completed
+```
+
+Eighteen minutes is too long for `ci` on every commit, so the task stays out of it and is required
+before merge instead. That is the design's stated fallback, chosen on the measurement it asked for.
+
+**Survivors, and how they were driven to zero.** First full run: 12, all in `common/src/repo.rs`.
+
+| survivor | closed by |
+|---|---|
+| `Resolver::blocked_roots` (x2) | DELETED: no callers anywhere in the tree |
+| `home_dir_as_blocked -> vec![]` (x2) | `a_fresh_resolver_blocks_the_real_home_directory` |
+| `ProbeOutcome::resolved_host` (x4) | `resolved_host_reports_the_host_only_for_a_resolved_probe` |
+| `ProbeOutcome::as_str` (x2) | `probe_outcome_tokens_are_a_stable_contract` |
+| containment `==` -> `!=` | `detect_declines_a_toplevel_that_does_not_contain_the_cwd` |
+| `parse_slug` `\|\|` -> `&&` | two rows added to `parse_slug_garbage_returns_none` |
+
+The first COMPLETE run then reported 15, none of them in `common/src/repo.rs` (those were fixed) and
+most in files the earlier partial runs never reached:
+
+| survivor | closed by |
+|---|---|
+| `anchor_disagrees_with_remote`: `delete !`, `!=` -> `==` | `anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts` |
+| `record_enrich_skip`: `>` -> `>=` | `record_enrich_skip_reports_whether_it_actually_changed_anything` |
+| `record_enrich_failure`: `>` -> `>=` | `record_enrich_failure_reports_whether_the_session_exists` |
+| `classify_with_evidence`: `==` -> `!=` on the override | `an_operator_override_decides_in_both_directions` |
+| `derive_repository`: `\|\|` -> `&&` | two rows added to `derive_repository_only_from_exact_github_pull_shape` |
+| `head_tail`: `cap / 2` and `cap - head_n`, four mutants | `head_tail_splits_the_cap_into_two_halves_that_add_up` |
+| token budget: `+` -> `-`/`*`, `>=` -> `<`, three mutants | `the_token_budget_halts_the_sweep_once_the_total_reaches_it` |
+| `stats.skipped_empty` / `stats.redactions` accumulators | `the_sweep_counters_accumulate_across_sessions` |
+| tag preservation: `\|\|` -> `&&` | `manual_tags_survive_an_ordinary_sweep_but_not_an_explicit_one` |
+| `migrate_v7`/`v8`/`v9` version gates, three mutants | `the_v7_reset_fires_only_on_the_v6_hop`, `the_v8_and_v9_resets_refuse_a_version_outside_their_hop` |
+| `extract`: `line_no += 1` -> `*= 1` | `an_unparseable_record_is_warned_with_its_real_line_number` |
+
+**Two of those were worth having entirely apart from the mutant.** The token-budget guard is what
+stops an unattended timer run spending without limit and had NO test at all. The migration version
+gates had tests only for the hop each gate ADMITS, so nothing ever observed one refusing: inverting
+`from_version != 6` would spare the upgrade that needs the reset and wipe the annotation on every
+other, discarding work a previous reindex paid to compute.
+
+**`line_no` was the one real `mutants:skip` candidate, and writing the test instead paid off
+immediately.** It feeds only log messages, so an annotation would have been defensible. The test
+failed on its first run for a reason I had not predicted: `extract` runs a substring PRESCREEN
+(`outcome.rs:285`) before the JSON parser, so a malformed line with no `tool_use`/`gitOperation`
+marker is skipped before any warning can fire, and the capture came back empty. The warning path had
+no coverage at all, and a skip would have hidden that rather than recorded it.
+
+**The containment mutant needed a shape nobody had.** `!(toplevel == cwd || cwd.starts_with(&toplevel))`
+only differs from the mutant when the toplevel is neither the cwd nor an ancestor of it, and every
+ordinary shape is contained by construction because git's discovery walks UP. `core.worktree` is the
+reproducible way there, measured 2026-07-31:
+
+```
+$ git -C <proj> config --local core.worktree <elsewhere>
+$ git -C <proj> rev-parse --show-toplevel
+<elsewhere>          # not the cwd, and not an ancestor of it
+```
+
+**The override mutant is the phase's own lesson, in miniature.** `sessions` already asserted the
+override end to end through the real gate, and that assertion could not close a mutant in `session`,
+because a mutant is only checked by the tests that run for it. The biting test has to live in the
+crate that owns the code.
+
+**The final verdict, and how it is composed.** Two complete runs, because the harness kept killing
+the 18-minute one and a partial run proves nothing:
+
+```
+gate3, all six paths:      287 mutants: 4 missed, 155 caught, 128 unviable
+                           (all four survivors in sessions/src/enrich.rs)
+gate5, the two sessions files after closing those four:
+                            78 mutants: 0 missed,  53 caught,  25 unviable
+```
+
+The composition is sound rather than convenient: between the two runs I added TESTS only, and no
+production code changed. Adding a test can kill a mutant; it cannot resurrect one. So gate3's clean
+verdict on `common/src/repo.rs`, `session/src/scope.rs`, `efficiency/src/outcome.rs` and
+`sessions/src/db/migrate.rs` still holds, and gate5 re-tests exactly the file the four survivors were
+in (plus its sibling, since the shared `Fake` helper was extended).
+
+**ZERO `// mutants:skip` in the tree.** Every survivor was a genuine test gap, so none was annotated.
+
+**The last four survivors are the phase's sharpest lesson: a test can look right and still not
+distinguish the mutant.** All three of my first attempts passed, and all three failed to bite:
+
+| survivor | why the first attempt could not kill it |
+|---|---|
+| `tokens_in + tokens_out` -> `*` | the Fake reported 10 in / 5 out, and 15 and 50 BOTH clear any budget a test would pick. A zero `tokens_out` separates them: `10 + 0 = 10` halts, `10 * 0 = 0` never halts at all |
+| tag preservation `\|\|` -> `&&` | I asserted the MANUAL-tag case, where the original and the mutant agree (both preserve). The distinguishing case is enrich-OWNED tags: the original refreshes them, the mutant preserves them forever and the vocabulary never updates |
+| `skipped_empty += 1` (x2) | there are TWO such sites; my test reached the empty-BODY one. The survivor is the no-staged-copy branch, which `enrich_candidates` excludes and which is only reachable through `--only` |
+
+The tag test then failed on its own PRECONDITION, which is worth recording separately: the row was
+not re-offered, because `parsed_record` pins `modified` and the candidate predicate needs
+`modified > enriched_modified`. Both the fixture and the assertion have to be right before a test
+bites, and only the mutation run tells you when one of them is not.
+
+**The gate exhausted the disk before it exhausted the mutants, and the failure mode is a FALSE
+GREEN.** With `--jobs 12` the first full `--test-workspace` run died partway through:
+
+```
+ERROR Worker thread failed: failed to overwrite "/tmp/cargo-mutants-clyde-ORZTho.tmp/sessions/src/enrich.rs"
+Caused by: No space left on device (os error 28)
+OTTO EXIT=1
+```
+
+cargo-mutants gives every job its own copy of the workspace AND its own `target/`, and `/tmp` on this
+host is a 16 GB tmpfs (`df`: `tmpfs 16G ... /tmp`) while `/` has 338 GB free. The dangerous part is
+what the log said up to that point: **zero survivors**. Anyone reading the survivor count rather than
+the exit code would have called that a pass on a run that tested a fraction of the mutants.
+
+AC6 is specified correctly for exactly this reason (`otto mutants; echo $?` returns `0`), and the
+task now avoids the trap rather than relying on the reader: `TMPDIR` is redirected to a disk-backed
+`target/mutants-scratch` (overridable with `TMPDIR_MUTANTS`) and `--jobs` drops from 12 to 4. Four is
+chosen for the DISK, not the CPU; cargo-mutants' own startup warning independently says jobs above 8
+is probably too high.
+
+**Redirecting `TMPDIR` then broke the BASELINE, and that exposed a real fragility in the code, not
+just in the task.** With the scratch under `$PWD/target/mutants-scratch`:
+
+```
+test repo::tests::detect_is_conclusively_not_a_repo_for_a_plain_directory ... FAILED
+ERROR cargo test failed in an unmutated tree, so no mutants were tested
+```
+
+`has_git_marker` (Phase 2) walks LEXICAL ancestors, and `TMPDIR` is what decides where
+`TempDir::new()` puts a "plain directory". Under `$PWD/target/...` there is a `.git` above it (this
+repo), so a plain temp dir correctly reads `Indeterminate` rather than `NotARepo`. `$HOME/.cache`
+would have failed identically: measured, `/home/saidler/.git` exists, because the maintainer's home
+IS a dotfiles repo.
+
+Two fixes, because there are two problems:
+
+- the task uses `/var/tmp/clyde-mutants` (disk-backed, and verified to have no `.git` above it),
+  overridable with `TMPDIR_MUTANTS`
+- the TEST now states its precondition and fails with an explanatory message when the environment
+  violates it, rather than asserting the wrong arm and leaving the next person to work out why a
+  green suite went red when only an environment variable changed
+
+**The auto-set timeout manufactures false findings under parallelism.** cargo-mutants derives the
+per-mutant test timeout from the unmutated baseline, measured on an idle machine, and then runs the
+mutants N-way parallel. Observed on a chunk whose baseline auto-set 20s:
+
+```
+INFO Auto-set test timeout to 20s
+TIMEOUT  common/src/repo.rs:304:9: replace ProbeOutcome::as_str -> &'static str with "xyzzy"
+TIMEOUT  common/src/repo.rs:335:8: delete ! in detect_with_blocked_roots
+...  21 TIMEOUT out of 22 results
+```
+
+Replacing a `&'static str` with `"xyzzy"` cannot hang, so those are load artifacts rather than
+findings. The workspace suite alone takes ~16s idle, so a 20s budget under four concurrent jobs is
+not a budget at all. The task now passes `--timeout 300`, roughly 15x the idle suite.
+
+That matters beyond convenience: a gate that manufactures noise is a gate everyone learns to ignore,
+which is the same failure the register describes for a test that does not bite.
+
+**The `cost` flake, root-caused.** Recorded in Phase 2 as observed-once and unreproduced; Phase 5
+reproduced it on demand and the mechanism is now certain. Running `otto mutants` and `otto ci`
+concurrently:
+
+```
+[test] test cache::tests::test_save_and_load_cached_day ... FAILED
+[test] test cache::tests::test_prune_cache_removes_old_entries ... FAILED
+```
+
+`cost::cache::cache_dir()` resolves to the real `~/.cache/clyde/cost/` for every process, and
+`prune_cache` deletes files a sibling test is about to read. cargo-mutants runs dozens of copies of the
+suite at once, all pointed at that one directory. After the fix, `cargo test -p cost cache::` passed
+five consecutive runs with 56 concurrent cargo-mutants processes hammering the same path.

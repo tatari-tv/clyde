@@ -73,6 +73,11 @@ fn parse_slug_garbage_returns_none() {
     assert_eq!(parse_slug(""), None);
     assert_eq!(parse_slug("not-a-url"), None);
     assert_eq!(parse_slug("https://github.com/onlyorg"), None);
+    // KILLS: `replace || with && in parse_slug`. The guard is `org.is_empty() || repo.is_empty()`,
+    // so it only differs from `&&` when exactly ONE side is empty, and nothing covered that. Both
+    // shapes are reachable from a real (if malformed) remote URL.
+    assert_eq!(parse_slug("https://github.com//philo"), None, "an empty org");
+    assert_eq!(parse_slug("https://github.com/tatari-tv/"), None, "an empty repo");
 }
 
 /// The host is normalized before it reaches the allowlist: any `user@` dropped, any `:port` dropped,
@@ -112,6 +117,19 @@ fn detect_is_indeterminate_for_a_missing_dir() {
 #[test]
 fn detect_is_conclusively_not_a_repo_for_a_plain_directory() {
     let tmp = TempDir::new().unwrap();
+    // PRECONDITION, stated rather than assumed: `NotARepo` means "no repository at or above this
+    // cwd", so the temp root must not itself sit under one. `$TMPDIR` decides that, and it is not
+    // always `/tmp`: pointing it under this repo (or under `$HOME`, which is a dotfiles repo on the
+    // maintainer's machine) puts a `.git` above every temp dir and this cwd legitimately reads
+    // `Indeterminate` instead. Found when the mutation task redirected `TMPDIR` and the baseline
+    // failed here with no explanation.
+    assert!(
+        !tmp.path().ancestors().any(|d| d.join(".git").exists()),
+        "this test needs a temp root outside any git repository; $TMPDIR resolved to {} and a \
+         `.git` exists above it, so a plain directory there is legitimately Indeterminate",
+        tmp.path().display()
+    );
+
     let r = detect_with_blocked_roots(tmp.path(), &[]);
     assert_eq!(r, ProbeOutcome::NotARepo);
     assert!(r.is_conclusive_negative());
@@ -773,5 +791,120 @@ fn slug_under_root_declines_anything_that_is_not_the_shape() {
         slug_under_root(Path::new("/tmp/scratch/a/b"), root),
         None,
         "matching is confined to the configured root, so an arbitrary path cannot manufacture an org"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mutation-driven coverage (Phase 5). Every test below closes a SURVIVING mutant: the mutation run
+// found code whose behavior no test observed. Each names the mutant it kills, so a future reader can
+// tell a coverage test from a behavior test.
+// ---------------------------------------------------------------------------------------------
+
+/// KILLS: `replace home_dir_as_blocked -> Vec<PathBuf> with vec![]` and `with vec![Default::default()]`.
+///
+/// The blocked set is the ONLY thing stopping a git-tracked `$HOME` from attributing every session
+/// to the dotfiles repo, and nothing asserted it was actually populated from `$HOME`. Every existing
+/// blocked-root test passes its own list, so an empty default was invisible.
+#[test]
+fn a_fresh_resolver_blocks_the_real_home_directory() {
+    let resolver = Resolver::new();
+    let home = dirs::home_dir().expect("this test needs a HOME");
+    assert_eq!(
+        resolver.blocked,
+        vec![home],
+        "Resolver::new must block $HOME; an empty set silently attributes a git-tracked home"
+    );
+}
+
+/// KILLS: the four `ProbeOutcome::resolved_host` mutants, including the deleted match arm.
+///
+/// The host is what Phase 3's allowlist reads, so an accessor that always answered `None` would
+/// silently make every row pre-v13 (never refusing), and one that answered a constant would confer
+/// work from the wrong host.
+#[test]
+fn resolved_host_reports_the_host_only_for_a_resolved_probe() {
+    let resolved = ProbeOutcome::Resolved {
+        slug: "tatari-tv/philo".into(),
+        host: "github.com".into(),
+    };
+    assert_eq!(resolved.resolved_host(), Some("github.com"));
+    assert_eq!(resolved.resolved_slug(), Some("tatari-tv/philo"));
+
+    for other in [
+        ProbeOutcome::NoOrigin,
+        ProbeOutcome::NotARepo,
+        ProbeOutcome::Blocked,
+        ProbeOutcome::OutsideRoot,
+        ProbeOutcome::Indeterminate,
+    ] {
+        assert_eq!(
+            other.resolved_host(),
+            None,
+            "{} observed no remote, so it has no host to report",
+            other.as_str()
+        );
+    }
+}
+
+/// KILLS: both `ProbeOutcome::as_str` mutants.
+///
+/// These tokens are PERSISTED in `sessions.repo_probe`, so they are a stored contract rather than a
+/// label: renaming one silently orphans every row written under the old spelling, and `clyde doctor`
+/// would stop counting them.
+#[test]
+fn probe_outcome_tokens_are_a_stable_contract() {
+    assert_eq!(
+        ProbeOutcome::Resolved {
+            slug: "a/b".into(),
+            host: "h".into()
+        }
+        .as_str(),
+        "resolved"
+    );
+    assert_eq!(ProbeOutcome::NoOrigin.as_str(), "no-origin");
+    assert_eq!(ProbeOutcome::NotARepo.as_str(), "not-a-repo");
+    assert_eq!(ProbeOutcome::Blocked.as_str(), "blocked");
+    assert_eq!(ProbeOutcome::OutsideRoot.as_str(), "outside-root");
+    assert_eq!(ProbeOutcome::Indeterminate.as_str(), "indeterminate");
+}
+
+/// KILLS: `replace == with != in detect_with_blocked_roots` (the containment check).
+///
+/// The check is `!(toplevel == cwd || cwd.starts_with(&toplevel))`, and it only DIFFERS from the
+/// mutant when the toplevel is neither the cwd nor an ancestor of it. Every ordinary shape is
+/// contained by construction, because git's discovery walks UP, so nothing exercised the rejection.
+///
+/// `core.worktree` is the reproducible way to get there. Measured 2026-07-31:
+///
+/// ```text
+/// $ git -C <proj> config --local core.worktree <elsewhere>
+/// $ git -C <proj> rev-parse --show-toplevel
+/// <elsewhere>                     # not the cwd, and not an ancestor of it
+/// ```
+///
+/// This is exactly the "git finds a repo that does not contain X" case the containment check exists
+/// for, and it must decline rather than attribute the cwd to that repo.
+#[test]
+fn detect_declines_a_toplevel_that_does_not_contain_the_cwd() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().canonicalize().unwrap();
+    let elsewhere = real.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    let proj = real.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    git_init(&proj);
+    add_origin(&proj, "git@github.com:tatari-tv/philo.git");
+    git_config(&proj, "core.worktree", &elsewhere.to_string_lossy());
+
+    let outcome = detect_with_blocked_roots(&proj, &[]);
+    assert_eq!(
+        outcome,
+        ProbeOutcome::OutsideRoot,
+        "a toplevel outside the cwd must be rejected, not attributed"
+    );
+    assert!(
+        !outcome.is_conclusive_negative(),
+        "and it must not stamp: a containment rejection says nothing about a remote"
     );
 }

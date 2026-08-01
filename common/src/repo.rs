@@ -229,12 +229,6 @@ impl Resolver {
         }
         resolved
     }
-
-    /// The roots this resolver refuses to attribute anything at or under (today: `$HOME`). Exposed
-    /// so a caller running the rules individually blocks exactly the set the chain does.
-    pub fn blocked_roots(&self) -> &[PathBuf] {
-        &self.blocked
-    }
 }
 
 fn home_dir_as_blocked() -> Vec<PathBuf> {
