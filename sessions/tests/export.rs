@@ -98,14 +98,28 @@ fn with_efficiency_block_carries_the_nested_session_efficiency_shape() {
     );
 }
 
-/// Schema v6: `EXPORT_SCHEMA_VERSION` stays 1 -- the efficiency block is ADDITIVE within the frozen
-/// envelope, not a breaking change (design: keep the version at 1). BITES: bump it to 2 and this fails.
+/// The contract version is 2, and what bumped it was the `scope` DERIVATION, nothing else.
+///
+/// **The historical fact this test used to assert is preserved, because it is still true:** schema
+/// v6's efficiency block rode the envelope ADDITIVELY and did NOT bump the version. It was
+/// `export_schema_version_stays_one_after_efficiency_block`, it asserted `== 1`, and that was the
+/// right assertion for as long as every change was additive. Deleting it would delete the reasoning;
+/// leaving it asserting 1 would make it a test of nothing.
+///
+/// v2 (2026-08-01) is the first BREAKING change: `scope` became
+/// `scope_override -> stored scope -> classify(cwd)` instead of `classify(cwd)` alone, so the field's
+/// MEANING changed for rows an operator has overridden or the gate has decided differently. See
+/// [`sessions::EXPORT_SCHEMA_VERSION`] for why a meaning-only change takes a major bump.
+///
+/// BITES: bump the version for a non-breaking addition and this fails, which is the guard the
+/// original test existed to provide.
 #[test]
-fn export_schema_version_stays_one_after_efficiency_block() {
+fn export_schema_version_is_two_and_only_the_scope_derivation_bumped_it() {
     assert_eq!(
         sessions::EXPORT_SCHEMA_VERSION,
-        1,
-        "the additive efficiency block must NOT bump the export contract version"
+        2,
+        "the scope-derivation change is the ONLY thing that has bumped this contract; an additive \
+         field (e.g. schema v6's efficiency block, which rode v1) must not bump it"
     );
 }
 
@@ -116,7 +130,7 @@ fn export_schema_version_stays_one_after_efficiency_block() {
 fn enrich_status_contract_values_all_deserialize() {
     for status in ["ok", "skipped-personal", "skipped-empty", "failed"] {
         let json = format!(
-            r#"{{"schema-version":1,"generated-at":"2026-07-17T00:00:00+00:00","host":"host-01","cursor":0,
+            r#"{{"schema-version":2,"generated-at":"2026-07-17T00:00:00+00:00","host":"host-01","cursor":0,
                  "sessions":[{{"session-id":"s","host":"host-01","scope":"work","cwd":null,
                  "project-dir":"/p","repo":null,"git-branch":null,"created":null,
                  "modified":"2026-07-17T00:00:00+00:00","updated-at":1,"duration-secs":0,"dormant":false,

@@ -136,6 +136,27 @@ impl Scope {
         }
     }
 
+    /// Parse a STORED scope token back to the type, or `None` when it is outside the vocabulary.
+    ///
+    /// The inverse of [`Self::as_str`] and deliberately EXACT: no case folding, no trimming. The two
+    /// legal tokens are the only things any clyde writer produces (`record_enrich_skip`,
+    /// `set_enrichment`, `record_enrich_failure` all bind `Scope::as_str`, and
+    /// `Db::set_scope_override` rejects anything else at the setter), so a value that fails to parse
+    /// means a hand-edited catalog or one written by a FUTURE clyde that learned a third scope --
+    /// exactly the two cases a reader must not paper over.
+    ///
+    /// Callers decide what to do with `None`. The export contract fails LOUDLY (a non-contract value
+    /// must never reach the wire); [`classify_with_evidence`]'s override step fails CLOSED to
+    /// [`Scope::Personal`], because a routing decision must never block. Those are different
+    /// obligations and the difference is deliberate.
+    pub fn from_stored(token: &str) -> Option<Self> {
+        match token {
+            "work" => Some(Scope::Work),
+            "personal" => Some(Scope::Personal),
+            _ => None,
+        }
+    }
+
     /// True only for [`Scope::Work`] -- the single gate the enrich send path consults.
     pub fn is_work(self) -> bool {
         matches!(self, Scope::Work)

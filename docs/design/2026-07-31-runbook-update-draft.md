@@ -58,10 +58,19 @@ Add a section:
 >
 > `clyde session scope --session <id> --set work|personal --reason <text>`
 > : force a decision. `--reason` is required and stored. Forcing `work` over a recorded conclusive
->   negative warns and names what it is overriding.
+>   negative warns and names what it is overriding; forcing `personal` on a session that was already
+>   enriched warns that the transcript has been sent and the override cannot un-send it.
 >
 > `clyde session scope --session <id> --clear`
 > : drop the override and let the rules decide again.
+>
+> **Both `--set` and `--clear` take effect on the next ORDINARY `clyde session enrich`.** No `--all`,
+> no flags, nothing else to run: the override re-offers the row it applies to, and the next scheduled
+> pass picks it up. (Do NOT reach for `--all` -- it re-enriches the whole catalog and clobbers every
+> manually-set tag. It was the only workaround before the release that lands these fixes, and it is no longer needed for this.)
+>
+> One case an override does NOT rescue: a session already enriched, or one that has exhausted its
+> retry budget. An override records the correct scope going forward; it does not re-send or re-try.
 >
 > `clyde session reindex --clear-probe --session <id>`
 > : clear a recorded probe result for named sessions, so the next pass re-observes. Use this when a
@@ -79,20 +88,74 @@ Add a section:
 
 Add:
 
-> `clyde doctor` now reports the effective `repo-root`, the per-rule resolution counts, and five
-> routing counts. They are separate because they have DIFFERENT remedies:
+> `clyde doctor` reports the effective `repo-root`, the per-rule resolution counts, and then routing
+> in TWO groups. **The distinction is the whole point of reading it.**
 >
-> | count | what it means | what to do |
+> **`routing decisions:`** -- what actually DECIDED each row. These are counts of decisions, not of
+> rows carrying a condition: each one is produced by running the real classifier over the catalog, so
+> it cannot disagree with the enrich gate. The group SUMS to the catalog row count, because every
+> session is decided by exactly one basis. Listed in the classifier's own precedence order, so it
+> reads top-down the way a decision is made.
+>
+> | decision | what decided the row | what to do |
 > |---|---|---|
-> | probe-refused | a work slug was refused by a recorded conclusive negative | `--clear-probe` if the negative is stale |
-> | host-refused | the remote's host is not in `work-remote-hosts` | add the host, or investigate |
-> | null `repo_host` | indexed before v13; keeps its old authority | nothing; it resolves on reprobe |
-> | overrides | an operator forced the decision | `session scope --list` to read why |
-> | anchor/remote disagreement | the directory and the remote disagree | usually a fork, sometimes a misfiled clone |
-> | indeterminate probes | git could not answer | check `safe.directory` and that git is installed |
+> | override | an operator forced it | `session scope --list` to read why |
+> | cwd-anchor | the directory's `repos/<org>` anchor | nothing; this is the ordinary case |
+> | git-origin | the remote's slug | nothing; this is the ordinary case |
+> | touch-set | the set of repos the session edited | nothing |
+> | host-refused | a work slug REFUSED because its host is not in `work-remote-hosts` | add the host, or investigate |
+> | probe-refused | a work slug REFUSED by a recorded conclusive negative | `--clear-probe` if the negative is stale |
 >
-> A host where EVERY probe is indeterminate has a `safe.directory` or missing-git problem, not a
+> **`routing conditions:`** -- facts PRESENT on rows, which did NOT decide anything on their own. A
+> row can carry a condition while something earlier in the precedence already decided it.
+>
+> | condition | what it means | what to do |
+> |---|---|---|
+> | probe-recorded | rows carrying a conclusive negative, decided or not | `--clear-probe` a stale one |
+> | host-unknown | indexed before v13; keeps its old authority | nothing; it resolves on reprobe |
+> | anchor/remote | the directory and the remote disagree | usually a fork, sometimes a misfiled clone |
+> | blocked / outside-root / indeterminate | live re-probe outcomes on this machine right now | see below |
+>
+> **Why the two groups exist.** Before the release that lands these fixes, `doctor` answered each routing
+> line with its own SQL count over a single column and read them all as decisions. They were not. The
+> classifier returns at
+> the cwd anchor BEFORE it ever reads the probe record or the host, so a row could satisfy
+> `repo_probe IS NOT NULL` while that condition decided nothing. On the maintainer's own catalog with
+> shipped config, `probe-refused` read 326 and the number of decisions a probe refusal had made was
+> **zero**. If you screenshotted or filed a ticket against the old numbers, they were wrong and these
+> are not; a refusal count is now a count of DECISIONS.
+>
+> A host where EVERY live probe is indeterminate has a `safe.directory` or missing-git problem, not a
 > layout problem.
+
+## 4b. The export contract: `schema-version` is now 2
+
+Add a section wherever the runbook describes `clyde session export`:
+
+> **`clyde session export` now emits `schema-version: 2`, and `scope` means something different.**
+>
+> Through v1, `scope` was computed from the session's working directory alone. That rule ignores
+> everything clyde later learned to read: an operator's override, the git remote the session's own
+> checkout points at, and the set of repos the session actually edited. So a session clyde had DECIDED
+> was work could still export as `personal`, and an operator who ran `session scope --set work` got
+> the opposite of what they asked for on the wire. On the maintainer's catalog, 31 rows were already
+> exporting a scope that contradicted the catalog.
+>
+> In v2, `scope` is the decision that was actually made, first match wins:
+>
+>     operator override  ->  the scope the routing gate recorded  ->  the working-directory rule
+>
+> The field's type and vocabulary are unchanged (`"work" | "personal"`, never null). Only its MEANING
+> changed, and only for rows where the directory rule disagreed with the real decision.
+>
+> **Any consumer pinned to `schema-version: 1` must be updated before this release reaches it.** A
+> consumer that hard-fails on an unrecognized version will break at the release, by design -- that is
+> what the bump is for. One that tolerates the version keeps working, but keeps consuming the old
+> (wrong) scope semantics until it is updated. If you store or key off `scope`, expect some values to
+> differ from what the same session exported under v1: the session did not change, the earlier answer
+> was wrong.
+>
+> Full contract: `docs/session-export-contract.md`, section "What changed in v2".
 
 ## 5. The new config key
 

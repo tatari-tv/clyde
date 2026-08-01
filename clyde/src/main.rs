@@ -13,6 +13,7 @@ mod projects;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
@@ -40,9 +41,41 @@ const TITLE_DISPLAY_WIDTH: usize = 80;
 /// to the full session ID on the line above.
 const RECORD_INDENT: &str = "    ";
 
-fn main() -> Result<()> {
+/// The whole binary's error sink. Every propagated `Report` -- from an absorbed tool, from the
+/// `update` arm, or from any clyde-native subcommand -- renders through `render_error` here, so
+/// clyde has exactly ONE error rendering instead of the three it grew (see `render_error`).
+///
+/// Splitting the fallible work into `parse_cli` + `dispatch` is what lets the `debug` flag be
+/// honest: a failure inside `parse_cli` happens BEFORE `--log-level` is known, so it renders at
+/// `debug = false`, which is the right default for a usage error. Everything after has the parsed
+/// `Cli` and renders at the verbosity the user actually asked for.
+fn main() -> ExitCode {
     reset_sigpipe();
     let log_path = session::paths::data_root().join("logs").join("clyde.log");
+    let cli = match parse_cli(&log_path) {
+        Ok(cli) => cli,
+        Err(e) => {
+            render_error(&e, false);
+            return ExitCode::FAILURE;
+        }
+    };
+    let debug = debug_rendering(&cli);
+    match dispatch(cli, &log_path) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            render_error(&e, debug);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Build the clap command (with the runtime-rendered log path and any per-subcommand REQUIRED
+/// TOOLS block) and parse argv into a `Cli`.
+///
+/// `command.get_matches()` still exits the process itself on a clap parse/usage error, printing
+/// clap's own message -- that is unchanged. The `Err` this returns is the narrower
+/// `from_arg_matches` case.
+fn parse_cli(log_path: &Path) -> Result<Cli> {
     let after_help = format!("Logs are written to: {}", log_path.display());
     let mut command = Cli::command().after_help(after_help);
     // Subcommands that shell out to external binaries advertise them in a REQUIRED TOOLS block at
@@ -73,8 +106,12 @@ fn main() -> Result<()> {
             _ => command,
         };
     }
-    let cli = Cli::from_arg_matches(&command.get_matches())?;
+    Ok(Cli::from_arg_matches(&command.get_matches())?)
+}
 
+/// Everything `main` does after argv is parsed: the early process-exiting intercepts (`mcp`,
+/// `update`), logger setup, the passive renew notice, then `run`.
+fn dispatch(cli: Cli, log_path: &Path) -> Result<()> {
     // `mcp serve|register|unregister|status|bundle` is intercepted here, BEFORE any logging setup
     // and the renew notice below, for the reason the `mcp-io` library exists: once `mcp serve`
     // runs, stdout IS the JSON-RPC protocol channel, so nothing (not our logger init, not a renew
@@ -107,7 +144,7 @@ fn main() -> Result<()> {
     } else {
         // Every clyde-native arm (sessions, bootstrap, doctor, update) uses env_logger. (The
         // `mcp` arm never reaches here -- it is intercepted above and owns its own file logging.)
-        setup_logging(&level, &log_path)?;
+        setup_logging(&level, log_path)?;
     }
 
     // `update check|install|revert` needs none of clyde's own setup (db, config, …), so intercept
@@ -117,7 +154,10 @@ fn main() -> Result<()> {
         match renew::renew!() {
             Ok(r) => std::process::exit(cmd.run(&r)),
             Err(e) => {
-                eprintln!("error: {e}");
+                // Rendered through the shared renderer like every other error path. `renew::Error`
+                // is a `thiserror` enum, not a `Report`, so it is wrapped to reach it -- the exit
+                // code stays renew's documented 2.
+                render_error(&eyre::Report::new(e), debug_rendering(&cli));
                 std::process::exit(2);
             }
         }
@@ -150,8 +190,9 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
-/// Map an absorbed tool's `run() -> Result<i32>` onto a process exit code: a propagated error is
-/// rendered to stderr and the process exits 1.
+/// Render a propagated error for a CLI user. THE renderer for the whole binary: `main`'s error
+/// sink, `dispatch_tool`, and the `update` arm all print through this and nothing else prints a
+/// `Report`.
 ///
 /// `debug` selects the rendering. At the default (info or lower verbosity) we print `{e:#}` -- the
 /// full eyre **cause chain** with NO `Location:`/backtrace -- so a normal failure reads as a clean,
@@ -159,13 +200,29 @@ fn reset_sigpipe() {}
 /// when `--log-level debug` (or trace) is set do we print `{e:?}` (Debug, with the location capture)
 /// for diagnosis. Plain `{e}` is deliberately avoided: Display alone hides the causal chain and
 /// would degrade the normal-failure UX.
+///
+/// This form shipped on `report`/`cost`/`permit`/`efficiency` first. `main` returned
+/// `Result<()>` and so rendered via eyre's own `Error: {e:?}`, WITH the `Location:` footer, on
+/// every other subcommand; the `update` arm printed a third form (`error: {e}`, no cause chain).
+/// One renderer means one meaning, and a new subcommand inherits it by propagating `Err`.
+///
+/// eyre's `Error: ` prefix is deliberately NOT reproduced: the four absorbed subcommands have
+/// always printed the bare message, and matching them is the whole point.
+fn render_error(e: &eyre::Report, debug: bool) {
+    eprintln!("{}", format_error(e, debug));
+}
+
+/// The rendering itself, split out so it is assertable without capturing stderr. `render_error` is
+/// the thin `eprintln!` shim over it.
+fn format_error(e: &eyre::Report, debug: bool) -> String {
+    if debug { format!("{e:?}") } else { format!("{e:#}") }
+}
+
+/// Map an absorbed tool's `run() -> Result<i32>` onto a process exit code: a propagated error is
+/// rendered to stderr via `render_error` and the process exits 1.
 fn dispatch_tool(result: Result<i32>, debug: bool) -> ! {
     let code = result.unwrap_or_else(|e| {
-        if debug {
-            eprintln!("{e:?}");
-        } else {
-            eprintln!("{e:#}");
-        }
+        render_error(&e, debug);
         1
     });
     std::process::exit(code);
@@ -181,12 +238,16 @@ fn is_debug_level(level: &str) -> bool {
     )
 }
 
+/// The `debug` rendering flag for a parsed `Cli`, resolving `--log-level` against the same default
+/// the logger setup uses. ONE source for both `main`'s final error sink and `run`'s `dispatch_tool`
+/// calls, so the two can never disagree about which form an error takes.
+fn debug_rendering(cli: &Cli) -> bool {
+    is_debug_level(cli.log_level.as_deref().unwrap_or(DEFAULT_LOG_LEVEL))
+}
+
 fn run(cli: Cli) -> Result<()> {
     let globals = cli.globals();
-    // Resolve the same level `main` used for logger setup, so the absorbed-tool error rendering
-    // matches the verbosity the user asked for (clean cause chain by default, Debug+Location under
-    // --log-level debug/trace).
-    let debug = is_debug_level(cli.log_level.as_deref().unwrap_or(DEFAULT_LOG_LEVEL));
+    let debug = debug_rendering(&cli);
     let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
 
     match cli.command {
@@ -984,6 +1045,21 @@ fn cmd_scope(db: &Db, args: cli::ScopeArgs) -> Result<()> {
             stamp,
         );
     }
+    // The mirror case, same shape and for the same reason: forcing `personal` on a row that was
+    // ALREADY enriched cannot un-send the transcript. Not a hard failure -- an operator may
+    // legitimately want the catalog to record the correct scope going forward -- but they must not
+    // be able to do it believing they just recalled the data.
+    if scope.eq_ignore_ascii_case(sessions::OVERRIDE_PERSONAL)
+        && let Some(stamp) = db.enriched_at_of(&id)?
+    {
+        println!(
+            "{} {} was already enriched ({}). The transcript has been sent; forcing `personal` \
+             records the scope going forward but cannot un-send it.",
+            "warning:".yellow(),
+            short_id(&id),
+            stamp,
+        );
+    }
     let scope = scope.to_ascii_lowercase();
     if db.set_scope_override(&id, &scope, reason, &actor, chrono::Utc::now())? {
         println!(
@@ -1317,7 +1393,7 @@ fn short_id(id: &str) -> String {
 #[cfg(test)]
 mod tests;
 
-fn setup_logging(level: &str, log_path: &PathBuf) -> Result<()> {
+fn setup_logging(level: &str, log_path: &Path) -> Result<()> {
     let level: LevelFilter = level.parse().unwrap_or(LevelFilter::Info);
     if let Some(dir) = log_path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("failed to create log dir {}", dir.display()))?;

@@ -1324,14 +1324,14 @@ mod migrate;
 /// `Db::enrich_summary`, plus schema v12's `scope_version`. Split out for file-size discipline,
 /// mirroring `catalog`/`query`/`repo`/`activity`.
 mod enrich;
-pub use enrich::ScopeEvidence;
+pub use enrich::{RoutingRow, ScopeEvidence};
 
 /// Schema v13's routing state: the conclusive-probe record (`Db::record_probe`, `Db::probe_of`,
 /// `Db::clear_probe`) and the operator scope override with its audit trail. Its own file rather than
 /// an addition to `repo`, because these columns answer "may this leave the machine", not "what repo
 /// was this in", and the design's central argument is that conflating the two is the defect.
 mod routing;
-pub use routing::{OVERRIDE_PERSONAL, OVERRIDE_WORK, RoutingSummary, ScopeOverride};
+pub use routing::{BASIS_COUNT, OVERRIDE_PERSONAL, OVERRIDE_WORK, RoutingSummary, ScopeOverride};
 
 /// Schema v11 parse-derived columns: the `(modified, parse_version)` skip key (`Db::skip_key_of`) and
 /// the narrow trigger-suppressed backfill write (`Db::set_parse_derived_many`). Split out for file-size

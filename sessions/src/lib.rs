@@ -16,6 +16,7 @@ pub mod index;
 pub mod llm;
 pub mod mcp;
 pub mod model;
+pub mod routing;
 pub mod since;
 pub mod stage;
 pub mod transcript;

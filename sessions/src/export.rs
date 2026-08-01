@@ -72,7 +72,16 @@ impl FromStr for EnrichStatus {
 /// breaking change (rename/remove a field, change a type, drop an `enrich-status` value) is a major
 /// bump. Distinct from the DB `SCHEMA_VERSION` (that versions the on-disk store, this versions the
 /// wire contract).
-pub const EXPORT_SCHEMA_VERSION: u32 = 1;
+///
+/// **2 (2026-08-01): `scope` is the scope that was DECIDED, not a cwd guess.** It became
+/// `scope_override -> stored scope -> classify(cwd)` (`Db::build_export_record`) instead of
+/// `classify(cwd)` alone. The field's TYPE and VOCABULARY are unchanged (`"work" | "personal"`,
+/// never null), so the letter of the additive-within-major rule below would have allowed no bump.
+/// The bump is deliberate and is the safer reading: the field's MEANING changes for 31 rows on the
+/// maintainer's catalog today and for every overridden row after, and a consumer pinned to 1 that
+/// silently starts receiving differently-derived values has no way to notice. The bump is what tells
+/// them.
+pub const EXPORT_SCHEMA_VERSION: u32 = 2;
 
 /// The top-level `session export` envelope: contract version, provenance, an incremental cursor, and
 /// the result records.
@@ -121,9 +130,13 @@ pub struct ExportRecord {
     // identity
     pub session_id: String,
     pub host: String,
-    /// `work` | `personal` -- re-derived at export time via `scope::classify(cwd)`, never the nullable
-    /// stored column, so the field is always one of the two tokens even for un-enriched sessions
-    /// (finding S1).
+    /// `work` | `personal` -- the scope that was actually DECIDED, resolved at export time as
+    /// `scope_override -> stored scope -> classify(cwd)`, first match wins (schema-version 2).
+    ///
+    /// Still ALWAYS one of the two tokens, never null, for the same reason finding S1 gave: the
+    /// `classify(cwd)` tail answers for the rows the enrich gate has not processed. What changed at
+    /// v2 is that the cwd rule is the FALLBACK rather than the only source, so an operator override
+    /// and a git-origin attribution now reach the wire instead of dying at this boundary.
     pub scope: String,
     // location
     pub cwd: Option<String>,
@@ -177,8 +190,8 @@ pub struct ExportRecord {
     /// Carried as an opaque `serde_json::Value` on purpose: the nested shape is OWNED by the
     /// `efficiency` crate (kebab-case), and this contract passes it through unchanged rather than
     /// re-declaring it, so an efficiency-internal field addition rides the additive envelope with no
-    /// export-contract type change (the forward-compatible-envelope carve-out). Additive within
-    /// [`EXPORT_SCHEMA_VERSION`] 1 -- always emitted (`null` when absent) so a consumer always sees the
+    /// export-contract type change (the forward-compatible-envelope carve-out). Added additively within
+    /// [`EXPORT_SCHEMA_VERSION`] 1 (it rode the v1 envelope, and still rides v2) -- always emitted (`null` when absent) so a consumer always sees the
     /// key. The catalog's flat `cache_read_share`/`tool_errors`/`cost_usd` scalar columns exist for
     /// server-side ranking only and are deliberately NOT re-emitted here (they are derivable from this
     /// block, and a field derived from another must never be duplicated where it could diverge).
