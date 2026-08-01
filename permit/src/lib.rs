@@ -272,5 +272,17 @@ fn run_inner(args: PermitArgs, globals: common::Globals) -> Result<i32> {
     Ok(0)
 }
 
+/// ONE process-wide lock for every test in this crate that reads or mutates the process
+/// environment. Deliberately crate-level rather than per-module, for the reason
+/// `common/src/lib.rs` spells out: `set_var`/`remove_var` mutate the whole environ block, so two
+/// modules each holding their OWN mutex do not serialize against each other at all -- reading the
+/// block in one module while another mutates it under a different lock is the exact unsafety
+/// window edition 2024 marks `set_var`/`remove_var` `unsafe` for.
+///
+/// Not hypothetical here: `config`'s tests and `tests`'s both mutated the environment under two
+/// separate module-local mutexes, which serialize against nothing.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests;

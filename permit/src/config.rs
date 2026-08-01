@@ -137,15 +137,11 @@ pub fn xdg_data_dir() -> Option<PathBuf> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    // Serialize env-var-touching tests to prevent parallel races.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn load_prefers_clyde_then_falls_back_to_legacy() {
-        let guard = ENV_LOCK.lock().expect("lock");
+        let guard = crate::ENV_LOCK.lock().expect("lock");
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
         let dir = TempDir::new().expect("temp");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
@@ -212,12 +208,12 @@ mod tests {
 
     #[test]
     fn load_no_path_uses_defaults() {
-        // Must hold ENV_LOCK and sandbox XDG_CONFIG_HOME: Config::load(None) resolves the real
+        // Must hold crate::ENV_LOCK and sandbox XDG_CONFIG_HOME: Config::load(None) resolves the real
         // XDG path, so without this it races load_prefers_clyde_then_falls_back_to_legacy (which
         // sets XDG_CONFIG_HOME to a temp dir whose clyde/permit.yml has suggest-threshold: 11) and
         // intermittently reads 11. Point XDG at an empty temp dir with no permit config so
         // resolution yields the default of 3.
-        let guard = ENV_LOCK.lock().expect("lock");
+        let guard = crate::ENV_LOCK.lock().expect("lock");
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
         let dir = TempDir::new().expect("temp");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };

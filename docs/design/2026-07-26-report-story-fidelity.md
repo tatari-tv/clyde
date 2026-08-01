@@ -323,16 +323,28 @@ a cwd whose directory is gone. `<root>/tatari-tv/clyde/main` and `<root>/tatari-
 resolved correctly via git origin every time they existed, so both prefixes are already known and
 both keep resolving after deletion, with no convention baked into clyde.
 
-**Rule 1 is already layout-agnostic, verified 2026-07-26.** Every worktree shape in use resolves to
-the same correct slug while its directory exists, because `git remote get-url origin` is shared
-across a repo's worktrees:
+**Rule 1 was verified over four rows on 2026-07-26, and all four were the same shape. CORRECTED
+2026-07-31.** Every row below is a cwd INSIDE a work tree, which is exactly the case
+`rev-parse --show-toplevel` answers. The fifth row is the one that was never tested, and it is the
+one that fails:
 
 | cwd | `rev-parse --show-toplevel` | `remote get-url origin` |
 |---|---|---|
 | `tatari-tv/clyde` (flat clone) | `.../tatari-tv/clyde` | `tatari-tv/clyde` |
 | `tatari-tv/clyde-ft` (org-level sibling worktree) | `.../tatari-tv/clyde-ft` | `tatari-tv/clyde` |
 | `tatari-tv/clyde-report` (org-level sibling worktree) | `.../tatari-tv/clyde-report` | `tatari-tv/clyde` |
-| `scottidler/second-brain/main` (bare container) | `.../second-brain/main` | `scottidler/second-brain` |
+| `scottidler/second-brain/main` (bare container CHILD) | `.../second-brain/main` | `scottidler/second-brain` |
+| **`<container>` (bare container ROOT)** | **`fatal: this operation must be run in a work tree` (rc=128)** | **resolves fine (rc=0)** |
+
+The last row is Keegan's `tatari-tv/airflow-dags`, and rule 1 declined it for a year: it `?`-returned
+the moment `--show-toplevel` failed, before reaching the call that answers. Measured cost on his
+catalog: 12 sessions, $326.87 of July spend, coverage 49% -> 72%, and the repo absent from every
+by-repo table in his month's report.
+
+The sentence this replaces claimed rule 1 was "already layout-agnostic, verified", over a table with
+no row for the shape that breaks it. Fixed in
+`docs/design/2026-07-31-attribution-and-routing.md` Phase 6, which adds a `--git-common-dir` fallback
+so a cwd with no work tree still resolves.
 
 So the layout is not the problem and this doc does not need to understand any layout. The problem is
 that clyde asks the filesystem a question at the one moment the filesystem can no longer answer it.

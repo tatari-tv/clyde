@@ -9,6 +9,7 @@ use session::ParsedSession;
 
 use super::*;
 use crate::db::Db;
+use crate::export::{ExportContext, ExportFilters};
 use crate::llm::{Completer, LlmEnrichment};
 
 const WORK_CWD: &str = "/home/saidler/repos/tatari-tv/marquee";
@@ -28,6 +29,8 @@ struct Fake {
     fail: bool,
     tags: Vec<String>,
     summary: String,
+    /// `(tokens_in, tokens_out)` reported per call.
+    tokens: (u64, u64),
 }
 
 impl Fake {
@@ -37,6 +40,19 @@ impl Fake {
             fail: false,
             tags: tags.iter().map(|s| s.to_string()).collect(),
             summary: "a durable summary".to_string(),
+            tokens: (10, 5),
+        }
+    }
+
+    /// A completer that reports an explicit `(in, out)` token count.
+    ///
+    /// Needed because the default 10-in/5-out cannot distinguish `tokens_in + tokens_out` from
+    /// `tokens_in * tokens_out` in the budget guard: 15 and 50 both clear any budget the test would
+    /// pick. A zero `out` separates them (10 + 0 = 10, but 10 * 0 = 0).
+    fn with_tokens(tags: &[&str], tokens_in: u64, tokens_out: u64) -> Self {
+        Self {
+            tokens: (tokens_in, tokens_out),
+            ..Self::ok(tags)
         }
     }
     fn failing() -> Self {
@@ -45,6 +61,7 @@ impl Fake {
             fail: true,
             tags: vec![],
             summary: String::new(),
+            tokens: (10, 5),
         }
     }
     fn calls(&self) -> usize {
@@ -61,8 +78,8 @@ impl Completer for Fake {
         Ok(LlmEnrichment {
             tags: self.tags.clone(),
             summary: self.summary.clone(),
-            tokens_in: 10,
-            tokens_out: 5,
+            tokens_in: self.tokens.0,
+            tokens_out: self.tokens.1,
         })
     }
 }
@@ -627,23 +644,21 @@ fn an_evidence_free_skip_is_provisional_and_self_heals_on_the_next_pass() {
     assert_eq!(fake2.calls(), 1);
 }
 
-/// A git-origin attribution is enough on its own: enriched on the FIRST pass, with no reindex, and
-/// SETTLED so no later pass reconsiders it.
+/// A git-origin WORK attribution is enough on its own: enriched on the FIRST pass, with no reindex,
+/// and SETTLED so no later pass reconsiders it.
 ///
 /// This is the teammate case measured on 2026-07-31. Their cwd carries no `repos/<org>` anchor to read
 /// and their catalog has no `outcome_json` yet, so before the git-origin branch every session gated
-/// `skipped-personal` and coverage was 0%.
+/// `skipped-personal` and coverage was 0%. That win is the constraint this whole branch preserves.
 ///
-/// The settled half matters as much as the enriched half. The provisional rule keys on
-/// `Basis::reads_stored_evidence`, and a git-origin decision reads none -- so it must record
-/// `scope_version` even with no evidence stored. Keying it on `evidence.present` instead would leave
-/// every one of these rows NULL forever, and the widened predicate would re-offer all of them on every
-/// pass while `record_enrich_skip`'s bare UPDATE bumped the export cursor each time.
+/// The settled half matters as much as the enriched half: a git-origin decision reads no stored
+/// evidence, so gating its `scope_version` on `evidence.present` would leave every one of these rows
+/// NULL forever and re-offer all of them on every pass.
 ///
-/// BITES: gate `scope_version` on `evidence.present` alone and the personal half of this test reports
-/// `considered: 1` on the second pass instead of 0.
+/// BITES: return `settled: false` from the git-origin WORK arm and the second pass reports
+/// `considered: 1` instead of 0.
 #[test]
-fn a_git_origin_attribution_settles_the_decision_with_no_reindex() {
+fn a_git_origin_work_attribution_settles_the_decision_with_no_reindex() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db = Db::open_memory().unwrap();
 
@@ -658,18 +673,98 @@ fn a_git_origin_attribution_settles_the_decision_with_no_reindex() {
     assert_eq!(stats.skipped_personal, 0);
     assert_eq!(fake.calls(), 1);
 
-    // The personal direction, same shape: a personal remote is a SETTLED skip, not a provisional one.
-    let db2 = Db::open_memory().unwrap();
-    let parent2 = write_transcript(tmp.path(), UUID_B, "personal side project");
-    insert(&db2, tmp.path(), UUID_B, "/Users/luke/Projects/claude", &parent2);
-    set_git_origin(&db2, UUID_B, "scottidler/claude");
-
-    let first = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
-    assert_eq!(first.skipped_personal, 1, "a personal remote must not be sent");
-    let second = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let second = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
     assert_eq!(
         second.considered, 0,
-        "a git-origin decision needs no stored evidence, so it must be settled: {second:?}"
+        "a git-origin WORK decision is settled and must not be reconsidered: {second:?}"
+    );
+}
+
+/// **Problem 3, the mirror of Problem 1, and the reason a personal git-origin decision must NEVER
+/// settle.** A session that genuinely ran in a work repo, whose path now holds a personal checkout,
+/// classifies personal from the remote. Recording that as settled excludes it from
+/// `enrich_candidates` on all four disjuncts, so restoring the work checkout does not recover it:
+/// directionally safe, permanently wrong, and silent.
+///
+/// The asymmetry is deliberate. Work requires first-sight authority; personal is always revisable.
+///
+/// Re-offering is CHEAP, which is what makes it affordable: the routing gate records the skip before
+/// the transport, so the fake completer is never called on the second pass.
+///
+/// BITES: return `settled: true` from the git-origin PERSONAL arm and `considered` drops to 0 on the
+/// second pass, which is the lockout.
+#[test]
+fn a_personal_git_origin_decision_is_re_offered_rather_than_excluded() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    let parent = write_transcript(tmp.path(), UUID_B, "personal side project");
+    insert(&db, tmp.path(), UUID_B, "/Users/luke/Projects/claude", &parent);
+    set_git_origin(&db, UUID_B, "scottidler/claude");
+
+    let first = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(first.skipped_personal, 1, "a personal remote must not be sent");
+
+    let fake = Fake::ok(&["x"]);
+    let second = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        second.considered, 1,
+        "a personal git-origin row must stay a candidate so a corrected checkout can recover it: \
+         {second:?}"
+    );
+    assert_eq!(second.skipped_personal, 1);
+    assert_eq!(
+        fake.calls(),
+        0,
+        "re-offering spends NO tokens: the gate records the skip before the transport"
+    );
+}
+
+/// The other half of what makes provisional-personal affordable: `record_enrich_skip` must not
+/// REWRITE a row whose scope, status and version are all unchanged. It used to be a bare UPDATE, so
+/// every pass fired the v5 revision trigger and forced every `session export --cursor` consumer to
+/// re-fetch the row. With Problem 3's fix creating far more provisional rows, that churn would be
+/// permanent and catalog-wide.
+///
+/// BITES: drop the `AND (scope IS NOT ... )` guard from `record_enrich_skip` and the revision moves.
+#[test]
+fn a_no_change_skip_leaves_the_export_revision_untouched() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    let parent = write_transcript(tmp.path(), UUID_B, "personal side project");
+    insert(&db, tmp.path(), UUID_B, "/Users/luke/Projects/claude", &parent);
+    set_git_origin(&db, UUID_B, "scottidler/claude");
+
+    enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+
+    // Asserted through `session export --cursor`, the CONSUMER-visible surface the revision trigger
+    // exists to drive, rather than by reading `updated_at` directly. That is the behavior the guard
+    // protects: after a no-change pass, an incremental consumer must have nothing to re-fetch.
+    let ctx = ExportContext {
+        now: dt("2026-07-01T00:00:00Z"),
+        host: "desk".into(),
+        dormant_after: chrono::Duration::days(7),
+    };
+    let after_first = db.export(&ExportFilters::default(), &ctx).unwrap().cursor;
+
+    // A second pass re-offers the row (it is provisional) and re-decides it identically.
+    enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+
+    let refetched = db
+        .export(
+            &ExportFilters {
+                cursor: Some(after_first),
+                ..Default::default()
+            },
+            &ctx,
+        )
+        .unwrap();
+    assert!(
+        refetched.sessions.is_empty(),
+        "a no-change skip advanced the export cursor, so every incremental consumer re-fetches this \
+         row after every enrich pass, forever: {:?}",
+        refetched.sessions.iter().map(|s| &s.session_id).collect::<Vec<_>>()
     );
 }
 
@@ -752,5 +847,614 @@ fn a_zero_edit_session_is_settled_after_one_pass() {
     assert_eq!(
         p2.considered, 1,
         "an evidence-FREE decision stays provisional and is reconsidered: {p2:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// v3: the routing gate. Problem 1 (the retro-flip), the override, and the coverage it must keep.
+// ---------------------------------------------------------------------------------------------
+
+/// **AC1, and the whole point of this branch.** No sequence of reindexes may upgrade a recorded
+/// `personal` decision to `work`.
+///
+/// The sequence, which is the shape no test in the tree had before Phase 1:
+///
+/// 1. The session ran in a repo with NO origin. A reindex probes, gets the CONCLUSIVE `NoOrigin`,
+///    and records it. The gate classifies personal.
+/// 2. Someone runs `git remote add origin git@github.com:tatari-tv/side-project.git`, or
+///    `gh repo create tatari-tv/<x> --source=.`, which is an ordinary workflow.
+/// 3. A later reindex probes the SAME cwd, resolves, and writes a work slug at rank 0.
+///
+/// On v0.22.0 step 3 flips the session to `work, would-send=True` and a personal transcript is
+/// queued for the work Anthropic account. Reproduced end to end against the installed binary, and
+/// again in the Phase 1 harness.
+///
+/// What refuses it is the RECORD of step 1, not a timestamp. clyde always looks after the session
+/// ran, so time alone cannot separate this from an ordinary first index; only the earlier FAILED
+/// observation can.
+///
+/// BITES: delete the `facts.repo_probe` branch from `session::scope`'s git-origin arm and this
+/// enriches.
+#[test]
+fn scope_never_upgrades_personal_to_work_on_a_later_probe() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    // An unanchored cwd, so the remote is the only thing that could place this session.
+    let parent = write_transcript(tmp.path(), UUID_A, "my own side project");
+    insert(&db, tmp.path(), UUID_A, "/Users/luke/Projects/side-project", &parent);
+
+    // Step 1: the probe was conclusive, and the reindex recorded it.
+    db.record_probe(
+        UUID_A,
+        &common::repo::ProbeOutcome::NoOrigin,
+        dt("2026-07-01T00:00:00Z"),
+    )
+    .unwrap();
+
+    // Steps 2 and 3: a remote now exists, and a later pass attributed a WORK slug from it.
+    set_git_origin(&db, UUID_A, "tatari-tv/side-project");
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(
+        fake.calls(),
+        0,
+        "a personal transcript reached the work account: {stats:?}"
+    );
+    assert_eq!(stats.enriched, 0);
+    assert_eq!(stats.skipped_personal, 1);
+}
+
+/// The constraint the fix must not break, and the reason the register's fix (a) was rejected. An
+/// ordinary teammate's remote was there all along, so the FIRST index resolves and nothing is ever
+/// stamped. Work scope is conferred, and the v0.22.0 coverage win is preserved intact.
+///
+/// A first-sight test (`repo_paths.first_seen <= activity_at`) would refuse this row, because
+/// `first_seen` records when clyde first LOOKED and clyde always looks after the session ran. That
+/// is 0% coverage again, which is the bug v0.22.0 fixed.
+///
+/// BITES: refuse a git-origin work slug unconditionally (rather than only when a negative precedes
+/// it) and this session stops being enriched.
+#[test]
+fn an_ordinary_first_index_still_confers_work_scope() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    let parent = write_transcript(tmp.path(), UUID_A, "the philo rollout");
+    insert(&db, tmp.path(), UUID_A, "/Users/stephen/code/work/philo", &parent);
+    // No probe is ever recorded: the origin resolved on the first look.
+    set_git_origin(&db, UUID_A, "tatari-tv/philo");
+
+    let fake = Fake::ok(&["philo"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(stats.enriched, 1, "the v0.22.0 coverage win must survive: {stats:?}");
+    assert_eq!(fake.calls(), 1);
+}
+
+/// A refusal must stay RECOVERABLE, which is what `--clear-probe --session <id>` is for. Narrow and
+/// explicit: it clears the record for named sessions only, and the next pass re-stamps if the cwd
+/// still declines conclusively.
+///
+/// BITES: make `clear_probe` a no-op and the row stays refused after the operator's repair.
+#[test]
+fn clearing_the_probe_record_recovers_a_refused_session() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    let parent = write_transcript(tmp.path(), UUID_A, "actually a work session");
+    insert(&db, tmp.path(), UUID_A, "/Users/stephen/code/work/philo", &parent);
+    db.record_probe(
+        UUID_A,
+        &common::repo::ProbeOutcome::NoOrigin,
+        dt("2026-07-01T00:00:00Z"),
+    )
+    .unwrap();
+    set_git_origin(&db, UUID_A, "tatari-tv/philo");
+
+    let refused = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(refused.skipped_personal, 1, "refused while the record stands");
+
+    db.clear_probe(&[UUID_A.to_string()]).unwrap();
+
+    let fake = Fake::ok(&["philo"]);
+    let recovered = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        recovered.enriched, 1,
+        "the row must be recoverable, not permanently locked out: {recovered:?}"
+    );
+    assert_eq!(fake.calls(), 1);
+}
+
+/// The operator override beats every rule, in BOTH directions. It is the escape hatch for a decision
+/// the rules get wrong either way, and it is what makes register item 3 recoverable without a
+/// `SCOPE_VERSION` bump.
+///
+/// BITES: delete the `facts.scope_override` branch and both halves flip.
+#[test]
+fn a_scope_override_beats_a_refusal_in_both_directions() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let now = dt("2026-07-31T12:00:00Z");
+
+    // work-over-refusal: the gate refused a work slug on a recorded negative, and the operator knows
+    // the negative is stale.
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "genuinely work");
+    insert(&db, tmp.path(), UUID_A, "/Users/stephen/code/work/philo", &parent);
+    db.record_probe(UUID_A, &common::repo::ProbeOutcome::NoOrigin, now)
+        .unwrap();
+    set_git_origin(&db, UUID_A, "tatari-tv/philo");
+    db.set_scope_override(UUID_A, crate::db::OVERRIDE_WORK, "stale probe", "saidler@desk", now)
+        .unwrap();
+
+    let fake = Fake::ok(&["philo"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(stats.enriched, 1, "an operator `work` override must win: {stats:?}");
+
+    // personal-over-work: a cwd anchored to the work org that the operator knows is a misfiled
+    // personal clone. The override must keep it off the work account.
+    let db2 = Db::open_memory().unwrap();
+    let parent2 = write_transcript(tmp.path(), UUID_B, "misfiled personal clone");
+    insert(&db2, tmp.path(), UUID_B, WORK_CWD, &parent2);
+    db2.set_scope_override(
+        UUID_B,
+        crate::db::OVERRIDE_PERSONAL,
+        "personal clone parked under the work org",
+        "saidler@desk",
+        now,
+    )
+    .unwrap();
+
+    let fake2 = Fake::ok(&["x"]);
+    let stats2 = enrich(&db2, Some(&fake2), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        fake2.calls(),
+        0,
+        "an operator `personal` override must beat the cwd anchor: {stats2:?}"
+    );
+    assert_eq!(stats2.skipped_personal, 1);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Register items 5 and 6: the two disclosures. Both are LOG-ONLY behavior, so both need a captured
+// log to be assertable at all.
+// ---------------------------------------------------------------------------------------------
+
+/// A `log::Log` that appends every record to a shared buffer.
+///
+/// Needed because items 5 and 6 are pure DISCLOSURE: item 6's fix produces the same `None` the
+/// swallowing `.ok()` did, so the warning IS the entire observable difference. Without a captured
+/// log, "deleting the `warn!` fails a test" is not satisfiable, and the register's own complaint
+/// (a loud error silently discarded) would be re-introduced with no test to stop it.
+///
+/// Tests run concurrently in one binary and share this buffer, so every assertion filters by a
+/// needle unique to its own fixture rather than by position.
+struct Capture;
+
+static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
+impl log::Log for Capture {
+    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        if let Ok(mut buf) = CAPTURED.lock() {
+            buf.push(format!("{} {}", record.level(), record.args()));
+        }
+    }
+    fn flush(&self) {}
+}
+
+/// Install the capturing logger once per process, and return the lines matching `needle`.
+fn captured_containing(needle: &str) -> Vec<String> {
+    CAPTURE_INIT.call_once(|| {
+        // A failure here means another logger is already installed for this binary, which would make
+        // the assertions below silently vacuous. Nothing else in `sessions`' tests installs one.
+        log::set_boxed_logger(Box::new(Capture)).expect("no other logger is installed in this test binary");
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+    let buf = CAPTURED.lock().expect("capture buffer");
+    buf.iter().filter(|line| line.contains(needle)).cloned().collect()
+}
+
+/// **Register item 6.** `RepoSource::from_str` raises loudly on purpose, and `.ok()` threw that away,
+/// so a corrupt `repo_source` became a plain `None` and the session fell through to the touch set
+/// with no trace.
+///
+/// The fix produces the SAME classification, which is why the warning is the whole point: the row is
+/// still classified fail-safe, and now an operator can see that it happened and why.
+///
+/// BITES: restore `.ok()` in place of the match and no line is emitted, so this fails.
+#[test]
+fn an_unreadable_repo_source_warns_instead_of_being_swallowed() {
+    const SID: &str = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), SID, "some work content");
+    insert(&db, tmp.path(), SID, "/Users/stephen/code/work/philo", &parent);
+
+    // A provenance value no `RepoSource` spelling matches: a hand-edited row, or one written by a
+    // FUTURE clyde that learned a fifth rule. Both are real, and both must be loud.
+    {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        drop(conn);
+    }
+    db.upsert_repo(
+        SID,
+        &common::repo::Resolved {
+            repo: "tatari-tv/philo".into(),
+            source: common::repo::RepoSource::GitOrigin,
+        },
+    )
+    .unwrap();
+    set_raw_repo_source(&db, SID, "rule-five-from-the-future");
+
+    // Prime the logger before the run so the pass's own output is captured.
+    captured_containing("prime");
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    let lines = captured_containing(SID);
+    assert!(
+        lines.iter().any(|l| l.contains("unreadable repo_source")),
+        "an unreadable repo_source must WARN, not vanish. captured: {lines:?}"
+    );
+    assert_eq!(
+        stats.skipped_personal, 1,
+        "and it still classifies fail-safe without the remote signal: {stats:?}"
+    );
+}
+
+/// **Register item 5's disclosure.** The precedence is UNCHANGED and the anchor still decides; the
+/// conflict is surfaced rather than resolved, because a personal fork in a work directory and a
+/// misfiled personal clone are the same slug in the same place.
+///
+/// BITES: delete the `anchor_disagrees_with_remote` block in `enrich` and no line is emitted.
+#[test]
+fn a_cwd_anchor_disagreeing_with_the_remote_is_warned_and_still_decides() {
+    const SID: &str = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), SID, "work on a fork");
+    // A work directory holding a PERSONAL remote: the fork case that killed the precedence change.
+    insert(&db, tmp.path(), SID, WORK_CWD, &parent);
+    set_git_origin(&db, SID, "scottidler/clyde-fork");
+
+    captured_containing("prime");
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(
+        stats.enriched, 1,
+        "the fork must still be WORK by the cwd anchor: dropping it is the change that was withdrawn"
+    );
+    let lines = captured_containing(SID);
+    assert!(
+        lines.iter().any(|l| l.contains("DISAGREE")),
+        "the disagreement must be disclosed. captured: {lines:?}"
+    );
+}
+
+/// Write a `repo_source` the enum cannot parse, which no production writer can produce. Models a
+/// hand-edited row or one written by a future clyde with a fifth rule.
+fn set_raw_repo_source(db: &Db, session_id: &str, raw: &str) {
+    db.set_raw_repo_source_for_test(session_id, raw).unwrap();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mutation-driven coverage (Phase 5), part two: the arithmetic nobody had asserted.
+// ---------------------------------------------------------------------------------------------
+
+/// KILLS: `replace / with *` and `replace / with %` at `cap / 2`, and `replace - with +` and
+/// `replace - with /` at `cap - head_n`.
+///
+/// `head_tail` is the SEND-SIDE cap: the last thing between a body and the work Anthropic account.
+/// Nothing asserted that the two halves add up to the cap, so any of those four mutations produced a
+/// payload of the wrong size and no test noticed.
+///
+/// Char counts throughout, never byte lengths: the house UTF-8 rule, and the reason the function
+/// exists in this shape at all.
+#[test]
+fn head_tail_splits_the_cap_into_two_halves_that_add_up() {
+    // Below the cap: unchanged, and not flagged.
+    let (out, truncated) = head_tail("short", 100);
+    assert_eq!(out, "short");
+    assert!(!truncated);
+
+    // Exactly at the cap is NOT truncation.
+    let (out, truncated) = head_tail("abcde", 5);
+    assert_eq!(out, "abcde");
+    assert!(!truncated);
+
+    // Over the cap: head + tail must be exactly `cap` chars of ORIGINAL content, with the marker in
+    // between. `cap / 2` and `cap - head_n` are what make that true, in both parities.
+    for cap in [10usize, 11] {
+        let body: String = ('a'..='z').cycle().take(200).collect();
+        let (out, truncated) = head_tail(&body, cap);
+        assert!(truncated, "cap={cap}");
+
+        let marker = "\n...[truncated]...\n";
+        let (head, tail) = out.split_once(marker).expect("the marker separates the two halves");
+        assert_eq!(
+            head.chars().count() + tail.chars().count(),
+            cap,
+            "cap={cap}: the two halves must add up to exactly the cap"
+        );
+        assert_eq!(head.chars().count(), cap / 2, "cap={cap}: head is the floor half");
+        assert!(body.starts_with(head), "cap={cap}: the head is a PREFIX of the body");
+        assert!(body.ends_with(tail), "cap={cap}: the tail is a SUFFIX of the body");
+    }
+
+    // Multibyte, because the cap counts CHARS. A byte-based split would panic or mangle here.
+    let body: String = "\u{4f60}\u{597d}\u{4e16}\u{754c}".repeat(50);
+    let (out, truncated) = head_tail(&body, 9);
+    assert!(truncated);
+    let (head, tail) = out
+        .split_once("\n...[truncated]...\n")
+        .expect("the marker separates the two halves");
+    assert_eq!(head.chars().count() + tail.chars().count(), 9);
+}
+
+/// KILLS: `replace + with -`, `replace + with *`, and `replace >= with <` in the token-budget guard.
+///
+/// The guard is `stats.tokens_in + stats.tokens_out >= budget`, and it is what stops an unattended
+/// timer run from spending without limit. Nothing exercised it, so all three mutations passed.
+///
+/// The Fake charges 10 in + 5 out per call, so a budget of 12 is reached after ONE send and the
+/// second candidate is never sent.
+#[test]
+fn the_token_budget_halts_the_sweep_once_the_total_reaches_it() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let a = write_transcript(tmp.path(), UUID_A, "first work session");
+    let b = write_transcript(tmp.path(), UUID_B, "second work session");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &a);
+    insert(&db, tmp.path(), UUID_B, WORK_CWD, &b);
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(
+        &db,
+        Some(&fake),
+        &EnrichOptions {
+            token_budget: Some(12),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(stats.considered, 2, "both were candidates");
+    assert_eq!(
+        fake.calls(),
+        1,
+        "the budget must halt the sweep after the first send: 10 in + 5 out >= 12"
+    );
+    assert_eq!(stats.enriched, 1);
+    assert_eq!((stats.tokens_in, stats.tokens_out), (10, 5));
+
+    // And a budget the first send cannot reach does NOT halt.
+    let fake = Fake::ok(&["x"]);
+    let db2 = Db::open_memory().unwrap();
+    insert(&db2, tmp.path(), UUID_A, WORK_CWD, &a);
+    insert(&db2, tmp.path(), UUID_B, WORK_CWD, &b);
+    let stats = enrich(
+        &db2,
+        Some(&fake),
+        &EnrichOptions {
+            token_budget: Some(1_000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fake.calls(),
+        2,
+        "a budget nowhere near the total must not halt anything"
+    );
+    assert_eq!(stats.enriched, 2);
+}
+
+/// KILLS: `replace += with -=` and `replace += with *=` on `stats.skipped_empty`, and
+/// `replace += with *=` on `stats.redactions`.
+///
+/// Both are counters the operator reads to decide whether a sweep did what they expected, and both
+/// start at zero, so `*=` pins them at zero forever and `-=` underflows. Nothing asserted either
+/// across MORE THAN ONE session, which is what makes an accumulator distinguishable from an
+/// assignment.
+#[test]
+fn the_sweep_counters_accumulate_across_sessions() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    // Two body-less transcripts: both skip as empty, so the counter must reach 2, not 1 and not 0.
+    let a = write_empty_transcript(tmp.path(), UUID_A);
+    let b = write_empty_transcript(tmp.path(), UUID_B);
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &a);
+    insert(&db, tmp.path(), UUID_B, WORK_CWD, &b);
+
+    let stats = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        stats.skipped_empty, 2,
+        "the empty-skip counter must ACCUMULATE: {stats:?}"
+    );
+
+    // Two sessions each carrying one secret: the redaction counter must reach 2.
+    let db2 = Db::open_memory().unwrap();
+    let secret = "deploy with sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx and ship";
+    let c = write_transcript(tmp.path(), UUID_A, secret);
+    let d = write_transcript(tmp.path(), UUID_B, secret);
+    insert(&db2, tmp.path(), UUID_A, WORK_CWD, &c);
+    insert(&db2, tmp.path(), UUID_B, WORK_CWD, &d);
+
+    let stats = enrich(
+        &db2,
+        Some(&Fake::ok(&["x"])),
+        &EnrichOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(stats.redactions, 2, "one redaction per session, accumulated: {stats:?}");
+}
+
+/// KILLS: `replace || with &&` in the tag-preservation predicate.
+///
+/// `force || rec.tags.is_empty() || !db.tags_are_manual(..)` decides whether enrichment may overwrite
+/// tags. With `&&` it would take ALL THREE, so a session with existing manual tags and no force would
+/// still be overwritten only in cases nothing covered. The manual-tag preservation contract is the
+/// thing being protected: a post-enrichment retag must survive an ordinary sweep.
+#[test]
+fn manual_tags_survive_an_ordinary_sweep_but_not_an_explicit_one() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "work content");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
+    db.set_tags(UUID_A, &["hand-picked".to_string()]).unwrap();
+
+    // An ordinary sweep must PRESERVE them: not forced, tags non-empty, tags are manual.
+    enrich(&db, Some(&Fake::ok(&["machine"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        db.get(UUID_A).unwrap().unwrap().tags,
+        vec!["hand-picked".to_string()],
+        "a manual retag must survive an ordinary sweep"
+    );
+
+    // `--all` forces, so the same row IS overwritten.
+    enrich(
+        &db,
+        Some(&Fake::ok(&["machine"])),
+        &EnrichOptions {
+            all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        db.get(UUID_A).unwrap().unwrap().tags,
+        vec!["machine".to_string()],
+        "--all is the documented way to refresh the vocabulary"
+    );
+}
+
+/// KILLS: `replace + with *` in the token-budget guard.
+///
+/// The default Fake reports 10 in / 5 out, and 10+5 and 10*5 both clear any budget a test would pick,
+/// so `the_token_budget_halts_the_sweep_once_the_total_reaches_it` could not tell the two apart. A
+/// ZERO output count separates them: `10 + 0 = 10` reaches a budget of 10, while `10 * 0 = 0` never
+/// reaches any budget at all, so the sweep would run forever without halting.
+///
+/// A zero `tokens_out` is not contrived: a completer that returns an empty or refused completion
+/// reports exactly that.
+#[test]
+fn the_token_budget_sums_the_two_counts_rather_than_multiplying_them() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let a = write_transcript(tmp.path(), UUID_A, "first work session");
+    let b = write_transcript(tmp.path(), UUID_B, "second work session");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &a);
+    insert(&db, tmp.path(), UUID_B, WORK_CWD, &b);
+
+    let fake = Fake::with_tokens(&["x"], 10, 0);
+    let stats = enrich(
+        &db,
+        Some(&fake),
+        &EnrichOptions {
+            token_budget: Some(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(stats.considered, 2);
+    assert_eq!(
+        fake.calls(),
+        1,
+        "10 in + 0 out reaches a budget of 10 and must halt; multiplying gives 0 and never halts"
+    );
+}
+
+/// KILLS: `replace || with && ` at the SECOND disjunct of the tag-preservation predicate.
+///
+/// The predicate is `force || rec.tags.is_empty() || !db.tags_are_manual(..)`. My first attempt used
+/// a session with MANUAL tags, where the original and the mutant agree (both preserve), so it could
+/// not bite. The distinguishing case is tags that are non-empty and NOT manual, i.e. a session
+/// already enriched once:
+///
+/// - original: `false || false || !false` -> true  -> refresh
+/// - mutant:   `false || (false && true)` -> false -> preserve, and the vocabulary never updates
+///
+/// That is the real contract: enrichment OWNS the tags it wrote, so a later sweep refreshes them.
+/// Only a manual retag is protected.
+#[test]
+fn enrichment_owned_tags_are_refreshed_by_a_later_sweep() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "work content");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
+
+    // First sweep: enrichment writes the tags, so they are enrich-owned and non-empty.
+    enrich(&db, Some(&Fake::ok(&["first"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(db.get(UUID_A).unwrap().unwrap().tags, vec!["first".to_string()]);
+    assert!(
+        !db.tags_are_manual(UUID_A).unwrap(),
+        "the tags are enrich-owned, which is the precondition this test needs"
+    );
+
+    // Make the row a candidate again. The predicate needs `modified > enriched_modified`, and
+    // `parsed_record` pins `modified`, so the re-upsert carries a LATER one: growing the file alone
+    // is not enough, which is the same "grown since last enrichment" rule production uses.
+    let grown = ParsedSession {
+        modified: dt("2026-06-25T10:00:00Z"),
+        body: "indexed body, grown".into(),
+        ..parsed_record(tmp.path(), UUID_A, WORK_CWD, &parent)
+    };
+    db.upsert_session(&grown, "desk").unwrap();
+
+    enrich(&db, Some(&Fake::ok(&["second"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        db.get(UUID_A).unwrap().unwrap().tags,
+        vec!["second".to_string()],
+        "enrichment owns the tags it wrote, so a later sweep must refresh them"
+    );
+}
+
+/// KILLS: `replace += with -=` and `replace += with *=` on the `skipped_empty` counter in the
+/// NO-STAGED-COPY branch.
+///
+/// There are two `skipped_empty += 1` sites, and `the_sweep_counters_accumulate_across_sessions`
+/// only reaches the empty-BODY one. This is the other: an archived session whose transcript is gone
+/// from disk and which has no staged copy, so `transcript_layout` returns `None` and there is nothing
+/// to parse.
+///
+/// Reached through `--only`, deliberately: `enrich_candidates` excludes
+/// `archived = 1 AND staged_path IS NULL`, so the ordinary sweep never offers such a row and this
+/// branch is only reachable when an operator names the session explicitly.
+#[test]
+fn an_archived_session_with_no_staged_copy_counts_as_an_empty_skip() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "work content");
+    insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
+
+    // The transcript vanishes (TTL-reaped) and there is no staged copy.
+    std::fs::remove_file(&parent).unwrap();
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(
+        &db,
+        Some(&fake),
+        &EnrichOptions {
+            only: Some(UUID_A.to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(fake.calls(), 0, "there is no body to send");
+    assert_eq!(
+        stats.skipped_empty, 1,
+        "the no-staged-copy branch must COUNT its skip: {stats:?}"
     );
 }

@@ -261,12 +261,55 @@ mod tests {
 
     #[test]
     fn test_load_cached_day_miss() {
+        let (guard, cache_home, prior) = isolated_cache();
         let result = load_cached_day(NaiveDate::from_ymd_opt(1900, 1, 1).expect("valid date"), 0);
         assert!(result.is_none());
+        drop(cache_home);
+        restore_cache_home(prior);
+        drop(guard);
+    }
+
+    /// Every test in this module reads and writes the SAME on-disk cache directory, and before this
+    /// guard that directory was the operator's REAL `~/.cache/clyde/cost/`.
+    ///
+    /// Two collisions followed from that, and both were observed rather than theorised. In-process:
+    /// cargo runs these tests concurrently, and `prune_cache` deletes files a sibling test is about
+    /// to read. Cross-process: `otto mutants` runs many copies of this suite at once, all pointed at
+    /// the same real directory, and `test_save_and_load_cached_day` plus
+    /// `test_prune_cache_removes_old_entries` failed together the first time both tasks ran side by
+    /// side.
+    ///
+    /// The mutex alone fixes only the first. `cache_dir()` resolves through `dirs::cache_dir()`,
+    /// which honors `$XDG_CACHE_HOME`, so pointing that at a per-test `TempDir` is what fixes the
+    /// second and keeps the suite off the operator's real cache entirely.
+    use crate::ENV_LOCK as CACHE_LOCK;
+
+    /// Hold the lock and redirect `cache_dir()` into a fresh `TempDir` for the duration.
+    ///
+    /// Returns the guard and the `TempDir`: both must stay alive for the body of the test, so the
+    /// caller binds them. Restores the prior `$XDG_CACHE_HOME` on drop of the returned guard's
+    /// scope, in the same order every caller uses.
+    fn isolated_cache() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir, Option<String>) {
+        let guard = CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().expect("temp cache home");
+        let prior = std::env::var("XDG_CACHE_HOME").ok();
+        // SAFETY: every reader of this variable in this binary is serialized behind CACHE_LOCK.
+        unsafe { std::env::set_var("XDG_CACHE_HOME", dir.path()) };
+        (guard, dir, prior)
+    }
+
+    /// Undo [`isolated_cache`]'s redirect.
+    fn restore_cache_home(prior: Option<String>) {
+        // SAFETY: as above; the caller still holds CACHE_LOCK.
+        match prior {
+            Some(v) => unsafe { std::env::set_var("XDG_CACHE_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+        }
     }
 
     #[test]
     fn test_save_and_load_cached_day() {
+        let (guard, cache_home, prior) = isolated_cache();
         let date = NaiveDate::from_ymd_opt(2099, 12, 31).expect("valid date");
         let hash = 42;
 
@@ -285,6 +328,9 @@ mod tests {
         if let Some(dir) = cache_dir() {
             let _ = fs::remove_file(dir.join(format!("{}.json", date)));
         }
+        drop(cache_home);
+        restore_cache_home(prior);
+        drop(guard);
     }
 
     #[test]
@@ -319,6 +365,7 @@ mod tests {
 
     #[test]
     fn test_load_cached_day_corrupt_json() {
+        let (guard, cache_home, prior) = isolated_cache();
         let dir = cache_dir().expect("cache dir");
         fs::create_dir_all(&dir).expect("create cache dir");
 
@@ -330,10 +377,14 @@ mod tests {
         assert!(result.is_none());
 
         let _ = fs::remove_file(&path);
+        drop(cache_home);
+        restore_cache_home(prior);
+        drop(guard);
     }
 
     #[test]
     fn test_prune_cache_removes_old_entries() {
+        let (guard, cache_home, prior) = isolated_cache();
         let dir = cache_dir().expect("cache dir");
         fs::create_dir_all(&dir).expect("create cache dir");
 
@@ -360,10 +411,14 @@ mod tests {
         assert!(today_path.exists(), "today's cache file should be kept");
 
         let _ = fs::remove_file(&today_path);
+        drop(cache_home);
+        restore_cache_home(prior);
+        drop(guard);
     }
 
     #[test]
     fn test_prune_cache_ignores_non_json_files() {
+        let (guard, cache_home, prior) = isolated_cache();
         let dir = cache_dir().expect("cache dir");
         fs::create_dir_all(&dir).expect("create cache dir");
 
@@ -375,15 +430,22 @@ mod tests {
         assert!(non_json.exists(), "non-json file should be untouched");
 
         let _ = fs::remove_file(&non_json);
+        drop(cache_home);
+        restore_cache_home(prior);
+        drop(guard);
     }
 
     #[test]
     fn test_prune_cache_nonexistent_dir() {
+        let (guard, cache_home, prior) = isolated_cache();
         // prune_cache should succeed gracefully when cache dir doesn't exist
         // We can't easily force cache_dir() to return a nonexistent path,
         // but we can verify it doesn't error when the dir exists but is empty
         let dir = cache_dir().expect("cache dir");
         fs::create_dir_all(&dir).expect("create cache dir");
         prune_cache(90).expect("prune empty dir should succeed");
+        drop(cache_home);
+        restore_cache_home(prior);
+        drop(guard);
     }
 }

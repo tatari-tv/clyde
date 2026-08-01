@@ -352,6 +352,58 @@ pub struct Config {
     /// rather than hidden, and a low-coverage report is still worth having.
     #[serde(default = "default_min_enrichment", deserialize_with = "de_min_enrichment")]
     min_enrichment: f64,
+    /// Hosts a git remote may confer WORK scope from. Absent -> `["github.com"]`.
+    ///
+    /// Config rather than a literal in the code, for two reasons the design measured. A shop with an
+    /// internal GitHub Enterprise has to be able to say so without a code change; and the default is
+    /// not a guess (all 59 `origin` remotes across `~/repos/tatari-tv/*` on desk.lan resolve to
+    /// `github.com`, zero to anything else).
+    ///
+    /// An SSH `Host` alias is RESOLVED against this list rather than compared literally, so
+    /// `git@github-work:tatari-tv/x` still confers work when the alias points at `github.com`. See
+    /// [`crate::repo::host`].
+    #[serde(default = "default_work_remote_hosts", deserialize_with = "de_work_remote_hosts")]
+    work_remote_hosts: Vec<String>,
+}
+
+/// The serde default for `work-remote-hosts`, from the one definition in [`crate::repo::host`].
+fn default_work_remote_hosts() -> Vec<String> {
+    crate::repo::host::DEFAULT_WORK_REMOTE_HOSTS
+        .iter()
+        .map(|h| (*h).to_string())
+        .collect()
+}
+
+/// Reject an EMPTY `work-remote-hosts` list, loudly and by name.
+///
+/// An empty list is the one value whose meaning is genuinely ambiguous: it reads as "trust nothing",
+/// which silently returns every alias user and every teammate to 0% enrichment coverage, and it
+/// reads just as easily as "I meant to fill this in". The house rule is that defaults fail CLOSED,
+/// and this one does (it would confer work from no host at all), but failing closed SILENTLY on a
+/// value that is probably a mistake is worse than refusing to start.
+fn de_work_remote_hosts<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let hosts = Vec::<String>::deserialize(deserializer)?;
+    if hosts.is_empty() {
+        return Err(serde::de::Error::custom(
+            "work-remote-hosts must name at least one host; an empty list confers work scope from \
+             nothing at all, which returns every teammate to 0% enrichment coverage. Remove the key \
+             to get the default [github.com].",
+        ));
+    }
+    // Padding is rejected, not trimmed. `HostPolicy::with_resolver` lowercases each entry but does
+    // not trim, and `normalize_host` never emits leading whitespace, so `" github.com"` would match
+    // nothing and hand the operator a silent 0% work-scope coverage. That silence is the exact
+    // failure this deserializer exists to prevent, so it is a loud config error instead.
+    if let Some(bad) = hosts.iter().find(|h| h.is_empty() || h.trim() != h.as_str()) {
+        return Err(serde::de::Error::custom(format!(
+            "work-remote-hosts contains an entry that is empty or padded with whitespace ({bad:?}); \
+             a padded host can never match a parsed remote host"
+        )));
+    }
+    Ok(hosts)
 }
 
 /// The default enrichment-coverage floor when `min-enrichment` is unset: half the window. Exposed
@@ -391,6 +443,7 @@ impl Default for Config {
             efficiency: EfficiencyConfig::default(),
             repo_root: default_repo_root(),
             min_enrichment: default_min_enrichment(),
+            work_remote_hosts: default_work_remote_hosts(),
         }
     }
 }
@@ -479,10 +532,22 @@ impl Config {
         self.render.slot_max_output_tokens
     }
 
-    /// The resolved projects root for `clyde mcp serve`: the configured `projects-dir`, else the
-    /// platform default `~/.claude/projects`.
+    /// The resolved projects root: the configured `projects-dir`, else the platform default
+    /// `~/.claude/projects`.
     pub fn projects_dir(&self) -> PathBuf {
         self.projects_dir.clone().unwrap_or_else(default_projects_dir)
+    }
+
+    /// The `projects-dir` AS CONFIGURED, with no platform fallback substituted. `None` means the key
+    /// is absent from `clyde.yml`.
+    ///
+    /// [`Self::projects_dir`] cannot answer this: it folds the config value and the platform default
+    /// into one `PathBuf`, so a caller that must place config STRICTLY between a CLI flag and the
+    /// platform default has no way to tell "the operator set this" from "nobody set anything". That
+    /// three-level precedence is the whole point of `clyde::projects::resolve`, and collapsing it is
+    /// how `cmd_reindex` came to skip config entirely while `mcp serve` honored it (register item 8).
+    pub fn configured_projects_dir(&self) -> Option<&Path> {
+        self.projects_dir.as_deref()
     }
 
     /// Whether `clyde mcp serve` runs a one-shot incremental reindex at startup (default `true`).
@@ -503,6 +568,11 @@ impl Config {
     /// The enrichment-coverage floor `report collect` warns below, as a fraction (`0.5` when unset).
     pub fn min_enrichment(&self) -> f64 {
         self.min_enrichment
+    }
+
+    /// The hosts a git remote may confer WORK scope from (`["github.com"]` when unset).
+    pub fn work_remote_hosts(&self) -> &[String] {
+        &self.work_remote_hosts
     }
 }
 
@@ -528,6 +598,15 @@ fn load_from(path: &std::path::Path) -> Result<Config> {
         Err(e) => return Err(e).with_context(|| format!("failed to read config {}", path.display())),
     };
     serde_yaml::from_str(&text).with_context(|| format!("failed to parse config {}", path.display()))
+}
+
+/// The resolved path to `clyde.yml`, whether or not it exists.
+///
+/// Public so `clyde doctor` can report WHICH file it loaded. A diagnostic that prints settings
+/// without naming their source leaves the operator guessing between a config they forgot about and
+/// the built-in defaults, which is the exact confusion register item 8 came from.
+pub fn config_file_path() -> Option<PathBuf> {
+    config_path()
 }
 
 /// Path to `clyde.yml`: `<xdg-config>/clyde/clyde.yml`.

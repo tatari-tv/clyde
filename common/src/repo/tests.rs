@@ -1,66 +1,72 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::checkout::Matrix;
 use std::process::Command;
 use tempfile::TempDir;
 
+/// Run one setup `git` command with a SCRUBBED environment.
+///
+/// The scrub is not cosmetic. Three tests in this file mutate `GIT_DIR` / `GIT_CONFIG_*` / `HOME`
+/// process-wide to prove `run_git`'s allowlist works, and cargo runs the tests in one binary
+/// CONCURRENTLY. Without this, a leaked `GIT_DIR` redirects a sibling test's `git init` at an
+/// unrelated repository and the failure surfaces somewhere else entirely. `ENV_LOCK` cannot help:
+/// it only serializes the tests that take it.
+fn git_setup(dir: &Path, args: &[&str]) {
+    let s = Command::new("git")
+        .current_dir(dir)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(s.success(), "git {args:?} failed in {}", dir.display());
+}
+
 fn git_init(dir: &Path) {
-    let s = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir)
-        .status()
-        .unwrap();
-    assert!(s.success());
-    let s = Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(dir)
-        .status()
-        .unwrap();
-    assert!(s.success());
-    let s = Command::new("git")
-        .args(["config", "user.name", "test"])
-        .current_dir(dir)
-        .status()
-        .unwrap();
-    assert!(s.success());
+    git_setup(dir, &["init", "-q"]);
+    git_setup(dir, &["config", "user.email", "test@example.com"]);
+    git_setup(dir, &["config", "user.name", "test"]);
 }
 
 fn add_origin(dir: &Path, url: &str) {
-    let s = Command::new("git")
-        .args(["remote", "add", "origin", url])
-        .current_dir(dir)
-        .status()
-        .unwrap();
-    assert!(s.success());
+    git_setup(dir, &["remote", "add", "origin", url]);
+}
+
+/// Set one key in the repo's OWN (`--local`) config. Used to plant an `insteadOf` rule in the one
+/// scope no environment scrub can take away.
+fn git_config(dir: &Path, key: &str, value: &str) {
+    git_setup(dir, &["config", "--local", key, value]);
+}
+
+/// `(host, slug)` for a URL, or `None`. The two fields are asserted TOGETHER everywhere below,
+/// because discarding the host while keeping the slug is precisely Problem 2.
+fn split(url: &str) -> Option<(String, String)> {
+    parse_slug(url).map(|r| (r.host, r.slug))
 }
 
 #[test]
 fn parse_slug_ssh_form() {
-    assert_eq!(
-        parse_slug("git@github.com:tatari-tv/claude-report.git"),
-        Some("tatari-tv/claude-report".into())
-    );
-    assert_eq!(
-        parse_slug("git@github.com:tatari-tv/claude-report"),
-        Some("tatari-tv/claude-report".into())
-    );
+    let want = Some(("github.com".to_string(), "tatari-tv/claude-report".to_string()));
+    assert_eq!(split("git@github.com:tatari-tv/claude-report.git"), want);
+    assert_eq!(split("git@github.com:tatari-tv/claude-report"), want);
 }
 
 #[test]
 fn parse_slug_https_form() {
-    assert_eq!(
-        parse_slug("https://github.com/scottidler/obsidian.git"),
-        Some("scottidler/obsidian".into())
-    );
-    assert_eq!(
-        parse_slug("https://github.com/scottidler/obsidian"),
-        Some("scottidler/obsidian".into())
-    );
+    let want = Some(("github.com".to_string(), "scottidler/obsidian".to_string()));
+    assert_eq!(split("https://github.com/scottidler/obsidian.git"), want);
+    assert_eq!(split("https://github.com/scottidler/obsidian"), want);
 }
 
 #[test]
 fn parse_slug_git_protocol() {
-    assert_eq!(parse_slug("git://github.com/foo/bar.git"), Some("foo/bar".into()));
+    assert_eq!(
+        split("git://github.com/foo/bar.git"),
+        Some(("github.com".to_string(), "foo/bar".to_string()))
+    );
 }
 
 #[test]
@@ -68,28 +74,77 @@ fn parse_slug_garbage_returns_none() {
     assert_eq!(parse_slug(""), None);
     assert_eq!(parse_slug("not-a-url"), None);
     assert_eq!(parse_slug("https://github.com/onlyorg"), None);
+    // KILLS: `replace || with && in parse_slug`. The guard is `org.is_empty() || repo.is_empty()`,
+    // so it only differs from `&&` when exactly ONE side is empty, and nothing covered that. Both
+    // shapes are reachable from a real (if malformed) remote URL.
+    assert_eq!(parse_slug("https://github.com//philo"), None, "an empty org");
+    assert_eq!(parse_slug("https://github.com/tatari-tv/"), None, "an empty repo");
 }
 
+/// The host is normalized before it reaches the allowlist: any `user@` dropped, any `:port` dropped,
+/// lowercased. Each of those is a way a host could otherwise miss a literal comparison.
 #[test]
-fn detect_returns_none_for_missing_dir() {
+fn parse_slug_normalizes_the_host() {
+    assert_eq!(
+        split("ssh://git@GitHub.com:22/tatari-tv/philo.git"),
+        Some(("github.com".to_string(), "tatari-tv/philo".to_string())),
+        "user, port and case all normalized away"
+    );
+    assert_eq!(
+        split("http://10.0.0.5:8080/tatari-tv/x"),
+        Some(("10.0.0.5".to_string(), "tatari-tv/x".to_string())),
+        "a bare IP with a port is a host like any other, and it is not on the allowlist"
+    );
+}
+
+/// An IPv6 literal is DECLINED rather than mangled. clyde has never seen one in a git remote, and a
+/// wrong answer here confers work scope, so the fail-closed direction is to refuse.
+#[test]
+fn parse_slug_declines_a_bracketed_ipv6_authority() {
+    assert_eq!(parse_slug("ssh://git@[::1]:22/tatari-tv/x.git"), None);
+}
+
+/// A missing cwd is the archived-session case (matrix row 26). There is nothing to observe, so it
+/// must be INDETERMINATE and record nothing: a restored checkout has to be able to recover the row.
+#[test]
+fn detect_is_indeterminate_for_a_missing_dir() {
     let r = detect_with_blocked_roots(Path::new("/nonexistent/cr-test/missing"), &[]);
-    assert_eq!(r, None);
+    assert_eq!(r, ProbeOutcome::Indeterminate);
+    assert!(!r.is_conclusive_negative(), "a vanished cwd is not evidence");
 }
 
+/// A directory that is genuinely not a repository IS conclusive: git answered, and there is no
+/// repo here to carry a work remote.
 #[test]
-fn detect_returns_none_for_non_repo() {
+fn detect_is_conclusively_not_a_repo_for_a_plain_directory() {
     let tmp = TempDir::new().unwrap();
+    // PRECONDITION, stated rather than assumed: `NotARepo` means "no repository at or above this
+    // cwd", so the temp root must not itself sit under one. `$TMPDIR` decides that, and it is not
+    // always `/tmp`: pointing it under this repo (or under `$HOME`, which is a dotfiles repo on the
+    // maintainer's machine) puts a `.git` above every temp dir and this cwd legitimately reads
+    // `Indeterminate` instead. Found when the mutation task redirected `TMPDIR` and the baseline
+    // failed here with no explanation.
+    assert!(
+        !tmp.path().ancestors().any(|d| d.join(".git").exists()),
+        "this test needs a temp root outside any git repository; $TMPDIR resolved to {} and a \
+         `.git` exists above it, so a plain directory there is legitimately Indeterminate",
+        tmp.path().display()
+    );
+
     let r = detect_with_blocked_roots(tmp.path(), &[]);
-    assert_eq!(r, None);
+    assert_eq!(r, ProbeOutcome::NotARepo);
+    assert!(r.is_conclusive_negative());
 }
 
+/// The seed state of Problem 1, and the one negative the routing gate exists to record.
 #[test]
-fn detect_returns_none_when_repo_has_no_origin() {
+fn detect_is_conclusively_no_origin_when_the_repo_has_none() {
     let tmp = TempDir::new().unwrap();
     let real = tmp.path().canonicalize().unwrap();
     git_init(&real);
     let r = detect_with_blocked_roots(&real, &[]);
-    assert_eq!(r, None);
+    assert_eq!(r, ProbeOutcome::NoOrigin);
+    assert!(r.is_conclusive_negative());
 }
 
 #[test]
@@ -99,7 +154,7 @@ fn detect_returns_slug_for_ssh_origin() {
     git_init(&real);
     add_origin(&real, "git@github.com:tatari-tv/claude-report.git");
     let r = detect_with_blocked_roots(&real, &[]);
-    assert_eq!(r, Some("tatari-tv/claude-report".into()));
+    assert_eq!(r.resolved_slug(), Some("tatari-tv/claude-report"));
 }
 
 #[test]
@@ -109,7 +164,7 @@ fn detect_returns_slug_for_https_origin_no_dot_git() {
     git_init(&real);
     add_origin(&real, "https://github.com/scottidler/obsidian");
     let r = detect_with_blocked_roots(&real, &[]);
-    assert_eq!(r, Some("scottidler/obsidian".into()));
+    assert_eq!(r.resolved_slug(), Some("scottidler/obsidian"));
 }
 
 #[test]
@@ -121,9 +176,11 @@ fn detect_finds_slug_from_subdirectory_of_repo() {
     let sub = real.join("src");
     std::fs::create_dir_all(&sub).unwrap();
     let r = detect_with_blocked_roots(&sub, &[]);
-    assert_eq!(r, Some("foo/bar".into()));
+    assert_eq!(r.resolved_slug(), Some("foo/bar"));
 }
 
+/// A blocked root is a refusal to ATTRIBUTE, not a statement about a remote, so it must not record.
+/// Stamping it would mean a session run under a git-tracked `$HOME` could never be recovered.
 #[test]
 fn detect_rejects_dotfiles_climb_when_toplevel_is_blocked() {
     let tmp = TempDir::new().unwrap();
@@ -135,13 +192,244 @@ fn detect_rejects_dotfiles_climb_when_toplevel_is_blocked() {
     std::fs::create_dir_all(&unversioned).unwrap();
 
     let r = detect_with_blocked_roots(&unversioned, std::slice::from_ref(&real));
-    assert_eq!(r, None, "dotfiles climb should be rejected via blocked root");
+    assert_eq!(
+        r,
+        ProbeOutcome::Blocked,
+        "dotfiles climb should be rejected via blocked root"
+    );
+    assert!(
+        !r.is_conclusive_negative(),
+        "a blocked root says nothing about a remote, so it must never stamp"
+    );
 
     let r2 = detect_with_blocked_roots(&unversioned, &[]);
     assert_eq!(
-        r2,
-        Some("user/dotfiles".into()),
+        r2.resolved_slug(),
+        Some("user/dotfiles"),
         "without blocked roots, the literal rule does not catch the climb"
+    );
+}
+
+/// AC11's `GIT_DIR` vector. Measured on `main` before the scrub: an exported `GIT_DIR` makes an
+/// unrelated cwd resolve to the pointed-at repo's origin, and the containment check does NOT catch
+/// it, because git treats the `-C` path as the work tree when `GIT_DIR` is set without
+/// `GIT_WORK_TREE`.
+///
+/// BITES: delete `env_clear()` from `run_git` and this resolves to `tatari-tv/forged` instead.
+#[test]
+fn git_dir_in_the_environment_cannot_forge_an_attribution() {
+    let guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().canonicalize().unwrap();
+
+    let elsewhere = real.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    git_init(&elsewhere);
+    add_origin(&elsewhere, "git@github.com:tatari-tv/forged.git");
+
+    // A plain directory with no repository of its own.
+    let unrelated = real.join("unrelated");
+    std::fs::create_dir_all(&unrelated).unwrap();
+
+    let prior = std::env::var("GIT_DIR").ok();
+    unsafe { std::env::set_var("GIT_DIR", elsewhere.join(".git")) };
+    let r = detect_with_blocked_roots(&unrelated, &[]);
+    match prior {
+        Some(v) => unsafe { std::env::set_var("GIT_DIR", v) },
+        None => unsafe { std::env::remove_var("GIT_DIR") },
+    }
+    drop(guard);
+
+    assert_eq!(
+        r.resolved_slug(),
+        None,
+        "an inherited GIT_DIR must not reach the probe; it forged an attribution on main"
+    );
+    assert_eq!(
+        r,
+        ProbeOutcome::NotARepo,
+        "with the environment scrubbed, the cwd is simply not a repository"
+    );
+}
+
+/// AC11's `GIT_CONFIG_*` vectors, both of them, in the LEAK direction (a personal origin reading as
+/// work). Round 3 demonstrated only the safe direction; this is the one that matters.
+///
+/// BITES: revert the origin read to `git remote get-url origin` and the `insteadOf` case resolves to
+/// `tatari-tv/sideproject`. Drop `--local` and the injection case does the same.
+#[test]
+fn git_config_in_the_environment_cannot_forge_an_attribution() {
+    let guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().canonicalize().unwrap();
+    git_init(&real);
+    add_origin(&real, "git@github.com:scottidler/sideproject.git");
+
+    let vars = [
+        ("GIT_CONFIG_COUNT", "1".to_string()),
+        (
+            "GIT_CONFIG_KEY_0",
+            "url.git@github.com:tatari-tv/.insteadOf".to_string(),
+        ),
+        ("GIT_CONFIG_VALUE_0", "git@github.com:scottidler/".to_string()),
+    ];
+    let prior: Vec<(&str, Option<String>)> = vars.iter().map(|(k, _)| (*k, std::env::var(k).ok())).collect();
+    for (k, v) in &vars {
+        unsafe { std::env::set_var(k, v) };
+    }
+    let rewritten = detect_with_blocked_roots(&real, &[]);
+    for (k, v) in &prior {
+        match v {
+            Some(v) => unsafe { std::env::set_var(k, v) },
+            None => unsafe { std::env::remove_var(k) },
+        }
+    }
+    drop(guard);
+
+    assert_eq!(
+        rewritten.resolved_slug(),
+        Some("scottidler/sideproject"),
+        "an insteadOf rewrite must not turn a personal origin into a work one"
+    );
+}
+
+/// **A FOURTH channel, found while writing the deletion proofs and not named in the design.**
+/// `insteadOf` does not need an environment variable OR a hostile `~/.gitconfig`: set in the repo's
+/// OWN `--local` config it rewrites a personal origin into a work one, and `env_clear` cannot help,
+/// because the forge lives in the file `--local` is supposed to read. Measured 2026-07-31:
+///
+/// ```text
+/// $ git config --local 'url.git@github.com:tatari-tv/.insteadOf' 'git@github.com:scottidler/'
+/// $ env -i PATH=... git remote get-url origin
+/// git@github.com:tatari-tv/sideproject.git      # forged
+/// $ env -i PATH=... git config --local --get remote.origin.url
+/// git@github.com:scottidler/sideproject.git     # the truth
+/// ```
+///
+/// This is the case the primitive change OWNS, and the only one where it is the sole defense.
+///
+/// BITES: revert the origin read to `git remote get-url origin` and this resolves to
+/// `tatari-tv/sideproject`.
+#[test]
+fn the_origin_primitive_does_not_apply_insteadof_rewriting() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().canonicalize().unwrap();
+    git_init(&real);
+    add_origin(&real, "git@github.com:scottidler/sideproject.git");
+    git_config(
+        &real,
+        "url.git@github.com:tatari-tv/.insteadOf",
+        "git@github.com:scottidler/",
+    );
+
+    assert_eq!(
+        detect_with_blocked_roots(&real, &[]).resolved_slug(),
+        Some("scottidler/sideproject"),
+        "an insteadOf rule in the repo's own config must not rewrite a personal origin into a work \
+         one; `git remote get-url` applies it by design and `git config` does not"
+    );
+}
+
+/// The property `--local` OWNS: the origin read consults ONLY the repo's own config, so a
+/// `remote.origin.url` planted in a WIDER scope cannot contribute one.
+///
+/// Asserted against the argv itself rather than through [`detect_with_blocked_roots`], and that is
+/// deliberate. `run_git`'s `env_clear` already denies the child every channel that could carry a
+/// wider-scope config, so a test routed through the module would pass with `--local` deleted and
+/// prove nothing. The layering means each defense has to be tested at ITS layer:
+///
+/// - `env_clear` is tested through the module (`git_dir_in_the_environment_...`), because that is
+///   where it acts.
+/// - `--local` is tested here, against [`ORIGIN_ARGS`], because what it protects is the read's SCOPE.
+///   Its live job is to keep the forge closed if a future caller ever inherits an environment, and
+///   `/etc/gitconfig` is a scope no `env_clear` removes.
+///
+/// BITES: drop `--local` from [`ORIGIN_ARGS`] and the first assertion sees the planted URL.
+#[test]
+fn the_origin_primitive_reads_only_the_repos_own_config() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().canonicalize().unwrap();
+    git_init(&real);
+
+    let planted = real.join("planted.cfg");
+    std::fs::write(
+        &planted,
+        "[remote \"origin\"]\n\turl = git@github.com:tatari-tv/forged.git\n",
+    )
+    .unwrap();
+
+    let run = |args: &[&str]| -> (i32, String) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&real)
+            .args(args)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("GIT_CONFIG_GLOBAL", &planted)
+            .output()
+            .expect("spawn git");
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        )
+    };
+
+    let (rc, out) = run(ORIGIN_ARGS);
+    assert_eq!(
+        (rc, out.as_str()),
+        (1, ""),
+        "the SHIPPED argv must stay conclusively origin-less with a URL planted in a wider scope"
+    );
+
+    // The control: the same read without the scope qualifier picks the planted URL straight up.
+    // Without this line the assertion above could pass because the plant never worked.
+    let (rc, out) = run(&["config", "--get", "remote.origin.url"]);
+    assert_eq!(
+        (rc, out.as_str()),
+        (0, "git@github.com:tatari-tv/forged.git"),
+        "control: the plant IS reachable without --local, which is what --local is for"
+    );
+}
+
+/// The composite: a hostile `~/.gitconfig` setting `remote.origin.url` must not turn a repo with NO
+/// origin, which owes the conclusive `NoOrigin`, into a forged work `Resolved`. That is the worst
+/// shape in the design, and it needs no `GIT_*` variable at all.
+///
+/// BITES: add `HOME` to `GIT_ENV_ALLOWLIST` (with `--local` also dropped) and this resolves to
+/// `tatari-tv/forged`. With `--local` in place, forwarding `HOME` alone does NOT break it, and AC11
+/// says so rather than demanding a failure measurement shows will not happen.
+#[test]
+fn a_hostile_home_gitconfig_cannot_forge_an_attribution() {
+    let guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().canonicalize().unwrap();
+
+    let fake_home = real.join("home");
+    std::fs::create_dir_all(&fake_home).unwrap();
+    std::fs::write(
+        fake_home.join(".gitconfig"),
+        "[remote \"origin\"]\n\turl = git@github.com:tatari-tv/forged.git\n",
+    )
+    .unwrap();
+
+    let repo_dir = real.join("noorigin");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    git_init(&repo_dir);
+
+    let prior = std::env::var("HOME").ok();
+    unsafe { std::env::set_var("HOME", &fake_home) };
+    let r = detect_with_blocked_roots(&repo_dir, &[]);
+    match prior {
+        Some(v) => unsafe { std::env::set_var("HOME", v) },
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+    drop(guard);
+
+    assert_eq!(
+        r,
+        ProbeOutcome::NoOrigin,
+        "a repo with no origin must stay CONCLUSIVELY origin-less; a hostile ~/.gitconfig forged a \
+         work Resolved here on main"
     );
 }
 
@@ -504,5 +792,285 @@ fn slug_under_root_declines_anything_that_is_not_the_shape() {
         slug_under_root(Path::new("/tmp/scratch/a/b"), root),
         None,
         "matching is confined to the configured root, so an arbitrary path cannot manufacture an org"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mutation-driven coverage (Phase 5). Every test below closes a SURVIVING mutant: the mutation run
+// found code whose behavior no test observed. Each names the mutant it kills, so a future reader can
+// tell a coverage test from a behavior test.
+// ---------------------------------------------------------------------------------------------
+
+/// KILLS: `replace home_dir_as_blocked -> Vec<PathBuf> with vec![]` and `with vec![Default::default()]`.
+///
+/// The blocked set is the ONLY thing stopping a git-tracked `$HOME` from attributing every session
+/// to the dotfiles repo, and nothing asserted it was actually populated from `$HOME`. Every existing
+/// blocked-root test passes its own list, so an empty default was invisible.
+#[test]
+fn a_fresh_resolver_blocks_the_real_home_directory() {
+    // This test READS `HOME` twice indirectly (`Resolver::new` computes `home_dir_as_blocked`, and
+    // `dirs::home_dir` computes the expected value) while `a_hostile_home_gitconfig_cannot_forge_an_
+    // attribution` sets `HOME` process-wide in the same binary. `ENV_LOCK` serializes only the tests
+    // that TAKE it, so an indirect reader has to take it too or it can observe the fake home and
+    // fail for a reason that has nothing to do with what it asserts.
+    let guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let resolver = Resolver::new();
+    let home = dirs::home_dir().expect("this test needs a HOME");
+    assert_eq!(
+        resolver.blocked,
+        vec![home],
+        "Resolver::new must block $HOME; an empty set silently attributes a git-tracked home"
+    );
+    drop(guard);
+}
+
+/// KILLS: the four `ProbeOutcome::resolved_host` mutants, including the deleted match arm.
+///
+/// The host is what Phase 3's allowlist reads, so an accessor that always answered `None` would
+/// silently make every row pre-v13 (never refusing), and one that answered a constant would confer
+/// work from the wrong host.
+#[test]
+fn resolved_host_reports_the_host_only_for_a_resolved_probe() {
+    let resolved = ProbeOutcome::Resolved {
+        slug: "tatari-tv/philo".into(),
+        host: "github.com".into(),
+    };
+    assert_eq!(resolved.resolved_host(), Some("github.com"));
+    assert_eq!(resolved.resolved_slug(), Some("tatari-tv/philo"));
+
+    for other in [
+        ProbeOutcome::NoOrigin,
+        ProbeOutcome::NotARepo,
+        ProbeOutcome::Blocked,
+        ProbeOutcome::OutsideRoot,
+        ProbeOutcome::Indeterminate,
+    ] {
+        assert_eq!(
+            other.resolved_host(),
+            None,
+            "{} observed no remote, so it has no host to report",
+            other.as_str()
+        );
+    }
+}
+
+/// KILLS: both `ProbeOutcome::as_str` mutants.
+///
+/// These tokens are PERSISTED in `sessions.repo_probe`, so they are a stored contract rather than a
+/// label: renaming one silently orphans every row written under the old spelling, and `clyde doctor`
+/// would stop counting them.
+#[test]
+fn probe_outcome_tokens_are_a_stable_contract() {
+    assert_eq!(
+        ProbeOutcome::Resolved {
+            slug: "a/b".into(),
+            host: "h".into()
+        }
+        .as_str(),
+        "resolved"
+    );
+    assert_eq!(ProbeOutcome::NoOrigin.as_str(), "no-origin");
+    assert_eq!(ProbeOutcome::NotARepo.as_str(), "not-a-repo");
+    assert_eq!(ProbeOutcome::Blocked.as_str(), "blocked");
+    assert_eq!(ProbeOutcome::OutsideRoot.as_str(), "outside-root");
+    assert_eq!(ProbeOutcome::Indeterminate.as_str(), "indeterminate");
+}
+
+/// KILLS: `replace == with != in detect_with_blocked_roots` (the containment check).
+///
+/// The check is `!(toplevel == cwd || cwd.starts_with(&toplevel))`, and it only DIFFERS from the
+/// mutant when the toplevel is neither the cwd nor an ancestor of it. Every ordinary shape is
+/// contained by construction, because git's discovery walks UP, so nothing exercised the rejection.
+///
+/// `core.worktree` is the reproducible way to get there. Measured 2026-07-31:
+///
+/// ```text
+/// $ git -C <proj> config --local core.worktree <elsewhere>
+/// $ git -C <proj> rev-parse --show-toplevel
+/// <elsewhere>                     # not the cwd, and not an ancestor of it
+/// ```
+///
+/// This is exactly the "git finds a repo that does not contain X" case the containment check exists
+/// for, and it must decline rather than attribute the cwd to that repo.
+#[test]
+fn detect_declines_a_toplevel_that_does_not_contain_the_cwd() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().canonicalize().unwrap();
+    let elsewhere = real.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    let proj = real.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    git_init(&proj);
+    add_origin(&proj, "git@github.com:tatari-tv/philo.git");
+    git_config(&proj, "core.worktree", &elsewhere.to_string_lossy());
+
+    let outcome = detect_with_blocked_roots(&proj, &[]);
+    assert_eq!(
+        outcome,
+        ProbeOutcome::OutsideRoot,
+        "a toplevel outside the cwd must be rejected, not attributed"
+    );
+    assert!(
+        !outcome.is_conclusive_negative(),
+        "and it must not stamp: a containment rejection says nothing about a remote"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 6: rule 1 resolves where there is no work tree, and stops declining symlinked cwds.
+// ---------------------------------------------------------------------------------------------
+
+/// Matrix row 6, and Problem 4. At the root of a bare-repo container there is no work tree, so
+/// `rev-parse --show-toplevel` fails and rule 1 used to give up BEFORE the call that answers.
+///
+/// Not exotic: it is what `git init --bare` plus branch directories produces, and clyde's own
+/// `build.rs` already resolves it. Cost on Keegan's catalog: 12 sessions, $326.87 of July spend, and
+/// `tatari-tv/airflow-dags` absent from every by-repo table in his month's report.
+///
+/// BITES: delete the `--git-common-dir` fallback and this declines again.
+#[test]
+fn detect_resolves_at_a_bare_repo_container_root() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.container_root, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/airflow-dags")
+    );
+}
+
+/// Matrix row 7. A plain bare repo reports `.` for its common dir, which is the case the design's
+/// own snippet got wrong: `cwd.join(common).parent()` walks one level too high.
+///
+/// BITES: delete the `common == cwd` branch and the root becomes the cwd's PARENT, which fails
+/// containment and declines.
+#[test]
+fn detect_resolves_at_a_plain_bare_repo() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.bare_mirror, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/mirror")
+    );
+}
+
+/// Matrix row 8. A cwd inside the container's `.bare` resolves through the container, because the
+/// common dir's parent IS the container and the cwd is under it.
+///
+/// The design labels this row "containment" and Phase 6 names its test
+/// `detect_declines_a_repo_found_above_the_cwd`, but measurement says it RESOLVES: git's discovery
+/// walks up, so whatever it finds is an ancestor by construction. The genuine decline needs a
+/// gitdir pointer out of the tree, which is
+/// `detect_declines_a_repo_found_outside_the_cwd` below. Both are asserted rather than picking one.
+#[test]
+fn detect_resolves_from_inside_the_bare_dir() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.inside_bare, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/airflow-dags")
+    );
+}
+
+/// The containment check, on the NO-WORK-TREE branch. A `.git` FILE pointing at a bare repo in a
+/// SIBLING tree resolves to a root that is not an ancestor of the cwd, and must be refused rather
+/// than attributed.
+///
+/// BITES: drop the mirrored containment check from the fallback and this attributes
+/// `tatari-tv/detached` to a directory that has nothing to do with it.
+#[test]
+fn detect_declines_a_repo_found_outside_the_cwd() {
+    let m = Matrix::build();
+    let outcome = detect_with_blocked_roots(&m.outside_root, &m.blocked());
+    assert_eq!(outcome, ProbeOutcome::OutsideRoot);
+    assert!(
+        !outcome.is_conclusive_negative(),
+        "a containment rejection says nothing about a remote, so it must never stamp"
+    );
+}
+
+/// Matrix row 13, and the reason the fallback needs the `--is-bare-repository` refinement. A BARE
+/// repo at `$HOME` must still be refused: the blocked-root guard is what stops a git-tracked home
+/// attributing every session to the dotfiles repo.
+///
+/// BITES: root the `common == cwd` case at the cwd's parent unconditionally and the computed root
+/// stops equalling `$HOME`, so the guard misses and this resolves.
+#[test]
+fn detect_still_blocks_a_bare_repo_at_a_blocked_root() {
+    let m = Matrix::build();
+    m.make_home_a_bare_repo();
+    assert_eq!(
+        detect_with_blocked_roots(&m.home(), &m.blocked()),
+        ProbeOutcome::Blocked
+    );
+}
+
+/// The OTHER half of the same refinement, and a hole this phase would have introduced rather than
+/// exposed. A cwd inside a NON-bare repo's `.git` also reports `.` for its common dir, so the
+/// design's unconditional `common == cwd -> root = cwd` would root at `<repo>/.git`. The blocked
+/// check compares the root, so a repo at `$HOME` probed from `$HOME/.git` would compute
+/// `$HOME/.git`, MISS the guard, and attribute the dotfiles repo.
+///
+/// BITES: drop the `--is-bare-repository` branch and this resolves instead of being blocked.
+#[test]
+fn detect_blocks_a_cwd_inside_a_blocked_repos_git_dir() {
+    let m = Matrix::build();
+    m.make_home_a_repo();
+    let git_dir = m.home().join(".git");
+    assert_eq!(
+        detect_with_blocked_roots(&git_dir, &m.blocked()),
+        ProbeOutcome::Blocked,
+        "a cwd inside $HOME/.git must root at $HOME and hit the guard"
+    );
+}
+
+/// Matrix row 24, a CONFIRMED pre-existing bug rather than one this design introduced.
+/// `--show-toplevel` returns the CANONICAL path, so the lexical containment check rejected every
+/// session whose cwd was reached through a symlink, silently.
+///
+/// BITES: revert `contains` to a lexical comparison and this declines.
+#[test]
+fn detect_resolves_a_symlinked_cwd() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.symlinked, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/philo"),
+        "a symlink-reached cwd must resolve; the toplevel is canonical and the cwd is not"
+    );
+}
+
+/// A `.git` DIRECTORY that carries no `HEAD` is not a repository, and git says so. Testing only for
+/// existence made a stray one downgrade a conclusive `NotARepo` to `Indeterminate`.
+///
+/// Found on a live host: `~/.git` there is a plain directory holding only `info/` (the
+/// `info/exclude` global-ignore trick), and it turned 21 conclusive answers into a `clyde doctor`
+/// line telling the operator to go check `safe.directory` for a problem that did not exist.
+///
+/// BITES: revert `has_git_marker` to a bare `.exists()` and this reports `Indeterminate`.
+#[test]
+fn a_git_directory_with_no_head_is_not_a_marker() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().canonicalize().unwrap();
+    assert!(
+        !real.ancestors().any(|d| d.join(".git").exists()),
+        "this test needs a temp root outside any git repository"
+    );
+
+    // The stray shape: a `.git` directory with only `info/` inside.
+    std::fs::create_dir_all(real.join(".git").join("info")).unwrap();
+    let under = real.join("some").join("workdir");
+    std::fs::create_dir_all(&under).unwrap();
+
+    let outcome = detect_with_blocked_roots(&under, &[]);
+    assert_eq!(
+        outcome,
+        ProbeOutcome::NotARepo,
+        "git reports `not a git repository` here, so clyde must agree and record it"
+    );
+    assert!(outcome.is_conclusive_negative());
+
+    // And the real shape still counts: a `.git` dir WITH a HEAD suppresses the conclusive answer,
+    // because a repository genuinely is present even if git could not use it.
+    std::fs::write(real.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    assert!(
+        !detect_with_blocked_roots(&under, &[]).is_conclusive_negative(),
+        "a real git dir above the cwd must still suppress the conclusive answer"
     );
 }

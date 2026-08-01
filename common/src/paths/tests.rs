@@ -1,11 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 use tempfile::TempDir;
-
-// Env-var mutation is process-global; serialize every env-touching test.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Holds the env lock and restores `$XDG_DATA_HOME` on DROP, so the original value comes back during
 /// unwinding as well as on the happy path.
@@ -23,7 +20,7 @@ struct EnvGuard {
 
 impl EnvGuard {
     fn new() -> Self {
-        let lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lock = crate::ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         Self {
             _lock: lock,
             prior: std::env::var("XDG_DATA_HOME").ok(),

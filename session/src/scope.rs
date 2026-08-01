@@ -20,13 +20,28 @@
 //! `tatari-tv` (`~/repos/scottidler/tatari-tv`) or a scratchpad under `/tmp/tatari-tv/` is
 //! **personal** -- the safe direction.
 //!
-//! **That convention is one person's, and the path signal is only ever a proxy for the remote.**
-//! Measured 2026-07-31: four teammates run four different layouts (`~/code/work/<repo>`,
+//! **That convention is one person's, and the path signal cannot place a session that does not
+//! follow it.** Measured 2026-07-31: four teammates run four different layouts (`~/code/work/<repo>`,
 //! `~/Projects/<repo>`, `~/git/tatari/<repo>`, `~`), none of which has an org slot to read, and all
 //! four sat at 0% enrichment coverage with their reports' prose sections empty. The `git-origin`
-//! branch answers the same question authoritatively and without caring where the checkout lives, so
-//! the path walk is now the fallback rather than the whole story. A session that no signal can place
-//! is still `personal` -- that failure direction is unchanged and still the acceptable one.
+//! branch places those sessions without caring where the checkout lives.
+//!
+//! **The remote places sessions the path convention CANNOT. It does not outrank a positive path
+//! signal, and register item 5 is the correction to a comment that said otherwise.** The code has
+//! always consulted the cwd anchor first; the comments called the remote "authoritative", which
+//! reads as a general claim the code does not make. Keeping the precedence and fixing the words is
+//! the resolution, because the breaking case for inverting it is ordinary: a personal FORK of a work
+//! repo checked out in a work directory (`~/repos/tatari-tv/clyde-fork` with origin
+//! `git@github.com:scottidler/clyde-fork.git`) is WORK, the cwd anchor reads it correctly today, and
+//! a remote-first rule would silently drop it from enrichment.
+//!
+//! clyde cannot tell that fork from a personal clone parked under the work org, because the two are
+//! the same slug in the same directory. So it does not guess: when the anchor and a trusted remote
+//! DISAGREE, the disagreement is logged and counted (`clyde doctor`) rather than resolved by a rule
+//! that would be wrong half the time.
+//!
+//! A session that no signal can place is still `personal` -- that failure direction is unchanged and
+//! still the acceptable one.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -45,7 +60,10 @@ use log::trace;
 /// v1 is [`classify_with_evidence`], the widening from cwd-only to cwd-plus-repo-evidence.
 /// v2 adds the `git-origin` branch, so every row v1 recorded as `skipped-personal` on a path
 /// convention it could not read gets re-offered and re-decided against the remote.
-pub const SCOPE_VERSION: i64 = 2;
+/// v3 NARROWS: a git-origin work slug is refused when a conclusive negative probe precedes it
+/// (Problem 1), a git-origin PERSONAL decision stops settling so it can be recovered (Problem 3),
+/// and an operator [`RoutingFacts::scope_override`] beats every rule.
+pub const SCOPE_VERSION: i64 = 3;
 
 /// The org names that mark a session as work-scoped, matched only in the org slot.
 const WORK_ORGS: &[&str] = &["tatari-tv"];
@@ -63,28 +81,41 @@ const REPOS_ANCHOR: &str = "repos";
 /// the next `SCOPE_VERSION` bump, which on a never-fully-reindexed catalog is every row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Basis {
+    /// An operator [`RoutingFacts::scope_override`]. Beats every rule, in both directions.
+    Override,
     /// The cwd's `repos/<org>` anchor. Reads only the stored `cwd`.
     CwdAnchor,
     /// The repo attributed from the git remote. Reads only `repo`/`repo_source`.
     GitOrigin,
-    /// The set of repos whose files the session edited. The ONLY basis that reads `outcome_json`, so
-    /// the only one whose decision can be provisional for want of a reindex.
+    /// A git-origin WORK slug REFUSED because a conclusive negative probe precedes it. Its own
+    /// variant rather than a `GitOrigin` personal, because Phase 8 has to count these separately: at
+    /// 3am an operator must be able to tell "the remote says personal" from "clyde refused to trust
+    /// the remote", and one timestamp cannot.
+    ProbeRefused,
+    /// A git-origin WORK slug REFUSED because the host it came from is not allowlisted. Counted
+    /// separately from [`Self::ProbeRefused`] for the same 3am reason: the two have DIFFERENT
+    /// remedies. A probe refusal is cleared with `session reindex --clear-probe`; a host refusal is
+    /// fixed by adding the host to `work-remote-hosts`, or is a genuine attack.
+    HostRefused,
+    /// The set of repos whose files the session edited. Reads `outcome_json`, so its decision is
+    /// provisional until the efficiency pass has reached the row.
     TouchSet,
 }
 
-impl Basis {
-    /// True only for [`Basis::TouchSet`]: the one basis whose inputs come from `outcome_json` and are
-    /// therefore absent until the efficiency pass has reached the row.
-    pub fn reads_stored_evidence(self) -> bool {
-        matches!(self, Basis::TouchSet)
-    }
-}
-
-/// A classification and the signal that produced it.
+/// A classification, the signal that produced it, and whether it is SETTLED.
+///
+/// `settled` is computed by the classifier rather than re-derived by the caller, which is a change
+/// from v2. It used to be `!basis.reads_stored_evidence() || evidence.present`, evaluated in
+/// `sessions::enrich`, and that formulation cannot express v3's rule: a git-origin decision reads no
+/// stored evidence at all, yet a git-origin PERSONAL one must stay revisable so a stale probe cannot
+/// lock a work session out forever (Problem 3). One place decides, or the two drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decision {
     pub scope: Scope,
     pub basis: Basis,
+    /// Whether to record [`SCOPE_VERSION`] against this decision. `false` leaves `scope_version`
+    /// NULL, which is what keeps the row a candidate for the next pass.
+    pub settled: bool,
 }
 
 /// Work/personal classification of a session, decided from its `cwd`.
@@ -154,7 +185,30 @@ pub fn classify_with_evidence(
     repo_source: Option<RepoSource>,
     repos_touched: &BTreeMap<String, u64>,
     files_edited: u64,
+    facts: &RoutingFacts<'_>,
 ) -> Decision {
+    // Step 0: an operator said so. Beats every rule below, in BOTH directions, and it is what makes
+    // a wrong decision recoverable without a `SCOPE_VERSION` bump. Settled, because a human is the
+    // highest-confidence evidence there is; `clyde session scope --clear` is how it stops applying.
+    if let Some(over) = facts.scope_override {
+        let scope = if over == Scope::Work.as_str() {
+            Scope::Work
+        } else {
+            // Fail CLOSED on an unrecognized value. `Db::set_scope_override` rejects anything but
+            // the two legal tokens, so reaching here means a hand-edited catalog, and "personal" is
+            // the direction that cannot leak.
+            Scope::Personal
+        };
+        trace!(
+            "scope::classify_with_evidence: operator override {over:?} -> {}",
+            scope.as_str()
+        );
+        return Decision {
+            scope,
+            basis: Basis::Override,
+            settled: true,
+        };
+    }
     // The existing cwd-only rule wins outright: a work-anchored cwd is work.
     if let Some(path) = cwd
         && has_work_org(path)
@@ -163,6 +217,7 @@ pub fn classify_with_evidence(
         return Decision {
             scope: Scope::Work,
             basis: Basis::CwdAnchor,
+            settled: true,
         };
     }
     // A cwd anchored to ANY org has already been judged by that anchor. Only an unanchored cwd (or no
@@ -174,19 +229,28 @@ pub fn classify_with_evidence(
         return Decision {
             scope: Scope::Personal,
             basis: Basis::CwdAnchor,
+            settled: true,
         };
     }
-    // The git remote, which is the AUTHORITATIVE answer to the question the cwd anchor above only
-    // approximates: "what repo is this session's working directory in?". `RepoSource::GitOrigin` means
-    // clyde ran `git remote get-url origin` IN THE CWD and parsed `<org>/<repo>` out of it
-    // (`common::repo`, rule 1, rank 0), so it is a statement about this session's own directory and it
-    // does not care where on disk the checkout lives.
+    // The git remote, which places sessions the cwd anchor above CANNOT.
     //
-    // This is the fix for the `~/repos/<org>/<repo>` layout assumption. That convention is the
+    // **Not "authoritative", and register item 5 is the correction.** The comment here used to call
+    // the remote the authoritative answer, which reads as a general claim; the code has always run
+    // AFTER both cwd branches and therefore never outranked a positive path signal. Code and comment
+    // now agree, which is all item 5 asked for. Inverting the precedence instead was drafted and
+    // WITHDRAWN: it silently drops a personal fork of a work repo checked out in a work directory,
+    // which is ordinary work, and `cwd_anchor_outranks_the_remote_in_both_directions` asserts exactly
+    // that case.
+    //
+    // `RepoSource::GitOrigin` means clyde read this cwd's OWN git config and parsed `<org>/<repo>`
+    // out of its origin (`common::repo`, rule 1, rank 0), so it is a statement about this session's
+    // own directory and it does not care where on disk the checkout lives.
+    //
+    // That is the fix for the `~/repos/<org>/<repo>` layout assumption. The convention is the
     // maintainer's; measured 2026-07-31, four teammates run four different layouts
     // (`~/code/work/<repo>`, `~/Projects/<repo>`, `~/git/tatari/<repo>`, `~`) and NONE of them carries
     // an org slot a path walk could read, so all four sat at 0% enrichment coverage. The remote knows
-    // the org in every one of those layouts.
+    // the org in three of those four; the bare `~` is placeable by nothing and stays personal.
     //
     // DEFINITIVE IN BOTH DIRECTIONS, and gated on `GitOrigin` alone. A personal remote returns Personal
     // rather than falling through, which is strictly safer than today: it stops the touch-set path below
@@ -194,17 +258,64 @@ pub fn classify_with_evidence(
     // deliberately excluded -- `KnownPath`/`PathGuess` are path conventions (the thing being fixed) and
     // `FilesTouched` is the touch set, which the totality-checked branch below already handles under its
     // own rules. Trusting it here would bypass that check.
+    //
+    // v3 NARROWS this branch in two directions, and the asymmetry is deliberate.
+    //
+    // **Work requires that no conclusive negative precedes it.** `repo_source` is written by a LIVE
+    // `git` subprocess at whatever moment the last reindex ran, while the cwd it is keyed to is
+    // immutable since the session ran. The two read different eras, and the only thing that
+    // separates "the remote was there all along" (an ordinary teammate, whose coverage must be
+    // preserved) from "the remote appeared afterwards" (the leak) is the earlier FAILED observation.
+    // Time alone cannot: clyde always looks after the session ran, so a first-sight test would refuse
+    // every legitimate first index. So the negative is recorded, and its presence refuses.
+    //
+    // **Personal is never settled.** A session that genuinely ran in a work repo, whose path now
+    // holds a personal checkout, classifies personal here. Recording that as settled excludes it from
+    // `enrich_candidates` on all four disjuncts, so restoring the work checkout would not recover it:
+    // directionally safe, permanently wrong, silent. Leaving it provisional costs one predicate
+    // evaluation per pass, because the gate records the skip before the transport and spends no
+    // tokens.
     if repo_source == Some(RepoSource::GitOrigin)
         && let Some(slug) = repo
     {
-        let scope = if is_work_slug(slug) { Scope::Work } else { Scope::Personal };
-        trace!(
-            "scope::classify_with_evidence: repo={slug} via git-origin -> {}",
-            scope.as_str()
-        );
+        if is_work_slug(slug) {
+            // Problem 2. The `<org>/<repo>` shape guards were always sound; the HOST was the gap, and
+            // `git@evil.example.com:tatari-tv/x.git` reads as a work org today. A recorded,
+            // non-allowlisted host refuses before the probe record is even consulted, because the
+            // slug is not trustworthy in the first place.
+            //
+            // `None` (no host recorded) deliberately does NOT refuse: see `host_confers_work`.
+            if facts.host_confers_work == Some(false) {
+                trace!("scope::classify_with_evidence: repo={slug} REFUSED, its host is not allowlisted");
+                return Decision {
+                    scope: Scope::Personal,
+                    basis: Basis::HostRefused,
+                    settled: false,
+                };
+            }
+            if let Some(stamp) = facts.repo_probe {
+                trace!(
+                    "scope::classify_with_evidence: repo={slug} via git-origin REFUSED, conclusive \
+                     negative recorded at {stamp}"
+                );
+                return Decision {
+                    scope: Scope::Personal,
+                    basis: Basis::ProbeRefused,
+                    settled: false,
+                };
+            }
+            trace!("scope::classify_with_evidence: repo={slug} via git-origin -> work");
+            return Decision {
+                scope: Scope::Work,
+                basis: Basis::GitOrigin,
+                settled: true,
+            };
+        }
+        trace!("scope::classify_with_evidence: repo={slug} via git-origin -> personal (revisable)");
         return Decision {
-            scope,
+            scope: Scope::Personal,
             basis: Basis::GitOrigin,
+            settled: false,
         };
     }
     // A CHECKED sum that fails closed on overflow. `repos_touched` is a STORED blob, so a corrupt or
@@ -231,7 +342,60 @@ pub fn classify_with_evidence(
     Decision {
         scope,
         basis: Basis::TouchSet,
+        // PROVISIONAL when the efficiency pass has not REACHED this row, so there was no evidence to
+        // consult at all. The gate is `evidence_present`, NOT `repos_touched.is_empty()`: a session
+        // that edited nothing has PRESENT evidence and an empty touch set, and IS settled. Keying on
+        // emptiness would leave every zero-edit session's `scope_version` NULL forever, so the
+        // widened predicate would re-offer it every pass and each `record_enrich_skip` would bump the
+        // export revision. Zero-edit sessions are common; that is permanent cursor churn.
+        settled: facts.evidence_present,
     }
+}
+
+/// The routing state a classification consults beyond the session's own metadata.
+///
+/// A struct rather than four more positional parameters, and it carries a [`Default`] so a caller
+/// that has none of it (a pure cwd-and-touch-set test) writes `&RoutingFacts::default()` and reads as
+/// "no override, no recorded negative, no stored evidence" rather than as three bare `None`s whose
+/// meaning has to be counted out against the signature.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoutingFacts<'a> {
+    /// The recorded CONCLUSIVE-negative probe stamp for this session's cwd, or `None`.
+    ///
+    /// PRESENCE is the signal: `sessions.repo_probe` is written only for `NoOrigin` and `NotARepo`,
+    /// so a value at all means the cwd was once observed to carry no work remote. A transient
+    /// failure (`safe.directory`, a vanished drive, a blocked root) records nothing and therefore
+    /// refuses nothing, which is what keeps this from being a lockout.
+    pub repo_probe: Option<&'a str>,
+    /// An operator override, `work` or `personal`. Beats every rule.
+    pub scope_override: Option<&'a str>,
+    /// Whether the HOST this session's remote-derived slug came from may confer Work scope.
+    ///
+    /// Three states, and the third is the whole migration story:
+    ///
+    /// - `Some(true)`  the host is allowlisted (or an SSH alias resolving to one). Work is allowed.
+    /// - `Some(false)` the host is recorded and is NOT allowlisted. Work is REFUSED.
+    /// - `None`        no host is recorded. This is every pre-v13 row, and it must NOT refuse.
+    ///
+    /// **`None` never refuses, and that is the strip-only rule made executable.** `repo_host` is NULL
+    /// on every row indexed before v13, and the only way to fill it is a live probe. If NULL refused,
+    /// the v13 upgrade would strip work authority from every such row at once; if a live probe could
+    /// CONFER authority, that would be the retro-observation defect being fixed. So a live-populated
+    /// host may only ever REMOVE authority: probe and find a non-allowlisted host, the row is
+    /// stripped; probe and find an allowlisted one, or fail to probe at all, and the row keeps
+    /// exactly the authority it already had under v0.22.0.
+    ///
+    /// Pre-v13 rows therefore carry pre-v13 trust, which is honest: the evidence needed to do better
+    /// was never collected. Problem 2 is fully closed for rows indexed at v13 and later, and
+    /// enforceable downward on older ones.
+    ///
+    /// Resolved by the CALLER, never here. Resolution spawns `ssh -G`, and this module is a pure
+    /// function the routing gate can reason about; a classifier that shells out is one that cannot be
+    /// unit-tested against a fixed input.
+    pub host_confers_work: Option<bool>,
+    /// Whether `outcome_json` existed and parsed, i.e. whether the efficiency pass has reached this
+    /// row. Decides whether a TOUCH-SET decision is settled, and nothing else.
+    pub evidence_present: bool,
 }
 
 /// True iff the path's org slot -- the component immediately after a `repos` component -- is a work
@@ -250,6 +414,36 @@ fn has_work_org(path: &Path) -> bool {
 fn has_repos_anchor(path: &Path) -> bool {
     let comps: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
     comps.windows(2).any(|w| w[0] == REPOS_ANCHOR)
+}
+
+/// Whether the cwd ANCHOR and a trusted REMOTE disagree about this session's scope.
+///
+/// Register item 5's disclosure. clyde does not resolve the disagreement, because it cannot: a
+/// personal fork of a work repo in a work directory is legitimate work, a personal clone parked under
+/// the work org is a smell, and the two are indistinguishable from the slug and the path alone.
+/// Guessing would be wrong half the time, so the honest move is to make the disagreement VISIBLE.
+///
+/// `None` when there is nothing to compare: no anchor to read, or no slug. Only an ANCHORED cwd can
+/// disagree, because an unanchored one expresses no opinion.
+pub fn anchor_disagrees_with_remote(cwd: &Path, slug: &str) -> Option<Disagreement> {
+    if !has_repos_anchor(cwd) {
+        return None;
+    }
+    let anchor = if has_work_org(cwd) { Scope::Work } else { Scope::Personal };
+    let remote = if is_work_slug(slug) { Scope::Work } else { Scope::Personal };
+    (anchor != remote).then_some(Disagreement { anchor, remote })
+}
+
+/// The two verdicts when [`anchor_disagrees_with_remote`] finds a conflict, so the caller logs and
+/// counts the DIRECTION rather than just the fact. The two directions mean different things: a work
+/// anchor with a personal remote is usually a fork, and a personal anchor with a work remote is
+/// usually a misfiled clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Disagreement {
+    /// What the cwd's `repos/<org>` anchor says. This is the one that DECIDES.
+    pub anchor: Scope,
+    /// What the remote's slug says.
+    pub remote: Scope,
 }
 
 /// True iff a `repos_touched` KEY names a work org. Its keys are `<org>/<repo>` attribution slugs

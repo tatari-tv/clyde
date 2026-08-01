@@ -149,6 +149,83 @@ tasks:
     bash: |
       echo "✅ All CI checks passed!"
 
+  mutants:
+    help: "Mutation-test the routing path; ZERO unannotated survivors (NOT part of ci: see below)"
+    bash: |
+      # The gate register item 4 needed and did not have. A test that does not BITE is a surviving
+      # mutant, and that is the one check which catches the whole defect class automatically, forever,
+      # without anyone remembering to look. Design:
+      # docs/design/2026-07-31-attribution-and-routing.md (Phase 5).
+      #
+      # THE THRESHOLD IS ZERO. Not "whatever was measured". A survivor budget of N lets a NEW survivor
+      # hide behind a fixed old one while the count never moves; an annotated `// mutants:skip` with a
+      # rationale is reviewable in a diff and a number is not. If a survivor is genuinely unavoidable,
+      # annotate it at the smallest site with one line saying why. Do NOT raise a threshold, because
+      # there is no threshold to raise.
+      #
+      # VERSION PINNED so a toolchain refresh cannot silently change the gate: a newer cargo-mutants
+      # that generates different mutants would change what "zero" means without anyone deciding to.
+      MUTANTS_VERSION="27.1.0"
+      have=$(cargo mutants --version 2>/dev/null | awk '{print $2}')
+      if [ "$have" != "$MUTANTS_VERSION" ]; then
+        echo "installing cargo-mutants $MUTANTS_VERSION (found: ${have:-none})"
+        cargo install cargo-mutants --version "$MUTANTS_VERSION" --locked
+      fi
+
+      # `--workspace` is REQUIRED and not decorative: this repo sets `default-members = ["clyde"]`,
+      # so without it cargo-mutants scopes to `clyde` alone, finds none of the files below, and
+      # reports success having tested NOTHING. Measured: the first run of this command listed 0
+      # mutants and exited 0.
+      #
+      # Six paths, not two. Two was the earlier draft's scope and both reviewers called it too narrow:
+      # the routing decision is spread across the classifier, the resolver, the sweep, the candidate
+      # predicate, rule 3's input, and the migration that carries the columns.
+      #
+      # Default (per-package) test scope, NOT `--test-workspace`. Each mutant is checked by its
+      # OWNING package's tests, which is the stricter discipline and not a weaker one: it forces the
+      # biting test to live in the crate that owns the code. Proven necessary by the
+      # `scope_override` comparison in `session/src/scope.rs`, which `sessions` already asserted end
+      # to end and which survived anyway, because a mutant is only checked by the tests that run for
+      # it. The fix was a unit test in `session`, not a wider flag.
+      #
+      # `--test-workspace true` was tried and dropped: it multiplies runtime roughly five-fold for no
+      # additional finding once every crate owns its coverage.
+      #
+      # `TMPDIR` is redirected to a DISK-backed scratch dir, and `--jobs` is capped at 8. Both
+      # are the same measured lesson: cargo-mutants gives every job its own copy of the workspace
+      # AND its own `target/`, and on this host `/tmp` is a 16 GB tmpfs. A 12-job run filled it and
+      # died with `No space left on device (os error 28)` partway through, having reported zero
+      # survivors up to that point, which is a FALSE GREEN if anyone reads only the survivor count.
+      # cargo-mutants' own startup warning says jobs above 8 is probably too high, so 8 is the
+      # ceiling; the disk-backed scratch is what makes even that safe.
+      #
+      # `/var/tmp`, NOT somewhere under the repo and NOT under `$HOME`. The scratch dir becomes
+      # `$TMPDIR` for the tests too, and `common::repo`'s tests create real directories there and
+      # assert they are NOT inside a git repository. `has_git_marker` walks LEXICAL ancestors, and
+      # both `$PWD/target/...` (this repo) and `$HOME/...` (Scott's dotfiles repo) have a `.git`
+      # above them, so either choice makes a plain temp dir read as "a repository is present" and
+      # the baseline fails before a single mutant runs. Measured, with the scratch inside `target/`:
+      #   test repo::tests::detect_is_conclusively_not_a_repo_for_a_plain_directory ... FAILED
+      #   ERROR cargo test failed in an unmutated tree, so no mutants were tested
+      export TMPDIR="${TMPDIR_MUTANTS:-/var/tmp/clyde-mutants}"
+      mkdir -p "$TMPDIR"
+
+      # `-t 300` is an EXPLICIT test timeout, and the auto-set one is why. cargo-mutants derives it
+      # from the unmutated baseline, measured on an idle machine; the mutants then run N-way parallel,
+      # so the real per-mutant budget is a fraction of what the baseline saw. Observed: a chunk whose
+      # baseline auto-set 20s reported 21 TIMEOUTs out of 22 results, including
+      # `replace ProbeOutcome::as_str -> "xyzzy"`, which cannot hang. Those are load artifacts, not
+      # findings, and a gate that manufactures them teaches everyone to ignore it. 300s is roughly
+      # 15x the idle workspace suite, which absorbs the parallelism.
+      cargo mutants --workspace --timeout 300 \
+        -f "session/src/scope.rs" \
+        -f "common/src/repo.rs" \
+        -f "sessions/src/enrich.rs" \
+        -f "sessions/src/db/enrich.rs" \
+        -f "efficiency/src/outcome.rs" \
+        -f "sessions/src/db/migrate.rs" \
+        --jobs 8
+
   eval:
     help: "Judged render eval over the committed fixtures (PAID: LLM calls; NOT part of ci)"
     bash: |

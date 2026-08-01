@@ -13,6 +13,8 @@ use chrono::{DateTime, Utc};
 use eyre::{Context, Result, bail};
 use log::{debug, info, warn};
 
+use common::repo::host::{DEFAULT_WORK_REMOTE_HOSTS, HostPolicy};
+
 use crate::db::{Db, EnrichSuccess};
 use crate::export::EnrichStatus;
 use crate::llm::{Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION};
@@ -51,6 +53,12 @@ pub struct EnrichOptions {
     pub max_attempts: i64,
     /// Halt the sweep once cumulative tokens (in+out) reach this budget. `None` = unbounded.
     pub token_budget: Option<u64>,
+    /// Hosts a git remote may confer WORK scope from (`clyde.yml`'s `work-remote-hosts`).
+    ///
+    /// Carried in the options rather than as a fifth parameter because it IS sweep configuration,
+    /// like `max_attempts` and `token_budget`, and because a `Default` that resolves to
+    /// `["github.com"]` is what keeps every existing caller correct rather than merely compiling.
+    pub work_remote_hosts: Vec<String>,
 }
 
 impl Default for EnrichOptions {
@@ -63,6 +71,7 @@ impl Default for EnrichOptions {
             show_payload: None,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
             token_budget: None,
+            work_remote_hosts: DEFAULT_WORK_REMOTE_HOSTS.iter().map(|h| (*h).to_string()).collect(),
         }
     }
 }
@@ -100,6 +109,11 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
     // personal-scope or empty-body skip never reached the transport, so it is neither a failure nor a
     // success and leaves the count unchanged.
     let mut consecutive_failures: usize = 0;
+    // The host allowlist, resolved ONCE for the whole sweep so an SSH alias costs one `ssh -G` rather
+    // than one per session. It lives here rather than inside the classifier because resolution spawns
+    // a subprocess, and `session::scope` is a pure function the routing gate has to be able to reason
+    // about against a fixed input.
+    let mut hosts = HostPolicy::new(&opts.work_remote_hosts);
 
     for rec in &records {
         // Classify from the cwd, the GIT REMOTE, and the repo evidence the catalog already holds, in
@@ -109,37 +123,69 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         // unchanged and still wins outright, and widening only ever fires where the cwd answer is
         // "unclassifiable", never where it is "personal by a positive signal".
         let evidence = db.scope_evidence(&rec.session_id)?;
+        // Register item 6. `RepoSource::from_str` raises LOUDLY on purpose: a silently-dropped
+        // provenance would let a rule-4 guess be rendered as an observation, and the whole point of
+        // the column is that provenance travels with the slug. `.ok()` threw that away, so a corrupt
+        // or forward-dated `repo_source` became a plain `None` here and the session quietly fell
+        // through to the touch set with no trace at all.
+        let repo_source = match rec.repo_source.as_deref().map(str::parse::<common::repo::RepoSource>) {
+            Some(Ok(source)) => Some(source),
+            Some(Err(e)) => {
+                warn!(
+                    "enrich::enrich: {} has an unreadable repo_source {:?}: {e}. Classifying WITHOUT \
+                     the remote signal, which is the fail-safe direction; run \
+                     `clyde session reindex --reresolve-repo --session {}` to rewrite it",
+                    rec.session_id, rec.repo_source, rec.session_id,
+                );
+                None
+            }
+            None => None,
+        };
         let decision = session::classify_with_evidence(
             rec.cwd.as_deref().map(std::path::Path::new),
             rec.repo.as_deref(),
-            rec.repo_source.as_deref().and_then(|s| s.parse().ok()),
+            repo_source,
             &evidence.repos_touched,
             evidence.files_edited,
+            &session::RoutingFacts {
+                repo_probe: evidence.repo_probe.as_deref(),
+                scope_override: evidence.scope_override.as_deref(),
+                evidence_present: evidence.present,
+                // `None` when no host was recorded, which is every pre-v13 row, and it must stay
+                // `None` rather than becoming `Some(false)`: see `RoutingFacts::host_confers_work`
+                // for why a NULL host may never strip authority on its own.
+                host_confers_work: evidence.repo_host.as_deref().map(|h| hosts.confers_work(h)),
+            },
         );
         let scope = decision.scope;
-        // PROVISIONAL when the efficiency pass has not REACHED this row, so there was no evidence to
-        // consult at all. Recording the current `SCOPE_VERSION` on an evidence-free decision would
-        // exclude the row from the widened predicate until the next const bump -- and on a catalog that
-        // has never run a full `clyde session reindex`, `outcome_json` is NULL for EVERY row, so that
-        // is the default path, not an edge case. Leaving the column NULL keeps the row a candidate for
-        // the next pass, and re-consideration spends no tokens (the gate below records a skip without
-        // reaching the transport).
+        // Register item 5's DISCLOSURE. The precedence is unchanged: the anchor decided, and it is
+        // right to have decided. But a work directory holding a personal remote is either an ordinary
+        // fork or a misfiled clone, and clyde cannot tell those apart, so the conflict is surfaced
+        // rather than resolved. `clyde doctor` counts these; this names the one that just happened.
+        if let (Some(cwd), Some(slug)) = (rec.cwd.as_deref(), rec.repo.as_deref())
+            && repo_source == Some(common::repo::RepoSource::GitOrigin)
+            && let Some(d) = session::anchor_disagrees_with_remote(std::path::Path::new(cwd), slug)
+        {
+            warn!(
+                "enrich::enrich: {} cwd anchor and remote DISAGREE: cwd {cwd} reads {} but origin slug \
+                 {slug} reads {}. Classified {} by the anchor, which is correct for a fork and a smell \
+                 for a misfiled clone; `clyde doctor` counts these",
+                rec.session_id,
+                d.anchor.as_str(),
+                d.remote.as_str(),
+                scope.as_str(),
+            );
+        }
+        // Whether to record `SCOPE_VERSION`, straight from the classifier. This used to be re-derived
+        // here as `!basis.reads_stored_evidence() || evidence.present`, and that formulation cannot
+        // express v3: a git-origin decision reads no stored evidence at all, yet a git-origin PERSONAL
+        // one must stay revisable, or a stale probe locks a genuine work session out forever with no
+        // path back (Problem 3). `Decision::settled` is the one place that judgment is made.
         //
-        // The gate is `evidence.present`, NOT `repos_touched.is_empty()`. A session that edited nothing
-        // has PRESENT evidence and an empty touch set, and is a settled decision: keying on emptiness
-        // would leave its `scope_version` NULL forever, so the widened predicate would re-offer it every
-        // pass and `record_enrich_skip`'s bare UPDATE would bump the export revision every time.
-        // Zero-edit sessions are common, so that is a permanent cursor churn for a large set of rows --
-        // the same hazard Phase 3 took a batched trigger sandwich to avoid.
-        //
-        // ...and it applies ONLY when the touch set is what decided. `Basis::reads_stored_evidence` is
-        // the discriminator, from the classifier itself rather than re-derived here. A cwd-anchor or
-        // git-origin decision never consults `outcome_json`, so it is SETTLED even on a catalog that has
-        // never been fully reindexed -- which is the common case for the very hosts the git-origin branch
-        // exists for. Gating those on `evidence.present` would leave their `scope_version` NULL forever
-        // and re-offer every one of their rows on every pass, exactly the churn this rule prevents.
-        let scope_version =
-            (!decision.basis.reads_stored_evidence() || evidence.present).then_some(session::SCOPE_VERSION);
+        // Leaving the column NULL is what keeps the row a candidate for the next pass, and
+        // re-consideration spends no tokens: the routing gate below records a skip without ever
+        // reaching the transport.
+        let scope_version = decision.settled.then_some(session::SCOPE_VERSION);
 
         // --- Routing gate: personal content never leaves the machine. ---
         if !scope.is_work() {

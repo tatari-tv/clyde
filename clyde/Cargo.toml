@@ -39,4 +39,7 @@ sessions = { path = "../sessions" }
 which.workspace = true
 
 [dev-dependencies]
+common = { path = "../common", features = ["testkit"] }
+rusqlite = { workspace = true, features = ["bundled"] }
+serde_yaml.workspace = true
 tempfile = { workspace = true }

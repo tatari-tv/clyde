@@ -21,4 +21,19 @@ pub mod stage;
 
 pub use model::{Message, ParsedSession, Role, SessionFile, SessionFileKind};
 pub use parse::PARSE_VERSION;
-pub use scope::{SCOPE_VERSION, Scope, classify, classify_with_evidence};
+pub use scope::{
+    Basis, Decision, Disagreement, RoutingFacts, SCOPE_VERSION, Scope, anchor_disagrees_with_remote, classify,
+    classify_with_evidence,
+};
+
+/// ONE process-wide lock for every test in this crate that reads or mutates the process
+/// environment. Deliberately crate-level rather than per-module, for the reason
+/// `common/src/lib.rs` spells out: `set_var`/`remove_var` mutate the whole environ block, so two
+/// modules each holding their OWN mutex do not serialize against each other at all -- reading the
+/// block in one module while another mutates it under a different lock is the exact unsafety
+/// window edition 2024 marks `set_var`/`remove_var` `unsafe` for.
+///
+/// Only `paths::tests` touches the environment today, so this is the shape rather than a fix:
+/// a second env-touching module added later inherits the lock instead of minting its own.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

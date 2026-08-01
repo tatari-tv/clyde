@@ -10,6 +10,7 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
 use common::EfficiencyConfig;
+use common::repo::SharedResolver;
 use common::scan::{SessionFile, find_session_files_with_staged, pricing_files};
 use eyre::{Context, Result};
 use log::{debug, warn};
@@ -123,6 +124,7 @@ pub fn collect_layouts(
     candidates: &[EfficiencyCandidate],
     config: &EfficiencyConfig,
     repo_root: &Path,
+    work_remote_hosts: &[String],
 ) -> Result<Collected> {
     debug!(
         "collect_layouts: candidates={} repo_root={}",
@@ -159,11 +161,17 @@ pub fn collect_layouts(
         }
     }
 
+    // ONE resolver for the whole pass, shared by reference across the rayon threads. That sharing is
+    // the point: sessions overlap heavily on directories, so a per-session memo would re-probe the
+    // same checkout once per session instead of once per catalog.
+    // `with_hosts`, NOT `new`: rule 3 must be able to refuse a work-looking slug that arrived from
+    // a non-allowlisted remote, which is the same gate rule 1 applies.
+    let slugs = SharedResolver::with_hosts(work_remote_hosts);
     let sessions: Vec<CollectedSession> = priceable
         .par_iter()
         .map(|(candidate, files)| {
             let group_files: Vec<&SessionFile> = files.iter().collect();
-            build_session(&candidate.session_id, &group_files, config, Some(repo_root))
+            build_session(&candidate.session_id, &group_files, config, Some(&slugs))
         })
         .collect();
 
@@ -187,15 +195,19 @@ fn group_by_session(files: &[SessionFile]) -> BTreeMap<String, Vec<&SessionFile>
     groups
 }
 
-/// `outcomes_repo_root` is BOTH the outcome switch and rule 3's parsing root: `Some(root)` extracts
-/// outcomes (bucketing edited paths under `root`), `None` skips the second per-file scan entirely.
-/// One parameter rather than a `bool` plus a path, so asking for outcomes without a root is not
-/// expressible.
+/// `slugs` is BOTH the outcome switch and rule 3's resolver: `Some(resolver)` extracts outcomes
+/// (bucketing edited paths by asking git about each parent directory), `None` skips the second
+/// per-file scan entirely. One parameter rather than a `bool` plus a resolver, so asking for outcomes
+/// without one is not expressible.
+///
+/// It replaces the `repo_root` this used to take. Rule 3 no longer reads the
+/// `<root>/<org>/<repo>` shape at all (Problem 5), so a root is no longer the thing it needs; rule 4
+/// still uses `repo_root`, but rule 4 lives in `common::repo` and never came through here.
 fn build_session(
     session_id: &str,
     group_files: &[&SessionFile],
     config: &EfficiencyConfig,
-    outcomes_repo_root: Option<&Path>,
+    slugs: Option<&SharedResolver>,
 ) -> CollectedSession {
     let file_effs: Vec<FileEfficiency> = group_files
         .iter()
@@ -212,8 +224,8 @@ fn build_session(
     // scan failure is warn-and-skipped (same robustness contract as efficiency extract) so one bad
     // file cannot fail the whole session's annotation. An empty session unions to the all-empty
     // default (a stored, non-NULL `outcome_json` distinct from "not yet reindexed").
-    let outcomes = match outcomes_repo_root {
-        Some(repo_root) => {
+    let outcomes = match slugs {
+        Some(slugs) => {
             let file_outcomes: Vec<outcome::FileOutcomes> = group_files
                 .iter()
                 .filter_map(|f| match outcome::extract(&f.path) {
@@ -227,7 +239,7 @@ fn build_session(
                     }
                 })
                 .collect();
-            outcome::union(&file_outcomes, repo_root)
+            outcome::union(&file_outcomes, slugs)
         }
         None => Outcomes::default(),
     };
@@ -244,7 +256,7 @@ fn build_session(
         "collect::build_session: session_id={session_id} files={} last_active={last_active} \
          with_outcomes={} commits={} prs={} repos-touched={}",
         group_files.len(),
-        outcomes_repo_root.is_some(),
+        slugs.is_some(),
         outcomes.commits.len(),
         outcomes.prs.len(),
         outcomes.repos_touched.len(),

@@ -7,19 +7,233 @@
 use std::path::{Path, PathBuf};
 
 use colored::Colorize;
-use eyre::Result;
+use eyre::{Context, Result};
 use log::debug;
 
 use crate::bootstrap::Paths;
 
 /// Entry point for `clyde doctor`. Returns the intended process exit code (0 healthy, 1 if any
 /// legacy target/state remains).
-pub fn run() -> Result<i32> {
-    debug!("doctor::run");
+///
+/// `db_path` is the catalog to report attribution and routing from. Those lines do not WRITE any
+/// attribution or routing state, but this is not a read-only command: `sessions::Db::open_at` runs
+/// `Db::init`, so opening the catalog here applies the snapshot helpers and the full migration
+/// ladder. On a host still at v12, `clyde doctor` therefore writes `<db>.pre-v13.bak` and advances
+/// `user_version` to 13. That is column-add only and snapshotted first, so it is safe, but it is a
+/// side effect and calling it read-only was wrong.
+///
+/// The attribution lines deliberately do NOT feed [`Report::healthy`]: a session refused by the routing gate is the gate
+/// working, not a broken installation, and a diagnostic that exits non-zero for correct behavior is
+/// one people stop running.
+pub fn run(db_path: &Path) -> Result<i32> {
+    debug!("doctor::run: db={}", db_path.display());
     let paths = Paths::from_env()?;
     let report = diagnose(&paths)?;
     print_report(&paths, &report);
+    // Config and catalog are both best-effort here. `doctor` exists to tell an operator what is
+    // wrong, so it must still print everything it CAN when one source is unreadable, and say which
+    // one failed rather than dying on it.
+    match attribution(db_path) {
+        Ok(Some(section)) => print_attribution(&section),
+        Ok(None) => println!("\n  {} no catalog at {}", "attribution:".bold(), db_path.display()),
+        Err(e) => println!("\n  {} could not read the catalog: {e}", "attribution:".red()),
+    }
     Ok(if report.healthy() { 0 } else { 1 })
+}
+
+/// What `clyde doctor` reports about attribution and routing.
+struct Attribution {
+    /// The resolved config file path, or `None` when no config file exists.
+    config_path: Option<PathBuf>,
+    /// The effective `repo-root`, and whether it exists on disk.
+    repo_root: PathBuf,
+    repo_root_exists: bool,
+    /// Whether `repo-root` contains at least one `<org>/<repo>` pair. When it does not, rule 4 is
+    /// INERT on this host and says so, rather than looking like it is simply not firing.
+    repo_root_has_org_repo: bool,
+    work_remote_hosts: Vec<String>,
+    routing: sessions::RoutingSummary,
+}
+
+/// Read the attribution picture, or `Ok(None)` when there is no catalog to read.
+fn attribution(db_path: &Path) -> Result<Option<Attribution>> {
+    if !db_path.exists() {
+        return Ok(None);
+    }
+    let cfg = common::config::load().context("failed to load clyde config")?;
+    let db = sessions::Db::open_at(db_path)?;
+    let repo_root = cfg.repo_root().to_path_buf();
+    Ok(Some(Attribution {
+        config_path: common::config::config_file_path().filter(|p| p.exists()),
+        repo_root_exists: repo_root.is_dir(),
+        repo_root_has_org_repo: has_org_repo_pair(&repo_root),
+        work_remote_hosts: cfg.work_remote_hosts().to_vec(),
+        routing: db.routing_summary(cfg.work_remote_hosts())?,
+        repo_root,
+    }))
+}
+
+/// Whether `root` holds at least one `<org>/<repo>` directory pair, which is the shape rule 4
+/// matches. Two `read_dir` levels, stopping at the first hit.
+fn has_org_repo_pair(root: &Path) -> bool {
+    let Ok(orgs) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for org in orgs.filter_map(std::result::Result::ok) {
+        if !org.path().is_dir() {
+            continue;
+        }
+        if let Ok(mut repos) = std::fs::read_dir(org.path())
+            && repos.any(|r| r.is_ok_and(|r| r.path().is_dir()))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn print_attribution(a: &Attribution) {
+    println!("\n{}", "attribution".bold());
+    match &a.config_path {
+        Some(path) => println!("  config:        {}", path.display()),
+        None => println!("  config:        {} (all defaults)", "none".dimmed()),
+    }
+    let root_state = if a.repo_root_exists {
+        "".to_string()
+    } else {
+        format!(" {}", "(does not exist)".red())
+    };
+    println!("  repo-root:     {}{}", a.repo_root.display(), root_state);
+    if a.repo_root_exists && !a.repo_root_has_org_repo {
+        // Not a failure: plenty of hosts have no `<org>/<repo>` layout at all. But rule 4 silently
+        // never firing looks identical to rule 4 being broken, and this is the difference.
+        println!(
+            "    {} no <org>/<repo> pair under this root, so rule 4 (path-guess) is INERT on this host",
+            "note:".yellow()
+        );
+    }
+    if a.work_remote_hosts.is_empty() {
+        // An empty allowlist is fail-closed in `routing_summary`, so every recorded host counts as
+        // refused. Printing a blank line next to a large `host-refused` gives the operator the
+        // symptom with no cause.
+        println!(
+            "  work hosts:    {} {}",
+            "none".red(),
+            "every recorded host is refused; set `work-remote-hosts` in clyde.yml".dimmed()
+        );
+    } else {
+        println!("  work hosts:    {}", a.work_remote_hosts.join(", "));
+    }
+
+    println!("  resolved by:");
+    for (source, n) in &a.routing.by_source {
+        println!("    {source:<14} {n}");
+    }
+
+    // Each line names the command that inspects or clears it. At 3am the count alone is not
+    // actionable; the count plus its remedy is.
+    let r = &a.routing;
+    println!("  routing:");
+    // Each line carries its own REMEDY. At 3am a count is not actionable on its own, and the six
+    // counts have six different fixes: that is why they are six counts and not one.
+    for (label, n, remedy) in [
+        (
+            "probe-refused",
+            r.probe_refused,
+            "a conclusive negative refuses a work slug; clear one with `session reindex --clear-probe --session <id>`",
+        ),
+        (
+            "host-refused",
+            r.host_refused,
+            "host not in work-remote-hosts (an ssh alias counts here, and IS resolved at the gate)",
+        ),
+        (
+            "host-unknown",
+            r.host_unknown,
+            "indexed before v13; keeps its pre-v13 authority until a reprobe records a host",
+        ),
+        (
+            "overrides",
+            r.overrides,
+            "operator-set; read them with `session scope --list`",
+        ),
+        (
+            "anchor/remote",
+            r.anchor_remote_disagreement,
+            "cwd and remote disagree: an ordinary fork, or a personal clone under the work org",
+        ),
+    ] {
+        println!("    {label:<14} {n:<6} {}", remedy.dimmed());
+    }
+
+    // The LIVE half. `Blocked`, `OutsideRoot` and `Indeterminate` all record nothing (that is what
+    // keeps a transient failure from becoming a lockout), so the catalog cannot say which of them a
+    // row hit. `doctor` re-probes, which is exactly the right place for it: this is a question about
+    // the machine as it is NOW, not about when a session ran.
+    //
+    // SAMPLED, and it says so. This used to claim "memoized per repository, so it is a handful of
+    // `git` calls" -- which is false: `reprobe_candidates` is `SELECT DISTINCT cwd`, so every entry
+    // is a distinct memo key and the memo never hits. Measured candidate counts on live hosts are in
+    // the hundreds, so the unbounded form spawned hundreds of `git` processes serially, with no
+    // progress output, every time an operator ran `doctor` because something was already wrong.
+    let sampled = a.routing.reprobe_candidates.len().min(REPROBE_SAMPLE_MAX);
+    let (blocked, outside, indeterminate) = reprobe(&a.routing.reprobe_candidates);
+    if a.routing.reprobe_candidates.len() > REPROBE_SAMPLE_MAX {
+        println!(
+            "    {:<14} {:<6} {}",
+            "(sampled)",
+            format!("{sampled}/{}", a.routing.reprobe_candidates.len()),
+            "the three counts below are a sample; each one costs its own `git` call".dimmed()
+        );
+    }
+    println!(
+        "    {:<14} {:<6} {}",
+        "blocked",
+        blocked,
+        "cwd resolves to a blocked root ($HOME); correct, and never attributed".dimmed()
+    );
+    println!(
+        "    {:<14} {:<6} {}",
+        "outside-root",
+        outside,
+        "git found a repo that does not contain the cwd; nothing is recorded for these".dimmed()
+    );
+    println!(
+        "    {:<14} {:<6} {}",
+        "indeterminate",
+        indeterminate,
+        "git answered NOTHING; check `safe.directory` and that git is installed".dimmed()
+    );
+    if indeterminate > 0 && indeterminate == sampled {
+        println!(
+            "      {} EVERY probe on this host is indeterminate, which is a git problem rather than \
+             a layout one",
+            "warning:".yellow()
+        );
+    }
+}
+
+/// The reprobe sample cap. Every candidate is a DISTINCT cwd, so each one costs its own `git`
+/// invocation and the resolver's memo cannot amortize them. A few hundred serial spawns is not what
+/// a diagnostic should cost, so `doctor` samples and says that it sampled.
+const REPROBE_SAMPLE_MAX: usize = 64;
+
+/// Re-probe each cwd and tally which non-recording outcome it hits: `(blocked, outside, indeterminate)`.
+fn reprobe(cwds: &[String]) -> (usize, usize, usize) {
+    use common::repo::ProbeOutcome;
+    let resolver = common::repo::SharedResolver::new();
+    let (mut blocked, mut outside, mut indeterminate) = (0, 0, 0);
+    for cwd in cwds.iter().take(REPROBE_SAMPLE_MAX) {
+        match resolver.probe(Path::new(cwd)) {
+            ProbeOutcome::Blocked => blocked += 1,
+            ProbeOutcome::OutsideRoot => outside += 1,
+            ProbeOutcome::Indeterminate => indeterminate += 1,
+            // Resolved or conclusive: the catalog is simply behind a reindex, which is not a fault.
+            _ => {}
+        }
+    }
+    debug!("doctor::reprobe: blocked={blocked} outside={outside} indeterminate={indeterminate}");
+    (blocked, outside, indeterminate)
 }
 
 /// Where a given integration currently resolves.

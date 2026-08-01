@@ -12,6 +12,13 @@ path = "src/lib.rs"
 [lints]
 workspace = true
 
+[features]
+# The shared checkout matrix (`common::checkout`), a real-`git` fixture the routing/attribution
+# phases assert against. OFF by default so the builders never reach a release binary; enabled as a
+# DEV-dependency by the crates whose tests consume it. `tempfile` is already a normal dependency, so
+# the feature adds no new dep, only the module.
+testkit = []
+
 [dependencies]
 chrono.workspace = true
 claude-pricing = { version = "2.0.0", path = "../pricing" }

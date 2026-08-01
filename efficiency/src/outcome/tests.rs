@@ -10,11 +10,12 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tempfile::TempDir;
 
 use super::*;
+use common::checkout::Matrix;
 
 fn write_jsonl(dir: &TempDir, name: &str, lines: &[&str]) -> PathBuf {
     let path = dir.path().join(name);
@@ -126,6 +127,19 @@ fn derive_repository_only_from_exact_github_pull_shape() {
     );
     assert_eq!(derive_repository("https://github.com/org/team/repo/pull/9"), None);
     assert_eq!(derive_repository("https://github.com/org/repo/pull/latest"), None);
+    // KILLS: `replace || with && in derive_repository` (the second one). `a || b || c || d` becomes
+    // `a || (b && c) || d`, which only differs when the repo segment is EMPTY and the `pull` literal
+    // is correct: the guard then stops rejecting and the function returns the malformed `org/`.
+    assert_eq!(
+        derive_repository("https://github.com/org//pull/1"),
+        None,
+        "an empty repo segment must not yield the slug `org/`"
+    );
+    assert_eq!(
+        derive_repository("https://github.com//repo/pull/1"),
+        None,
+        "an empty org"
+    );
 }
 
 // ---- extract (per-file), parity with report::outcome::extract over an unbounded window ----
@@ -246,6 +260,29 @@ fn extract_no_outcomes_yields_empty_without_error() {
 
 // ---- union (per-session), parity with report::session::union_outcomes ----
 
+/// A resolver over a fixture, blocked at the FIXTURE's `$HOME` rather than the real one.
+///
+/// Rule 3 now ASKS GIT, so a test that expects a bucket must point at a real checkout. That is the
+/// change, not an inconvenience: the paths these tests used to pass (`/repos/tatari-tv/clyde/...`)
+/// never existed on disk, so they asserted a directory CONVENTION rather than any fact about a repo.
+/// Carries the allowlist too, because rule 3 refuses a slug whose host cannot confer Work. The
+/// fixtures' remotes are `github.com`, so that is what is allowlisted here; `slugs_refusing_hosts`
+/// is the same resolver with the gate closed.
+fn slugs_for(m: &Matrix) -> SharedResolver {
+    SharedResolver::with_blocked_and_hosts(m.blocked(), &["github.com".to_string()])
+}
+
+/// The same fixture resolver with an allowlist that does NOT cover the fixtures' remote.
+fn slugs_refusing_hosts(m: &Matrix) -> SharedResolver {
+    SharedResolver::with_blocked_and_hosts(m.blocked(), &["example.invalid".to_string()])
+}
+
+/// A resolver with nothing behind it, for the union cases that assert on commits, PRs and MCP counts
+/// and do not care about buckets. Every path they name is fictional, so every lookup declines.
+fn no_slugs() -> SharedResolver {
+    SharedResolver::with_blocked(Vec::new())
+}
+
 #[test]
 fn union_dedupes_commits_and_prs_globally_sums_mcp_and_counts_distinct_files() {
     let pr = PrRef {
@@ -275,7 +312,7 @@ fn union_dedupes_commits_and_prs_globally_sums_mcp_and_counts_distinct_files() {
         lines_written: 5,
         lines_replaced: 1,
     };
-    let out = union(&[parent, subagent], Path::new("/repos"));
+    let out = union(&[parent, subagent], &no_slugs());
 
     assert_eq!(
         out.commits,
@@ -298,7 +335,7 @@ fn union_dedupes_commits_and_prs_globally_sums_mcp_and_counts_distinct_files() {
 #[test]
 fn union_of_empty_files_is_the_default_outcomes() {
     assert_eq!(
-        union(&[FileOutcomes::default(), FileOutcomes::default()], Path::new("/repos")),
+        union(&[FileOutcomes::default(), FileOutcomes::default()], &no_slugs()),
         Outcomes::default(),
         "a session with no observed outcome unions to the all-empty default (stored, not NULL)"
     );
@@ -334,7 +371,7 @@ fn full_session_extract_then_union_matches_reports_per_session_outcome() {
     );
 
     let file_out = extract(&path).unwrap();
-    let session = union(&[file_out], Path::new("/repos"));
+    let session = union(&[file_out], &no_slugs());
 
     let expected = Outcomes {
         commits: vec!["cafef00d".to_string(), "deadbeef".to_string()], // sorted, amended excluded
@@ -479,47 +516,215 @@ fn extract_lines_handles_insertion_and_unconfirmed_calls() {
     assert_eq!(out.lines_replaced, 0, "an empty old_string replaced nothing");
 }
 
-/// `repos_touched` is derived by PURE path parsing against the repo root: the slug comes from the
-/// edited file's PARENT directory, so a file nested any depth inside a repo counts for that repo,
-/// a loose file at the org level counts for nothing, and a path outside the root counts for
-/// nothing.
+/// `repos_touched` buckets by the edited file's PARENT directory, so a file nested any depth inside
+/// a checkout counts for that checkout. Over REAL checkouts now, because git is what answers.
 #[test]
-fn union_buckets_edited_paths_by_repo_under_the_root() {
+fn union_buckets_edited_paths_by_the_repo_git_reports() {
+    let m = Matrix::build();
     let file = FileOutcomes {
         files_edited: BTreeSet::from([
-            "/repos/tatari-tv/clyde/report/src/lib.rs".to_string(),
-            "/repos/tatari-tv/clyde/README.md".to_string(),
-            "/repos/scottidler/dotfiles/zshrc".to_string(),
-            // Org-level loose file: its parent has one component under the root, so no slug is
-            // fabricated from the FILE name.
-            "/repos/tatari-tv/notes.txt".to_string(),
-            // Outside the root entirely (a scratchpad session).
-            "/tmp/scratch/notes.md".to_string(),
+            // Two files in the same checkout, at different depths.
+            m.subdir.join("lib.rs").to_string_lossy().into_owned(),
+            m.flat_ssh.join("README.md").to_string_lossy().into_owned(),
+            // A different checkout, with a different origin.
+            m.fork_in_work_dir.join("main.rs").to_string_lossy().into_owned(),
+            // A directory git cannot place: contributes nothing, and fabricates nothing.
+            m.not_a_repo.join("notes.txt").to_string_lossy().into_owned(),
         ]),
         ..Default::default()
     };
-    let out = union(&[file], Path::new("/repos"));
+    let out = union(&[file], &slugs_for(&m));
     assert_eq!(
         out.repos_touched,
         BTreeMap::from([
-            ("tatari-tv/clyde".to_string(), 2),
-            ("scottidler/dotfiles".to_string(), 1),
+            ("tatari-tv/philo".to_string(), 2),
+            ("scottidler/clyde-fork".to_string(), 1),
         ])
     );
-    assert_eq!(out.files_edited, 5, "every distinct path still counts as a file edit");
+    assert_eq!(out.files_edited, 4, "every distinct path still counts as a file edit");
 }
 
-/// A different `repo-root` is a different answer: the shape is matched under the CONFIGURED root
-/// only, never a wildcard, so an arbitrary path cannot manufacture an org.
+/// **Problem 2's second door, closed.** Rule 1 refuses a work-looking slug from a non-allowlisted
+/// host, but `repos_touched` used to be built from `detect`, which discards the host entirely. A
+/// remote at `git@evil.example.com:tatari-tv/x.git` therefore reached the touch-set branch of
+/// `session::scope` as a bare `tatari-tv/x`, where unanimity is decided by `is_work_slug` alone with
+/// no host left to check. Closing the gap on rule 1 and leaving rule 3 open is not closing it.
+///
+/// The refusal is expressed as ABSENCE: a repo whose host cannot confer Work never enters the map,
+/// so the branch's totality check stops adding up and it declines. `files_edited` still counts every
+/// path, which is what makes the totality check notice.
+///
+/// BITES: revert `repos_touched` to `slugs.detect(parent)` and both assertions below fail.
 #[test]
-fn union_repos_touched_is_empty_off_the_configured_root() {
+fn union_repos_touched_refuses_a_slug_from_a_non_allowlisted_host() {
+    let m = Matrix::build();
     let file = FileOutcomes {
-        files_edited: BTreeSet::from(["/repos/tatari-tv/clyde/src/lib.rs".to_string()]),
+        files_edited: BTreeSet::from([
+            m.subdir.join("lib.rs").to_string_lossy().into_owned(),
+            m.flat_ssh.join("README.md").to_string_lossy().into_owned(),
+            m.fork_in_work_dir.join("main.rs").to_string_lossy().into_owned(),
+        ]),
         ..Default::default()
     };
-    let out = union(&[file], Path::new("/elsewhere"));
+    let out = union(&[file], &slugs_refusing_hosts(&m));
     assert!(
         out.repos_touched.is_empty(),
-        "nothing under /elsewhere; no slug invented"
+        "no repo may enter the touch set when its host cannot confer work; got {:?}",
+        out.repos_touched
+    );
+    assert_eq!(
+        out.files_edited, 3,
+        "the edits still count, so the touch-set branch's totality check sees the shortfall"
+    );
+}
+
+/// **Problem 5, and this test is the INVERSION of the one it replaces.** It used to be
+/// `union_repos_touched_is_empty_off_the_configured_root`, asserting that a checkout outside
+/// `repo-root` buckets to nothing. That WAS the defect: rule 3's input was built the same way rule 4
+/// matches, so on any layout without an `<org>/<repo>` level under the configured root the bucket map
+/// was always empty and rule 3 abstained on every session.
+///
+/// Renaming and inverting it is deliberate, so the old assumption cannot quietly return.
+///
+/// All three teammate layouts, real checkouts with real `tatari-tv` origins, NONE under a
+/// `repo-root`: `<home>/code/work/philo`, `<home>/Projects/philo`, `<home>/git/tatari/philo`.
+///
+/// BITES: restore the `slug_under_root` parse and every one of these buckets to nothing.
+#[test]
+fn union_repos_touched_resolves_off_the_configured_root() {
+    let m = Matrix::build();
+    for (who, checkout) in [
+        ("Stephen, <home>/code/work", &m.layout_code_work),
+        ("Luke, <home>/Projects", &m.layout_projects),
+        ("Keegan, <home>/git/tatari", &m.layout_git_tatari),
+    ] {
+        let file = FileOutcomes {
+            // A file directly in the checkout. Its PARENT must exist on disk, which is the one
+            // behavior this change costs; see `union_repos_touched_needs_the_parent_to_still_exist`.
+            files_edited: BTreeSet::from([checkout.join("README.md").to_string_lossy().into_owned()]),
+            ..Default::default()
+        };
+        let out = union(&[file], &slugs_for(&m));
+        assert_eq!(
+            out.repos_touched,
+            BTreeMap::from([("tatari-tv/philo".to_string(), 1)]),
+            "{who} is off every repo-root and must still bucket"
+        );
+    }
+}
+
+/// **The one thing this change COSTS, stated as a test rather than discovered later.** Rule 3 now
+/// asks git about the edited file's parent DIRECTORY, so that directory has to still exist. The path
+/// parse it replaces worked on strings and would happily bucket a checkout deleted years ago.
+///
+/// The trade is deliberate and it is the branch's own thesis applied here: a slug parsed out of a
+/// vanished path is a GUESS, and rule 4 is the rule that is allowed to guess (and is marked
+/// `path-guess` wherever it is rendered). Rule 3 claims to report what a session actually edited, so
+/// abstaining is the honest answer when the evidence is gone.
+///
+/// Measured on the live catalog before shipping; see the implementation notes for the delta.
+#[test]
+fn union_repos_touched_needs_the_parent_to_still_exist() {
+    let m = Matrix::build();
+    let gone = m.home().join("deleted-checkout").join("src").join("lib.rs");
+    let file = FileOutcomes {
+        files_edited: BTreeSet::from([gone.to_string_lossy().into_owned()]),
+        ..Default::default()
+    };
+    assert!(
+        union(&[file], &slugs_for(&m)).repos_touched.is_empty(),
+        "a vanished directory cannot be probed, so rule 3 abstains rather than guessing"
+    );
+}
+
+/// A directory git cannot place contributes NOTHING, and fabricates nothing. `$HOME` is the case
+/// that matters: it is a blocked root, so even when it IS a repo the probe refuses, and a session
+/// that edited only files there must not widen to that repo's scope.
+#[test]
+fn union_repos_touched_declines_a_non_repo_directory() {
+    let m = Matrix::build();
+
+    let scratch = FileOutcomes {
+        files_edited: BTreeSet::from([m.not_a_repo.join("notes.md").to_string_lossy().into_owned()]),
+        ..Default::default()
+    };
+    assert!(
+        union(&[scratch], &slugs_for(&m)).repos_touched.is_empty(),
+        "a plain directory buckets to nothing"
+    );
+
+    m.make_home_a_repo();
+    let at_home = FileOutcomes {
+        files_edited: BTreeSet::from([m.home().join("notes.md").to_string_lossy().into_owned()]),
+        ..Default::default()
+    };
+    assert!(
+        union(&[at_home], &slugs_for(&m)).repos_touched.is_empty(),
+        "a git-tracked $HOME is a BLOCKED root, so it can never contribute a bucket"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mutation-driven coverage (Phase 5).
+// ---------------------------------------------------------------------------------------------
+
+/// A `log::Log` that appends every record to a shared buffer, so a LOG-ONLY behavior can be
+/// asserted. Same pattern as `sessions::enrich::tests`; tests share the buffer and filter by a
+/// needle unique to their own fixture.
+struct Capture;
+
+static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
+impl log::Log for Capture {
+    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        if let Ok(mut buf) = CAPTURED.lock() {
+            buf.push(record.args().to_string());
+        }
+    }
+    fn flush(&self) {}
+}
+
+fn captured_containing(needle: &str) -> Vec<String> {
+    CAPTURE_INIT.call_once(|| {
+        log::set_boxed_logger(Box::new(Capture)).expect("no other logger is installed in this test binary");
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+    let buf = CAPTURED.lock().expect("capture buffer");
+    buf.iter().filter(|l| l.contains(needle)).cloned().collect()
+}
+
+/// KILLS: `replace += with *= in extract` on `line_no`.
+///
+/// `line_no` feeds only diagnostics, and `*= 1` from a start of 0 pins it at 0 forever. That is
+/// exactly the failure the house logging rule exists to prevent: an operator sees "unparseable
+/// outcome record <path>:0" for every bad line in a 50,000-line transcript and cannot find any of
+/// them.
+///
+/// Annotating this with `mutants:skip` was the cheaper option and the wrong one. The line number IS
+/// the diagnostic; a counter that never counts makes the message worse than no message, because it
+/// looks like an answer.
+#[test]
+fn an_unparseable_record_is_warned_with_its_real_line_number() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("marker-9f3a2b.jsonl");
+
+    // Three lines, then a malformed one on line 4. The malformed line must carry a prescreen marker
+    // (`tool_use`), or `extract` skips it BEFORE the parser and no warning is emitted at all: the
+    // substring prescreen at `outcome.rs:285` is the gate. Found by this test capturing nothing.
+    let good = r#"{"type":"user","message":{"content":[]}}"#;
+    let bad = r#"{"tool_use" not json"#;
+    std::fs::write(&path, format!("{good}\n{good}\n{good}\n{bad}\n")).unwrap();
+
+    captured_containing("prime");
+    extract(&path).expect("a malformed line is skipped, never fatal");
+
+    let lines = captured_containing("marker-9f3a2b.jsonl");
+    assert!(
+        lines.iter().any(|l| l.contains("marker-9f3a2b.jsonl:4")),
+        "the warning must name the REAL line number (4), not 0. captured: {lines:?}"
     );
 }

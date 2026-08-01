@@ -46,10 +46,32 @@ pub struct ScopeEvidence {
     ///
     /// Keying the caller's provisional rule on emptiness would leave every zero-edit session's
     /// `scope_version` NULL forever, so the widened `enrich_candidates` predicate would re-offer it on
-    /// every pass, `record_enrich_skip` would rewrite it every time, and that bare UPDATE fires the v5
+    /// every pass, `record_enrich_skip` would rewrite it every time, and that UPDATE would fire the v5
     /// revision trigger -- making every `session export --cursor` consumer re-fetch those rows after
-    /// every enrich pass, indefinitely.
+    /// every enrich pass, indefinitely. (`record_enrich_skip` now guards against the no-change write,
+    /// which is what makes v3's much larger provisional population affordable.)
     pub present: bool,
+    /// Schema v13. The recorded CONCLUSIVE-negative probe stamp for this session's cwd, or `None`.
+    /// Its PRESENCE is what refuses a later git-origin work slug: it is the earlier failed
+    /// observation, the only thing that separates the Problem 1 leak from an ordinary first index.
+    pub repo_probe: Option<String>,
+    /// Schema v13. The host the origin URL came from, or `None` on every pre-v13 row. Read by the
+    /// host gate; NULL means "indexed before clyde recorded hosts", which is handled strip-only.
+    pub repo_host: Option<String>,
+    /// Schema v13. An operator override (`work` or `personal`) that beats every rule.
+    pub scope_override: Option<String>,
+}
+
+/// The four nullable columns [`Db::scope_evidence`] reads, as a named row rather than a tuple.
+///
+/// A struct because the tuple form is four `Option<String>`s in a row: any two could be swapped at
+/// the destructuring site and the code would still compile, while silently feeding the probe stamp
+/// to the host check. Naming them makes that impossible.
+struct EvidenceRow {
+    outcome_json: Option<String>,
+    repo_probe: Option<String>,
+    repo_host: Option<String>,
+    scope_override: Option<String>,
 }
 
 impl Db {
@@ -66,24 +88,58 @@ impl Db {
     /// genuinely has no usable evidence, and treating it as settled would freeze a wrong answer behind
     /// a recorded `scope_version`. A reindex rewrites the blob and the row self-heals.
     pub fn scope_evidence(&self, session_id: &str) -> Result<ScopeEvidence> {
-        let blob: Option<String> = self
+        // ONE query for all four columns. The touch set and the routing state are read together for
+        // the same reason `repos_touched` and `files_edited` are: the classifier compares them
+        // against each other, and reading them in separate queries would be comparing values that are
+        // only incidentally from the same row.
+        let row: Option<EvidenceRow> = self
             .conn
             .query_row(
-                "SELECT outcome_json FROM sessions WHERE session_id = ?1",
+                "SELECT outcome_json, repo_probe, repo_host, scope_override FROM sessions WHERE session_id = ?1",
                 params![session_id],
-                |r| r.get(0),
+                |r| {
+                    Ok(EvidenceRow {
+                        outcome_json: r.get(0)?,
+                        repo_probe: r.get(1)?,
+                        repo_host: r.get(2)?,
+                        scope_override: r.get(3)?,
+                    })
+                },
             )
-            .optional()?
-            .flatten();
+            .optional()?;
+        let Some(EvidenceRow {
+            outcome_json: blob,
+            repo_probe,
+            repo_host,
+            scope_override,
+        }) = row
+        else {
+            trace!("Db::scope_evidence: session_id={session_id} is absent from the catalog");
+            return Ok(ScopeEvidence::default());
+        };
+        // The routing state stands on its own: a row with no `outcome_json` yet can still carry a
+        // conclusive negative and an override, and BOTH must reach the classifier. Returning early on
+        // an absent blob without them would silently disarm the whole gate on exactly the
+        // never-fully-reindexed catalog it exists to protect.
+        let routing = ScopeEvidence {
+            repo_probe,
+            repo_host,
+            scope_override,
+            ..Default::default()
+        };
         let Some(blob) = blob else {
             trace!("Db::scope_evidence: session_id={session_id} has no outcome_json");
-            return Ok(ScopeEvidence::default());
+            return Ok(routing);
         };
         let value: serde_json::Value = match serde_json::from_str(&blob) {
             Ok(v) => v,
             Err(e) => {
+                // A MALFORMED blob counts as NOT present: it is unreadable, so this row genuinely has
+                // no usable touch-set evidence, and treating it as settled would freeze a wrong answer
+                // behind a recorded `scope_version`. The routing state is unaffected by a bad blob and
+                // is carried through regardless.
                 warn!("Db::scope_evidence: session_id={session_id} has an unparseable outcome_json: {e}");
-                return Ok(ScopeEvidence::default());
+                return Ok(routing);
             }
         };
         let repos_touched = match value.get(REPOS_TOUCHED_KEY) {
@@ -105,6 +161,7 @@ impl Db {
             present: true,
             repos_touched,
             files_edited,
+            ..routing
         })
     }
 
@@ -207,8 +264,23 @@ impl Db {
             "Db::record_enrich_skip: session_id={session_id} scope={scope} scope_version={scope_version:?} status={}",
             status.as_str()
         );
+        // **Guarded against a NO-CHANGE write.** This was a bare UPDATE, so it touched the row on
+        // every pass whether or not anything differed, and the v5 revision trigger fired each time,
+        // forcing every `session export --cursor` consumer to re-fetch those rows after every enrich
+        // pass, indefinitely.
+        //
+        // That churn is what made provisional decisions expensive, and v3 creates a LOT more of them:
+        // a git-origin personal decision now never settles (Problem 3's fix), so those rows are
+        // re-offered on every pass forever by design. Fixing the churn at the source is what makes
+        // that affordable: the cost of provisional-personal becomes one predicate evaluation per pass.
+        //
+        // `IS NOT` rather than `!=`, because `scope_version` is nullable and `NULL != NULL` is NULL,
+        // not true, so a `!=` form would rewrite every provisional row on every pass and change
+        // nothing about the churn.
         let n = self.conn.execute(
-            "UPDATE sessions SET scope=?2, enrich_status=?3, scope_version=?4 WHERE session_id=?1",
+            "UPDATE sessions SET scope=?2, enrich_status=?3, scope_version=?4 \
+             WHERE session_id=?1 \
+               AND (scope IS NOT ?2 OR enrich_status IS NOT ?3 OR scope_version IS NOT ?4)",
             params![session_id, scope, status.as_str(), scope_version],
         )?;
         Ok(n > 0)

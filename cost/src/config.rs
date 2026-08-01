@@ -90,14 +90,10 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Serialize env-var-touching tests to prevent parallel races.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn load_prefers_clyde_then_falls_back_to_ccu() {
-        let guard = ENV_LOCK.lock().expect("lock");
+        let guard = crate::ENV_LOCK.lock().expect("lock");
         let prior = std::env::var("XDG_CONFIG_HOME").ok();
         let dir = tempfile::TempDir::new().expect("temp");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };

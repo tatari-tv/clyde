@@ -9,6 +9,7 @@
 mod bootstrap;
 mod cli;
 mod doctor;
+mod projects;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -87,7 +88,9 @@ fn main() -> Result<()> {
     if let Command::Mcp(cmd) = &cli.command {
         let cfg = common::config::load().context("failed to load clyde config")?;
         let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
-        let projects_dir = cfg.projects_dir();
+        // `mcp serve` is spawned by an MCP host with FIXED args, so there is no flag to pass; it
+        // still goes through the shared resolver so all three callers read one precedence.
+        let projects_dir = projects::resolve(None, &cfg)?;
         let reindex_on_start = cfg.reindex_on_start();
         let io = mcp_io::mcp_io!();
         std::process::exit(cmd.run(&io, || {
@@ -199,7 +202,10 @@ fn run(cli: Cli) -> Result<()> {
         Command::Efficiency(args) => dispatch_tool(efficiency::run(args, globals), debug),
         // clyde-native migration/health commands.
         Command::Bootstrap(args) => bootstrap::run(&args),
-        Command::Doctor => std::process::exit(doctor::run()?),
+        Command::Doctor => {
+            let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
+            std::process::exit(doctor::run(&db_path)?)
+        }
         // Handled by early intercepts in `main`, which exit the process.
         Command::Update(_) => unreachable!("Update is intercepted before this dispatch"),
         Command::Mcp(_) => unreachable!("Mcp is intercepted before this dispatch"),
@@ -245,6 +251,7 @@ fn run(cli: Cli) -> Result<()> {
                     let tz = load_date_tz()?;
                     cmd_enrich(&db, args, tz)
                 }
+                SessionsCommand::Scope(args) => cmd_scope(&db, args),
                 SessionsCommand::Doctor => cmd_doctor(&db),
                 // Unreachable: the outer arm above peels `Resume` off before this shared `Db` block.
                 SessionsCommand::Resume(_) => unreachable!("Resume is dispatched before this Db block"),
@@ -651,18 +658,25 @@ fn cmd_tag(db: &Db, args: TagArgs) -> Result<()> {
 }
 
 fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
-    let projects_dir = args
-        .projects_dir
-        .or_else(session::paths::claude_projects_dir)
-        .ok_or_else(|| eyre::eyre!("could not determine ~/.claude/projects (set HOME)"))?;
     // Load and validate clyde.yml BEFORE the content reindex mutates the catalog: an invalid
     // `efficiency:` section (a typo'd key, an out-of-range threshold) must fail closed, before any
     // write happens, not after the catalog has already been rewritten. Config supplies the scoring
-    // thresholds for the efficiency pass below, and `repo-root` for repo attribution's rule 4.
+    // thresholds for the efficiency pass below, `repo-root` for repo attribution's rule 4, and
+    // `projects-dir` for the resolver on the next line.
     let cfg = common::config::load().context("failed to load clyde config for the efficiency pass")?;
+    // Loaded FIRST, then resolved: this call used to skip config entirely and jump from the flag to
+    // the platform default, so a configured `projects-dir` was ignored and reindex scanned the real
+    // `~/.claude/projects` (register item 8).
+    let projects_dir = projects::resolve(args.projects_dir.as_deref(), &cfg)?;
 
-    if args.session.is_some() && !args.reresolve_repo {
-        eyre::bail!("--session requires --reresolve-repo");
+    if args.session.is_some() && !(args.reresolve_repo || args.clear_probe) {
+        eyre::bail!("--session requires --reresolve-repo or --clear-probe");
+    }
+    if args.clear_probe && args.session.is_none() {
+        // Deliberately NOT a catalog-wide form. Clearing every probe record at once would erase the
+        // negative evidence the routing gate rests on, catalog-wide, in one command: the exact
+        // opposite of what the flag is for.
+        eyre::bail!("--clear-probe requires --session <id>; there is no catalog-wide form");
     }
     // Resolve every `--session` id to exactly one concrete session BEFORE anything is written: an
     // ambiguous or absent id must fail the command, not fail it halfway through a repair.
@@ -674,6 +688,18 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
         ),
         None => None,
     };
+
+    // Clear the named sessions' probe records BEFORE the reindex, so this same command re-observes
+    // and re-stamps if the cwd still declines conclusively. Clearing after the pass would leave the
+    // gate open until the next reindex, which is a window nobody asked for.
+    if args.clear_probe {
+        let ids = targets.clone().unwrap_or_default();
+        let cleared = db.clear_probe(&ids)?;
+        println!(
+            "{} cleared the probe record on {cleared} session(s); re-observing now",
+            "✓".green()
+        );
+    }
 
     let stats = sessions::reindex(db, &projects_dir, cfg.repo_root())?;
 
@@ -703,7 +729,7 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     // deliberately does NOT advance the export `updated_at` cursor. Wired here (the explicit reindex),
     // not into `lazy_reindex`, so a query's cheap incremental refresh never pays the transcript
     // re-read the efficiency compute costs.
-    let eff = efficiency::reindex_efficiency(db, cfg.efficiency(), cfg.repo_root())?;
+    let eff = efficiency::reindex_efficiency(db, cfg.efficiency(), cfg.repo_root(), cfg.work_remote_hosts())?;
     // Repo attribution's rule 3 reads `Outcomes::repos_touched`, which the efficiency pass above is
     // what writes. Re-run the chain now that those blobs exist, so a session whose cwd is `$HOME` or
     // a temp dir is attributed within THIS command rather than on some later reindex. Scoped to
@@ -819,6 +845,10 @@ fn cmd_stage(db: &Db, args: StageArgs, tz: common::DateTz) -> Result<()> {
 }
 
 fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
+    // Loaded BEFORE the sweep, and its failure is fatal here rather than a warning: `clyde.yml`
+    // carries `work-remote-hosts`, which decides which remotes may confer WORK scope. A malformed
+    // config must never fall back to defaults on the one path that ships content off-machine.
+    let cfg = common::config::load().context("failed to load clyde config for the enrichment gate")?;
     // Enrich off fresh mtimes so dormancy and grown-since detection reflect the latest activity.
     lazy_reindex(db, false);
     if args.show_payload.is_some() && !args.dry_run {
@@ -856,6 +886,9 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
         show_payload: args.show_payload,
         max_attempts: args.max_attempts,
         token_budget: args.budget_tokens,
+        // The host allowlist reaches the gate through config, never a flag: it decides which remotes
+        // may confer WORK scope, which is policy, not a per-invocation choice.
+        work_remote_hosts: cfg.work_remote_hosts().to_vec(),
     };
     let stats = if args.dry_run {
         // No off-machine calls, no `claude` needed: the gate is previewed, not opened.
@@ -865,6 +898,105 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
         sessions::enrich(db, Some(&client), &opts)?
     };
     print_enrich(&stats);
+    Ok(())
+}
+
+/// `clyde session scope`: read or override a routing decision.
+///
+/// Exactly one mode per invocation. The validation is deliberately strict and up front: an override
+/// is the one command that can put a personal transcript on the work account, so a half-specified
+/// invocation must fail rather than do something adjacent to what was meant.
+fn cmd_scope(db: &Db, args: cli::ScopeArgs) -> Result<()> {
+    debug!(
+        "cmd_scope: session={:?} set={:?} clear={} list={} reason={:?}",
+        args.session,
+        args.set,
+        args.clear,
+        args.list,
+        args.reason.as_deref().map(|r| r.len())
+    );
+    let modes = usize::from(args.set.is_some()) + usize::from(args.clear) + usize::from(args.list);
+    if modes != 1 {
+        eyre::bail!("pass exactly one of --set, --clear or --list");
+    }
+
+    if args.list {
+        let rows = db.scope_overrides()?;
+        if rows.is_empty() {
+            println!("{}", "no scope overrides".dimmed());
+            return Ok(());
+        }
+        for row in &rows {
+            println!(
+                "{}  {}  {}  {}  {}",
+                short_id(&row.session_id).yellow(),
+                row.scope.cyan(),
+                row.by.as_deref().unwrap_or("(unknown)").dimmed(),
+                row.at.as_deref().unwrap_or("(no timestamp)").dimmed(),
+                row.reason,
+            );
+        }
+        return Ok(());
+    }
+
+    // Resolve to exactly one concrete session BEFORE writing, the same rule
+    // `--reresolve-repo --session` already enforces: an ambiguous or absent id must fail the
+    // command, never write to whichever row happened to sort first.
+    let Some(needle) = args.session.as_deref() else {
+        eyre::bail!("--set and --clear require --session <id>");
+    };
+    let id = resolve_one_session_id(db, needle)?;
+
+    if args.clear {
+        if db.clear_scope_override(&id)? {
+            println!("{} cleared the scope override on {}", "✓".green(), short_id(&id));
+        } else {
+            eprintln!("{} session {id} not found", "✗".red());
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    let Some(scope) = args.set.as_deref() else {
+        eyre::bail!("--set requires work or personal");
+    };
+    let Some(reason) = args.reason.as_deref() else {
+        eyre::bail!("--set requires --reason: an unexplained routing flip is not auditable");
+    };
+    // `$USER@host`, not a bare username. `sessions` already carries a `host` and catalogs get merged
+    // across machines, so a bare name would not identify who actually did this.
+    let actor = format!(
+        "{}@{}",
+        std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
+        gethostname::gethostname().to_string_lossy()
+    );
+    // Overriding a row that carries a CONCLUSIVE negative to `work` is the one case that also warns,
+    // naming what is being overridden, so the operator cannot do it without seeing what the evidence
+    // said. Printed BEFORE the write, so it is visible even if the write then fails.
+    if scope.eq_ignore_ascii_case(sessions::OVERRIDE_WORK)
+        && let Some(stamp) = db.probe_of(&id)?
+    {
+        println!(
+            "{} {} carries a conclusive negative probe ({}). Forcing `work` overrides recorded \
+             evidence that this cwd had no work remote.",
+            "warning:".yellow(),
+            short_id(&id),
+            stamp,
+        );
+    }
+    let scope = scope.to_ascii_lowercase();
+    if db.set_scope_override(&id, &scope, reason, &actor, chrono::Utc::now())? {
+        println!(
+            "{} {} scope override set to {} by {}",
+            "✓".green(),
+            short_id(&id),
+            scope.cyan(),
+            actor.dimmed()
+        );
+    } else {
+        eprintln!("{} session {id} not found", "✗".red());
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -880,10 +1012,6 @@ fn lazy_reindex(db: &Db, skip: bool) {
     if skip {
         return;
     }
-    let Some(projects_dir) = session::paths::claude_projects_dir() else {
-        warn!("lazy_reindex: cannot resolve ~/.claude/projects; querying stored data only");
-        return;
-    };
     // A broken clyde.yml SKIPS the refresh entirely rather than falling back to the default
     // repo-root. Reindexing writes repo attribution, and that write is strictly-improving: rule 4
     // resolving a session against the WRONG root persists an answer of equal rank that no later
@@ -892,13 +1020,24 @@ fn lazy_reindex(db: &Db, skip: bool) {
     //
     // "Stale data beats no answer" still holds for the QUERY (it proceeds against stored data); it
     // does not license a persistent wrong write on the way there.
-    let repo_root = match common::config::load() {
-        Ok(cfg) => cfg.repo_root().to_path_buf(),
+    let cfg = match common::config::load() {
+        Ok(cfg) => cfg,
         Err(e) => {
             warn!(
                 "lazy_reindex: failed to load clyde config, skipping the incremental refresh so a \
                  default repo-root cannot persist wrong attribution; querying stored data only: {e}"
             );
+            return;
+        }
+    };
+    let repo_root = cfg.repo_root().to_path_buf();
+    // Through the shared resolver, which is what makes a configured `projects-dir` reach the lazy
+    // refresh at all. It previously read the platform default unconditionally, so on a host with
+    // `projects-dir` set, every `ls`/`search`/`enrich` silently reindexed the WRONG tree.
+    let projects_dir = match projects::resolve(None, &cfg) {
+        Ok(dir) => dir,
+        Err(e) => {
+            warn!("lazy_reindex: {e}; querying stored data only");
             return;
         }
     };

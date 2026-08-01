@@ -129,6 +129,8 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
     migrate_v11_activity(&tx)?;
     // v12: add `scope_version`. Its OWN step, never appended to v11's: see the function's doc.
     migrate_v12_scope(&tx)?;
+    // v13: the routing gate's six columns. Its OWN step, for the same reason v12 is.
+    migrate_v13_routing(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -422,6 +424,51 @@ fn migrate_v11_activity(conn: &Connection) -> Result<()> {
 fn migrate_v12_scope(conn: &Connection) -> Result<()> {
     debug!("migrate_v12_scope: add scope_version (column-add only, no reset)");
     ensure_column(conn, "sessions", "scope_version", "INTEGER")?;
+    Ok(())
+}
+
+/// Snapshot the on-disk DB to `<path>.pre-v13.bak` before the v13 migration's first run. Same
+/// contract and same one-shot guarantee as [`snapshot_before_v10`], gated on a PRE-migration
+/// `user_version` in `1..13`.
+pub(super) fn snapshot_before_v13(conn: &Connection, path: &Path) -> Result<()> {
+    snapshot_before(conn, path, 13)
+}
+
+/// Apply the schema v13 extension inside the caller's migration transaction: the six columns the
+/// routing gate needs.
+///
+/// | column | why |
+/// |---|---|
+/// | `repo_host` | Problem 2. A slug alone cannot be host-checked later, so the host is persisted |
+/// | `repo_probe` | Problem 1. The last CONCLUSIVE probe outcome and when: the negative evidence |
+/// | `scope_override` | the operator escape hatch, `work` or `personal`, when a rule gets it wrong |
+/// | `scope_override_reason` | REQUIRED on `--set`, so an override is never an unexplained flip |
+/// | `scope_override_by` | the actor, as `$USER@host`. Catalogs get merged across machines |
+/// | `scope_override_at` | when it was set |
+///
+/// **The actor column exists because review round 3 caught the doc promising an audit trail the
+/// schema could not hold.** The text said "stored with the setter and the timestamp" while the
+/// migration had no actor column at all.
+///
+/// **No backfill, for any of them, and that is a decision rather than an omission.** A backfill
+/// would have to run a LIVE probe against each row's cwd, which is exactly the retro-observation
+/// defect `repo_probe` exists to close: it would observe the world as it is TODAY and record the
+/// answer as if it were evidence about when the session ran. NULL is the correct reading for every
+/// existing row: `repo_probe IS NULL` means "no evidence of a flip", and `repo_host IS NULL` means
+/// "this row was indexed before clyde recorded hosts", which Phase 3 handles strip-only.
+///
+/// Column-add only, no invalidation: nothing about the efficiency or outcome blobs changed. Its own
+/// step rather than an addition to v12's, for the reason spelled out on [`migrate_v12_scope`]: a
+/// column appended to an already-applied step is never created on a host that ran the earlier
+/// version, and these phases ship as one release but land as separate commits.
+fn migrate_v13_routing(conn: &Connection) -> Result<()> {
+    debug!("migrate_v13_routing: add the routing-gate columns (column-add only, no backfill)");
+    ensure_column(conn, "sessions", "repo_host", "TEXT")?;
+    ensure_column(conn, "sessions", "repo_probe", "TEXT")?;
+    ensure_column(conn, "sessions", "scope_override", "TEXT")?;
+    ensure_column(conn, "sessions", "scope_override_reason", "TEXT")?;
+    ensure_column(conn, "sessions", "scope_override_by", "TEXT")?;
+    ensure_column(conn, "sessions", "scope_override_at", "TEXT")?;
     Ok(())
 }
 

@@ -108,14 +108,19 @@ impl OwnedEfficiency {
 /// second). That is what lets an ARCHIVED row be priced from its staged copy, which the previous
 /// whole-tree scan structurally could not do. Candidates with no bytes anywhere are counted in
 /// [`PersistStats::unrecoverable`] rather than silently vanishing from the total.
-pub fn reindex_efficiency(db: &Db, config: &EfficiencyConfig, repo_root: &Path) -> Result<PersistStats> {
+pub fn reindex_efficiency(
+    db: &Db,
+    config: &EfficiencyConfig,
+    repo_root: &Path,
+    work_remote_hosts: &[String],
+) -> Result<PersistStats> {
     debug!("reindex_efficiency: repo_root={}", repo_root.display());
     let candidates = db
         .sessions_missing_efficiency()
         .context("reindex_efficiency: failed to query sessions missing efficiency")?;
     debug!("reindex_efficiency: candidates={}", candidates.len());
 
-    let collected = collect_layouts(&candidates, config, repo_root)?;
+    let collected = collect_layouts(&candidates, config, repo_root, work_remote_hosts)?;
     let owned: Vec<OwnedEfficiency> = collected
         .sessions
         .iter()

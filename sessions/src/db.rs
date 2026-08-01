@@ -62,7 +62,16 @@ use crate::model::{
 ///    because [`migrate::migrate`] returns early once `user_version >= SCHEMA_VERSION`: a column
 ///    appended to an already-applied step is never created on a host that ran the earlier version.
 ///    See [`migrate::migrate_v12_scope`].
-const SCHEMA_VERSION: i64 = 12;
+/// v13 added the six columns the routing gate needs to STOP TRUSTING a live probe blindly:
+///    `repo_host` (the host an origin URL came from, so a later host-policy change can be applied
+///    without a live reprobe), `repo_probe` (the last CONCLUSIVE probe outcome and when, which is
+///    the NEGATIVE evidence that separates the Problem 1 leak from an ordinary first index), and
+///    four `scope_override*` columns (the operator escape hatch plus its audit trail: reason, actor
+///    as `$USER@host`, and timestamp). Column-add only, and deliberately NO BACKFILL for any of
+///    them: a backfill would have to probe LIVE, which is the retro-observation defect they exist to
+///    close. See [`migrate::migrate_v13_routing`] and
+///    `docs/design/2026-07-31-attribution-and-routing.md`.
+const SCHEMA_VERSION: i64 = 13;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -150,7 +159,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     outcome_json      TEXT,
     activity_at       TEXT,
     parse_version     INTEGER,
-    scope_version     INTEGER
+    scope_version     INTEGER,
+    repo_host             TEXT,
+    repo_probe            TEXT,
+    scope_override        TEXT,
+    scope_override_reason TEXT,
+    scope_override_by     TEXT,
+    scope_override_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(title, tags, summary);
@@ -290,6 +305,7 @@ impl Db {
             migrate::snapshot_before_v10(&conn, path).context("failed to snapshot the DB before the v10 migration")?;
             migrate::snapshot_before_v11(&conn, path).context("failed to snapshot the DB before the v11 migration")?;
             migrate::snapshot_before_v12(&conn, path).context("failed to snapshot the DB before the v12 migration")?;
+            migrate::snapshot_before_v13(&conn, path).context("failed to snapshot the DB before the v13 migration")?;
         }
         migrate::migrate(&conn).context("failed to migrate schema")?;
         Ok(Self { conn })
@@ -1309,6 +1325,13 @@ mod migrate;
 /// mirroring `catalog`/`query`/`repo`/`activity`.
 mod enrich;
 pub use enrich::ScopeEvidence;
+
+/// Schema v13's routing state: the conclusive-probe record (`Db::record_probe`, `Db::probe_of`,
+/// `Db::clear_probe`) and the operator scope override with its audit trail. Its own file rather than
+/// an addition to `repo`, because these columns answer "may this leave the machine", not "what repo
+/// was this in", and the design's central argument is that conflating the two is the defect.
+mod routing;
+pub use routing::{OVERRIDE_PERSONAL, OVERRIDE_WORK, RoutingSummary, ScopeOverride};
 
 /// Schema v11 parse-derived columns: the `(modified, parse_version)` skip key (`Db::skip_key_of`) and
 /// the narrow trigger-suppressed backfill write (`Db::set_parse_derived_many`). Split out for file-size

@@ -130,6 +130,25 @@ fn apply_chain(
     repos_touched: &std::collections::BTreeMap<String, u64>,
     repo_root: &Path,
 ) -> Result<()> {
+    // Record the NEGATIVE first, before anything is resolved. This is the observation the routing
+    // gate needs and the only thing that separates the Problem 1 leak (the session ran with no
+    // origin, a remote appeared later, a later probe succeeded) from an ordinary teammate whose
+    // remote was there all along. clyde always looks AFTER the session ran, so no timestamp
+    // comparison can tell those apart: only the earlier FAILED observation can.
+    //
+    // `Db::record_probe` writes only for a CONCLUSIVE outcome and refuses everything else, so a
+    // `safe.directory` refusal, a vanished drive, a blocked root, or a containment rejection records
+    // nothing and locks nothing out. `Resolver::probe` is memoized, so this shares the same pair of
+    // `git` invocations `resolve` below is about to use.
+    let outcome = resolver.probe(cwd);
+    db.record_probe(session_id, &outcome, Utc::now())?;
+    // Persist the HOST alongside, when the probe resolved one. Without it a later host-policy change
+    // could only be applied by a live reprobe, which is the retro-observation defect the probe record
+    // exists to close. Rows indexed before v13 keep a NULL host and are handled strip-only.
+    if let Some(host) = outcome.resolved_host() {
+        db.record_repo_host(session_id, host)?;
+    }
+
     let Some(resolved) = resolver.resolve(cwd, db, repos_touched, repo_root) else {
         return Ok(());
     };
