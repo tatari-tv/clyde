@@ -841,3 +841,95 @@ validate it in the population the criterion looked at.
 "already layout-agnostic, verified 2026-07-26"; every row was a cwd inside a work tree. The fifth row
 (the container ROOT, `fatal: this operation must be run in a work tree`, rc=128) is added, with
 Keegan's cost and a pointer to this design.
+
+## Phase 7: Rule 3 stops reading the layout
+
+### Design decisions
+
+- **`SharedResolver` is a new `Sync` sibling of `Resolver`** (`common/src/repo.rs`), not a change to
+  it. `efficiency::collect` prices sessions through rayon's `par_iter`, so the resolver it hands rule
+  3 must be shared by reference across threads and a `&mut Resolver` cannot be. The design does not
+  mention this; it says "memoized through `Resolver`'s existing per-path cache", which is not
+  reachable from a parallel iterator.
+- **The lock is held around the map only, never across the `git` spawn.** Two threads racing the same
+  uncached directory both probe and both insert the same answer: one wasted spawn, no wrong result.
+  Holding it across the subprocess would serialize the entire parallel pass, which is the house rule
+  about not holding a lock across blocking work.
+- **`build_session` takes `Option<&SharedResolver>` where it took `Option<&Path>`**, keeping the
+  original shape: the parameter is BOTH the outcome switch and rule 3's input, so asking for outcomes
+  without the means to bucket them stays inexpressible. `repo_root` left that call path entirely;
+  rule 4 still uses it, but rule 4 lives in `common::repo` and never came through here.
+- **ONE resolver for the whole pass**, created in `collect_layouts` rather than per session. Sessions
+  overlap heavily on directories, so a per-session memo would re-probe the same checkout once per
+  session instead of once per catalog.
+
+### Deviations
+
+- **The memo collapses per REPOSITORY, not per directory.** A successful probe seeds every ancestor up
+  to and including the first carrying a `.git` marker. Those are all inside the same repository by
+  construction of the walk, so rule 1 gives every one the identical answer, and stopping at the marker
+  means a submodule or nested checkout never inherits its parent's slug. This is the design's own
+  stated remedy ("if a full reindex regresses meaningfully the cache key moves to the git common
+  dir") reached more cheaply: the `.git` marker already identifies the repository, so no extra `git`
+  call is needed to find it. Measured below.
+
+- **Rule 3 now requires the edited file's parent directory to still EXIST.** The path parse it
+  replaces worked on strings and would bucket a checkout deleted years ago. The trade is deliberate
+  and it is this branch's thesis applied consistently: a slug parsed out of a vanished path is a
+  GUESS, and rule 4 is the rule permitted to guess (and is marked `path-guess` wherever it is
+  rendered). Rule 3 claims to report what a session actually edited. Asserted explicitly by
+  `union_repos_touched_needs_the_parent_to_still_exist` so it is a stated cost rather than a
+  discovery.
+
+### Tradeoffs
+
+- **The old `union_repos_touched_is_empty_off_the_configured_root` was INVERTED and renamed**, per the
+  design, so the assumption it encoded cannot quietly return. It asserted that a checkout outside
+  `repo-root` buckets to nothing; that WAS Problem 5.
+- **The `union` tests moved onto real checkouts.** They used to pass paths like
+  `/repos/tatari-tv/clyde/src/lib.rs` that never existed on disk, which is precisely the register's
+  complaint in miniature: they asserted a directory CONVENTION rather than a fact about a repository.
+  The cases that genuinely do not care about buckets (commits, PRs, MCP counts) use a resolver with
+  nothing behind it, named `no_slugs()` so the intent is visible.
+
+### Open questions
+
+- None.
+
+### Measured
+
+**A 96-second "regression" that did not exist, and the correction matters more than the number.**
+The first comparison was `~/.cargo/bin/clyde` (12.30 s) against `./target/debug/clyde` (106.11 s) and
+I read it as an 8.6x regression from this phase. It is a RELEASE binary against a DEBUG one. Two
+subsequent investigations chased it: a subprocess count (which showed only ~116 extra successful
+spawns, the rest being PATH-search failures) and a bisect across the phase commits, which finally
+gave it away by reporting Phase 1 alone at 103.67 s. Phase 1 changes no probing at all.
+
+Rebuilt in release, three runs each on fresh copies of the live 2,150-row catalog:
+
+```
+v0.22.0 (installed release):   11.87 s / 10.47 s / 10.32 s
+this branch (release):         10.43 s / 10.48 s / 10.47 s
+```
+
+No regression. The branch is marginally faster and noticeably more consistent.
+
+**The repository-wide collapse still earns its place, measured the same way:**
+
+```
+per-directory memo only:       13.21 s / 14.99 s
+repository-wide collapse:      10.43 s / 10.48 s
+```
+
+So the collapse is worth roughly 3-4 s of a 10 s reindex, which is real but a fraction of what the
+debug numbers implied. It stays, and this note records that it was originally justified by an
+artifact.
+
+Rule 3's probing costs almost nothing on its own: with `repos_touched` short-circuited to empty, the
+same debug binary ran 108.66 s against 111.93 s with it enabled. That measurement is in debug units
+and therefore only a ratio, but the ratio is the point: rule 3 is ~3% of the pass, not the cause of
+anything.
+
+**The lesson, since it cost three investigations: never compare a `cargo build` binary against a
+`cargo install` one.** The house rule about measuring rather than guessing does not help if the two
+things measured are not comparable.

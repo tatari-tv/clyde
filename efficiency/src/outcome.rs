@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+use common::repo::SharedResolver;
 use eyre::{Context, Result};
 use log::{debug, trace, warn};
 use serde::{Deserialize, Serialize};
@@ -145,17 +146,16 @@ struct Pending {
 /// outcome), because the catalog stores a non-NULL `outcome_json` for every reindexed session -- a
 /// stored empty object means "reindexed, no outcomes", distinct from a NULL "not yet reindexed".
 ///
-/// `repo_root` is the configured clone root ([`common::config::Config::repo_root`]), and it is the
-/// ONLY extra input: [`Outcomes::repos_touched`] is built by PURE path parsing of the edited-file
-/// set against the `<root>/<org>/<repo>` shape. No cwd, no catalog lookup, no `repo_paths` -- rule 2's
-/// learned map lives in SQLite and dragging it in here would make this function unusable without a
-/// database.
-pub fn union(files: &[FileOutcomes], repo_root: &Path) -> Outcomes {
-    debug!(
-        "outcome::union: files={} repo-root={}",
-        files.len(),
-        repo_root.display()
-    );
+/// `slugs` is the shared rule-1 memo [`Outcomes::repos_touched`] is built with. It replaces the
+/// `<root>/<org>/<repo>` path parse this used to do, and Problem 5 is why: `slug_under_root` needs an
+/// ORG LEVEL that most layouts do not have. `~/code/work/philo` has one component under the root and
+/// `~/git/tatari/philo` has two but the org slot reads `tatari`, so off-layout the bucket map was
+/// always empty and rule 3 abstained on every session.
+///
+/// Asking git instead makes rule 3 as layout-independent as rule 1 already is, which is the same fix
+/// applied to the same assumption in a second place.
+pub fn union(files: &[FileOutcomes], slugs: &SharedResolver) -> Outcomes {
+    debug!("outcome::union: files={}", files.len());
     let mut commits: BTreeSet<String> = BTreeSet::new();
     let mut prs: Vec<PrRef> = Vec::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
@@ -181,7 +181,7 @@ pub fn union(files: &[FileOutcomes], repo_root: &Path) -> Outcomes {
         lines_replaced += fo.lines_replaced;
     }
 
-    let repos_touched = repos_touched(&files_edited, repo_root);
+    let repos_touched = repos_touched(&files_edited, slugs);
     let outcomes = Outcomes {
         commits: commits.into_iter().collect(),
         prs,
@@ -209,16 +209,21 @@ pub fn union(files: &[FileOutcomes], repo_root: &Path) -> Outcomes {
     outcomes
 }
 
-/// Count the distinct edited files per `<org>/<repo>` slug, by pure path parsing against
-/// `repo_root`.
+/// Count the distinct edited files per `<org>/<repo>` slug, by ASKING GIT about each file's parent
+/// directory.
 ///
-/// The slug is read from the file's PARENT directory, not from the file path itself. That is what
-/// makes the depth requirement right: `<root>/<org>/<repo>/src/main.rs` and
-/// `<root>/<org>/<repo>/README.md` both yield `<org>/<repo>`, while a loose file sitting directly at
-/// `<root>/<org>/notes.txt` yields nothing (its parent has only one component under the root) rather
-/// than fabricating the slug `<org>/notes.txt`. A path outside `repo_root` contributes nothing at
-/// all, which is the fail-closed answer for scratchpad-only sessions.
-fn repos_touched(files_edited: &BTreeSet<String>, repo_root: &Path) -> BTreeMap<String, u64> {
+/// The slug comes from the file's PARENT, not the file path itself, which is unchanged and is what
+/// keeps the question sensible: every file in a checkout shares that checkout's remote.
+///
+/// **One `git` invocation per distinct DIRECTORY, not per file.** The memo is the whole reason this
+/// is affordable: a session editing 200 files across 12 directories costs 12 probes, and a reindex
+/// already spawns `git` once per session cwd. Sessions share directories heavily, and the memo is
+/// shared across the whole pass, so the real cost is one probe per distinct directory in the catalog.
+///
+/// A directory git cannot place contributes nothing, which is the same fail-closed answer the path
+/// parse gave for a scratchpad path outside the root. The difference is WHY: it is now "git says this
+/// is not a repo with a remote" rather than "this does not match one person's directory convention".
+fn repos_touched(files_edited: &BTreeSet<String>, slugs: &SharedResolver) -> BTreeMap<String, u64> {
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     for path in files_edited {
         let path = Path::new(path);
@@ -226,13 +231,13 @@ fn repos_touched(files_edited: &BTreeSet<String>, repo_root: &Path) -> BTreeMap<
             trace!("outcome::repos_touched: {} has no parent; skipped", path.display());
             continue;
         };
-        match common::repo::slug_under_root(parent, repo_root) {
+        match slugs.detect(parent) {
             Some(slug) => {
                 trace!("outcome::repos_touched: {} -> {slug}", path.display());
                 *counts.entry(slug).or_default() += 1;
             }
             None => trace!(
-                "outcome::repos_touched: {} is not under the repo root; skipped",
+                "outcome::repos_touched: git could not place {}; skipped",
                 path.display()
             ),
         }
