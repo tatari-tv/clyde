@@ -123,39 +123,19 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         // unchanged and still wins outright, and widening only ever fires where the cwd answer is
         // "unclassifiable", never where it is "personal by a positive signal".
         let evidence = db.scope_evidence(&rec.session_id)?;
-        // Register item 6. `RepoSource::from_str` raises LOUDLY on purpose: a silently-dropped
-        // provenance would let a rule-4 guess be rendered as an observation, and the whole point of
-        // the column is that provenance travels with the slug. `.ok()` threw that away, so a corrupt
-        // or forward-dated `repo_source` became a plain `None` here and the session quietly fell
-        // through to the touch set with no trace at all.
-        let repo_source = match rec.repo_source.as_deref().map(str::parse::<common::repo::RepoSource>) {
-            Some(Ok(source)) => Some(source),
-            Some(Err(e)) => {
-                warn!(
-                    "enrich::enrich: {} has an unreadable repo_source {:?}: {e}. Classifying WITHOUT \
-                     the remote signal, which is the fail-safe direction; run \
-                     `clyde session reindex --reresolve-repo --session {}` to rewrite it",
-                    rec.session_id, rec.repo_source, rec.session_id,
-                );
-                None
-            }
-            None => None,
-        };
-        let decision = session::classify_with_evidence(
-            rec.cwd.as_deref().map(std::path::Path::new),
+        // ONE classification step, shared with `Db::routing_summary` (`crate::routing`). It used to
+        // be inlined here, which meant `doctor` answered the same question with its own SQL and
+        // drifted the moment the classifier grew a precedence -- the defect P2 fixes. Register item
+        // 6's loud `repo_source` parse moved into `parse_repo_source` with it, unchanged in
+        // behavior: an unreadable value warns, names its remedy, and classifies WITHOUT the remote
+        // signal, which is the fail-safe direction.
+        let crate::routing::RowDecision { decision, repo_source } = crate::routing::classify_row(
+            &rec.session_id,
+            rec.cwd.as_deref(),
             rec.repo.as_deref(),
-            repo_source,
-            &evidence.repos_touched,
-            evidence.files_edited,
-            &session::RoutingFacts {
-                repo_probe: evidence.repo_probe.as_deref(),
-                scope_override: evidence.scope_override.as_deref(),
-                evidence_present: evidence.present,
-                // `None` when no host was recorded, which is every pre-v13 row, and it must stay
-                // `None` rather than becoming `Some(false)`: see `RoutingFacts::host_confers_work`
-                // for why a NULL host may never strip authority on its own.
-                host_confers_work: evidence.repo_host.as_deref().map(|h| hosts.confers_work(h)),
-            },
+            rec.repo_source.as_deref(),
+            &evidence,
+            &mut hosts,
         );
         let scope = decision.scope;
         // Register item 5's DISCLOSURE. The precedence is unchanged: the anchor decided, and it is

@@ -74,6 +74,85 @@ struct EvidenceRow {
     scope_override: Option<String>,
 }
 
+/// One catalog row's complete classifier input: the session's own metadata plus the four evidence
+/// columns. What [`Db::routing_rows`] yields, one per session.
+pub struct RoutingRow {
+    pub session_id: String,
+    pub cwd: Option<String>,
+    pub repo: Option<String>,
+    /// RAW, unparsed. `crate::routing::parse_repo_source` is the one place that reads it, so an
+    /// unreadable value warns exactly once per row and in exactly one voice.
+    pub repo_source: Option<String>,
+    row: EvidenceRow,
+}
+
+impl RoutingRow {
+    /// This row's [`ScopeEvidence`], parsing its `outcome_json` under the same degradation rules
+    /// [`Db::scope_evidence`] applies.
+    pub fn evidence(&self) -> ScopeEvidence {
+        evidence_from_row(&self.session_id, &self.row)
+    }
+}
+
+/// Turn the four raw evidence columns into a [`ScopeEvidence`].
+///
+/// The ONE parse, shared by [`Db::scope_evidence`] (one session) and [`Db::routing_rows`] (the whole
+/// catalog), so the enrich gate and `doctor` cannot read the same blob two different ways.
+///
+/// Never errors. An absent `outcome_json` means "not reindexed yet", which is a legitimate state,
+/// and the all-empty answer it yields makes the classifier fall through to `personal` -- the
+/// fail-safe direction. A MALFORMED blob is warned about rather than propagated, mirroring
+/// `Db::repos_touched`, so one corrupt row cannot abort an enrich pass or a `doctor` scan.
+///
+/// A malformed blob counts as NOT present: it is unreadable, so the row genuinely has no usable
+/// touch-set evidence, and treating it as settled would freeze a wrong answer behind a recorded
+/// `scope_version`. A reindex rewrites the blob and the row self-heals.
+fn evidence_from_row(session_id: &str, row: &EvidenceRow) -> ScopeEvidence {
+    // The routing state stands on its own: a row with no `outcome_json` yet can still carry a
+    // conclusive negative and an override, and BOTH must reach the classifier. Returning early on
+    // an absent blob without them would silently disarm the whole gate on exactly the
+    // never-fully-reindexed catalog it exists to protect.
+    let routing = ScopeEvidence {
+        repo_probe: row.repo_probe.clone(),
+        repo_host: row.repo_host.clone(),
+        scope_override: row.scope_override.clone(),
+        ..Default::default()
+    };
+    let Some(blob) = row.outcome_json.as_deref() else {
+        trace!("evidence_from_row: session_id={session_id} has no outcome_json");
+        return routing;
+    };
+    let value: serde_json::Value = match serde_json::from_str(blob) {
+        Ok(v) => v,
+        Err(e) => {
+            // The routing state is unaffected by a bad blob and is carried through regardless.
+            warn!("evidence_from_row: session_id={session_id} has an unparseable outcome_json: {e}");
+            return routing;
+        }
+    };
+    let repos_touched = match value.get(REPOS_TOUCHED_KEY) {
+        None => BTreeMap::new(),
+        Some(v) => serde_json::from_value(v.clone()).unwrap_or_else(|e| {
+            warn!("evidence_from_row: session_id={session_id} has a malformed {REPOS_TOUCHED_KEY}: {e}");
+            BTreeMap::new()
+        }),
+    };
+    let files_edited = value
+        .get(FILES_EDITED_KEY)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    trace!(
+        "evidence_from_row: session_id={session_id} repos={} files_edited={files_edited}",
+        repos_touched.len()
+    );
+    ScopeEvidence {
+        present: true,
+        repos_touched,
+        files_edited,
+        ..routing
+    }
+}
+
 impl Db {
     /// The repo evidence for one session, from its stored `outcome_json`, in ONE query and ONE parse.
     ///
@@ -107,62 +186,48 @@ impl Db {
                 },
             )
             .optional()?;
-        let Some(EvidenceRow {
-            outcome_json: blob,
-            repo_probe,
-            repo_host,
-            scope_override,
-        }) = row
-        else {
+        let Some(row) = row else {
             trace!("Db::scope_evidence: session_id={session_id} is absent from the catalog");
             return Ok(ScopeEvidence::default());
         };
-        // The routing state stands on its own: a row with no `outcome_json` yet can still carry a
-        // conclusive negative and an override, and BOTH must reach the classifier. Returning early on
-        // an absent blob without them would silently disarm the whole gate on exactly the
-        // never-fully-reindexed catalog it exists to protect.
-        let routing = ScopeEvidence {
-            repo_probe,
-            repo_host,
-            scope_override,
-            ..Default::default()
-        };
-        let Some(blob) = blob else {
-            trace!("Db::scope_evidence: session_id={session_id} has no outcome_json");
-            return Ok(routing);
-        };
-        let value: serde_json::Value = match serde_json::from_str(&blob) {
-            Ok(v) => v,
-            Err(e) => {
-                // A MALFORMED blob counts as NOT present: it is unreadable, so this row genuinely has
-                // no usable touch-set evidence, and treating it as settled would freeze a wrong answer
-                // behind a recorded `scope_version`. The routing state is unaffected by a bad blob and
-                // is carried through regardless.
-                warn!("Db::scope_evidence: session_id={session_id} has an unparseable outcome_json: {e}");
-                return Ok(routing);
-            }
-        };
-        let repos_touched = match value.get(REPOS_TOUCHED_KEY) {
-            None => BTreeMap::new(),
-            Some(v) => serde_json::from_value(v.clone()).unwrap_or_else(|e| {
-                warn!("Db::scope_evidence: session_id={session_id} has a malformed {REPOS_TOUCHED_KEY}: {e}");
-                BTreeMap::new()
-            }),
-        };
-        let files_edited = value
-            .get(FILES_EDITED_KEY)
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        trace!(
-            "Db::scope_evidence: session_id={session_id} repos={} files_edited={files_edited}",
-            repos_touched.len()
-        );
-        Ok(ScopeEvidence {
-            present: true,
-            repos_touched,
-            files_edited,
-            ..routing
-        })
+        Ok(evidence_from_row(session_id, &row))
+    }
+
+    /// Every row's classifier inputs in ONE scan: the session's own metadata plus its
+    /// [`ScopeEvidence`].
+    ///
+    /// The batch form of [`Self::scope_evidence`], added because `Db::routing_summary` classifies the
+    /// WHOLE catalog and calling the per-session form 2184 times would be 2184 queries. Both share
+    /// [`evidence_from_row`], so the blob parse and its degradation rules cannot diverge between
+    /// them -- which matters most for the malformed-blob case, where the per-session form's "warn and
+    /// count the row as evidence-absent" is exactly what keeps one corrupt row from aborting a scan.
+    ///
+    /// `doctor` is the command an operator runs when something is already broken; it is the last
+    /// place that may die on one bad row.
+    pub fn routing_rows(&self) -> Result<Vec<RoutingRow>> {
+        debug!("Db::routing_rows");
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, cwd, repo, repo_source, outcome_json, repo_probe, repo_host, scope_override \
+             FROM sessions",
+        )?;
+        let rows: Vec<RoutingRow> = stmt
+            .query_map([], |r| {
+                Ok(RoutingRow {
+                    session_id: r.get(0)?,
+                    cwd: r.get(1)?,
+                    repo: r.get(2)?,
+                    repo_source: r.get(3)?,
+                    row: EvidenceRow {
+                        outcome_json: r.get(4)?,
+                        repo_probe: r.get(5)?,
+                        repo_host: r.get(6)?,
+                        scope_override: r.get(7)?,
+                    },
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        debug!("Db::routing_rows: {} row(s)", rows.len());
+        Ok(rows)
     }
 
     /// Write a successful enrichment for `session_id` in one transaction: the `summary`, optional

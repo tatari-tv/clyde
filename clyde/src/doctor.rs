@@ -113,9 +113,10 @@ fn print_attribution(a: &Attribution) {
         );
     }
     if a.work_remote_hosts.is_empty() {
-        // An empty allowlist is fail-closed in `routing_summary`, so every recorded host counts as
-        // refused. Printing a blank line next to a large `host-refused` gives the operator the
-        // symptom with no cause.
+        // An empty allowlist is fail-closed at the GATE (`HostPolicy::confers_work` matches nothing,
+        // so every recorded host reads `Some(false)` and refuses a work slug), and `routing_summary`
+        // now runs that same policy. Printing a blank line next to a large `host-refused` decision
+        // count would give the operator the symptom with no cause.
         println!(
             "  work hosts:    {} {}",
             "none".red(),
@@ -130,32 +131,39 @@ fn print_attribution(a: &Attribution) {
         println!("    {source:<14} {n}");
     }
 
-    // Each line names the command that inspects or clears it. At 3am the count alone is not
-    // actionable; the count plus its remedy is.
+    // TWO groups, because these are two different kinds of claim and printing them as one list is
+    // what made `probe-refused` read as 326 refusals when the number of decisions a probe refusal
+    // made was 0. A DECISION count says "this is what decided the row"; a CONDITION count says "this
+    // fact is present on the row, and it decided nothing on its own".
     let r = &a.routing;
-    println!("  routing:");
-    // Each line carries its own REMEDY. At 3am a count is not actionable on its own, and the six
-    // counts have six different fixes: that is why they are six counts and not one.
+
+    // Decisions, in the classifier's own precedence order, so the list reads top-down the way a
+    // decision is actually made. Each count comes from running the classifier over the catalog, so
+    // it cannot drift from the enrich gate. The group SUMS to the catalog row count.
+    println!("  routing decisions:");
+    for (label, n, remedy) in r.basis_counts() {
+        println!("    {label:<14} {n:<6} {}", remedy.dimmed());
+    }
+    println!(
+        "    {:<14} {:<6} {}",
+        "(total)",
+        r.decisions_total(),
+        "sums to the catalog row count; every row is decided by exactly one basis".dimmed()
+    );
+
+    // Conditions. Each line still carries its own REMEDY: at 3am a count is not actionable on its
+    // own, and these have different fixes, which is why they are separate counts and not one.
+    println!("  routing conditions:");
     for (label, n, remedy) in [
         (
-            "probe-refused",
-            r.probe_refused,
-            "a conclusive negative refuses a work slug; clear one with `session reindex --clear-probe --session <id>`",
-        ),
-        (
-            "host-refused",
-            r.host_refused,
-            "host not in work-remote-hosts (an ssh alias counts here, and IS resolved at the gate)",
+            "probe-recorded",
+            r.probe_recorded,
+            "rows carrying a conclusive negative; clear a stale one with `session reindex --clear-probe --session <id>`",
         ),
         (
             "host-unknown",
             r.host_unknown,
-            "indexed before v13; keeps its pre-v13 authority until a reprobe records a host",
-        ),
-        (
-            "overrides",
-            r.overrides,
-            "operator-set; read them with `session scope --list`",
+            "indexed before v13; keeps pre-v13 authority until a reprobe records a host",
         ),
         (
             "anchor/remote",
