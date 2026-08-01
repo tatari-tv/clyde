@@ -123,10 +123,28 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         // unchanged and still wins outright, and widening only ever fires where the cwd answer is
         // "unclassifiable", never where it is "personal by a positive signal".
         let evidence = db.scope_evidence(&rec.session_id)?;
+        // Register item 6. `RepoSource::from_str` raises LOUDLY on purpose: a silently-dropped
+        // provenance would let a rule-4 guess be rendered as an observation, and the whole point of
+        // the column is that provenance travels with the slug. `.ok()` threw that away, so a corrupt
+        // or forward-dated `repo_source` became a plain `None` here and the session quietly fell
+        // through to the touch set with no trace at all.
+        let repo_source = match rec.repo_source.as_deref().map(str::parse::<common::repo::RepoSource>) {
+            Some(Ok(source)) => Some(source),
+            Some(Err(e)) => {
+                warn!(
+                    "enrich::enrich: {} has an unreadable repo_source {:?}: {e}. Classifying WITHOUT \
+                     the remote signal, which is the fail-safe direction; run \
+                     `clyde session reindex --reresolve-repo --session {}` to rewrite it",
+                    rec.session_id, rec.repo_source, rec.session_id,
+                );
+                None
+            }
+            None => None,
+        };
         let decision = session::classify_with_evidence(
             rec.cwd.as_deref().map(std::path::Path::new),
             rec.repo.as_deref(),
-            rec.repo_source.as_deref().and_then(|s| s.parse().ok()),
+            repo_source,
             &evidence.repos_touched,
             evidence.files_edited,
             &session::RoutingFacts {
@@ -140,6 +158,24 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
             },
         );
         let scope = decision.scope;
+        // Register item 5's DISCLOSURE. The precedence is unchanged: the anchor decided, and it is
+        // right to have decided. But a work directory holding a personal remote is either an ordinary
+        // fork or a misfiled clone, and clyde cannot tell those apart, so the conflict is surfaced
+        // rather than resolved. `clyde doctor` counts these; this names the one that just happened.
+        if let (Some(cwd), Some(slug)) = (rec.cwd.as_deref(), rec.repo.as_deref())
+            && repo_source == Some(common::repo::RepoSource::GitOrigin)
+            && let Some(d) = session::anchor_disagrees_with_remote(std::path::Path::new(cwd), slug)
+        {
+            warn!(
+                "enrich::enrich: {} cwd anchor and remote DISAGREE: cwd {cwd} reads {} but origin slug \
+                 {slug} reads {}. Classified {} by the anchor, which is correct for a fork and a smell \
+                 for a misfiled clone; `clyde doctor` counts these",
+                rec.session_id,
+                d.anchor.as_str(),
+                d.remote.as_str(),
+                scope.as_str(),
+            );
+        }
         // Whether to record `SCOPE_VERSION`, straight from the classifier. This used to be re-derived
         // here as `!basis.reads_stored_evidence() || evidence.present`, and that formulation cannot
         // express v3: a git-origin decision reads no stored evidence at all, yet a git-origin PERSONAL

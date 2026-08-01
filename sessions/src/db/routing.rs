@@ -206,3 +206,20 @@ impl Db {
 
 #[cfg(test)]
 mod tests;
+
+impl Db {
+    /// Write a RAW `repo_source` string, bypassing [`common::repo::RepoSource`]'s vocabulary.
+    ///
+    /// Test-only, and gated so it cannot be called from production. It exists to model a row no
+    /// current writer can produce but that the reader must survive: a hand-edited catalog, or one
+    /// written by a FUTURE clyde that learned a fifth rule. Register item 6 is about reading such a
+    /// row loudly instead of silently.
+    #[cfg(test)]
+    pub fn set_raw_repo_source_for_test(&self, session_id: &str, raw: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET repo_source = ?2 WHERE session_id = ?1",
+            params![session_id, raw],
+        )?;
+        Ok(())
+    }
+}

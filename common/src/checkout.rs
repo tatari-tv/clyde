@@ -32,6 +32,8 @@ use tempfile::TempDir;
 /// notion of "work" is spelled; `session::scope::WORK_ORGS` is the production one and the two are
 /// deliberately separate, so a test cannot pass by sharing a constant with the code under test.
 const WORK_ORG: &str = "tatari-tv";
+/// The personal org the fork's mirror row is checked out under.
+const PERSONAL_ORG: &str = "scottidler";
 
 /// Run one `git` command inside the fixture, hermetically. Panics with the full stderr on failure,
 /// because a fixture that half-built is worse than one that did not build: the test that consumes it
@@ -133,6 +135,11 @@ pub struct Matrix {
     /// Row 18: a PERSONAL fork of a work repo, checked out in a work directory. The case that killed
     /// the precedence change (register item 5).
     pub fork_in_work_dir: PathBuf,
+    /// Row 18's MIRROR: a work remote checked out under a PERSONAL org directory. Needed because
+    /// `cwd_anchor_outranks_the_remote_in_both_directions` asserts the precedence in both
+    /// directions, and converting it off hand-built rows (register item 4) requires a real checkout
+    /// for each side.
+    pub work_remote_in_personal_dir: PathBuf,
     /// Row 19: a remote on a host that is not allowlisted. Problem 2.
     pub host_not_allowed: PathBuf,
     /// Row 20: a remote reached through an ssh `Host` alias. Problem 2's fix must not break this.
@@ -234,6 +241,10 @@ impl Matrix {
             &work.join("clyde-fork"),
             Some("git@github.com:scottidler/clyde-fork.git"),
         );
+        let work_remote_in_personal_dir = repo(
+            &mkdir(&repos.join(PERSONAL_ORG)).join("philo"),
+            Some("git@github.com:tatari-tv/philo.git"),
+        );
         // Rows 19 and 20 live OFF-layout, and that placement is the point rather than a detail.
         // Under `<repo-root>/tatari-tv/` the cwd anchor would place the session as work on its own
         // and the host gate would never be consulted, so a test there asserts nothing about
@@ -294,6 +305,7 @@ impl Matrix {
             layout_projects,
             layout_git_tatari,
             fork_in_work_dir,
+            work_remote_in_personal_dir,
             host_not_allowed,
             host_ssh_alias,
             hostile_submodule,

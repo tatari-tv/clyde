@@ -999,3 +999,130 @@ fn a_scope_override_beats_a_refusal_in_both_directions() {
     );
     assert_eq!(stats2.skipped_personal, 1);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Register items 5 and 6: the two disclosures. Both are LOG-ONLY behavior, so both need a captured
+// log to be assertable at all.
+// ---------------------------------------------------------------------------------------------
+
+/// A `log::Log` that appends every record to a shared buffer.
+///
+/// Needed because items 5 and 6 are pure DISCLOSURE: item 6's fix produces the same `None` the
+/// swallowing `.ok()` did, so the warning IS the entire observable difference. Without a captured
+/// log, "deleting the `warn!` fails a test" is not satisfiable, and the register's own complaint
+/// (a loud error silently discarded) would be re-introduced with no test to stop it.
+///
+/// Tests run concurrently in one binary and share this buffer, so every assertion filters by a
+/// needle unique to its own fixture rather than by position.
+struct Capture;
+
+static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
+impl log::Log for Capture {
+    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        if let Ok(mut buf) = CAPTURED.lock() {
+            buf.push(format!("{} {}", record.level(), record.args()));
+        }
+    }
+    fn flush(&self) {}
+}
+
+/// Install the capturing logger once per process, and return the lines matching `needle`.
+fn captured_containing(needle: &str) -> Vec<String> {
+    CAPTURE_INIT.call_once(|| {
+        // A failure here means another logger is already installed for this binary, which would make
+        // the assertions below silently vacuous. Nothing else in `sessions`' tests installs one.
+        log::set_boxed_logger(Box::new(Capture)).expect("no other logger is installed in this test binary");
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+    let buf = CAPTURED.lock().expect("capture buffer");
+    buf.iter().filter(|line| line.contains(needle)).cloned().collect()
+}
+
+/// **Register item 6.** `RepoSource::from_str` raises loudly on purpose, and `.ok()` threw that away,
+/// so a corrupt `repo_source` became a plain `None` and the session fell through to the touch set
+/// with no trace.
+///
+/// The fix produces the SAME classification, which is why the warning is the whole point: the row is
+/// still classified fail-safe, and now an operator can see that it happened and why.
+///
+/// BITES: restore `.ok()` in place of the match and no line is emitted, so this fails.
+#[test]
+fn an_unreadable_repo_source_warns_instead_of_being_swallowed() {
+    const SID: &str = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), SID, "some work content");
+    insert(&db, tmp.path(), SID, "/Users/stephen/code/work/philo", &parent);
+
+    // A provenance value no `RepoSource` spelling matches: a hand-edited row, or one written by a
+    // FUTURE clyde that learned a fifth rule. Both are real, and both must be loud.
+    {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        drop(conn);
+    }
+    db.upsert_repo(
+        SID,
+        &common::repo::Resolved {
+            repo: "tatari-tv/philo".into(),
+            source: common::repo::RepoSource::GitOrigin,
+        },
+    )
+    .unwrap();
+    set_raw_repo_source(&db, SID, "rule-five-from-the-future");
+
+    // Prime the logger before the run so the pass's own output is captured.
+    captured_containing("prime");
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    let lines = captured_containing(SID);
+    assert!(
+        lines.iter().any(|l| l.contains("unreadable repo_source")),
+        "an unreadable repo_source must WARN, not vanish. captured: {lines:?}"
+    );
+    assert_eq!(
+        stats.skipped_personal, 1,
+        "and it still classifies fail-safe without the remote signal: {stats:?}"
+    );
+}
+
+/// **Register item 5's disclosure.** The precedence is UNCHANGED and the anchor still decides; the
+/// conflict is surfaced rather than resolved, because a personal fork in a work directory and a
+/// misfiled personal clone are the same slug in the same place.
+///
+/// BITES: delete the `anchor_disagrees_with_remote` block in `enrich` and no line is emitted.
+#[test]
+fn a_cwd_anchor_disagreeing_with_the_remote_is_warned_and_still_decides() {
+    const SID: &str = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), SID, "work on a fork");
+    // A work directory holding a PERSONAL remote: the fork case that killed the precedence change.
+    insert(&db, tmp.path(), SID, WORK_CWD, &parent);
+    set_git_origin(&db, SID, "scottidler/clyde-fork");
+
+    captured_containing("prime");
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(
+        stats.enriched, 1,
+        "the fork must still be WORK by the cwd anchor: dropping it is the change that was withdrawn"
+    );
+    let lines = captured_containing(SID);
+    assert!(
+        lines.iter().any(|l| l.contains("DISAGREE")),
+        "the disagreement must be disclosed. captured: {lines:?}"
+    );
+}
+
+/// Write a `repo_source` the enum cannot parse, which no production writer can produce. Models a
+/// hand-edited row or one written by a future clyde with a fifth rule.
+fn set_raw_repo_source(db: &Db, session_id: &str, raw: &str) {
+    db.set_raw_repo_source_for_test(session_id, raw).unwrap();
+}

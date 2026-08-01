@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use common::checkout::Matrix;
+use std::path::Path;
 use std::path::PathBuf;
 
 fn classify_str(s: &str) -> Scope {
@@ -80,14 +82,22 @@ fn with_evidence(cwd: Option<&str>, pairs: &[(&str, u64)], files_edited: u64) ->
     classify_with_evidence(path.as_deref(), None, None, &touched(pairs), files_edited, &facts).scope
 }
 
-/// The same, with a repo attribution present. `source` is the stored `repo_source` spelling, parsed the
-/// way `sessions::enrich` parses it, so a typo'd variant name fails here rather than silently becoming
-/// `None` in production.
-fn with_repo(cwd: Option<&str>, repo: &str, source: &str, pairs: &[(&str, u64)], files_edited: u64) -> Decision {
-    with_repo_and_facts(
+/// Classify a session whose cwd is a REAL checkout in the shared matrix, with `repo`/`repo_source`
+/// produced by the ACTUAL rule-1 resolver.
+///
+/// **This replaces the deleted hand-built-row helper, and register item 4 is why.** That helper
+/// assembled a catalog row from three strings, so the test at `session/src/scope/tests.rs:277-289`
+/// (v0.22.0) could assert that a cwd of `/home/patrick` classifies work via
+/// `repo_source = "git-origin"`. Production can NEVER emit that row: `detect_with_blocked_roots`'s
+/// blocked set is `[$HOME]`, so a toplevel equal to `$HOME` is rejected, and if `$HOME` is not a repo
+/// the probe fails anyway. The test did not bite, and it inflated the measured win.
+///
+/// Driving the resolver makes that class of assertion impossible: a row that cannot be produced
+/// cannot be tested.
+fn classify_at(m: &Matrix, cwd: &Path, pairs: &[(&str, u64)], files_edited: u64) -> Decision {
+    classify_at_with_facts(
+        m,
         cwd,
-        repo,
-        source,
         pairs,
         files_edited,
         &RoutingFacts {
@@ -97,25 +107,54 @@ fn with_repo(cwd: Option<&str>, repo: &str, source: &str, pairs: &[(&str, u64)],
     )
 }
 
-/// The same, plus the v3 routing state: a recorded conclusive negative, an operator override, or
-/// whether the efficiency pass has reached the row.
-fn with_repo_and_facts(
-    cwd: Option<&str>,
-    repo: &str,
-    source: &str,
+/// [`classify_at`] plus the v3 routing state: a recorded conclusive negative, an operator override,
+/// or the host verdict.
+fn classify_at_with_facts(
+    m: &Matrix,
+    cwd: &Path,
     pairs: &[(&str, u64)],
     files_edited: u64,
     facts: &RoutingFacts<'_>,
 ) -> Decision {
-    let path = cwd.map(PathBuf::from);
+    let outcome = common::repo::detect_with_blocked_roots(cwd, &m.blocked());
+    // Rule 1 is the ONLY thing that produces `GitOrigin`, so the source is derived from whether the
+    // probe resolved rather than named by the test. A test cannot claim git-origin provenance for a
+    // cwd the resolver declined.
+    let source = outcome.resolved_slug().map(|_| RepoSource::GitOrigin);
+    classify_with_evidence(
+        Some(cwd),
+        outcome.resolved_slug(),
+        source,
+        &touched(pairs),
+        files_edited,
+        facts,
+    )
+}
+
+/// Classify a HAND-BUILT catalog row.
+///
+/// Legitimate for exactly two shapes, both of which the resolver can never emit and both of which are
+/// real states the classifier must survive:
+///
+/// - a CORRUPT stored slug (`sessions.repo` is a stored column; a hand-edited or truncated value has
+///   to fail closed rather than panic or widen)
+/// - a `repo_source` other than `git-origin`, which rules 2 through 4 write and rule 1 never does
+///
+/// Named for what it is, so the distinction from [`classify_at`] is visible at every call site rather
+/// than buried in a helper that looks the same for both.
+fn classify_stored(cwd: &str, repo: &str, source: &str, pairs: &[(&str, u64)], files_edited: u64) -> Decision {
+    let path = PathBuf::from(cwd);
     let parsed: RepoSource = source.parse().expect("the test names a real RepoSource spelling");
     classify_with_evidence(
-        path.as_deref(),
+        Some(&path),
         Some(repo),
         Some(parsed),
         &touched(pairs),
         files_edited,
-        facts,
+        &RoutingFacts {
+            evidence_present: true,
+            ..Default::default()
+        },
     )
 }
 
@@ -311,17 +350,53 @@ fn has_repos_anchor_detects_any_org_slot_not_just_work() {
 /// BITES: delete the `RepoSource::GitOrigin` branch and every Work row here flips to Personal.
 #[test]
 fn git_origin_classifies_every_real_world_layout() {
-    for cwd in [
-        "/Users/stephen/code/work/philo", // Stephen
-        "/Users/luke/Projects/philo",     // Luke
-        "/home/keegan/git/tatari/philo",  // Keegan: an org slot, but it reads `tatari`, not `tatari-tv`
-        "/home/patrick",                  // Patrick: no structure at all
-        "/Users/someone/wt/philo",        // a bare worktree root
+    let m = Matrix::build();
+    for (who, cwd) in [
+        ("Stephen, <home>/code/work", &m.layout_code_work),
+        ("Luke, <home>/Projects", &m.layout_projects),
+        (
+            "Keegan, <home>/git/tatari (an org slot, but it reads `tatari`)",
+            &m.layout_git_tatari,
+        ),
     ] {
-        let d = with_repo(Some(cwd), "tatari-tv/philo", "git-origin", &[], 0);
-        assert_eq!(d.scope, Scope::Work, "the remote must place a session run from {cwd}");
+        let d = classify_at(&m, cwd, &[], 0);
+        assert_eq!(d.scope, Scope::Work, "the remote must place a session run from {who}");
         assert_eq!(d.basis, Basis::GitOrigin);
     }
+}
+
+/// **Register item 4, corrected.** The fourth layout in the register's table is Patrick's bare `~`,
+/// and the old test asserted it classifies WORK via `repo_source = "git-origin"`. That row is
+/// impossible: rule 1's blocked set is `[$HOME]`, so a toplevel equal to `$HOME` is rejected, and a
+/// `$HOME` that is not a repo fails the probe anyway. The PR #82 body's claim that Patrick's layout
+/// was fixed is wrong, and this is the true expectation.
+///
+/// A `~` cwd stays PERSONAL, and it stays personal for the fail-safe reason: no signal can place it,
+/// so the default holds. Fixing Patrick's coverage needs a different mechanism, not this branch.
+///
+/// BITES: this is the assertion the old test had backwards, so any change that makes a bare `$HOME`
+/// confer work breaks it.
+#[test]
+fn a_home_cwd_stays_personal_because_no_signal_can_place_it() {
+    let m = Matrix::build();
+    let d = classify_at(&m, &m.home(), &[], 0);
+    assert_eq!(d.scope, Scope::Personal);
+    assert_eq!(
+        d.basis,
+        Basis::TouchSet,
+        "rule 1 declined, so nothing reached the git-origin branch at all"
+    );
+
+    // And it stays personal even when $HOME IS a git repo with a work remote, which is the dotfiles
+    // case the blocked-root guard exists for.
+    let m = Matrix::build();
+    m.make_home_a_repo();
+    let d = classify_at(&m, &m.home(), &[], 0);
+    assert_eq!(
+        d.scope,
+        Scope::Personal,
+        "a git-tracked $HOME must never be attributed, so it can never confer scope"
+    );
 }
 
 /// The branch is definitive in BOTH directions, and that is the safe choice.
@@ -334,19 +409,29 @@ fn git_origin_classifies_every_real_world_layout() {
 /// flips to Work.
 #[test]
 fn git_origin_refuses_a_personal_remote_and_outranks_the_touch_set() {
-    let d = with_repo(
-        Some("/Users/luke/Projects/claude"),
-        "scottidler/claude",
-        "git-origin",
-        &[],
-        0,
+    let m = Matrix::build();
+    // A real off-layout checkout whose origin is personal: the matrix's fork row, which carries
+    // `git@github.com:scottidler/clyde-fork.git`. Reached through its own path rather than the work
+    // directory it also sits in, so the git-origin branch is what decides.
+    let personal_remote = m.home().join("Projects").join("claude");
+    std::fs::create_dir_all(&personal_remote).expect("create dir");
+    let d = classify_at(&m, &m.fork_in_work_dir, &[], 0);
+    assert_eq!(
+        d.scope,
+        Scope::Work,
+        "the fork sits under the work org, so the CWD ANCHOR places it: that is register item 5"
     );
+    assert_eq!(d.basis, Basis::CwdAnchor);
+
+    // The git-origin branch itself, on a cwd with no anchor at all. Hand-built, because the matrix
+    // has no off-layout checkout with a personal remote and adding one would duplicate the fork.
+    let d = classify_stored("/Users/luke/Projects/claude", "scottidler/claude", "git-origin", &[], 0);
     assert_eq!(d.scope, Scope::Personal);
     assert_eq!(d.basis, Basis::GitOrigin);
 
     // A personal remote, and a touch set that WOULD satisfy unanimity + totality on its own.
-    let d = with_repo(
-        Some("/Users/luke/Projects/claude"),
+    let d = classify_stored(
+        "/Users/luke/Projects/claude",
         "scottidler/claude",
         "git-origin",
         &[("tatari-tv/philo", 2)],
@@ -370,13 +455,9 @@ fn git_origin_refuses_a_personal_remote_and_outranks_the_touch_set() {
 #[test]
 fn only_git_origin_confers_scope() {
     for source in ["known-path", "files-touched", "path-guess"] {
-        let d = with_repo(
-            Some("/Users/stephen/code/work/philo"),
-            "tatari-tv/philo",
-            source,
-            &[],
-            0,
-        );
+        // Hand-built on purpose: rule 1 never emits these sources, so there is no resolver output
+        // that could produce this row. That is exactly what `classify_stored` is for.
+        let d = classify_stored("/Users/stephen/code/work/philo", "tatari-tv/philo", source, &[], 0);
         assert_eq!(
             d.scope,
             Scope::Personal,
@@ -390,26 +471,19 @@ fn only_git_origin_confers_scope() {
 /// before the remote is consulted. The precedence in the doc comment is the precedence in the code.
 #[test]
 fn cwd_anchor_outranks_the_remote_in_both_directions() {
-    // Work anchor + personal remote -> Work by the anchor, unchanged from before this branch existed.
-    let d = with_repo(
-        Some("/home/saidler/repos/tatari-tv/clyde"),
-        "scottidler/claude",
-        "git-origin",
-        &[],
-        0,
-    );
+    let m = Matrix::build();
+
+    // Work anchor + PERSONAL remote -> Work by the anchor. A real checkout: the matrix's
+    // `<repo-root>/tatari-tv/clyde-fork`, whose origin is `scottidler/clyde-fork`. This is ordinary
+    // work, and it is the case that killed the proposed precedence change: making a personal remote
+    // refuse ahead of the anchor would silently drop it from enrichment.
+    let d = classify_at(&m, &m.fork_in_work_dir, &[], 0);
     assert_eq!(d.scope, Scope::Work);
     assert_eq!(d.basis, Basis::CwdAnchor);
 
-    // Personal anchor + work remote -> Personal by the anchor. This is the conservative placement: the
-    // remote never overturns a positive personal signal, matching the touch set's own restriction.
-    let d = with_repo(
-        Some("/home/saidler/repos/scottidler/claude"),
-        "tatari-tv/philo",
-        "git-origin",
-        &[],
-        0,
-    );
+    // Personal anchor + WORK remote -> Personal by the anchor. The conservative placement: the remote
+    // never overturns a positive personal signal, matching the touch set's own restriction.
+    let d = classify_at(&m, &m.work_remote_in_personal_dir, &[], 0);
     assert_eq!(d.scope, Scope::Personal);
     assert_eq!(d.basis, Basis::CwdAnchor);
 }
@@ -433,13 +507,9 @@ fn classify_with_evidence_reports_the_deciding_basis() {
     assert_eq!(d.scope, Scope::Personal, "no signal at all must stay fail-safe");
 
     // A malformed slug on an otherwise-trusted source fails closed rather than panicking or widening.
-    let d = with_repo(
-        Some("/Users/stephen/code/work/philo"),
-        "tatari-tv",
-        "git-origin",
-        &[],
-        0,
-    );
+    // Hand-built: `sessions.repo` is a STORED column, and `parse_slug` can never produce a slug with
+    // no repo segment, so this models a corrupt or hand-edited row rather than resolver output.
+    let d = classify_stored("/Users/stephen/code/work/philo", "tatari-tv", "git-origin", &[], 0);
     assert_eq!(
         d.scope,
         Scope::Personal,

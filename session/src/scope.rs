@@ -20,13 +20,28 @@
 //! `tatari-tv` (`~/repos/scottidler/tatari-tv`) or a scratchpad under `/tmp/tatari-tv/` is
 //! **personal** -- the safe direction.
 //!
-//! **That convention is one person's, and the path signal is only ever a proxy for the remote.**
-//! Measured 2026-07-31: four teammates run four different layouts (`~/code/work/<repo>`,
+//! **That convention is one person's, and the path signal cannot place a session that does not
+//! follow it.** Measured 2026-07-31: four teammates run four different layouts (`~/code/work/<repo>`,
 //! `~/Projects/<repo>`, `~/git/tatari/<repo>`, `~`), none of which has an org slot to read, and all
 //! four sat at 0% enrichment coverage with their reports' prose sections empty. The `git-origin`
-//! branch answers the same question authoritatively and without caring where the checkout lives, so
-//! the path walk is now the fallback rather than the whole story. A session that no signal can place
-//! is still `personal` -- that failure direction is unchanged and still the acceptable one.
+//! branch places those sessions without caring where the checkout lives.
+//!
+//! **The remote places sessions the path convention CANNOT. It does not outrank a positive path
+//! signal, and register item 5 is the correction to a comment that said otherwise.** The code has
+//! always consulted the cwd anchor first; the comments called the remote "authoritative", which
+//! reads as a general claim the code does not make. Keeping the precedence and fixing the words is
+//! the resolution, because the breaking case for inverting it is ordinary: a personal FORK of a work
+//! repo checked out in a work directory (`~/repos/tatari-tv/clyde-fork` with origin
+//! `git@github.com:scottidler/clyde-fork.git`) is WORK, the cwd anchor reads it correctly today, and
+//! a remote-first rule would silently drop it from enrichment.
+//!
+//! clyde cannot tell that fork from a personal clone parked under the work org, because the two are
+//! the same slug in the same directory. So it does not guess: when the anchor and a trusted remote
+//! DISAGREE, the disagreement is logged and counted (`clyde doctor`) rather than resolved by a rule
+//! that would be wrong half the time.
+//!
+//! A session that no signal can place is still `personal` -- that failure direction is unchanged and
+//! still the acceptable one.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -217,17 +232,25 @@ pub fn classify_with_evidence(
             settled: true,
         };
     }
-    // The git remote, which is the AUTHORITATIVE answer to the question the cwd anchor above only
-    // approximates: "what repo is this session's working directory in?". `RepoSource::GitOrigin` means
-    // clyde ran `git remote get-url origin` IN THE CWD and parsed `<org>/<repo>` out of it
-    // (`common::repo`, rule 1, rank 0), so it is a statement about this session's own directory and it
-    // does not care where on disk the checkout lives.
+    // The git remote, which places sessions the cwd anchor above CANNOT.
     //
-    // This is the fix for the `~/repos/<org>/<repo>` layout assumption. That convention is the
+    // **Not "authoritative", and register item 5 is the correction.** The comment here used to call
+    // the remote the authoritative answer, which reads as a general claim; the code has always run
+    // AFTER both cwd branches and therefore never outranked a positive path signal. Code and comment
+    // now agree, which is all item 5 asked for. Inverting the precedence instead was drafted and
+    // WITHDRAWN: it silently drops a personal fork of a work repo checked out in a work directory,
+    // which is ordinary work, and `cwd_anchor_outranks_the_remote_in_both_directions` asserts exactly
+    // that case.
+    //
+    // `RepoSource::GitOrigin` means clyde read this cwd's OWN git config and parsed `<org>/<repo>`
+    // out of its origin (`common::repo`, rule 1, rank 0), so it is a statement about this session's
+    // own directory and it does not care where on disk the checkout lives.
+    //
+    // That is the fix for the `~/repos/<org>/<repo>` layout assumption. The convention is the
     // maintainer's; measured 2026-07-31, four teammates run four different layouts
     // (`~/code/work/<repo>`, `~/Projects/<repo>`, `~/git/tatari/<repo>`, `~`) and NONE of them carries
     // an org slot a path walk could read, so all four sat at 0% enrichment coverage. The remote knows
-    // the org in every one of those layouts.
+    // the org in three of those four; the bare `~` is placeable by nothing and stays personal.
     //
     // DEFINITIVE IN BOTH DIRECTIONS, and gated on `GitOrigin` alone. A personal remote returns Personal
     // rather than falling through, which is strictly safer than today: it stops the touch-set path below
@@ -391,6 +414,36 @@ fn has_work_org(path: &Path) -> bool {
 fn has_repos_anchor(path: &Path) -> bool {
     let comps: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
     comps.windows(2).any(|w| w[0] == REPOS_ANCHOR)
+}
+
+/// Whether the cwd ANCHOR and a trusted REMOTE disagree about this session's scope.
+///
+/// Register item 5's disclosure. clyde does not resolve the disagreement, because it cannot: a
+/// personal fork of a work repo in a work directory is legitimate work, a personal clone parked under
+/// the work org is a smell, and the two are indistinguishable from the slug and the path alone.
+/// Guessing would be wrong half the time, so the honest move is to make the disagreement VISIBLE.
+///
+/// `None` when there is nothing to compare: no anchor to read, or no slug. Only an ANCHORED cwd can
+/// disagree, because an unanchored one expresses no opinion.
+pub fn anchor_disagrees_with_remote(cwd: &Path, slug: &str) -> Option<Disagreement> {
+    if !has_repos_anchor(cwd) {
+        return None;
+    }
+    let anchor = if has_work_org(cwd) { Scope::Work } else { Scope::Personal };
+    let remote = if is_work_slug(slug) { Scope::Work } else { Scope::Personal };
+    (anchor != remote).then_some(Disagreement { anchor, remote })
+}
+
+/// The two verdicts when [`anchor_disagrees_with_remote`] finds a conflict, so the caller logs and
+/// counts the DIRECTION rather than just the fact. The two directions mean different things: a work
+/// anchor with a personal remote is usually a fork, and a personal anchor with a work remote is
+/// usually a misfiled clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Disagreement {
+    /// What the cwd's `repos/<org>` anchor says. This is the one that DECIDES.
+    pub anchor: Scope,
+    /// What the remote's slug says.
+    pub remote: Scope,
 }
 
 /// True iff a `repos_touched` KEY names a work org. Its keys are `<org>/<repo>` attribution slugs

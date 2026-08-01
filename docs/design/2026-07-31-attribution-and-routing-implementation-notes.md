@@ -416,3 +416,79 @@ Recorded as a known-null result on the only catalog available, not as "no impact
 An earlier run of this comparison reported "1029 rows changed". That was a defect in the comparison
 script (a JSON list compared against a Python tuple), not in the code; the aggregate counts were
 identical on both sides, which is what caught it.
+
+## Phase 4: The honesty batch (register items 4, 5, 6)
+
+### Design decisions
+
+- **The hand-built-row helper is replaced by TWO helpers, not one** (`session/src/scope/tests.rs`).
+  `classify_at` drives the REAL rule-1 resolver over a matrix checkout and derives `repo_source` from
+  whether the probe resolved, so a test cannot claim git-origin provenance for a cwd the resolver
+  declined. `classify_stored` is the honest name for the remaining legitimate hand-built cases: a
+  CORRUPT stored slug, and a `repo_source` that rules 2 through 4 write and rule 1 never does. Both
+  are real states the classifier must survive; naming them differently is what keeps the distinction
+  visible at every call site instead of buried in one helper that looks the same for both.
+- **`anchor_disagrees_with_remote` returns a typed `Disagreement { anchor, remote }`**, not a bool.
+  The two directions mean different things to an operator: a work anchor with a personal remote is
+  usually a fork, a personal anchor with a work remote is usually a misfiled clone. A bool would make
+  Phase 8's count unactionable.
+- **A minimal `log::Log` capture was added to `sessions`' tests.** Items 5 and 6 are pure DISCLOSURE:
+  item 6's fix produces the same `None` the swallowing `.ok()` did, so the warning IS the entire
+  observable difference. Without a captured log, "deleting the `warn!` fails a test" is not
+  satisfiable, and the register's exact complaint (a loud error silently discarded) would come back
+  with no test to stop it. Tests share the buffer and filter by a needle unique to their own fixture.
+- **`Db::set_raw_repo_source_for_test` is `#[cfg(test)]`.** It writes a `repo_source` no production
+  writer can produce, which is precisely the row item 6 is about reading loudly. Gating it means it
+  cannot be reached from production at all.
+
+### Deviations
+
+- **AC5's grep tripped on a DOC COMMENT, not on a live helper.** After the conversion the only
+  remaining occurrence was a sentence explaining what had been removed and why. The comment was
+  reworded to cite the file:line the helper lived at (more precise than the identifier anyway) so
+  `rg -c 'with_repo' session/src/scope/tests.rs` exits 1 as the criterion requires. Recorded because
+  it is the criterion being satisfied by an edit to prose rather than to code, and a reader should
+  know that.
+- **One matrix row was ADDED that the design does not list**: `work_remote_in_personal_dir`, a work
+  remote checked out under a personal org directory. `cwd_anchor_outranks_the_remote_in_both
+  _directions` is the test the design says must STAY, and converting it off hand-built rows needs a
+  real checkout for each side of "both directions". The fork row covers one side; nothing covered the
+  other.
+
+### Tradeoffs
+
+- **`git_origin_classifies_every_real_world_layout` lost a row and gained a test.** It used to cover
+  four layouts including Patrick's bare `~`. Three are now driven from real fixtures; the fourth got
+  its own test, `a_home_cwd_stays_personal_because_no_signal_can_place_it`, because its expectation
+  is the OPPOSITE of what the old row asserted and burying that in a loop would hide the correction.
+- **Item 5 changed comments only, and the code is byte-identical.** That is the whole resolution: the
+  code always consulted the cwd anchor first, and the comments called the remote "authoritative",
+  which reads as a general claim the code does not make. Inverting the precedence was drafted and
+  withdrawn by the panel because it silently drops a personal fork of a work repo in a work
+  directory. Keeping the precedence and fixing the words is what item 5 actually asked for.
+
+### Open questions
+
+- None.
+
+### Measured
+
+**Register item 4, the impossible row.** The old assertion was that a cwd of `/home/patrick` with
+`repo_source = "git-origin"` classifies WORK. It is replaced by
+`a_home_cwd_stays_personal_because_no_signal_can_place_it`, which asserts the true expectation in
+both forms: a bare `~` (nothing can place it) and a git-tracked `$HOME` with a work remote (the
+blocked-root guard refuses to attribute it, so it can never confer scope). The PR #82 body's claim
+that Patrick's layout was fixed is wrong, and the test now says so.
+
+`rg -c 'with_repo' session/src/scope/tests.rs` exits 1 with no output. AC5 satisfied.
+
+**Items 5 and 6 both bite, verified by deletion:**
+
+- restore `.ok()` in place of the `repo_source` match ->
+  `an_unreadable_repo_source_warns_instead_of_being_swallowed` FAILED
+- delete the `anchor_disagrees_with_remote` block in `enrich` ->
+  `a_cwd_anchor_disagreeing_with_the_remote_is_warned_and_still_decides` FAILED
+
+The fork case still classifies WORK through the real gate in both the unit suite
+(`cwd_anchor_outranks_the_remote_in_both_directions`, now over a real checkout) and the integration
+suite (`matrix_row_18_the_fork_in_a_work_directory_stays_work_through_the_real_gate`).
