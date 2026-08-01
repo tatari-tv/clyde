@@ -933,3 +933,124 @@ anything.
 **The lesson, since it cost three investigations: never compare a `cargo build` binary against a
 `cargo install` one.** The house rule about measuring rather than guessing does not help if the two
 things measured are not comparable.
+
+## Phase 8: Disclose, and update the runbook
+
+### Design decisions
+
+- **`clyde doctor` gained a catalog, which it never had.** `run()` now takes the db path, and the
+  attribution section is READ-ONLY and deliberately does NOT feed `Report::healthy()`. A session
+  refused by the routing gate is the gate WORKING, and a diagnostic that exits non-zero for correct
+  behavior is one people stop running.
+- **Config and catalog are best-effort.** `doctor` exists to say what is wrong, so an unreadable
+  config or a missing catalog prints a line naming which one failed rather than aborting the whole
+  report.
+- **Every routing count carries its own REMEDY on the same line.** Six counts rather than one because
+  they have six different fixes; a count on its own is not actionable at 3am.
+- **`common::config::config_file_path` was made public** so `doctor` can name WHICH file it loaded. A
+  diagnostic that prints settings without naming their source leaves the reader guessing between a
+  forgotten config and the built-in defaults, which is the confusion register item 8 came from.
+- **The rule-4-inert line is a `note:`, not a failure.** Plenty of hosts have no `<org>/<repo>` layout,
+  but rule 4 silently never firing looks identical to rule 4 being broken.
+
+### Deviations
+
+- **`doctor` RE-PROBES to count `Blocked` / `OutsideRoot` / `Indeterminate`, rather than reading them
+  from the catalog.** It has to: those three outcomes record NOTHING by design, which is the property
+  that stops a transient failure becoming a lockout, so the catalog cannot distinguish them. A live
+  probe is legitimate here in a way it is not at the gate, because `doctor` asks about the machine as
+  it is NOW rather than about when a session ran. Memoized per repository, so it is a handful of
+  `git` calls.
+
+- **The runbook was NOT published.** It is a marquee post, so updating it is outward-facing and is
+  the owner's to send. The full diff is drafted at
+  `docs/design/2026-07-31-runbook-update-draft.md`, to publish with `marquee:replace` once the branch
+  is released.
+
+- **Register item 11's stash was NOT dropped**, as recorded under Phase 3. The register itself says
+  "if the stash is gone, nothing is lost", so the risk is low, but destroying work that exists on no
+  branch is the owner's call: `git stash drop stash@{0}`.
+
+### Open questions
+
+- None.
+
+### Measured
+
+**Two wrong `indeterminate` predicates, both caught by running the thing rather than reasoning about
+it.** The design asks for a counter so "a host where every probe is indeterminate" is visible. Getting
+it right took three attempts on the live catalog:
+
+```
+counting every non-git-origin row:            734   (counts everything rules 2-4 resolved)
++ an on-disk filter:                          399   (counts BLOCKED roots)
+live re-probe, split by actual outcome:   0 / 0 / 21 (blocked / outside-root / indeterminate)
+```
+
+The 399 was the instructive one: this maintainer's `$HOME` is itself a git repo, so every session
+directly under it resolves to a blocked root, correctly, and a predicate that cannot see the
+difference reports the gate working as if it were broken.
+
+**And the 21 turned out to be a real defect in `has_git_marker`, added back in Phase 2.** Git reports
+`fatal: not a git repository` for `/home/saidler/repos`, yet `/home/saidler/.git` exists. It is a
+plain directory containing only `info/` (the `info/exclude` global-ignore trick), so it is not a
+repository and git is right. `has_git_marker` tested only for `.git` EXISTENCE, so it saw a marker,
+downgraded 21 conclusive `NotARepo` answers to `Indeterminate`, and made `doctor` tell the operator to
+go check `safe.directory` for a problem that did not exist.
+
+A `.git` directory now has to carry `HEAD` to count; a `.git` FILE is a gitdir pointer and always
+counts. After the fix:
+
+```
+blocked 0 | outside-root 0 | indeterminate 0
+probe-refused 26 -> 370
+```
+
+**The 370 is the number to check before believing this is safe, and it was checked.** Those rows are
+cwds that genuinely are not repositories, so a conclusive negative is the correct record, and it will
+refuse a later git-origin work slug for exactly the reason Problem 1 exists. Re-running the routing
+decision against installed v0.22.0 on the live catalog:
+
+```
+this branch: considered 1044  would-enrich 26  (personal,false) 1017  (work,false) 1  (work,true) 26
+rows whose (scope, would-send) CHANGED vs v0.22.0: 0
+```
+
+Zero. `would-enrich` rises from 14 to 26 because Phase 6 newly attributes the container-root sessions,
+which is the coverage win rather than a routing change.
+
+**AC8, executed:**
+
+```
+$ clyde doctor | rg -i 'repo-root'
+  repo-root:     /home/saidler/repos
+$ echo $?
+0
+```
+
+One line, an absolute path, exit 0, and piping is safe because `clyde doctor` (`clyde/src/doctor.rs`)
+has no TTY branch. That is the distinction round 2 conflated: `clyde session doctor`'s `print_doctor`
+DOES switch to JSON when piped, and it is a different command.
+
+**The mutation gate still passes on the file Phases 6 to 8 changed most:** `common/src/repo.rs`, 100
+mutants, 35 caught, 65 unviable, 0 missed.
+
+### Out of scope, closed
+
+The `cost::cache` flake first reported in Phase 2 and root-caused in Phase 5 came back once more at
+the very end, in a DIFFERENT test (`cost::tests::resolve_stale_feed_offline_reads_the_sidecar_via_the
+_public_wrapper`), and the second failure showed the Phase 5 fix was only half of one.
+
+`cost/src/cache.rs` and `cost/src/tests.rs` each held their OWN module-level mutex, and both redirect
+`XDG_CACHE_HOME`. Two mutexes guarding one global serialize nothing against each other, which is
+exactly what `common/src/lib.rs` already documents:
+
+> ONE process-wide lock for every test in this crate that reads or mutates the process environment.
+> Deliberately crate-level rather than per-module.
+
+Consolidated onto a single `cost::ENV_LOCK`, following that existing pattern rather than inventing a
+third one. Five consecutive `cargo test -p cost` runs clean afterwards.
+
+Worth stating plainly, because it is the same lesson twice: the Phase 5 fix addressed the symptom I
+had measured (a shared cache DIRECTORY) and missed the general form (a shared PROCESS ENVIRONMENT
+with per-module locks). The house rule already had the general form written down.

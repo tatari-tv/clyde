@@ -1331,7 +1331,7 @@ pub use enrich::ScopeEvidence;
 /// an addition to `repo`, because these columns answer "may this leave the machine", not "what repo
 /// was this in", and the design's central argument is that conflating the two is the defect.
 mod routing;
-pub use routing::{OVERRIDE_PERSONAL, OVERRIDE_WORK, ScopeOverride};
+pub use routing::{OVERRIDE_PERSONAL, OVERRIDE_WORK, RoutingSummary, ScopeOverride};
 
 /// Schema v11 parse-derived columns: the `(modified, parse_version)` skip key (`Db::skip_key_of`) and
 /// the narrow trigger-suppressed backfill write (`Db::set_parse_derived_many`). Split out for file-size

@@ -2,7 +2,7 @@
 
 **Author:** Scott Idler
 **Date:** 2026-07-31
-**Status:** Approved, ready to build
+**Status:** Implemented (2026-07-31, branch `attribution-and-routing`)
 **Review Passes Completed:** 5/5 (draft, correctness, clarity, edge cases, excellence).
 **Review panel:** rounds 1 through 4 complete, 2026-07-31, Architect (Gemini) + Staff Engineer
 (Codex) in parallel. 36 findings, all dispositioned in "Review Panel: findings and disposition". 33
@@ -849,13 +849,41 @@ the backstop that catches the whole class mechanically.
       safe. It is a different command from `clyde session doctor`, whose `print_doctor`
       (`clyde/src/main.rs:1145`) does switch to JSON when piped. Round 2 conflated the two.
       `Observed on main:` no output, exit 1.
-- [ ] **AC11.** `cargo test -p common git_env_cannot_forge_an_attribution` reports `1 passed` over all
-      THREE vectors, and each defense is shown to bite on the vector it actually owns:
-      deleting `env_clear` fails the `GIT_DIR` case; deleting `--local` fails the
-      `GIT_CONFIG_*`-injection case and the hostile-`~/.gitconfig` case; reverting to
+- [ ] **AC11. AMENDED 2026-07-31 during implementation; the original is preserved below.** Five
+      named tests in `common::repo::tests`, and each defense shown to bite on the vector it actually
+      owns. `cargo test -p common -- git_dir_in_the_environment git_config_in_the_environment
+      a_hostile_home_gitconfig the_origin_primitive` reports `5 passed`, and the deletion matrix is:
+
+      | deletion | which test fails |
+      |---|---|
+      | `env_clear()` from `run_git` | `git_dir_in_the_environment_cannot_forge_an_attribution` |
+      | `--local` from `ORIGIN_ARGS` | `the_origin_primitive_reads_only_the_repos_own_config` |
+      | `git config` reverted to `git remote get-url` | `the_origin_primitive_does_not_apply_insteadof_rewriting` (+2) |
+      | forward `HOME` (with `--local` intact) | **nothing**, as finding 33 predicted |
+      | forward `HOME` AND drop `--local` | `a_hostile_home_gitconfig_cannot_forge_an_attribution` |
+
+      **Why the original could not be met, measured rather than argued.** It named ONE test and
+      required that deleting `--local` fail the `GIT_CONFIG_*`-injection and hostile-`~/.gitconfig`
+      cases. With `env_clear` in place the child never sees a `GIT_CONFIG_*` variable OR `HOME`, so
+      deleting `--local` breaks neither: executed, both still passed. The defenses are LAYERED, not
+      parallel, and a test routed through the module can only ever observe the outermost one. So
+      `--local` is pinned against `ORIGIN_ARGS` directly (the scope property it owns) and the
+      primitive change is pinned by an `insteadOf` rule in the repo's OWN config, which no
+      environment scrub can reach.
+
+      This is the same class of error as finding 33, which corrected the `HOME` row of the defense
+      table and left the identical over-claim standing here.
+
+      **A FOURTH vector was found while building these proofs and is now closed by the same primitive
+      change**: an `insteadOf` rule in a repo's own `--local` config rewrites a personal origin to a
+      work one with NO environment variable and NO hostile `~/.gitconfig`. It is the only vector where
+      the `git config` choice is the sole defense, and the vector table above credits `--local` and
+      `env_clear` with covering that row.
+
+      *Original text:* `cargo test -p common git_env_cannot_forge_an_attribution` reports `1 passed`
+      over all THREE vectors, deleting `env_clear` fails the `GIT_DIR` case, deleting `--local` fails
+      the `GIT_CONFIG_*`-injection case and the hostile-`~/.gitconfig` case, and reverting to
       `git remote get-url` fails the `insteadOf` case.
-      Do NOT assert that dropping `HOME` independently fails: with `--local` present it does not, and
-      an earlier version of this AC demanded a failure that measurement shows will not happen.
       `Observed on main:` does not exist. `run_git` (`common/src/repo.rs:400-406`) inherits the
       environment and rule 1 uses `git remote get-url origin` (`:257`). Measured, all three forges
       succeed on `main`:
@@ -917,6 +945,40 @@ or Calvin). Neither gates the merge; both gate the claim.
   section was written to warn about.
 - **2026-07-31, register item 11's stash is discarded, not applied.** Its reasoning is weaker than
   item 2's and its framing is wrong.
+
+## Addendum: corrections found during implementation
+
+Recorded here rather than by editing the claims in place, so the road not taken stays visible. Every
+one was found by RUNNING something, and each is measured in
+`docs/design/2026-07-31-attribution-and-routing-implementation-notes.md`.
+
+- **AC11's deletion pairings were unmeetable.** Amended above, with the matrix that replaces them.
+  Same class as the panel's finding 33, in a spot finding 33 did not sweep.
+- **A FOURTH forgery vector.** An `insteadOf` rule in a repo's OWN `--local` config rewrites a
+  personal origin to a work one with no environment variable and no hostile `~/.gitconfig`. Closed by
+  the `git config` primitive, which is its only defense.
+- **The `common == cwd` guard needed `--is-bare-repository`.** For a cwd inside a NON-bare repo's
+  `.git`, git also reports `.`, so rooting at the cwd unconditionally puts the root at `<repo>/.git`
+  and the blocked check misses `$HOME`. This design's fallback would have INTRODUCED that hole; the
+  old code could not reach it.
+- **`has_git_marker` must validate the marker, not just its existence.** `/home/saidler/.git` is a
+  plain directory holding only `info/`, so git correctly reports "not a git repository" beneath it. A
+  bare `.exists()` downgraded 21 conclusive answers to `Indeterminate` and made `doctor` blame
+  `safe.directory`. A `.git` directory now has to carry `HEAD`.
+- **"Problem 4 is invisible on desk.lan" is too strong.** The three containers this doc counts carry
+  0, 1 and 1 sessions. Seven OTHERS carry 101 between them, two of those under `tatari-tv`. The Phase
+  6 criterion still holds exactly as written (0 sessions move from UNRESOLVED, because rule 4 masks a
+  container under `<repo-root>/<org>/<repo>`): what was lost was PROVENANCE, not coverage.
+- **The blast radius of the `parse_slug` signature change is smaller than stated.** `rg -n 'parse_slug'`
+  finds one production call site, not the four the API Design section lists; `session/src/scope.rs`
+  and `efficiency/src/outcome.rs` consume a stored slug and never call it.
+- **Rule 3 now needs the edited file's parent directory to still exist.** Not named as a cost in
+  Phase 7. The path parse it replaces would bucket a checkout deleted years ago; a slug from a
+  vanished path is a guess, which is rule 4's job.
+- **`Resolver`'s per-path cache is not reachable from Phase 7's caller.** `efficiency::collect` uses
+  rayon's `par_iter`, so a `Sync` sibling (`SharedResolver`) was needed. Its memo collapses per
+  REPOSITORY rather than per directory, which is this doc's own "cache key moves to the git common
+  dir" remedy reached without an extra `git` call.
 
 ## Review Panel: findings and disposition
 

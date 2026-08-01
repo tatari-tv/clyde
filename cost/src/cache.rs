@@ -282,7 +282,7 @@ mod tests {
     /// The mutex alone fixes only the first. `cache_dir()` resolves through `dirs::cache_dir()`,
     /// which honors `$XDG_CACHE_HOME`, so pointing that at a per-test `TempDir` is what fixes the
     /// second and keeps the suite off the operator's real cache entirely.
-    static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::ENV_LOCK as CACHE_LOCK;
 
     /// Hold the lock and redirect `cache_dir()` into a fresh `TempDir` for the duration.
     ///

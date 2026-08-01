@@ -595,6 +595,15 @@ fn load_from(path: &std::path::Path) -> Result<Config> {
     serde_yaml::from_str(&text).with_context(|| format!("failed to parse config {}", path.display()))
 }
 
+/// The resolved path to `clyde.yml`, whether or not it exists.
+///
+/// Public so `clyde doctor` can report WHICH file it loaded. A diagnostic that prints settings
+/// without naming their source leaves the operator guessing between a config they forgot about and
+/// the built-in defaults, which is the exact confusion register item 8 came from.
+pub fn config_file_path() -> Option<PathBuf> {
+    config_path()
+}
+
 /// Path to `clyde.yml`: `<xdg-config>/clyde/clyde.yml`.
 fn config_path() -> Option<PathBuf> {
     xdg_config_dir().map(|d| d.join(PROJECT).join(format!("{PROJECT}.yml")))

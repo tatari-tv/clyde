@@ -20,7 +20,10 @@ pub mod since;
 pub mod stage;
 pub mod transcript;
 
-pub use db::{Db, EfficiencyWrite, EnrichSuccess, OVERRIDE_PERSONAL, OVERRIDE_WORK, ScopeOverride, SkipKey, Upsert};
+pub use db::{
+    Db, EfficiencyWrite, EnrichSuccess, OVERRIDE_PERSONAL, OVERRIDE_WORK, RoutingSummary, ScopeOverride, SkipKey,
+    Upsert,
+};
 pub use enrich::{EnrichOptions, enrich};
 pub use export::{
     EXPORT_SCHEMA_VERSION, EnrichStatus, ExportBody, ExportBodyMessage, ExportContext, ExportEnvelope, ExportFilters,

@@ -1056,5 +1056,15 @@ fn dispatch(args: &CostArgs, config: &Config, pricing: &Pricing) -> Result<()> {
 
 #[cfg(test)]
 mod oracle;
+/// ONE process-wide lock for every test in this crate that reads or mutates the process
+/// environment. Deliberately crate-level rather than per-module, for the reason
+/// `common/src/lib.rs` spells out: `set_var`/`remove_var` mutate the whole environ block, so two
+/// modules each holding their OWN mutex do not serialize against each other at all.
+///
+/// That was not hypothetical here. `cache`'s tests and `tests`'s both redirect `XDG_CACHE_HOME`, and
+/// with a mutex each they raced and failed intermittently under load.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests;

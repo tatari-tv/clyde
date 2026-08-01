@@ -202,7 +202,10 @@ fn run(cli: Cli) -> Result<()> {
         Command::Efficiency(args) => dispatch_tool(efficiency::run(args, globals), debug),
         // clyde-native migration/health commands.
         Command::Bootstrap(args) => bootstrap::run(&args),
-        Command::Doctor => std::process::exit(doctor::run()?),
+        Command::Doctor => {
+            let db_path = cli.db.clone().unwrap_or_else(session::paths::sessions_db_path);
+            std::process::exit(doctor::run(&db_path)?)
+        }
         // Handled by early intercepts in `main`, which exit the process.
         Command::Update(_) => unreachable!("Update is intercepted before this dispatch"),
         Command::Mcp(_) => unreachable!("Mcp is intercepted before this dispatch"),

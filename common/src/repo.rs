@@ -315,7 +315,7 @@ fn repo_local_ancestors(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for ancestor in dir.ancestors() {
         out.push(ancestor.to_path_buf());
-        if ancestor.join(".git").exists() {
+        if is_git_marker(&ancestor.join(".git")) {
             break;
         }
     }
@@ -576,7 +576,25 @@ fn no_work_tree_root(cwd: &Path) -> Result<PathBuf, ProbeOutcome> {
 /// more re-probe; over-recording is a permanent refusal of work scope. The asymmetry is the whole
 /// reason the enum exists, so the conservative direction is the correct one here.
 fn has_git_marker(cwd: &Path) -> bool {
-    cwd.ancestors().any(|dir| dir.join(".git").exists())
+    cwd.ancestors().any(|dir| is_git_marker(&dir.join(".git")))
+}
+
+/// Whether `path` is a git marker git would actually USE, rather than merely a `.git` entry.
+///
+/// **Existence alone is not enough, and a live host proved it.** `/home/saidler/.git` is a plain
+/// directory containing only `info/` (the `info/exclude` global-ignore trick), and git correctly
+/// reports `fatal: not a git repository` for every directory under it. Testing only for existence
+/// made `has_git_marker` return true there, which downgraded 21 conclusive `NotARepo` answers to
+/// `Indeterminate` on this catalog and made `clyde doctor` tell the operator to go check
+/// `safe.directory` for a problem that does not exist.
+///
+/// A `.git` FILE is a gitdir pointer and always counts. A `.git` DIRECTORY has to carry `HEAD`,
+/// which every real git dir does and a stray one does not.
+fn is_git_marker(path: &Path) -> bool {
+    if path.is_file() {
+        return true;
+    }
+    path.join("HEAD").exists()
 }
 
 /// The origin read, and the arms it maps to. Measured against git 2.53.0, so the implementer does

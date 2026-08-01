@@ -1028,3 +1028,42 @@ fn detect_resolves_a_symlinked_cwd() {
         "a symlink-reached cwd must resolve; the toplevel is canonical and the cwd is not"
     );
 }
+
+/// A `.git` DIRECTORY that carries no `HEAD` is not a repository, and git says so. Testing only for
+/// existence made a stray one downgrade a conclusive `NotARepo` to `Indeterminate`.
+///
+/// Found on a live host: `~/.git` there is a plain directory holding only `info/` (the
+/// `info/exclude` global-ignore trick), and it turned 21 conclusive answers into a `clyde doctor`
+/// line telling the operator to go check `safe.directory` for a problem that did not exist.
+///
+/// BITES: revert `has_git_marker` to a bare `.exists()` and this reports `Indeterminate`.
+#[test]
+fn a_git_directory_with_no_head_is_not_a_marker() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().canonicalize().unwrap();
+    assert!(
+        !real.ancestors().any(|d| d.join(".git").exists()),
+        "this test needs a temp root outside any git repository"
+    );
+
+    // The stray shape: a `.git` directory with only `info/` inside.
+    std::fs::create_dir_all(real.join(".git").join("info")).unwrap();
+    let under = real.join("some").join("workdir");
+    std::fs::create_dir_all(&under).unwrap();
+
+    let outcome = detect_with_blocked_roots(&under, &[]);
+    assert_eq!(
+        outcome,
+        ProbeOutcome::NotARepo,
+        "git reports `not a git repository` here, so clyde must agree and record it"
+    );
+    assert!(outcome.is_conclusive_negative());
+
+    // And the real shape still counts: a `.git` dir WITH a HEAD suppresses the conclusive answer,
+    // because a repository genuinely is present even if git could not use it.
+    std::fs::write(real.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    assert!(
+        !detect_with_blocked_roots(&under, &[]).is_conclusive_negative(),
+        "a real git dir above the cwd must still suppress the conclusive answer"
+    );
+}

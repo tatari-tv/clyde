@@ -223,3 +223,125 @@ impl Db {
         Ok(())
     }
 }
+
+/// The routing counts `clyde doctor` reports.
+///
+/// Six numbers rather than one, because at 3am an operator has to tell the refusals APART and one
+/// timestamp cannot. Each has a different remedy, which is the whole reason they are separate
+/// fields: a probe refusal is cleared with `session reindex --clear-probe`, a host refusal is fixed
+/// by adding the host to `work-remote-hosts`, a NULL host resolves itself on the next reprobe, an
+/// override is a human decision to go read, and a wall of indeterminate probes is a `safe.directory`
+/// or missing-git problem on the whole machine.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoutingSummary {
+    /// Rows carrying a recorded conclusive negative, which refuses a later git-origin work slug.
+    pub probe_refused: usize,
+    /// Rows whose recorded host is NOT in `work-remote-hosts`.
+    pub host_refused: usize,
+    /// Rows with a NULL `repo_host`: indexed before v13, so they keep pre-v13 authority (strip-only).
+    pub host_unknown: usize,
+    /// Rows carrying an operator override.
+    pub overrides: usize,
+    /// Rows where the cwd anchor and a git-origin slug DISAGREE. Legitimate for a fork, a smell for
+    /// a misfiled clone, and clyde cannot tell them apart, so it counts them instead of guessing.
+    pub anchor_remote_disagreement: usize,
+    /// Session cwds that are still on disk and which rule 1 did not resolve and did not conclusively
+    /// refuse. The candidate set for a LIVE re-probe, not an answer on its own.
+    ///
+    /// The catalog cannot answer "how many probes came back indeterminate", and deliberately so:
+    /// `Blocked`, `OutsideRoot` and `Indeterminate` all record NOTHING, which is the property that
+    /// keeps a transient failure from becoming a lockout. So the count has to be taken live, and
+    /// `clyde doctor` is the right place for that: it is a diagnostic about the machine as it is
+    /// NOW, not a routing decision about when a session ran.
+    ///
+    /// Two wrong predicates preceded this, both measured on the live catalog and both discarded:
+    /// counting every non-git-origin row reported 734 on a host with no git problem (it counts
+    /// everything rules 2 to 4 resolved), and adding an on-disk filter reported 399 (it counts
+    /// BLOCKED roots, and this maintainer's `$HOME` is itself a git repo, so every session directly
+    /// under it lands there correctly).
+    pub reprobe_candidates: Vec<String>,
+    /// Resolution counts per rule, best-first, plus the unresolved tail.
+    pub by_source: Vec<(String, usize)>,
+}
+
+impl Db {
+    /// The DISTINCT cwds still on disk that rule 1 neither resolved nor conclusively refused.
+    ///
+    /// Distinct, because the caller re-probes each one and many sessions share a directory. Still on
+    /// disk, because a row rule 1 did not resolve is unremarkable when its checkout is gone (that is
+    /// what rules 2 to 4 are for) and only interesting when the directory is sitting right there.
+    fn reprobe_candidates(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT cwd FROM sessions WHERE cwd IS NOT NULL AND repo_probe IS NULL \
+             AND (repo_source IS NULL OR repo_source != 'git-origin')",
+        )?;
+        let cwds: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let on_disk: Vec<String> = cwds
+            .into_iter()
+            .filter(|cwd| std::path::Path::new(cwd).is_dir())
+            .collect();
+        debug!("Db::reprobe_candidates: {} distinct cwds still on disk", on_disk.len());
+        Ok(on_disk)
+    }
+
+    /// The routing picture for `clyde doctor`.
+    ///
+    /// `work_remote_hosts` is passed in rather than read here, because the ALLOWLIST is config and
+    /// `sessions` does not load config. Alias resolution is deliberately NOT applied: `doctor` is a
+    /// read-only diagnostic and must not spawn `ssh` per host, so a row whose host is an SSH alias
+    /// counts as host-refused here and is not one at the gate. The line names that.
+    pub fn routing_summary(&self, work_remote_hosts: &[String]) -> Result<RoutingSummary> {
+        debug!("Db::routing_summary: allowlist={work_remote_hosts:?}");
+        let count = |sql: &str| -> Result<usize> {
+            let n: i64 = self.conn.query_row(sql, [], |r| r.get(0))?;
+            Ok(n as usize)
+        };
+
+        let mut by_source = Vec::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT COALESCE(repo_source, '(unresolved)'), COUNT(*) FROM sessions \
+             GROUP BY 1 ORDER BY repo_rank",
+        )?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize)))? {
+            by_source.push(row?);
+        }
+
+        // The host check is a literal comparison against the allowlist, done in SQL so `doctor` stays
+        // one pass over the table. An empty allowlist would make the `NOT IN ()` degenerate, so it is
+        // guarded: with nothing allowlisted every recorded host is refused, which is the honest
+        // reading and matches the gate's own fail-closed direction.
+        let host_refused = if work_remote_hosts.is_empty() {
+            count("SELECT COUNT(*) FROM sessions WHERE repo_host IS NOT NULL")?
+        } else {
+            let list = work_remote_hosts
+                .iter()
+                .map(|h| format!("'{}'", h.to_ascii_lowercase().replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(",");
+            count(&format!(
+                "SELECT COUNT(*) FROM sessions WHERE repo_host IS NOT NULL AND LOWER(repo_host) NOT IN ({list})"
+            ))?
+        };
+
+        Ok(RoutingSummary {
+            probe_refused: count("SELECT COUNT(*) FROM sessions WHERE repo_probe IS NOT NULL")?,
+            host_refused,
+            host_unknown: count(
+                "SELECT COUNT(*) FROM sessions WHERE repo_host IS NULL AND repo_source = 'git-origin'",
+            )?,
+            overrides: count("SELECT COUNT(*) FROM sessions WHERE scope_override IS NOT NULL")?,
+            // The disagreement predicate mirrors `session::has_work_org`: the org is the component
+            // immediately after a `repos` component, which SQLite can express as a LIKE against the
+            // anchored shape. Only git-origin rows can disagree, because only they carry a remote.
+            anchor_remote_disagreement: count(
+                "SELECT COUNT(*) FROM sessions WHERE repo_source = 'git-origin' AND cwd IS NOT NULL \
+                 AND repo IS NOT NULL AND ( \
+                   (cwd LIKE '%/repos/tatari-tv/%' AND repo NOT LIKE 'tatari-tv/%') \
+                   OR (cwd LIKE '%/repos/%' AND cwd NOT LIKE '%/repos/tatari-tv/%' \
+                       AND repo LIKE 'tatari-tv/%') )",
+            )?,
+            reprobe_candidates: self.reprobe_candidates()?,
+            by_source,
+        })
+    }
+}

@@ -210,7 +210,7 @@ fn resolve_current_none_when_no_sessions() {
 }
 
 // Serialize env-var-touching tests (XDG_DATA_HOME) so parallel runs can't race.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use crate::ENV_LOCK;
 
 #[test]
 fn log_file_path_resolves_under_unified_clyde_logs_dir() {
