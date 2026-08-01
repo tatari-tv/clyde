@@ -314,10 +314,34 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
     // `outcome_json` parse per row on the bulk paged endpoint whose whole point is being cheap, and
     // it would make export a THIRD site re-implementing the routing decision. Reading what the gate
     // already decided is the decomposition that cannot drift.
-    let scope = raw
-        .scope_override
-        .or(raw.scope)
-        .unwrap_or_else(|| session::classify(cwd_path).as_str().to_string());
+    // The stored sources are VALIDATED before they reach the wire, not passed through. Both columns
+    // are plain nullable TEXT with no `CHECK`, so a hand-edited catalog (or one written by a future
+    // clyde that learned a third scope) can hold `'Work'`, `'garbage'`, or `''`. Emitting those
+    // verbatim breaks the contract's frozen `"work" | "personal"` vocabulary
+    // (`docs/session-export-contract.md`), and it also DIVERGES from the gate: the classifier's
+    // override step fails closed to personal for an unrecognized value
+    // (`session/src/scope.rs`), so export would report `Work` for a row the gate routes as personal.
+    // That is the same two-sites-one-question defect this doc exists to remove.
+    //
+    // Fails LOUDLY, matching `enrich_status` and `efficiency_json` immediately below -- the two other
+    // stored values in this function whose vocabulary is frozen. A corrupt catalog makes the export
+    // ERROR and name the session, which is actionable; silently substituting a different answer is
+    // not, and silently forwarding the bad token is worse. Found by the review panel (Codex).
+    let stored_scope = raw.scope_override.or(raw.scope);
+    let scope = match stored_scope {
+        Some(token) => session::Scope::from_stored(&token)
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "session {} has a non-contract scope {token:?}; the frozen vocabulary is \
+                     \"work\" | \"personal\"",
+                    raw.session_id
+                )
+            })?
+            .as_str()
+            .to_string(),
+        // Neither source present: the cwd rule answers, preserving the never-null guarantee.
+        None => session::classify(cwd_path).as_str().to_string(),
+    };
     // `repo` is the PERSISTED v10 column, NOT `session::repo_slug(cwd)`. Deriving it from the cwd
     // here meant export and `report collect` answered differently for the same session the moment a
     // worktree was deleted: two fields with one name and two answers. Index time resolved it while

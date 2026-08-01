@@ -651,6 +651,12 @@ Ordered BEFORE the docs phase so the runbook and shakedown addenda describe the 
   `"personal"`. Whole-catalog export: `1912` records, `"schema-version": 2`, and the count of rows
   whose exported scope disagrees with `COALESCE(scope_override, scope, <cwd rule>)` is **0**.
   `rg -c '"schema-version": 1' sessions/tests/fixtures/export/` returns no matching files.
+  **Amended after the audit (2026-08-01):** precedence agreement alone was too weak a criterion. It is
+  satisfied by an export that faithfully forwards a corrupt stored token, which is what the panel
+  found. AC5 now also requires that EVERY emitted `scope` is one of the two frozen tokens, and that a
+  non-contract stored value fails loudly rather than reaching the wire. Verified: 1908 records, two
+  distinct tokens (`personal`, `work`), 0 divergences; the three poisoned rows each error and name the
+  session.
 - [ ] **AC6.** `otto ci` exits 0 on each of the five phase commits, and each phase is exactly one
   commit.
   `Observed on main:` `otto ci` green on `21c3a32`. Re-run per phase.
@@ -711,6 +717,20 @@ Ordered BEFORE the docs phase so the runbook and shakedown addenda describe the 
   once `probe-refused` becomes a decision count it reads 0 on this catalog, and the 326 rows that DO
   carry a stale conclusive negative would vanish from `doctor` entirely. `--clear-probe` is the
   remedy for those rows and an operator has no other way to find them.
+
+- **2026-08-01 (post-implementation audit, panel). Export VALIDATES the stored scope; it does not
+  forward it.** Codex found that Phase 4's `raw.scope_override.or(raw.scope)` emitted stored tokens
+  verbatim, and neither column carries a `CHECK`. Reproduced on a catalog copy: `scope_override='Work'`
+  exported `'Work'`, `scope='garbage'` exported `'garbage'`, `scope=''` exported `''`. That breaks the
+  frozen `"work" | "personal"` vocabulary this doc bumped `schema-version` to 2 to protect, and it
+  diverges from the gate, whose override step fails closed to personal for an unrecognized value. The
+  fix adds `session::Scope::from_stored` (the exact inverse of `as_str`) and fails LOUDLY on a
+  non-contract value, matching `enrich_status` and `efficiency_json`, the two other frozen-vocabulary
+  stored values in the same function. Fail-loud rather than fail-closed because export is a report:
+  silently substituting a different answer is not actionable, and an operator with a corrupt catalog
+  needs to be told. The classifier keeps failing closed, because a routing decision must never block.
+  Gemini approved the range with zero findings and was not followed here: its "cannot return NULL"
+  check answered a narrower question than the contract's vocabulary claim.
 
 ## Alternatives Considered
 

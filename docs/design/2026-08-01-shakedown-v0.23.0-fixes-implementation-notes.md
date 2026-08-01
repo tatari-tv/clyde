@@ -279,3 +279,67 @@ None.
 ### Open questions
 
 None.
+
+## Post-implementation audit (review panel, 2026-08-01)
+
+Gemini (Architect) and Codex (Staff Engineer) both ran in Mode 2 against `21c3a32..HEAD`.
+
+**Gemini: Approved, zero findings.** It verified each disclosed deviation, and independently confirmed
+the golden-fixture claim (the fixture tests round-trip static JSON and never call
+`build_export_record`).
+
+**Codex: one MAJOR, one MEDIUM, both accepted and fixed.** Where the two disagreed I did not average:
+Gemini's "impossible to return NULL on the wire" is true but answers a narrower question than the
+contract makes, which is about the frozen VOCABULARY. Codex was right.
+
+### MAJOR: a non-contract stored scope reached the export wire
+
+`build_export_record` emitted `raw.scope_override.or(raw.scope)` verbatim. Neither column has a
+`CHECK` (both are plain nullable TEXT), so a hand-edited catalog -- or one written by a FUTURE clyde
+that learned a third scope -- put a non-contract token on the wire.
+
+**Reproduced on a copy of the live catalog before fixing**, which is what promoted this from
+plausible to confirmed:
+
+| stored | exported (before) |
+|---|---|
+| `scope_override='Work'` | `'Work'` |
+| `scope='garbage'` | `'garbage'` |
+| `scope=''` | `''` |
+
+Two things make it more than pedantry. It breaks the `"work" \| "personal"` promise this doc just
+bumped `schema-version` to 2 to protect. And it DIVERGES from the gate: `classify_with_evidence`'s
+override step fails closed to `Personal` for an unrecognized value, so export reported `Work` for a
+row the gate routes as personal. That is the same two-sites-one-question defect the whole doc exists
+to remove, and my own Phase 4 comment claimed this decomposition "cannot drift".
+
+**Fix:** `session::Scope::from_stored` (`session/src/scope.rs`) is the exact inverse of `as_str`, and
+`build_export_record` validates both stored sources through it, failing LOUDLY with the session id and
+the offending value. Loud rather than fail-closed-to-personal, because that is what the two OTHER
+frozen-vocabulary stored values in the same function already do (`enrich_status`, `efficiency_json`),
+and because silently substituting a different answer is not actionable while an error is. The
+classifier keeps failing closed instead, since a routing decision must never block; `from_stored`'s
+doc comment records why the two obligations differ.
+
+Verified after the fix: all three poisoned rows now error and name the session; a healthy catalog
+still exports 1908 records at `schema-version: 2` with 0 precedence divergences and exactly two
+distinct scope tokens.
+
+### MEDIUM: the strongest Phase 4 test was self-confirming
+
+`no_exported_row_disagrees_with_the_three_step_precedence` recomputes production's own
+`COALESCE(scope_override, scope, <cwd rule>)` expression, so if production emitted `garbage` the test
+expected `garbage`. It does verify the precedence ORDERING, which was its purpose, but it cannot
+catch a vocabulary violation. `a_never_processed_row_still_exports_a_contract_scope_token` only
+covered rows with no stored value, so the gap was exactly as described.
+
+**Fix:** two tests added. `a_non_contract_stored_scope_fails_loudly_instead_of_reaching_the_wire`
+drives five poison values through the real producer; `every_exported_scope_is_a_frozen_contract_token`
+asserts the INDEPENDENT property that no amount of precedence agreement implies. Both bite: reverting
+to the pass-through form fails the first.
+
+### Not accepted as findings
+
+- Codex could not verify the `otto ci` claims, the break-it mutations, or the live-catalog numbers,
+  because it runs read-only and cannot execute mutating or build commands. Those remain verified by
+  the author, with the observed output recorded in the design doc's Acceptance Criteria.

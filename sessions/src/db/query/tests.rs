@@ -993,3 +993,104 @@ fn no_exported_row_disagrees_with_the_three_step_precedence() {
          disagreements: {disagreements:?}"
     );
 }
+
+/// Review-panel finding (Codex, MAJOR). Both stored scope sources are plain nullable TEXT with no
+/// `CHECK`, so a hand-edited catalog -- or one written by a FUTURE clyde that learned a third scope
+/// -- can hold a value outside the frozen vocabulary. Passing it through breaks the contract's
+/// `"work" | "personal"` promise, and it also DIVERGES from the gate: the classifier's override step
+/// fails closed to personal for an unrecognized value, so export would report `Work` for a row the
+/// gate routes as personal.
+///
+/// Reproduced on a copy of the live catalog before the fix: `scope_override='Work'` exported
+/// `'Work'`, `scope='garbage'` exported `'garbage'`, and `scope=''` exported `''`.
+///
+/// BITES: pass the stored value through (`raw.scope_override.or(raw.scope)`) and all four cases emit
+/// the raw token instead of erroring.
+#[test]
+fn a_non_contract_stored_scope_fails_loudly_instead_of_reaching_the_wire() {
+    for (col, token) in [
+        ("scope_override", "Work"),
+        ("scope_override", "WORK"),
+        ("scope", "garbage"),
+        ("scope", ""),
+        ("scope", "Personal"),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let transcript = tmp.path().join("t.jsonl");
+        fs::write(&transcript, "{}\n").unwrap();
+        let db = Db::open_memory().unwrap();
+        db.upsert_session(
+            &parsed_cwd(
+                UUID_A,
+                transcript.to_str().unwrap(),
+                UNPLACEABLE_CWD,
+                "2026-06-21T10:00:00Z",
+            ),
+            "desk",
+        )
+        .unwrap();
+        db.conn
+            .execute(
+                &format!("UPDATE sessions SET {col} = ?2 WHERE session_id = ?1"),
+                rusqlite::params![UUID_A, token],
+            )
+            .unwrap();
+
+        let err = db
+            .export(&ExportFilters::default(), &export_ctx("2026-07-01T00:00:00Z"))
+            .expect_err(&format!("{col}={token:?} must NOT reach the wire"));
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("non-contract scope") && msg.contains(UUID_A),
+            "the error must name the offending session and value; got {msg:?}"
+        );
+    }
+}
+
+/// The contract's own vocabulary claim, asserted over EVERY exported row rather than only the rows
+/// with no stored decision.
+///
+/// The panel's second finding was that `no_exported_row_disagrees_with_the_three_step_precedence`
+/// recomputes production's own expression, so it is self-confirming: if production emitted `garbage`
+/// the test expected `garbage`. This asserts the INDEPENDENT property -- the emitted token is always
+/// one of the two contract values -- which no amount of precedence agreement implies.
+#[test]
+fn every_exported_scope_is_a_frozen_contract_token() {
+    let tmp = TempDir::new().unwrap();
+    let transcript = tmp.path().join("t.jsonl");
+    fs::write(&transcript, "{}\n").unwrap();
+    let db = Db::open_memory().unwrap();
+
+    for (i, (cwd, stored, over)) in [
+        ("/home/saidler/repos/tatari-tv/philo", Some("work"), None),
+        (UNPLACEABLE_CWD, Some("personal"), Some("work")),
+        (UNPLACEABLE_CWD, None, None),
+        ("/home/saidler/repos/example-user/x", Some("personal"), None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("00000000-0000-4000-8000-0000000000e{}", i + 1);
+        db.upsert_session(
+            &parsed_cwd(&id, transcript.to_str().unwrap(), cwd, "2026-06-21T10:00:00Z"),
+            "desk",
+        )
+        .unwrap();
+        if let Some(s) = stored {
+            store_scope(&db, &id, s);
+        }
+        if let Some(o) = over {
+            db.set_scope_override(&id, o, "test", "tester@desk", dt("2026-07-01T00:00:00Z"))
+                .unwrap();
+        }
+    }
+
+    let scopes = exported_scopes(&db);
+    assert_eq!(scopes.len(), 4);
+    for (id, scope) in scopes {
+        assert!(
+            session::Scope::from_stored(&scope).is_some(),
+            "session {id} exported a non-contract scope token {scope:?}"
+        );
+    }
+}
