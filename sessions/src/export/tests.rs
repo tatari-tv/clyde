@@ -138,13 +138,29 @@ fn body_record_emits_all_three_body_keys_including_null_error() {
 #[test]
 fn unknown_top_level_envelope_field_is_tolerated() {
     // Forward-compatible envelope (no deny_unknown_fields): the contract is additive-within-major, so
-    // a v1 consumer MUST tolerate a v2 producer's new top-level key rather than error on it. The
+    // a consumer MUST tolerate a newer producer's extra top-level key rather than error on it. The
     // stray field is ignored, and the known fields still deserialize.
+    //
+    // KEPT at `schema-version: 1` deliberately. Emitting 2 and refusing to PARSE 1 are different
+    // promises, and this case proves the deserializer is not version-gated: a stored v1 envelope
+    // still reads. `a_v2_envelope_parses` below is the additive half.
     let json = r#"{"schema-version":1,"generated-at":"x","host":"h","cursor":0,"sessions":[],"future-key":1}"#;
     let env: ExportEnvelope =
-        serde_json::from_str(json).expect("a v2 producer's extra top-level key must not break a v1 consumer");
+        serde_json::from_str(json).expect("a newer producer's extra top-level key must not break an older consumer");
     assert_eq!(env.schema_version, 1);
     assert!(env.sessions.is_empty());
+}
+
+/// The v2 envelope parses, and 2 is what the producer now stamps.
+///
+/// Added alongside the v1 case rather than replacing it: this asserts what we EMIT, the case above
+/// asserts what we still ACCEPT, and collapsing them would silently drop the backward-parse promise.
+#[test]
+fn a_v2_envelope_parses_and_is_what_the_producer_stamps() {
+    let json = r#"{"schema-version":2,"generated-at":"x","host":"h","cursor":0,"sessions":[]}"#;
+    let env: ExportEnvelope = serde_json::from_str(json).expect("a v2 envelope must deserialize");
+    assert_eq!(env.schema_version, 2);
+    assert_eq!(env.schema_version, EXPORT_SCHEMA_VERSION);
 }
 
 #[test]

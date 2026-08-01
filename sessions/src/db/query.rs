@@ -5,7 +5,7 @@
 //!
 //! Deliberately its OWN column list ([`EXPORT_COLS`]) and mapper ([`map_export_raw`]): the export
 //! contract needs the enrichment fields and the v5 `updated_at` cursor that `db`'s `COLS`/`map_record`
-//! omit, and it re-derives `scope` from `cwd` rather than reading the nullable stored column.
+//! omit, and it derives `scope` as `scope_override -> stored scope -> classify(cwd)` (schema-version 2).
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -23,13 +23,15 @@ use crate::transcript::transcript_layout_parts;
 
 /// Column list (table alias `s`) for the `export` query. Deliberately its OWN list, NOT `db::COLS`:
 /// the export contract needs the enrichment fields (`enriched_at`, `enrich_status`, …) and the v5
-/// `updated_at` cursor that `COLS`/`map_record` omit, and it deliberately does NOT select the stored
-/// `scope` column (the contract re-derives it via `classify(cwd)`, finding S1). Index order is
-/// mirrored by [`map_export_raw`].
+/// `updated_at` cursor that `COLS`/`map_record` omit. Index order is mirrored by [`map_export_raw`].
+///
+/// `s.scope` and `s.scope_override` are APPENDED at the END (schema-version 2), so no existing
+/// [`map_export_raw`] index shifts.
 const EXPORT_COLS: &str = "s.session_id, s.host, s.cwd, s.project_dir, s.git_branch, s.created, \
      s.modified, s.updated_at, s.title, s.first_prompt, s.n_msgs, s.model, s.summary, s.tags, \
      s.tags_source, s.enriched_at, s.enrich_status, s.enrich_model, s.prompt_version, \
-     s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.efficiency_json, s.repo";
+     s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.efficiency_json, s.repo, \
+     s.scope, s.scope_override";
 
 impl Db {
     /// Bulk metadata export: the versioned envelope of [`ExportRecord`] for every row matching
@@ -239,6 +241,10 @@ struct ExportRaw {
     efficiency_json: Option<String>,
     /// The PERSISTED `<org>/<repo>` attribution (schema v10); `None` until a rule has fired.
     repo: Option<String>,
+    /// The scope the enrich gate RECORDED (schema v12); `None` on a row the gate has not processed.
+    scope: Option<String>,
+    /// An operator override (schema v13); `None` when no human has overridden this row.
+    scope_override: Option<String>,
 }
 
 /// Map one row to [`ExportRaw`]. Index order mirrors [`EXPORT_COLS`] exactly.
@@ -269,12 +275,14 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
         archived: row.get::<_, i64>(22)? != 0,
         efficiency_json: row.get(23)?,
         repo: row.get(24)?,
+        scope: row.get(25)?,
+        scope_override: row.get(26)?,
     })
 }
 
 /// Derive an [`ExportRecord`] from raw columns plus the injected clock. This is where the contract's
-/// derived fields are computed: `scope` re-derived via `classify(cwd)` (never the stored NULLable
-/// column, finding S1); `duration-secs` as `modified - created`
+/// derived fields are computed: `scope` as the three-step precedence below (schema-version 2);
+/// `duration-secs` as `modified - created`
 /// (equal to the doc's "mtime - earliest ts" on live rows and the reaped fallback, since `modified`
 /// IS the transcript mtime, finding D1); `dormant` request-relative against the injected `now`
 /// (finding T1). `body` is left `None` (the bulk path); [`Db::export_one`] fills it under
@@ -285,7 +293,31 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
 /// maps to `None` (never-attempted); a known value to `Some(variant)`.
 fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono::Duration) -> Result<ExportRecord> {
     let cwd_path = raw.cwd.as_deref().map(Path::new);
-    let scope = session::classify(cwd_path).as_str().to_string();
+    // **The scope that was actually DECIDED, in the classifier's own precedence, first match wins:**
+    //
+    //   scope_override  ->  stored `scope`  ->  classify(cwd)
+    //
+    // Each step is `session::classify_with_evidence`'s order truncated to what a cheap paged endpoint
+    // can know. Step 1 is its step 0 verbatim, so an override reaches the wire even on a row the gate
+    // has not processed yet. Step 2 is the decision the gate recorded. Step 3 preserves the
+    // contract's "never null" guarantee for rows that have neither.
+    //
+    // **This corrects `finding S1`, it does not reverse it.** S1's reason for avoiding the stored
+    // column was NULLability, and the `classify(cwd)` fallback answers that: the field is still never
+    // null. What S1 got wrong was using the cwd rule as the PRIMARY source. `session::classify` is
+    // the LEGACY cwd-only rule (work iff the cwd has a `repos/<work-org>` anchor) and it ignores
+    // overrides, git-origin attribution and the touch set -- so 31 rows on the live catalog exported
+    // a scope contradicting the catalog, and every session an operator forced to `work` would have
+    // exported `personal`, the exact opposite of what the operator asked for.
+    //
+    // Rejected: running the full `classify_with_evidence` here. It needs five more columns plus an
+    // `outcome_json` parse per row on the bulk paged endpoint whose whole point is being cheap, and
+    // it would make export a THIRD site re-implementing the routing decision. Reading what the gate
+    // already decided is the decomposition that cannot drift.
+    let scope = raw
+        .scope_override
+        .or(raw.scope)
+        .unwrap_or_else(|| session::classify(cwd_path).as_str().to_string());
     // `repo` is the PERSISTED v10 column, NOT `session::repo_slug(cwd)`. Deriving it from the cwd
     // here meant export and `report collect` answered differently for the same session the moment a
     // worktree was deleted: two fields with one name and two answers. Index time resolved it while

@@ -74,7 +74,7 @@ no overlap.
 
 ```json
 {
-  "schema-version": 1,
+  "schema-version": 2,
   "generated-at": "2026-07-17T00:00:00+00:00",
   "host": "desk",
   "cursor": 478,
@@ -84,7 +84,7 @@ no overlap.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `schema-version` | integer | The contract's own version (currently `1`). Distinct from clyde's internal on-disk database schema version - this number tracks only the wire contract described in this document. |
+| `schema-version` | integer | The contract's own version (currently `2`). Distinct from clyde's internal on-disk database schema version - this number tracks only the wire contract described in this document. |
 | `generated-at` | string (RFC3339) | When this envelope was generated. |
 | `host` | string | The hostname of the machine that generated the envelope. |
 | `cursor` | integer | The max `updated-at` revision across the returned `sessions`; echoes the request's `--cursor` when the result set is empty. Persist this value and pass it back as the next `--cursor` for correct incremental consumption. |
@@ -101,7 +101,7 @@ Every field is present on every record except the three body fields, which appea
 |---|---|---|
 | `session-id` | string | The session's unique id (a UUID). Usable, including as a unique prefix, with `--id`. |
 | `host` | string | The hostname that recorded this session. |
-| `scope` | string: `"work"` \| `"personal"` | Always one of these two values (never null) - re-derived at export time from the session's working directory, so it is populated even for sessions that have never been enriched. |
+| `scope` | string: `"work"` \| `"personal"` | Always one of these two values (never null). **The scope that was actually DECIDED**, resolved at export time in the classifier's own precedence, first match wins: (1) an operator override (`clyde session scope --set`), (2) the scope clyde's routing gate recorded, (3) the working-directory rule. Step 3 is what keeps the field populated for a session the gate has never processed. Changed in `schema-version` 2 - see "What changed in v2" below. |
 
 ### Location
 
@@ -206,9 +206,10 @@ plus the threshold it crossed. Derived ratio fields are `null` (never `NaN`) whe
 is zero.
 
 The nested shape is OWNED by clyde's `efficiency` computation, not frozen field-by-field by this
-contract: within `schema-version` 1 a new signal may be ADDED inside `efficiency` (the additive,
-forward-compatible-envelope rule), so a consumer must tolerate unknown keys inside the block. The
-block's PRESENCE (the `efficiency` key itself) and `null`-when-absent behavior are the stable part.
+contract: a new signal may be ADDED inside `efficiency` at any time within a major version (the
+additive, forward-compatible-envelope rule), so a consumer must tolerate unknown keys inside the
+block. The block's PRESENCE (the `efficiency` key itself) and `null`-when-absent behavior are the
+stable part.
 
 ### Body (only with `--with-body`)
 
@@ -245,7 +246,7 @@ Each element of the `body` array:
 
 ## Schema-version semantics and the compat promise
 
-`schema-version` (currently `1`) versions this contract, independent of clyde's internal on-disk
+`schema-version` (currently `2`) versions this contract, independent of clyde's internal on-disk
 database schema. The promise:
 
 - **Within a major version, changes are additive only.** A new envelope field, a new
@@ -255,17 +256,38 @@ database schema. The promise:
 - **A breaking change is a major-version bump.** Renaming or removing an envelope or record field,
   changing a field's type, or removing/renaming one of the frozen `enrich-status` values or
   `body-error` strings all require bumping `schema-version` to the next major number. A consumer
-  pinned to `schema-version: 1` can assume the field set and vocabulary documented here will never
-  shrink or rename under it.
+  pinned to a given `schema-version` can assume the field set and vocabulary documented here will
+  never shrink or rename under it.
+- **A change to what an existing field MEANS is also a major bump**, even when its type and
+  vocabulary are unchanged. That is what v2 is. A consumer has no way to detect a silently
+  redefined field, so the version number is the only signal available - see below.
 - There is no minor/patch component: additive changes do not bump the number at all; only breaking
   changes do.
 
 The `efficiency` block (added alongside clyde's v6 internal DB schema) is exactly such an additive
-change: it did NOT bump `schema-version`, which stays `1`. A `schema-version: 1` consumer written
-before the block existed keeps working (it ignores the new `efficiency` key); a consumer that reads
-it must treat the block's inner shape as forward-compatible (new nested signals may be added within
-v1). Note the two "schema versions" remain independent: clyde's on-disk DB schema advanced to v6,
-while this WIRE contract stayed at v1.
+change: it did NOT bump `schema-version`. A consumer written before the block existed keeps working
+(it ignores the new `efficiency` key); a consumer that reads it must treat the block's inner shape as
+forward-compatible (new nested signals may be added). Note the two "schema versions" remain
+independent: clyde's on-disk DB schema is well past v6 while this WIRE contract was at v1 until v2.
+
+### What changed in v2
+
+**One breaking change: how `scope` is derived.**
+
+Through v1, `scope` was computed from the session's working directory alone - work if the cwd sat
+under a recognized work org by the `repos/<org>/<repo>` convention, personal otherwise. That rule
+ignores everything clyde later learned to read: an operator's explicit override, the git remote the
+session's own checkout points at, and the set of repos the session actually edited. So a session
+clyde's routing gate had decided was work could still export as `personal`, and an operator who ran
+`clyde session scope --set work` got the opposite of what they asked for on the wire.
+
+In v2, `scope` is the decision that was actually made: `override -> recorded scope -> cwd rule`,
+first match wins. The field's TYPE and VOCABULARY are unchanged (`"work" | "personal"`, never null);
+only its MEANING changed, and only for rows where the cwd rule disagreed with the real decision.
+
+**What a consumer must do.** If you pin `schema-version`, update the pin to `2`. If you store or key
+off `scope`, be aware the value may now differ from what the same session exported under v1 - it did
+not change; the earlier answer was wrong. Nothing else in the envelope or record changed.
 
 ## Example: reading the contract without touching internals
 
