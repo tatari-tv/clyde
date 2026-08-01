@@ -65,7 +65,10 @@ Add a section:
 >
 > `clyde session reindex --clear-probe --session <id>`
 > : clear a recorded probe result for named sessions, so the next pass re-observes. Use this when a
->   session was refused because of a transient failure that has since been fixed. It does NOT disable
+>   session was refused by a STALE conclusive negative (`NoOrigin` or `NotARepo`) that no longer
+>   describes the cwd, typically because the remote was added or the checkout was restored. A
+>   transient failure is `Indeterminate` and never records anything, so there is nothing to clear for
+>   one. It does NOT disable
 >   the gate: if the cwd still declines conclusively, it re-records on the same pass. There is no
 >   catalog-wide form, deliberately.
 >

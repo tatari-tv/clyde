@@ -247,6 +247,17 @@ impl Resolver {
 pub struct SharedResolver {
     cache: std::sync::Mutex<HashMap<PathBuf, ProbeOutcome>>,
     blocked: Vec<PathBuf>,
+    /// The host allowlist rule 3 validates against, when the caller supplied one.
+    ///
+    /// `None` means no policy was configured, and [`Self::detect_trusted`] then refuses everything:
+    /// a caller that asks the TRUSTED question without providing a trust boundary gets the
+    /// fail-closed answer, not a silent pass. [`Self::detect`] is unaffected and stays the
+    /// host-agnostic accessor for callers that do their own validation downstream.
+    ///
+    /// Behind a `Mutex` because `HostPolicy::confers_work` takes `&mut` (it memoizes `ssh -G`), and
+    /// this type is shared by `&` across rayon threads. The lock is held only for the allowlist
+    /// check, which is a literal comparison for every host that is not an alias.
+    hosts: Option<std::sync::Mutex<host::HostPolicy<host::SshResolver>>>,
 }
 
 impl SharedResolver {
@@ -254,6 +265,16 @@ impl SharedResolver {
         Self {
             cache: std::sync::Mutex::new(HashMap::new()),
             blocked: home_dir_as_blocked(),
+            hosts: None,
+        }
+    }
+
+    /// Build one that can answer [`Self::detect_trusted`], for rule 3.
+    pub fn with_hosts(allowed: &[String]) -> Self {
+        Self {
+            cache: std::sync::Mutex::new(HashMap::new()),
+            blocked: home_dir_as_blocked(),
+            hosts: Some(std::sync::Mutex::new(host::HostPolicy::new(allowed))),
         }
     }
 
@@ -262,6 +283,16 @@ impl SharedResolver {
         Self {
             cache: std::sync::Mutex::new(HashMap::new()),
             blocked,
+            hosts: None,
+        }
+    }
+
+    /// Build one over an explicit blocked set AND an explicit allowlist, for tests.
+    pub fn with_blocked_and_hosts(blocked: Vec<PathBuf>, allowed: &[String]) -> Self {
+        Self {
+            cache: std::sync::Mutex::new(HashMap::new()),
+            blocked,
+            hosts: Some(std::sync::Mutex::new(host::HostPolicy::new(allowed))),
         }
     }
 
@@ -292,16 +323,72 @@ impl SharedResolver {
         // trade and a held lock is not.
         let outcome = detect_with_blocked_roots(dir, &self.blocked);
         if let Ok(mut cache) = self.cache.lock() {
-            for ancestor in repo_local_ancestors(dir) {
-                cache.insert(ancestor, outcome.clone());
+            // Only an outcome git reached THROUGH the repository describes the ancestors too.
+            //
+            // The collapse below is sound for `Resolved` and `NoOrigin` because both are statements
+            // about the repository: same toplevel, same origin, same containment. It is NOT sound
+            // for the others, and one of them is actively wrong. `detect_with_blocked_roots`
+            // returns `Indeterminate` at its `!cwd.exists()` check WITHOUT ever asking git, so a
+            // vanished `<repo>/gone/sub` would cache `Indeterminate` against `<repo>` itself and a
+            // later probe of the repo root would answer from that poisoned entry and lose the slug.
+            // Rule 3 reaches this constantly (it resolves the parent of every edited file, and
+            // edited files get moved and deleted), and because `rayon` decides which directory is
+            // probed first, the attribution differed between runs on identical input.
+            //
+            // `Blocked` and `OutsideRoot` are keyed to the cwd rather than the repository, so they
+            // do not generalize either. All three are cached for `dir` alone.
+            if matches!(outcome, ProbeOutcome::Resolved { .. } | ProbeOutcome::NoOrigin) {
+                for ancestor in repo_local_ancestors(dir) {
+                    cache.insert(ancestor, outcome.clone());
+                }
+            } else {
+                cache.insert(dir.to_path_buf(), outcome.clone());
             }
         }
         outcome
     }
 
     /// Rule 1's slug for `dir`, memoized. `None` for every non-resolving outcome.
+    ///
+    /// HOST-AGNOSTIC: a slug from any remote comes back. Callers that let the answer influence a
+    /// work/personal decision must validate the host themselves, or use [`Self::detect_trusted`].
     pub fn detect(&self, dir: &Path) -> Option<String> {
         self.probe(dir).resolved_slug().map(str::to_string)
+    }
+
+    /// Rule 1's slug for `dir`, but ONLY when the remote host may confer Work scope.
+    ///
+    /// This is the rule-3 accessor, and it exists because Problem 2 had a second door.
+    /// `detect` discards the host, so `repos_touched` used to record `tatari-tv/x` for a remote at
+    /// `git@evil.example.com:tatari-tv/x.git`; rule 1 refuses that host, but the touch-set branch in
+    /// `session::scope` decides unanimity from `is_work_slug` alone and would have conferred Work on
+    /// it. Closing the host gap on rule 1 and leaving rule 3 open is not closing it.
+    ///
+    /// Refusing here rather than filtering later is deliberate: a refused repo never enters
+    /// `repos_touched`, so the touch-set branch's totality check (accounted edits must equal
+    /// `files_edited`) stops adding up and the branch declines. The session degrades to Personal by
+    /// arithmetic rather than by a second bespoke check that could drift from this one.
+    pub fn detect_trusted(&self, dir: &Path) -> Option<String> {
+        let ProbeOutcome::Resolved { slug, host } = self.probe(dir) else {
+            return None;
+        };
+        let Some(policy) = self.hosts.as_ref() else {
+            warn!(
+                "repo::detect_trusted: {} resolved but no host policy is configured; refusing",
+                dir.display()
+            );
+            return None;
+        };
+        let allowed = match policy.lock() {
+            Ok(mut p) => p.confers_work(&host),
+            Err(poisoned) => poisoned.into_inner().confers_work(&host),
+        };
+        if allowed {
+            Some(slug)
+        } else {
+            debug!("repo::detect_trusted: {slug} REFUSED, host {host} is not allowlisted");
+            None
+        }
     }
 }
 

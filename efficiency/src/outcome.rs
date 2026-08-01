@@ -231,13 +231,16 @@ fn repos_touched(files_edited: &BTreeSet<String>, slugs: &SharedResolver) -> BTr
             trace!("outcome::repos_touched: {} has no parent; skipped", path.display());
             continue;
         };
-        match slugs.detect(parent) {
+        // `detect_trusted`, NOT `detect`: a slug whose remote host cannot confer Work must never
+        // enter this map. See `SharedResolver::detect_trusted` for why refusing here is what makes
+        // the touch-set branch decline, and why that is better than filtering downstream.
+        match slugs.detect_trusted(parent) {
             Some(slug) => {
                 trace!("outcome::repos_touched: {} -> {slug}", path.display());
                 *counts.entry(slug).or_default() += 1;
             }
             None => trace!(
-                "outcome::repos_touched: git could not place {}; skipped",
+                "outcome::repos_touched: git could not place {} or its host is not allowlisted; skipped",
                 path.display()
             ),
         }

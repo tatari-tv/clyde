@@ -173,7 +173,7 @@ Resolution counts by rule, two catalogs, 2026-07-31:
 | 4 | `path-guess` | 84 | 0 |
 | | (unresolved) | 309 | 53 |
 
-Keegan's cost of Problem 4: 12 sessions, $326.87 of July spend, coverage 49% -> 72%.
+Keegan's cost of Problem 4: 12 sessions, coverage 49% -> 72%.
 `tatari-tv/airflow-dags` is absent from every by-repo table in his month's report.
 
 **Problem 4 is invisible on desk.lan, and rule 4 is why.** Three bare containers exist here
@@ -1027,6 +1027,17 @@ one was found by RUNNING something, and each is measured in
   owner's call: 1.8 s on a background reindex that already takes 10 s is not worth holding the
   security fix for. Sizing it and finding the mechanism are open, and tracked as such rather than
   silently dropped.
+
+  **Scope of that number, added after the CodeRabbit round.** It was measured at the pre-audit-fix
+  commit. The audit then restricted `SharedResolver`'s ancestor collapse to the outcomes that
+  actually describe the repository (the cache-poisoning fix above), which changes how many probes a
+  pass performs: the once-per-catalog cold pass got measurably slower, and steady state landed back
+  in the same band. A clean re-measure was attempted three times and abandoned: the host was loaded
+  from the audit's own CI runs and the spread swamped the effect (one 45.7 s outlier, and an
+  interleaved warm pair of 12.68 s against 13.11 s that cannot distinguish the two builds at all).
+  So the 17% stands as measured WHERE it was measured, and the shipped code's figure is not
+  established. Re-measure on an idle host before quoting it.
+
 - **Three crates carried a live env-lock race the phase work missed.** Phase 5 fixed `cost`'s
   `cache`-against-`tests` pair and called it the general form. It was not: `cost/src/config.rs` kept
   its own mutex in the same crate whose doc says ONE lock, `common/src/paths/tests.rs` sat outside the
@@ -1379,7 +1390,7 @@ people who need the fix in order to answer. They are verified after release, not
 
 - **macOS confirmation of the v0.22.0 `$USER` fix.** A no-op on Linux by construction, so no host we
   can test from can confirm it. Confirm on the first macOS run after release.
-- **Keegan's 12-session / $326.87 recovery.** desk.lan has three bare containers and zero session
+- **Keegan's 12-session recovery.** desk.lan has three bare containers and zero session
   cwds at one, so it cannot produce the number. Confirm from his catalog after release.
 
 Neither is unverified logic. Both are covered by the checkout matrix in Testing Strategy, against

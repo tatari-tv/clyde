@@ -265,8 +265,16 @@ fn extract_no_outcomes_yields_empty_without_error() {
 /// Rule 3 now ASKS GIT, so a test that expects a bucket must point at a real checkout. That is the
 /// change, not an inconvenience: the paths these tests used to pass (`/repos/tatari-tv/clyde/...`)
 /// never existed on disk, so they asserted a directory CONVENTION rather than any fact about a repo.
+/// Carries the allowlist too, because rule 3 refuses a slug whose host cannot confer Work. The
+/// fixtures' remotes are `github.com`, so that is what is allowlisted here; `slugs_refusing_hosts`
+/// is the same resolver with the gate closed.
 fn slugs_for(m: &Matrix) -> SharedResolver {
-    SharedResolver::with_blocked(m.blocked())
+    SharedResolver::with_blocked_and_hosts(m.blocked(), &["github.com".to_string()])
+}
+
+/// The same fixture resolver with an allowlist that does NOT cover the fixtures' remote.
+fn slugs_refusing_hosts(m: &Matrix) -> SharedResolver {
+    SharedResolver::with_blocked_and_hosts(m.blocked(), &["example.invalid".to_string()])
 }
 
 /// A resolver with nothing behind it, for the union cases that assert on commits, PRs and MCP counts
@@ -534,6 +542,40 @@ fn union_buckets_edited_paths_by_the_repo_git_reports() {
         ])
     );
     assert_eq!(out.files_edited, 4, "every distinct path still counts as a file edit");
+}
+
+/// **Problem 2's second door, closed.** Rule 1 refuses a work-looking slug from a non-allowlisted
+/// host, but `repos_touched` used to be built from `detect`, which discards the host entirely. A
+/// remote at `git@evil.example.com:tatari-tv/x.git` therefore reached the touch-set branch of
+/// `session::scope` as a bare `tatari-tv/x`, where unanimity is decided by `is_work_slug` alone with
+/// no host left to check. Closing the gap on rule 1 and leaving rule 3 open is not closing it.
+///
+/// The refusal is expressed as ABSENCE: a repo whose host cannot confer Work never enters the map,
+/// so the branch's totality check stops adding up and it declines. `files_edited` still counts every
+/// path, which is what makes the totality check notice.
+///
+/// BITES: revert `repos_touched` to `slugs.detect(parent)` and both assertions below fail.
+#[test]
+fn union_repos_touched_refuses_a_slug_from_a_non_allowlisted_host() {
+    let m = Matrix::build();
+    let file = FileOutcomes {
+        files_edited: BTreeSet::from([
+            m.subdir.join("lib.rs").to_string_lossy().into_owned(),
+            m.flat_ssh.join("README.md").to_string_lossy().into_owned(),
+            m.fork_in_work_dir.join("main.rs").to_string_lossy().into_owned(),
+        ]),
+        ..Default::default()
+    };
+    let out = union(&[file], &slugs_refusing_hosts(&m));
+    assert!(
+        out.repos_touched.is_empty(),
+        "no repo may enter the touch set when its host cannot confer work; got {:?}",
+        out.repos_touched
+    );
+    assert_eq!(
+        out.files_edited, 3,
+        "the edits still count, so the touch-set branch's totality check sees the shortfall"
+    );
 }
 
 /// **Problem 5, and this test is the INVERSION of the one it replaces.** It used to be

@@ -15,8 +15,14 @@ use crate::bootstrap::Paths;
 /// Entry point for `clyde doctor`. Returns the intended process exit code (0 healthy, 1 if any
 /// legacy target/state remains).
 ///
-/// `db_path` is the catalog to report attribution and routing from. Those lines are READ-ONLY and
-/// deliberately do NOT feed [`Report::healthy`]: a session refused by the routing gate is the gate
+/// `db_path` is the catalog to report attribution and routing from. Those lines do not WRITE any
+/// attribution or routing state, but this is not a read-only command: `sessions::Db::open_at` runs
+/// `Db::init`, so opening the catalog here applies the snapshot helpers and the full migration
+/// ladder. On a host still at v12, `clyde doctor` therefore writes `<db>.pre-v13.bak` and advances
+/// `user_version` to 13. That is column-add only and snapshotted first, so it is safe, but it is a
+/// side effect and calling it read-only was wrong.
+///
+/// The attribution lines deliberately do NOT feed [`Report::healthy`]: a session refused by the routing gate is the gate
 /// working, not a broken installation, and a diagnostic that exits non-zero for correct behavior is
 /// one people stop running.
 pub fn run(db_path: &Path) -> Result<i32> {
@@ -106,7 +112,18 @@ fn print_attribution(a: &Attribution) {
             "note:".yellow()
         );
     }
-    println!("  work hosts:    {}", a.work_remote_hosts.join(", "));
+    if a.work_remote_hosts.is_empty() {
+        // An empty allowlist is fail-closed in `routing_summary`, so every recorded host counts as
+        // refused. Printing a blank line next to a large `host-refused` gives the operator the
+        // symptom with no cause.
+        println!(
+            "  work hosts:    {} {}",
+            "none".red(),
+            "every recorded host is refused; set `work-remote-hosts` in clyde.yml".dimmed()
+        );
+    } else {
+        println!("  work hosts:    {}", a.work_remote_hosts.join(", "));
+    }
 
     println!("  resolved by:");
     for (source, n) in &a.routing.by_source {
@@ -152,9 +169,23 @@ fn print_attribution(a: &Attribution) {
     // The LIVE half. `Blocked`, `OutsideRoot` and `Indeterminate` all record nothing (that is what
     // keeps a transient failure from becoming a lockout), so the catalog cannot say which of them a
     // row hit. `doctor` re-probes, which is exactly the right place for it: this is a question about
-    // the machine as it is NOW, not about when a session ran. Memoized per repository, so it is a
-    // handful of `git` calls even on a large catalog.
+    // the machine as it is NOW, not about when a session ran.
+    //
+    // SAMPLED, and it says so. This used to claim "memoized per repository, so it is a handful of
+    // `git` calls" -- which is false: `reprobe_candidates` is `SELECT DISTINCT cwd`, so every entry
+    // is a distinct memo key and the memo never hits. Measured candidate counts on live hosts are in
+    // the hundreds, so the unbounded form spawned hundreds of `git` processes serially, with no
+    // progress output, every time an operator ran `doctor` because something was already wrong.
+    let sampled = a.routing.reprobe_candidates.len().min(REPROBE_SAMPLE_MAX);
     let (blocked, outside, indeterminate) = reprobe(&a.routing.reprobe_candidates);
+    if a.routing.reprobe_candidates.len() > REPROBE_SAMPLE_MAX {
+        println!(
+            "    {:<14} {:<6} {}",
+            "(sampled)",
+            format!("{sampled}/{}", a.routing.reprobe_candidates.len()),
+            "the three counts below are a sample; each one costs its own `git` call".dimmed()
+        );
+    }
     println!(
         "    {:<14} {:<6} {}",
         "blocked",
@@ -173,7 +204,7 @@ fn print_attribution(a: &Attribution) {
         indeterminate,
         "git answered NOTHING; check `safe.directory` and that git is installed".dimmed()
     );
-    if indeterminate > 0 && indeterminate == a.routing.reprobe_candidates.len() {
+    if indeterminate > 0 && indeterminate == sampled {
         println!(
             "      {} EVERY probe on this host is indeterminate, which is a git problem rather than \
              a layout one",
@@ -182,12 +213,17 @@ fn print_attribution(a: &Attribution) {
     }
 }
 
+/// The reprobe sample cap. Every candidate is a DISTINCT cwd, so each one costs its own `git`
+/// invocation and the resolver's memo cannot amortize them. A few hundred serial spawns is not what
+/// a diagnostic should cost, so `doctor` samples and says that it sampled.
+const REPROBE_SAMPLE_MAX: usize = 64;
+
 /// Re-probe each cwd and tally which non-recording outcome it hits: `(blocked, outside, indeterminate)`.
 fn reprobe(cwds: &[String]) -> (usize, usize, usize) {
     use common::repo::ProbeOutcome;
     let resolver = common::repo::SharedResolver::new();
     let (mut blocked, mut outside, mut indeterminate) = (0, 0, 0);
-    for cwd in cwds {
+    for cwd in cwds.iter().take(REPROBE_SAMPLE_MAX) {
         match resolver.probe(Path::new(cwd)) {
             ProbeOutcome::Blocked => blocked += 1,
             ProbeOutcome::OutsideRoot => outside += 1,

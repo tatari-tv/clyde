@@ -393,9 +393,14 @@ where
              to get the default [github.com].",
         ));
     }
-    if let Some(bad) = hosts.iter().find(|h| h.trim().is_empty()) {
+    // Padding is rejected, not trimmed. `HostPolicy::with_resolver` lowercases each entry but does
+    // not trim, and `normalize_host` never emits leading whitespace, so `" github.com"` would match
+    // nothing and hand the operator a silent 0% work-scope coverage. That silence is the exact
+    // failure this deserializer exists to prevent, so it is a loud config error instead.
+    if let Some(bad) = hosts.iter().find(|h| h.is_empty() || h.trim() != h.as_str()) {
         return Err(serde::de::Error::custom(format!(
-            "work-remote-hosts contains an empty entry ({bad:?}); every entry must name a host"
+            "work-remote-hosts contains an entry that is empty or padded with whitespace ({bad:?}); \
+             a padded host can never match a parsed remote host"
         )));
     }
     Ok(hosts)

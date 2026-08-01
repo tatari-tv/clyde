@@ -935,8 +935,10 @@ No regression. The branch is marginally faster and noticeably more consistent.
 > overlap and it reproduced across two independent harnesses.
 >
 > The mechanism is NOT established. The likely candidate is the added per-cwd origin probe and host
-> recording, but that was not measured and is not asserted here. Sizing the cost, deciding whether
-> 17% on a background reindex is acceptable, and finding the mechanism are open.
+> recording, but that was not measured and is not asserted here.
+>
+> **ACCEPTED for v0.23.0** on the owner's call: 1.8 s on a background reindex that already takes 10 s
+> does not justify holding the security fix. Finding the mechanism is the only item left open.
 
 **The repository-wide collapse still earns its place, measured the same way:**
 

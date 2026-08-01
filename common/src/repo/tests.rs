@@ -808,6 +808,12 @@ fn slug_under_root_declines_anything_that_is_not_the_shape() {
 /// blocked-root test passes its own list, so an empty default was invisible.
 #[test]
 fn a_fresh_resolver_blocks_the_real_home_directory() {
+    // This test READS `HOME` twice indirectly (`Resolver::new` computes `home_dir_as_blocked`, and
+    // `dirs::home_dir` computes the expected value) while `a_hostile_home_gitconfig_cannot_forge_an_
+    // attribution` sets `HOME` process-wide in the same binary. `ENV_LOCK` serializes only the tests
+    // that TAKE it, so an indirect reader has to take it too or it can observe the fake home and
+    // fail for a reason that has nothing to do with what it asserts.
+    let guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let resolver = Resolver::new();
     let home = dirs::home_dir().expect("this test needs a HOME");
     assert_eq!(
@@ -815,6 +821,7 @@ fn a_fresh_resolver_blocks_the_real_home_directory() {
         vec![home],
         "Resolver::new must block $HOME; an empty set silently attributes a git-tracked home"
     );
+    drop(guard);
 }
 
 /// KILLS: the four `ProbeOutcome::resolved_host` mutants, including the deleted match arm.

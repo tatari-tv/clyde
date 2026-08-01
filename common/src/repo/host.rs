@@ -62,7 +62,9 @@ pub struct SshResolver;
 impl HostResolver for SshResolver {
     fn hostname(&self, host: &str) -> Option<String> {
         let out = Command::new("ssh")
-            .args(["-G", host])
+            // `--` because `normalize_host` accepts a leading `-`: without it OpenSSH parses such a host
+            // as an option. This is hardening, not a bypass fix; the allowlist already fails closed.
+            .args(["-G", "--", host])
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .output()

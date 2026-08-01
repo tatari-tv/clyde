@@ -185,9 +185,11 @@ fn matrix_rows_06_07_08_and_24_resolve_without_a_work_tree() {
     );
 }
 
-/// The remaining deliberate gap, named with the phase that closes it.
+/// Rows 19 and 21: the host is validated for the SCOPE it confers, and attribution is deliberately
+/// left alone. A non-allowlisted remote still parses to its slug, because refusing to attribute it
+/// would lose the provenance an operator needs to see WHY a session was refused.
 #[test]
-fn no_assertion_yet_for_the_rows_phase_7_owns() {
+fn matrix_row_19_a_refused_host_still_attributes_its_slug() {
     let m = Matrix::build();
     // Rows 19 and 21: the host IS validated as of Phase 3, but only for the SCOPE it confers.
     // Attribution is deliberately unchanged, so the slug still parses.

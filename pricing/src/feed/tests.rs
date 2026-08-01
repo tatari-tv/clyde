@@ -120,8 +120,13 @@ fn lookup_normalizes_bare_names() {
 
 #[test]
 fn with_user_override_missing_falls_back_to_embedded() {
+    // Reads `XDG_CONFIG_HOME` indirectly. App-name isolation keeps this test from COLLIDING with a
+    // sibling's fixture, but it does not make the read synchronized: `fetch::tests` rewrites the
+    // variable process-wide, and an unguarded read can land mid-rewrite.
+    let guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let p = Pricing::with_user_override("definitely-not-a-real-app-name-12345").unwrap();
     assert!(matches!(p.source(), Source::Embedded));
+    drop(guard);
 }
 
 #[test]
@@ -263,9 +268,12 @@ fn feed_with_blocks_is_authoritative_over_embedded() {
 
 #[test]
 fn user_override_path_returns_app_specific_dir() {
+    // Same indirect `XDG_CONFIG_HOME` read as above; same lock.
+    let guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = user_override_path("test-app");
     let path = path.unwrap();
     assert!(path.ends_with("test-app/pricing.json"));
+    drop(guard);
 }
 
 // ---- AC-P8: the embedded baseline reports its own version ---------------------------------------

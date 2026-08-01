@@ -124,6 +124,7 @@ pub fn collect_layouts(
     candidates: &[EfficiencyCandidate],
     config: &EfficiencyConfig,
     repo_root: &Path,
+    work_remote_hosts: &[String],
 ) -> Result<Collected> {
     debug!(
         "collect_layouts: candidates={} repo_root={}",
@@ -163,7 +164,9 @@ pub fn collect_layouts(
     // ONE resolver for the whole pass, shared by reference across the rayon threads. That sharing is
     // the point: sessions overlap heavily on directories, so a per-session memo would re-probe the
     // same checkout once per session instead of once per catalog.
-    let slugs = SharedResolver::new();
+    // `with_hosts`, NOT `new`: rule 3 must be able to refuse a work-looking slug that arrived from
+    // a non-allowlisted remote, which is the same gate rule 1 applies.
+    let slugs = SharedResolver::with_hosts(work_remote_hosts);
     let sessions: Vec<CollectedSession> = priceable
         .par_iter()
         .map(|(candidate, files)| {

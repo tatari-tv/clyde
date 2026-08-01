@@ -137,7 +137,7 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
     );
 
     // Run the backfill pass.
-    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos"), &[]).unwrap();
     assert_eq!(stats.candidates, 1, "one un-annotated session");
     assert_eq!(stats.computed, 1, "it is found on disk and computed");
     assert_eq!(stats.written, 1, "and written");
@@ -171,7 +171,7 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
     );
 
     // A second pass is a no-op (idempotent): nothing left to annotate, cursor still unchanged.
-    let again = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    let again = reindex_efficiency(&db, &config(), Path::new("/repos"), &[]).unwrap();
     assert_eq!(again.candidates, 0, "second pass finds nothing to do");
     assert_eq!(again.written, 0);
     let after2 = db.export(&ExportFilters::default(), &ctx).unwrap();
@@ -235,7 +235,7 @@ fn reindex_persists_per_model_tokens_and_outcomes() {
     };
     db.upsert_session(&parsed, "host-01").unwrap();
 
-    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos"), &[]).unwrap();
     assert_eq!(stats.written, 1, "the session is annotated");
 
     // Per-model tokens are inside efficiency_json (aggregate.raw.by-model), kebab-case.
@@ -295,7 +295,7 @@ fn reindex_discloses_and_counts_a_session_whose_model_could_not_be_priced() {
     db.upsert_session(&parsed_row(SID_UNPRICED, &project, &transcript), "host-01")
         .unwrap();
 
-    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos"), &[]).unwrap();
     assert_eq!(stats.computed, 1);
     assert_eq!(
         stats.unpriced, 1,
@@ -379,7 +379,7 @@ fn reindex_prices_an_archived_row_from_its_staged_copy() {
         "the reaped row is flagged archived"
     );
 
-    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos"), &[]).unwrap();
     assert_eq!(stats.candidates, 1, "an archived row is still a candidate");
     assert_eq!(stats.computed, 1, "and it is PRICED, from the staged copy");
     assert_eq!(stats.unrecoverable, 0, "its bytes were recoverable");
@@ -428,7 +428,7 @@ fn reindex_counts_an_archived_row_with_no_staged_copy_as_unrecoverable() {
     std::fs::remove_file(&transcript).unwrap();
     assert_eq!(db.reconcile_archived().unwrap(), 1);
 
-    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos"), &[]).unwrap();
     assert_eq!(stats.candidates, 1, "it is still offered as a candidate");
     assert_eq!(stats.computed, 0, "but there are no bytes anywhere to price");
     assert_eq!(stats.unrecoverable, 1, "so it is COUNTED, never silently dropped");
@@ -497,7 +497,7 @@ fn staging_before_the_efficiency_pass_survives_a_reap() {
     assert_eq!(db.reconcile_archived().unwrap(), 1);
 
     // The spend survives, because the staging sweep beat the reap.
-    let stats = reindex_efficiency(&db, &config(), Path::new("/repos")).unwrap();
+    let stats = reindex_efficiency(&db, &config(), Path::new("/repos"), &[]).unwrap();
     assert_eq!(stats.candidates, 1);
     assert_eq!(stats.computed, 1, "priced from the staged copy after the reap");
     assert_eq!(stats.unrecoverable, 0, "nothing was lost");
