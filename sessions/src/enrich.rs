@@ -13,6 +13,8 @@ use chrono::{DateTime, Utc};
 use eyre::{Context, Result, bail};
 use log::{debug, info, warn};
 
+use common::repo::host::{DEFAULT_WORK_REMOTE_HOSTS, HostPolicy};
+
 use crate::db::{Db, EnrichSuccess};
 use crate::export::EnrichStatus;
 use crate::llm::{Completer, ENRICH_MODEL, ENRICH_PROMPT_VERSION};
@@ -51,6 +53,12 @@ pub struct EnrichOptions {
     pub max_attempts: i64,
     /// Halt the sweep once cumulative tokens (in+out) reach this budget. `None` = unbounded.
     pub token_budget: Option<u64>,
+    /// Hosts a git remote may confer WORK scope from (`clyde.yml`'s `work-remote-hosts`).
+    ///
+    /// Carried in the options rather than as a fifth parameter because it IS sweep configuration,
+    /// like `max_attempts` and `token_budget`, and because a `Default` that resolves to
+    /// `["github.com"]` is what keeps every existing caller correct rather than merely compiling.
+    pub work_remote_hosts: Vec<String>,
 }
 
 impl Default for EnrichOptions {
@@ -63,6 +71,7 @@ impl Default for EnrichOptions {
             show_payload: None,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
             token_budget: None,
+            work_remote_hosts: DEFAULT_WORK_REMOTE_HOSTS.iter().map(|h| (*h).to_string()).collect(),
         }
     }
 }
@@ -100,6 +109,11 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
     // personal-scope or empty-body skip never reached the transport, so it is neither a failure nor a
     // success and leaves the count unchanged.
     let mut consecutive_failures: usize = 0;
+    // The host allowlist, resolved ONCE for the whole sweep so an SSH alias costs one `ssh -G` rather
+    // than one per session. It lives here rather than inside the classifier because resolution spawns
+    // a subprocess, and `session::scope` is a pure function the routing gate has to be able to reason
+    // about against a fixed input.
+    let mut hosts = HostPolicy::new(&opts.work_remote_hosts);
 
     for rec in &records {
         // Classify from the cwd, the GIT REMOTE, and the repo evidence the catalog already holds, in
@@ -119,6 +133,10 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 repo_probe: evidence.repo_probe.as_deref(),
                 scope_override: evidence.scope_override.as_deref(),
                 evidence_present: evidence.present,
+                // `None` when no host was recorded, which is every pre-v13 row, and it must stay
+                // `None` rather than becoming `Some(false)`: see `RoutingFacts::host_confers_work`
+                // for why a NULL host may never strip authority on its own.
+                host_confers_work: evidence.repo_host.as_deref().map(|h| hosts.confers_work(h)),
             },
         );
         let scope = decision.scope;

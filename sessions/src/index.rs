@@ -142,6 +142,12 @@ fn apply_chain(
     // `git` invocations `resolve` below is about to use.
     let outcome = resolver.probe(cwd);
     db.record_probe(session_id, &outcome, Utc::now())?;
+    // Persist the HOST alongside, when the probe resolved one. Without it a later host-policy change
+    // could only be applied by a live reprobe, which is the retro-observation defect the probe record
+    // exists to close. Rows indexed before v13 keep a NULL host and are handled strip-only.
+    if let Some(host) = outcome.resolved_host() {
+        db.record_repo_host(session_id, host)?;
+    }
 
     let Some(resolved) = resolver.resolve(cwd, db, repos_touched, repo_root) else {
         return Ok(());

@@ -281,3 +281,138 @@ the REAL `~/.cache/clyde/cost/` directory and clean up with `remove_file`, so co
 that binary share process-global state; that is the most likely mechanism, but I did not reproduce
 it and will not claim the exact interleaving. Unrelated to this design doc, in a crate it does not
 touch. Flagged for a follow-up rather than fixed here.
+
+## Phase 3: Validate the remote's host
+
+### Design decisions
+
+- **`HostResolver` is an injected PORT** (`common/src/repo/host.rs`), generic not `dyn`, per the house
+  DI rule. It exists for a reason specific to this module: the production resolver reads the invoking
+  user's real `~/.ssh/config`, which a test cannot control. Without the seam, `HostPolicy`'s logic
+  could only be exercised on hosts that happen to have no alias configured, which is not a test of
+  alias handling at all.
+- **The host gate lives in the CALLER, not the classifier.** `RoutingFacts::host_confers_work` is an
+  already-resolved `Option<bool>`. Resolution spawns `ssh -G`, and `session::scope` is a pure
+  function the routing gate has to be reasonable about against a fixed input; a classifier that
+  shells out cannot be unit-tested that way.
+- **`work_remote_hosts` rides in `EnrichOptions`, not as a fifth `enrich()` parameter.** It IS sweep
+  configuration, like `max_attempts` and `token_budget`, and a `Default` resolving to
+  `["github.com"]` keeps every existing caller CORRECT rather than merely compiling.
+- **An EMPTY `work-remote-hosts` is rejected at load** (`common/src/config.rs`). It fails closed
+  either way, but silently: an empty list confers work from nothing at all and returns every teammate
+  to 0% coverage, which is far more likely a half-finished edit than an intention.
+- **`Basis::HostRefused` is separate from `Basis::ProbeRefused`.** The two have DIFFERENT remedies: a
+  probe refusal is cleared with `session reindex --clear-probe`, a host refusal is fixed by adding the
+  host to `work-remote-hosts` or is a genuine attack. Phase 8 counts them separately for that reason.
+- **`record_repo_host` DOES overwrite; `record_probe` does not.** The host is a property of the
+  CURRENT remote, so a repo genuinely re-pointed must read as the new host. The probe record is a
+  historical observation and erasing it is the leak.
+- **An IPv6 authority is declined rather than parsed.** clyde has never seen one in a git remote, and
+  a wrong answer here confers work scope, so the fail-closed direction is to refuse.
+
+### Deviations
+
+- **`ssh` is invoked WITHOUT `HOME`, and the design's implicit assumption that forwarding it matters
+  is wrong.** Measured 2026-07-31 under `env -i` with `HOME` pointed at a temp dir holding a
+  `Host github-work` block:
+
+  ```
+  $ env -i PATH=/usr/bin:/bin HOME=$FAKE ssh -G github-work | grep -E 'hostname|knownhosts'
+  hostname github-work
+  userknownhostsfile /home/saidler/.ssh/known_hosts /home/saidler/.ssh/known_hosts2
+  ```
+
+  The alias did NOT resolve and ssh read the REAL user's `known_hosts`: it resolves the home
+  directory from the passwd database, not from `$HOME`. Forwarding `HOME` therefore buys nothing and
+  would wrongly imply to a reader that the operator's config is reachable through the environment.
+  The useful half of the same measurement is that alias resolution WORKS under a scrubbed
+  environment with `PATH` alone, which is what production needs.
+
+- **Matrix rows 19 and 20 were MOVED off-layout in the fixture**, from
+  `<repo-root>/tatari-tv/<repo>` to `<home>/code/work/<repo>`. Under the work org the cwd anchor
+  places the session as work on its own and the host gate is never consulted, so the test asserted
+  nothing about Problem 2. Found by row 19 failing with `("work", true)` for a legitimate reason.
+  Off-layout, the remote is the only signal, which is the teammate situation the git-origin branch
+  was built for and therefore the one the host gate has to defend.
+
+- **Row 20 asserts the alias is RECORDED verbatim, not that it resolves.** `ssh -G` reads the
+  invoking user's real config, which a test must not depend on and cannot safely modify. The
+  resolution logic is asserted against an injected resolver in `common::repo::host::tests`. Both
+  halves are needed: without the matrix half, nothing proves the alias survives the trip from git to
+  the catalog un-mangled.
+
+- **The blast radius is SMALLER than the design states.** The doc says "every call site is updated in
+  the same commit: `session/src/scope.rs`, `efficiency/src/outcome.rs`, `common/src/repo.rs`'s own
+  rule 1, and `common/src/repo/tests.rs`". Measured with the command the doc itself prescribes:
+
+  ```
+  $ rg -n 'parse_slug' --type rust -g '!target'
+  common/src/repo.rs:433   (rule 1, the one production call site)
+  common/src/repo.rs:690   (the definition)
+  common/src/repo/tests.rs  (five test call sites)
+  ```
+
+  `session/src/scope.rs` and `efficiency/src/outcome.rs` do not call `parse_slug` at all; they consume
+  a slug the catalog already stored. Nothing was missed, and the phase is independently committable
+  as the design intended.
+
+- **Register item 11's stash was NOT dropped, and this is the one thing left for the owner.** The
+  stash exists (`stash@{0}: On unblock-teammate-reports: scope trust-boundary doc + test`) and
+  dropping it destroys work that is on no branch. The design's stated PURPOSE ("recorded so it is not
+  rediscovered and applied") is met by the record itself. To finish it:
+  `git stash drop stash@{0}`.
+
+### Tradeoffs
+
+- **`HostPolicy` short-circuits on a literal match before resolving.** That makes the overwhelmingly
+  common case (`github.com`) spawn nothing, and it means an operator who lists an ALIAS in
+  `work-remote-hosts` gets a literal match rather than a resolution. Both readings are correct and
+  the cheap one wins.
+- **The failure is memoized too.** A catalog with 2,000 sessions behind one unresolvable alias spawns
+  `ssh` once, not 2,000 times. Asserted rather than assumed
+  (`resolution_is_memoized_per_host_including_failures`).
+
+### Open questions
+
+- None.
+
+### Measured
+
+**Row 19 and row 27 both bite, verified by deletion:**
+
+- delete the `host_confers_work` branch from `session::scope` ->
+  `matrix_row_19_a_non_allowlisted_host_attributes_but_confers_no_work_scope` FAILED
+- treat a NULL `repo_host` as `Some(false)` (the strip-only violation) ->
+  `matrix_row_27_a_pre_v13_row_with_no_recorded_host_keeps_its_work_authority` FAILED
+
+Row 27 did NOT bite on the first attempt, and the reason is recorded because it generalizes: with the
+checkout still on disk, `enrich`'s own `lazy_reindex` re-probes the cwd and re-populates `repo_host`
+before the classifier runs, so the NULL never reaches the gate. Deleting the checkout first makes the
+row a genuine pre-v13 shape. Any future test that nulls a column the reindex writes has the same
+trap.
+
+**AC9 at the RELEASE level** (Phase 2 plus Phase 3, which is what actually ships), `enrich --dry-run`
+against a copy of the live 2,150-row desk.lan catalog, versus installed v0.22.0:
+
+```
+v0.22.0:      considered 1029  would-enrich 14  (personal,false) 1014  (work,false) 1  (work,true) 14
+this branch:  considered 1029  would-enrich 14  (personal,false) 1014  (work,false) 1  (work,true) 14
+rows whose (scope, would-send) CHANGED: 0
+```
+
+**Zero, and EXPLAINED, which is the criterion the design sets rather than zero for its own sake:**
+
+```
+recorded hosts after the pass:  github.com 1230 | (null) 929
+hosts outside the allowlist:    none
+rows with a work slug and a NULL host (the strip-only population): 351
+```
+
+Both populations the Data Model names are present and neither moved. There is no non-allowlisted host
+on this catalog, so nothing is stripped; the 351 NULL-host work rows keep pre-v13 authority by design.
+A machine with a non-github remote WOULD see a change, and this catalog cannot produce that number.
+Recorded as a known-null result on the only catalog available, not as "no impact".
+
+An earlier run of this comparison reported "1029 rows changed". That was a defect in the comparison
+script (a JSON list compared against a Python tuple), not in the code; the aggregate counts were
+identical on both sides, which is what caught it.

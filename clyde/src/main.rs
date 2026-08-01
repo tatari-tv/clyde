@@ -842,6 +842,10 @@ fn cmd_stage(db: &Db, args: StageArgs, tz: common::DateTz) -> Result<()> {
 }
 
 fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
+    // Loaded BEFORE the sweep, and its failure is fatal here rather than a warning: `clyde.yml`
+    // carries `work-remote-hosts`, which decides which remotes may confer WORK scope. A malformed
+    // config must never fall back to defaults on the one path that ships content off-machine.
+    let cfg = common::config::load().context("failed to load clyde config for the enrichment gate")?;
     // Enrich off fresh mtimes so dormancy and grown-since detection reflect the latest activity.
     lazy_reindex(db, false);
     if args.show_payload.is_some() && !args.dry_run {
@@ -879,6 +883,9 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
         show_payload: args.show_payload,
         max_attempts: args.max_attempts,
         token_budget: args.budget_tokens,
+        // The host allowlist reaches the gate through config, never a flag: it decides which remotes
+        // may confer WORK scope, which is policy, not a per-invocation choice.
+        work_remote_hosts: cfg.work_remote_hosts().to_vec(),
     };
     let stats = if args.dry_run {
         // No off-machine calls, no `claude` needed: the gate is previewed, not opened.

@@ -71,6 +71,27 @@ impl Db {
         Ok(n > 0)
     }
 
+    /// Persist the HOST a resolved origin came from.
+    ///
+    /// Storing the host is what makes a later host-policy change applicable at all. With only the
+    /// slug, checking a pre-v13 row against a changed allowlist would require a LIVE reprobe, and a
+    /// live reprobe is the retro-observation defect this design exists to close: it observes the
+    /// world as it is today and records the answer as if it were evidence about when the session ran.
+    ///
+    /// Guarded against a no-change write, like every other column touched on every reindex pass: an
+    /// unconditional UPDATE here would fire the v5 revision trigger for every session, every pass.
+    /// Unlike [`Self::record_probe`] this DOES overwrite an existing value, because the host is a
+    /// property of the current remote (a repo genuinely re-pointed at a new host must read as the new
+    /// host), whereas the probe record is a historical observation that must not be erased.
+    pub fn record_repo_host(&self, session_id: &str, host: &str) -> Result<bool> {
+        debug!("Db::record_repo_host: session_id={session_id} host={host}");
+        let n = self.conn.execute(
+            "UPDATE sessions SET repo_host = ?2 WHERE session_id = ?1 AND repo_host IS NOT ?2",
+            params![session_id, host],
+        )?;
+        Ok(n > 0)
+    }
+
     /// The recorded conclusive-negative stamp for one session, or `None`.
     ///
     /// PRESENCE is the whole signal. Only a conclusive negative is ever written, so a non-`None`

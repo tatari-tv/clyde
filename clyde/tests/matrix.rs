@@ -31,6 +31,9 @@ const SID_NO_ORIGIN: &str = "22222222-2222-4222-8222-222222222222";
 const SID_FORK: &str = "33333333-3333-4333-8333-333333333333";
 const SID_LAYOUT: &str = "44444444-4444-4444-8444-444444444444";
 const SID_DELETABLE: &str = "55555555-5555-4555-8555-555555555555";
+const SID_EVIL_HOST: &str = "66666666-6666-4666-8666-666666666666";
+const SID_ALIAS: &str = "77777777-7777-4777-8777-777777777777";
+const SID_SUBMODULE: &str = "88888888-8888-4888-8888-888888888888";
 
 /// The rule-1 SLUG for a matrix cwd, through the REAL resolver with the fixture's blocked roots.
 /// Rows that care about the slug alone use this; rows about the routing gate use [`probe`].
@@ -618,5 +621,156 @@ fn matrix_rows_09_and_10_a_later_probe_never_upgrades_personal_to_work() {
         (scope.as_str(), *send),
         ("personal", false),
         "a personal transcript was queued for the work Anthropic account by a `git remote add`"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 3 rows: the host is validated, and the fix must not break SSH aliases.
+// ---------------------------------------------------------------------------------------------
+
+/// Row 19, Problem 2. A remote on a host that is not allowlisted still ATTRIBUTES a repo (it says
+/// which repo the session was in, which is true) but must never confer WORK scope.
+///
+/// The distinction matters: refusing the attribution too would lose real information for no safety
+/// gain, since attribution never leaves the machine.
+///
+/// BITES: remove the `host_confers_work` branch from `session::scope` and this classifies work.
+#[test]
+fn matrix_row_19_a_non_allowlisted_host_attributes_but_confers_no_work_scope() {
+    let s = Sandbox::new();
+    s.seed(SID_EVIL_HOST, &s.matrix.host_not_allowed);
+    s.reindex();
+
+    let (repo, source) = s.attribution(SID_EVIL_HOST);
+    assert_eq!(
+        repo.as_deref(),
+        Some("tatari-tv/x"),
+        "attribution is unchanged: the remote still says which repo this is"
+    );
+    assert_eq!(source.as_deref(), Some("git-origin"));
+
+    let decisions = s.dry_run_decisions();
+    let (_, scope, send) = decisions
+        .iter()
+        .find(|(id, _, _)| id == SID_EVIL_HOST)
+        .expect("the session was considered");
+    assert_eq!(
+        (scope.as_str(), *send),
+        ("personal", false),
+        "a `tatari-tv` slug from evil.example.com must not ship to the work account"
+    );
+}
+
+/// Row 21, the attacker-authored vector. A `.gitmodules` naming a hostile remote is content anyone
+/// can put in a repo you clone. It must not be able to influence the routing decision.
+///
+/// The checkout's OWN origin is a legitimate `github.com` work remote, so this asserts the honest
+/// outcome: the session is work because ITS remote is trustworthy, and the hostile `.gitmodules`
+/// changed nothing. A test asserting `personal` here would be asserting a coverage regression.
+#[test]
+fn matrix_row_21_a_hostile_gitmodules_does_not_reach_the_routing_decision() {
+    let s = Sandbox::new();
+    s.seed(SID_SUBMODULE, &s.matrix.hostile_submodule);
+    s.reindex();
+
+    let (repo, _) = s.attribution(SID_SUBMODULE);
+    assert_eq!(
+        repo.as_deref(),
+        Some("tatari-tv/withsub"),
+        "the cwd's OWN origin decides, never a url string sitting in a tracked file"
+    );
+
+    let host: Option<String> = {
+        let conn = rusqlite::Connection::open_with_flags(s.db_path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open the catalog");
+        conn.query_row(
+            "SELECT repo_host FROM sessions WHERE session_id = ?1",
+            rusqlite::params![SID_SUBMODULE],
+            |r| r.get(0),
+        )
+        .expect("row")
+    };
+    assert_eq!(
+        host.as_deref(),
+        Some("github.com"),
+        "the recorded host is the checkout's own, not evil.example.com from .gitmodules"
+    );
+}
+
+/// Row 20, and the check that Phase 3 did not reintroduce the 0%-coverage bug: a remote reached
+/// through an SSH `Host` alias that resolves to an allowlisted host STILL confers work.
+///
+/// The alias cannot be resolved in this sandbox (`ssh -G` reads the INVOKING USER's real
+/// `~/.ssh/config`, which a test must not depend on and cannot safely modify), so the assertion here
+/// is the one that IS reproducible: the alias is recorded verbatim as the host, which is what makes
+/// it resolvable at all. `HostPolicy`'s resolution logic is asserted against an injected resolver in
+/// `common::repo::host::tests::an_ssh_alias_resolving_to_an_allowlisted_host_still_confers_work`.
+///
+/// Both halves are needed: without this one, nothing proves the alias survives the trip from git to
+/// the catalog un-mangled.
+#[test]
+fn matrix_row_20_an_ssh_alias_host_is_recorded_verbatim_for_later_resolution() {
+    let s = Sandbox::new();
+    s.seed(SID_ALIAS, &s.matrix.host_ssh_alias);
+    s.reindex();
+
+    let host: Option<String> = {
+        let conn = rusqlite::Connection::open_with_flags(s.db_path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open the catalog");
+        conn.query_row(
+            "SELECT repo_host FROM sessions WHERE session_id = ?1",
+            rusqlite::params![SID_ALIAS],
+            |r| r.get(0),
+        )
+        .expect("row")
+    };
+    assert_eq!(
+        host.as_deref(),
+        Some("github-work"),
+        "the alias must be stored as written; normalizing it away here would make resolution \
+         impossible and refuse every alias user"
+    );
+}
+
+/// Row 27, the migration population. A pre-v13 row carries a NULL `repo_host`, and that must NOT
+/// strip its work authority: the v13 upgrade would otherwise demote every `git-origin` row at once.
+///
+/// **Strip-only, made executable.** A live-populated host may only ever REMOVE authority. This
+/// asserts the "keeps what it had" half; row 19 asserts the "stripped" half.
+///
+/// BITES: treat a NULL `repo_host` as `Some(false)` and this session stops being work.
+#[test]
+fn matrix_row_27_a_pre_v13_row_with_no_recorded_host_keeps_its_work_authority() {
+    let s = Sandbox::new();
+    s.seed(SID_LAYOUT, &s.matrix.layout_git_tatari);
+    s.reindex();
+
+    // The checkout is DELETED before the host is nulled, and that ordering is the whole test. With
+    // the checkout still on disk, `enrich`'s own `lazy_reindex` re-probes the cwd and re-populates
+    // `repo_host` before the classifier ever runs, so the NULL never reaches the gate and the
+    // assertion below passes no matter what the gate does. Verified by deletion: with the checkout
+    // present, treating a NULL host as `Some(false)` still passed.
+    //
+    // Deleted, the probe is `Indeterminate` (nothing to observe), no host is recorded, and the
+    // upgrade-only write keeps the existing `git-origin` attribution. That is precisely a pre-v13
+    // row: a real work slug with no host beside it.
+    std::fs::remove_dir_all(&s.matrix.layout_git_tatari).expect("delete the checkout");
+    {
+        let conn = rusqlite::Connection::open(s.db_path()).expect("open the catalog");
+        conn.execute(
+            "UPDATE sessions SET repo_host = NULL, scope_version = NULL WHERE session_id = ?1",
+            rusqlite::params![SID_LAYOUT],
+        )
+        .expect("null the host");
+    }
+
+    let decisions = s.dry_run_decisions();
+    let (_, scope, _) = decisions
+        .iter()
+        .find(|(id, _, _)| id == SID_LAYOUT)
+        .expect("the pre-v13 row was considered");
+    assert_eq!(
+        scope, "work",
+        "a NULL repo_host must never strip authority on its own: that is the whole strip-only rule"
     );
 }

@@ -40,33 +40,32 @@ fn git_config(dir: &Path, key: &str, value: &str) {
     git_setup(dir, &["config", "--local", key, value]);
 }
 
+/// `(host, slug)` for a URL, or `None`. The two fields are asserted TOGETHER everywhere below,
+/// because discarding the host while keeping the slug is precisely Problem 2.
+fn split(url: &str) -> Option<(String, String)> {
+    parse_slug(url).map(|r| (r.host, r.slug))
+}
+
 #[test]
 fn parse_slug_ssh_form() {
-    assert_eq!(
-        parse_slug("git@github.com:tatari-tv/claude-report.git"),
-        Some("tatari-tv/claude-report".into())
-    );
-    assert_eq!(
-        parse_slug("git@github.com:tatari-tv/claude-report"),
-        Some("tatari-tv/claude-report".into())
-    );
+    let want = Some(("github.com".to_string(), "tatari-tv/claude-report".to_string()));
+    assert_eq!(split("git@github.com:tatari-tv/claude-report.git"), want);
+    assert_eq!(split("git@github.com:tatari-tv/claude-report"), want);
 }
 
 #[test]
 fn parse_slug_https_form() {
-    assert_eq!(
-        parse_slug("https://github.com/scottidler/obsidian.git"),
-        Some("scottidler/obsidian".into())
-    );
-    assert_eq!(
-        parse_slug("https://github.com/scottidler/obsidian"),
-        Some("scottidler/obsidian".into())
-    );
+    let want = Some(("github.com".to_string(), "scottidler/obsidian".to_string()));
+    assert_eq!(split("https://github.com/scottidler/obsidian.git"), want);
+    assert_eq!(split("https://github.com/scottidler/obsidian"), want);
 }
 
 #[test]
 fn parse_slug_git_protocol() {
-    assert_eq!(parse_slug("git://github.com/foo/bar.git"), Some("foo/bar".into()));
+    assert_eq!(
+        split("git://github.com/foo/bar.git"),
+        Some(("github.com".to_string(), "foo/bar".to_string()))
+    );
 }
 
 #[test]
@@ -74,6 +73,29 @@ fn parse_slug_garbage_returns_none() {
     assert_eq!(parse_slug(""), None);
     assert_eq!(parse_slug("not-a-url"), None);
     assert_eq!(parse_slug("https://github.com/onlyorg"), None);
+}
+
+/// The host is normalized before it reaches the allowlist: any `user@` dropped, any `:port` dropped,
+/// lowercased. Each of those is a way a host could otherwise miss a literal comparison.
+#[test]
+fn parse_slug_normalizes_the_host() {
+    assert_eq!(
+        split("ssh://git@GitHub.com:22/tatari-tv/philo.git"),
+        Some(("github.com".to_string(), "tatari-tv/philo".to_string())),
+        "user, port and case all normalized away"
+    );
+    assert_eq!(
+        split("http://10.0.0.5:8080/tatari-tv/x"),
+        Some(("10.0.0.5".to_string(), "tatari-tv/x".to_string())),
+        "a bare IP with a port is a host like any other, and it is not on the allowlist"
+    );
+}
+
+/// An IPv6 literal is DECLINED rather than mangled. clyde has never seen one in a git remote, and a
+/// wrong answer here confers work scope, so the fail-closed direction is to refuse.
+#[test]
+fn parse_slug_declines_a_bracketed_ipv6_authority() {
+    assert_eq!(parse_slug("ssh://git@[::1]:22/tatari-tv/x.git"), None);
 }
 
 /// A missing cwd is the archived-session case (matrix row 26). There is nothing to observe, so it

@@ -77,6 +77,11 @@ pub enum Basis {
     /// 3am an operator must be able to tell "the remote says personal" from "clyde refused to trust
     /// the remote", and one timestamp cannot.
     ProbeRefused,
+    /// A git-origin WORK slug REFUSED because the host it came from is not allowlisted. Counted
+    /// separately from [`Self::ProbeRefused`] for the same 3am reason: the two have DIFFERENT
+    /// remedies. A probe refusal is cleared with `session reindex --clear-probe`; a host refusal is
+    /// fixed by adding the host to `work-remote-hosts`, or is a genuine attack.
+    HostRefused,
     /// The set of repos whose files the session edited. Reads `outcome_json`, so its decision is
     /// provisional until the efficiency pass has reached the row.
     TouchSet,
@@ -251,6 +256,20 @@ pub fn classify_with_evidence(
         && let Some(slug) = repo
     {
         if is_work_slug(slug) {
+            // Problem 2. The `<org>/<repo>` shape guards were always sound; the HOST was the gap, and
+            // `git@evil.example.com:tatari-tv/x.git` reads as a work org today. A recorded,
+            // non-allowlisted host refuses before the probe record is even consulted, because the
+            // slug is not trustworthy in the first place.
+            //
+            // `None` (no host recorded) deliberately does NOT refuse: see `host_confers_work`.
+            if facts.host_confers_work == Some(false) {
+                trace!("scope::classify_with_evidence: repo={slug} REFUSED, its host is not allowlisted");
+                return Decision {
+                    scope: Scope::Personal,
+                    basis: Basis::HostRefused,
+                    settled: false,
+                };
+            }
             if let Some(stamp) = facts.repo_probe {
                 trace!(
                     "scope::classify_with_evidence: repo={slug} via git-origin REFUSED, conclusive \
@@ -327,6 +346,30 @@ pub struct RoutingFacts<'a> {
     pub repo_probe: Option<&'a str>,
     /// An operator override, `work` or `personal`. Beats every rule.
     pub scope_override: Option<&'a str>,
+    /// Whether the HOST this session's remote-derived slug came from may confer Work scope.
+    ///
+    /// Three states, and the third is the whole migration story:
+    ///
+    /// - `Some(true)`  the host is allowlisted (or an SSH alias resolving to one). Work is allowed.
+    /// - `Some(false)` the host is recorded and is NOT allowlisted. Work is REFUSED.
+    /// - `None`        no host is recorded. This is every pre-v13 row, and it must NOT refuse.
+    ///
+    /// **`None` never refuses, and that is the strip-only rule made executable.** `repo_host` is NULL
+    /// on every row indexed before v13, and the only way to fill it is a live probe. If NULL refused,
+    /// the v13 upgrade would strip work authority from every such row at once; if a live probe could
+    /// CONFER authority, that would be the retro-observation defect being fixed. So a live-populated
+    /// host may only ever REMOVE authority: probe and find a non-allowlisted host, the row is
+    /// stripped; probe and find an allowlisted one, or fail to probe at all, and the row keeps
+    /// exactly the authority it already had under v0.22.0.
+    ///
+    /// Pre-v13 rows therefore carry pre-v13 trust, which is honest: the evidence needed to do better
+    /// was never collected. Problem 2 is fully closed for rows indexed at v13 and later, and
+    /// enforceable downward on older ones.
+    ///
+    /// Resolved by the CALLER, never here. Resolution spawns `ssh -G`, and this module is a pure
+    /// function the routing gate can reason about; a classifier that shells out is one that cannot be
+    /// unit-tested against a fixed input.
+    pub host_confers_work: Option<bool>,
     /// Whether `outcome_json` existed and parsed, i.e. whether the efficiency pass has reached this
     /// row. Decides whether a TOUCH-SET decision is settled, and nothing else.
     pub evidence_present: bool,

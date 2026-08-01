@@ -219,10 +219,8 @@ impl Matrix {
 
         // Rows 14 to 16: the three teammate layouts with no readable org slot. Real checkouts with
         // real `tatari-tv` origins, and NONE of them under `repo-root`.
-        let layout_code_work = repo(
-            &home.join("code").join("work").join("philo"),
-            Some("git@github.com:tatari-tv/philo.git"),
-        );
+        let offlayout = mkdir(&home.join("code").join("work"));
+        let layout_code_work = repo(&offlayout.join("philo"), Some("git@github.com:tatari-tv/philo.git"));
         let layout_projects = repo(
             &home.join("Projects").join("philo"),
             Some("git@github.com:tatari-tv/philo.git"),
@@ -236,8 +234,16 @@ impl Matrix {
             &work.join("clyde-fork"),
             Some("git@github.com:scottidler/clyde-fork.git"),
         );
-        let host_not_allowed = repo(&work.join("elsewhere"), Some("git@evil.example.com:tatari-tv/x.git"));
-        let host_ssh_alias = repo(&work.join("aliased"), Some("git@github-work:tatari-tv/x.git"));
+        // Rows 19 and 20 live OFF-layout, and that placement is the point rather than a detail.
+        // Under `<repo-root>/tatari-tv/` the cwd anchor would place the session as work on its own
+        // and the host gate would never be consulted, so a test there asserts nothing about
+        // Problem 2. Off-layout, the REMOTE is the only signal, which is exactly the teammate
+        // situation the git-origin branch was built for and therefore the one the host gate defends.
+        let host_not_allowed = repo(
+            &offlayout.join("elsewhere"),
+            Some("git@evil.example.com:tatari-tv/x.git"),
+        );
+        let host_ssh_alias = repo(&offlayout.join("aliased"), Some("git@github-work:tatari-tv/x.git"));
 
         // Row 21: `.gitmodules` is attacker-authored content in a third-party clone, and v0.22.0
         // newly feeds a remote-derived string to `is_work_slug`. The file is what matters; no

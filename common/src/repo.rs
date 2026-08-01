@@ -257,6 +257,13 @@ pub enum ProbeOutcome {
     Resolved {
         /// The `<org>/<repo>` slug.
         slug: String,
+        /// The HOST the origin URL pointed at, as written (an SSH alias is not resolved here).
+        ///
+        /// Carried and persisted because a slug alone cannot be host-checked later: without it, a
+        /// change to the allowlist could only be applied by a LIVE reprobe, and a live reprobe is the
+        /// retro-observation defect this whole design exists to close. Storing the host is what makes
+        /// a policy change applicable to rows that were indexed under the old policy.
+        host: String,
     },
     /// The cwd exists, IS a git repo, git answered, and there is no origin. CONCLUSIVE: records.
     NoOrigin,
@@ -278,7 +285,16 @@ impl ProbeOutcome {
     /// The slug when the probe resolved one, for the callers that only ever wanted the attribution.
     pub fn resolved_slug(&self) -> Option<&str> {
         match self {
-            Self::Resolved { slug } => Some(slug.as_str()),
+            Self::Resolved { slug, .. } => Some(slug.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The host when the probe resolved one. `None` for every other arm, which is correct: nothing
+    /// else observed a remote, so nothing else has a host to report.
+    pub fn resolved_host(&self) -> Option<&str> {
+        match self {
+            Self::Resolved { host, .. } => Some(host.as_str()),
             _ => None,
         }
     }
@@ -431,7 +447,7 @@ fn has_git_marker(cwd: &Path) -> bool {
 fn read_origin(cwd: &Path) -> ProbeOutcome {
     match run_git(cwd, ORIGIN_ARGS) {
         GitRun::Answered(url) => match parse_slug(url.trim()) {
-            Some(slug) => ProbeOutcome::Resolved { slug },
+            Some(RemoteSlug { host, slug }) => ProbeOutcome::Resolved { slug, host },
             None => {
                 warn!(
                     "repo::detect: {} has an origin that does not parse to <org>/<repo>; recording nothing",
@@ -687,33 +703,65 @@ fn run_git(cwd: &Path, args: &[&str]) -> GitRun {
     }
 }
 
-pub fn parse_slug(url: &str) -> Option<String> {
+/// A remote URL, split into the two things that matter: WHERE it points and WHAT it names.
+///
+/// Before v13 only the slug survived, and that is Problem 2. `parse_slug` discarded everything up to
+/// the first `/` or `:` in every branch (`let (_, path) = ...`), so all five of these conferred work
+/// scope:
+///
+/// ```text
+/// git@github.com:tatari-tv/philo.git          -> tatari-tv/philo
+/// git@evil.example.com:tatari-tv/x.git        -> tatari-tv/x
+/// https://evil.example.com/tatari-tv/x        -> tatari-tv/x
+/// http://10.0.0.5:8080/tatari-tv/x            -> tatari-tv/x
+/// ssh://git@gitea.local:2222/tatari-tv/x.git  -> tatari-tv/x
+/// ```
+///
+/// The `<org>/<repo>` shape guards were always sound; the host was the whole gap. The exposure is
+/// NEW to v0.22.0: before it, `is_work_slug` only ever saw `repos_touched` keys derived from LOCAL
+/// paths, so the module's stated threat model ("the hazard is ABSENCE, not forgery") covered its
+/// input. v0.22.0 newly feeds it a string derived from a remote URL, and a `.gitmodules` in a
+/// third-party clone is attacker-authored content that reaches this path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteSlug {
+    /// The host the URL points at, lowercased, with any `user@` and `:port` stripped. This may be an
+    /// SSH `Host` ALIAS (`github-work`) rather than a real hostname; resolving that is
+    /// [`host::HostPolicy`]'s job, not the parser's.
+    pub host: String,
+    /// The `<org>/<repo>` slug.
+    pub slug: String,
+}
+
+/// Split a remote URL into its host and its `<org>/<repo>` slug.
+///
+/// Returns `None` for anything that is not one of the five recognized forms or does not carry
+/// exactly two path components. Every departure from the shape fails CLOSED, because the result
+/// feeds the gate that decides whether a session body leaves the machine.
+pub fn parse_slug(url: &str) -> Option<RemoteSlug> {
     let url = url.trim();
     if url.is_empty() {
         return None;
     }
 
-    let path = if let Some(rest) = url.strip_prefix("git@") {
-        let (_, path) = rest.split_once(':')?;
-        path.to_string()
+    // `(host, path)` per form. The host used to be discarded here (`let (_, path) = ...`), in every
+    // single branch, which is Problem 2 in one character.
+    let (host, path) = if let Some(rest) = url.strip_prefix("git@") {
+        rest.split_once(':')?
     } else if let Some(rest) = url.strip_prefix("https://") {
-        let (_, path) = rest.split_once('/')?;
-        path.to_string()
+        rest.split_once('/')?
     } else if let Some(rest) = url.strip_prefix("http://") {
-        let (_, path) = rest.split_once('/')?;
-        path.to_string()
+        rest.split_once('/')?
     } else if let Some(rest) = url.strip_prefix("git://") {
-        let (_, path) = rest.split_once('/')?;
-        path.to_string()
+        rest.split_once('/')?
     } else if let Some(rest) = url.strip_prefix("ssh://") {
         let after_user = rest.split_once('@').map(|(_, r)| r).unwrap_or(rest);
-        let (_, path) = after_user.split_once('/')?;
-        path.to_string()
+        after_user.split_once('/')?
     } else {
         return None;
     };
 
-    let path = path.strip_suffix(".git").unwrap_or(&path);
+    let host = normalize_host(host)?;
+    let path = path.strip_suffix(".git").unwrap_or(path);
     let (org, repo) = path.split_once('/')?;
     if org.is_empty() || repo.is_empty() {
         return None;
@@ -721,8 +769,32 @@ pub fn parse_slug(url: &str) -> Option<String> {
     if repo.contains('/') {
         return None;
     }
-    Some(format!("{}/{}", org, repo))
+    Some(RemoteSlug {
+        host,
+        slug: format!("{org}/{repo}"),
+    })
 }
+
+/// Reduce a URL authority to a bare host: drop any `user@`, drop any `:port`, lowercase.
+///
+/// Lowercased because DNS is case-insensitive and the allowlist is compared as a string, so
+/// `GitHub.com` must not slip past a `github.com` entry. An IPv6 literal (`[::1]:22`) is declined
+/// rather than mangled: clyde has never seen one in a git remote, and a wrong ANSWER here confers
+/// work scope, so the fail-closed direction is to decline.
+fn normalize_host(authority: &str) -> Option<String> {
+    let host = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    if host.starts_with('[') {
+        debug!("repo::normalize_host: declining a bracketed (IPv6) authority {host:?}");
+        return None;
+    }
+    let host = host.split_once(':').map(|(h, _)| h).unwrap_or(host);
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
+}
+
+pub mod host;
 
 #[cfg(test)]
 mod tests;

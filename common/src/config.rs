@@ -352,6 +352,53 @@ pub struct Config {
     /// rather than hidden, and a low-coverage report is still worth having.
     #[serde(default = "default_min_enrichment", deserialize_with = "de_min_enrichment")]
     min_enrichment: f64,
+    /// Hosts a git remote may confer WORK scope from. Absent -> `["github.com"]`.
+    ///
+    /// Config rather than a literal in the code, for two reasons the design measured. A shop with an
+    /// internal GitHub Enterprise has to be able to say so without a code change; and the default is
+    /// not a guess (all 59 `origin` remotes across `~/repos/tatari-tv/*` on desk.lan resolve to
+    /// `github.com`, zero to anything else).
+    ///
+    /// An SSH `Host` alias is RESOLVED against this list rather than compared literally, so
+    /// `git@github-work:tatari-tv/x` still confers work when the alias points at `github.com`. See
+    /// [`crate::repo::host`].
+    #[serde(default = "default_work_remote_hosts", deserialize_with = "de_work_remote_hosts")]
+    work_remote_hosts: Vec<String>,
+}
+
+/// The serde default for `work-remote-hosts`, from the one definition in [`crate::repo::host`].
+fn default_work_remote_hosts() -> Vec<String> {
+    crate::repo::host::DEFAULT_WORK_REMOTE_HOSTS
+        .iter()
+        .map(|h| (*h).to_string())
+        .collect()
+}
+
+/// Reject an EMPTY `work-remote-hosts` list, loudly and by name.
+///
+/// An empty list is the one value whose meaning is genuinely ambiguous: it reads as "trust nothing",
+/// which silently returns every alias user and every teammate to 0% enrichment coverage, and it
+/// reads just as easily as "I meant to fill this in". The house rule is that defaults fail CLOSED,
+/// and this one does (it would confer work from no host at all), but failing closed SILENTLY on a
+/// value that is probably a mistake is worse than refusing to start.
+fn de_work_remote_hosts<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let hosts = Vec::<String>::deserialize(deserializer)?;
+    if hosts.is_empty() {
+        return Err(serde::de::Error::custom(
+            "work-remote-hosts must name at least one host; an empty list confers work scope from \
+             nothing at all, which returns every teammate to 0% enrichment coverage. Remove the key \
+             to get the default [github.com].",
+        ));
+    }
+    if let Some(bad) = hosts.iter().find(|h| h.trim().is_empty()) {
+        return Err(serde::de::Error::custom(format!(
+            "work-remote-hosts contains an empty entry ({bad:?}); every entry must name a host"
+        )));
+    }
+    Ok(hosts)
 }
 
 /// The default enrichment-coverage floor when `min-enrichment` is unset: half the window. Exposed
@@ -391,6 +438,7 @@ impl Default for Config {
             efficiency: EfficiencyConfig::default(),
             repo_root: default_repo_root(),
             min_enrichment: default_min_enrichment(),
+            work_remote_hosts: default_work_remote_hosts(),
         }
     }
 }
@@ -515,6 +563,11 @@ impl Config {
     /// The enrichment-coverage floor `report collect` warns below, as a fraction (`0.5` when unset).
     pub fn min_enrichment(&self) -> f64 {
         self.min_enrichment
+    }
+
+    /// The hosts a git remote may confer WORK scope from (`["github.com"]` when unset).
+    pub fn work_remote_hosts(&self) -> &[String] {
+        &self.work_remote_hosts
     }
 }
 

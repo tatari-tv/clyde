@@ -70,6 +70,7 @@ fn a_transient_git_failure_never_stamps() {
         ProbeOutcome::OutsideRoot,
         ProbeOutcome::Resolved {
             slug: "tatari-tv/philo".into(),
+            host: "github.com".into(),
         },
     ] {
         seed(&db, UUID_A);
