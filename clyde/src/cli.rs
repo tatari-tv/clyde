@@ -119,8 +119,36 @@ pub enum SessionsCommand {
     Stage(StageArgs),
     /// Enrich dormant sessions with tags + summary.
     Enrich(EnrichArgs),
+    /// Inspect or override a session's work/personal routing decision.
+    Scope(ScopeArgs),
     /// Report enrichment health.
     Doctor,
+}
+
+/// `clyde session scope`: the operator surface for `sessions.scope_override`.
+///
+/// It exists because an override with no setter and no audit trail is a hole, not a hatch: the
+/// earlier design said "operator-set" and specified nothing, which in practice means hand-editing
+/// SQLite. Three verbs, one flag each, no subcommands: this is a one-verb tool with modes.
+#[derive(clap::Args, Debug)]
+pub struct ScopeArgs {
+    /// The session to act on (id or unique prefix). Required by `--set` and `--clear`.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Force this session's scope, beating every classification rule. Requires `--reason`.
+    #[arg(long, value_parser = ["work", "personal"], ignore_case = true)]
+    pub set: Option<String>,
+    /// Remove an override, returning the session to whatever the rules decide.
+    #[arg(long)]
+    pub clear: bool,
+    /// List every session carrying an override, with its reason, actor and timestamp. The audit
+    /// surface `clyde doctor`'s override count points at.
+    #[arg(long)]
+    pub list: bool,
+    /// Why. REQUIRED with `--set`: an unexplained routing flip is not auditable, and a rising
+    /// override count is only worth reading if every row explains itself.
+    #[arg(long)]
+    pub reason: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -208,9 +236,20 @@ pub struct ReindexArgs {
     /// wrong first resolution needs an explicit operator reset.
     #[arg(long)]
     pub reresolve_repo: bool,
-    /// Limit `--reresolve-repo` to these session ids (space-separated). Requires `--reresolve-repo`.
+    /// Limit `--reresolve-repo` to these session ids (space-separated). Requires `--reresolve-repo`
+    /// or `--clear-probe`.
     #[arg(long, num_args = 1..)]
     pub session: Option<Vec<String>>,
+    /// Clear the recorded CONCLUSIVE probe outcome (`repo_probe`) for the named session(s), so the
+    /// next pass re-observes and re-stamps if the cwd still declines. The recovery path for a stamp
+    /// that is wrong.
+    ///
+    /// Requires `--session`, and is deliberately SEPARATE from `--reresolve-repo`: that flag
+    /// re-derives attribution, which is computed, while the probe record is an OBSERVATION. Clearing
+    /// it on the command every operator is told to run would re-open the retro-flip window on a
+    /// routine invocation.
+    #[arg(long)]
+    pub clear_probe: bool,
 }
 
 #[derive(clap::Args, Debug)]

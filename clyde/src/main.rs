@@ -248,6 +248,7 @@ fn run(cli: Cli) -> Result<()> {
                     let tz = load_date_tz()?;
                     cmd_enrich(&db, args, tz)
                 }
+                SessionsCommand::Scope(args) => cmd_scope(&db, args),
                 SessionsCommand::Doctor => cmd_doctor(&db),
                 // Unreachable: the outer arm above peels `Resume` off before this shared `Db` block.
                 SessionsCommand::Resume(_) => unreachable!("Resume is dispatched before this Db block"),
@@ -665,8 +666,14 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     // `~/.claude/projects` (register item 8).
     let projects_dir = projects::resolve(args.projects_dir.as_deref(), &cfg)?;
 
-    if args.session.is_some() && !args.reresolve_repo {
-        eyre::bail!("--session requires --reresolve-repo");
+    if args.session.is_some() && !(args.reresolve_repo || args.clear_probe) {
+        eyre::bail!("--session requires --reresolve-repo or --clear-probe");
+    }
+    if args.clear_probe && args.session.is_none() {
+        // Deliberately NOT a catalog-wide form. Clearing every probe record at once would erase the
+        // negative evidence the routing gate rests on, catalog-wide, in one command: the exact
+        // opposite of what the flag is for.
+        eyre::bail!("--clear-probe requires --session <id>; there is no catalog-wide form");
     }
     // Resolve every `--session` id to exactly one concrete session BEFORE anything is written: an
     // ambiguous or absent id must fail the command, not fail it halfway through a repair.
@@ -678,6 +685,18 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
         ),
         None => None,
     };
+
+    // Clear the named sessions' probe records BEFORE the reindex, so this same command re-observes
+    // and re-stamps if the cwd still declines conclusively. Clearing after the pass would leave the
+    // gate open until the next reindex, which is a window nobody asked for.
+    if args.clear_probe {
+        let ids = targets.clone().unwrap_or_default();
+        let cleared = db.clear_probe(&ids)?;
+        println!(
+            "{} cleared the probe record on {cleared} session(s); re-observing now",
+            "✓".green()
+        );
+    }
 
     let stats = sessions::reindex(db, &projects_dir, cfg.repo_root())?;
 
@@ -869,6 +888,105 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
         sessions::enrich(db, Some(&client), &opts)?
     };
     print_enrich(&stats);
+    Ok(())
+}
+
+/// `clyde session scope`: read or override a routing decision.
+///
+/// Exactly one mode per invocation. The validation is deliberately strict and up front: an override
+/// is the one command that can put a personal transcript on the work account, so a half-specified
+/// invocation must fail rather than do something adjacent to what was meant.
+fn cmd_scope(db: &Db, args: cli::ScopeArgs) -> Result<()> {
+    debug!(
+        "cmd_scope: session={:?} set={:?} clear={} list={} reason={:?}",
+        args.session,
+        args.set,
+        args.clear,
+        args.list,
+        args.reason.as_deref().map(|r| r.len())
+    );
+    let modes = usize::from(args.set.is_some()) + usize::from(args.clear) + usize::from(args.list);
+    if modes != 1 {
+        eyre::bail!("pass exactly one of --set, --clear or --list");
+    }
+
+    if args.list {
+        let rows = db.scope_overrides()?;
+        if rows.is_empty() {
+            println!("{}", "no scope overrides".dimmed());
+            return Ok(());
+        }
+        for row in &rows {
+            println!(
+                "{}  {}  {}  {}  {}",
+                short_id(&row.session_id).yellow(),
+                row.scope.cyan(),
+                row.by.as_deref().unwrap_or("(unknown)").dimmed(),
+                row.at.as_deref().unwrap_or("(no timestamp)").dimmed(),
+                row.reason,
+            );
+        }
+        return Ok(());
+    }
+
+    // Resolve to exactly one concrete session BEFORE writing, the same rule
+    // `--reresolve-repo --session` already enforces: an ambiguous or absent id must fail the
+    // command, never write to whichever row happened to sort first.
+    let Some(needle) = args.session.as_deref() else {
+        eyre::bail!("--set and --clear require --session <id>");
+    };
+    let id = resolve_one_session_id(db, needle)?;
+
+    if args.clear {
+        if db.clear_scope_override(&id)? {
+            println!("{} cleared the scope override on {}", "✓".green(), short_id(&id));
+        } else {
+            eprintln!("{} session {id} not found", "✗".red());
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    let Some(scope) = args.set.as_deref() else {
+        eyre::bail!("--set requires work or personal");
+    };
+    let Some(reason) = args.reason.as_deref() else {
+        eyre::bail!("--set requires --reason: an unexplained routing flip is not auditable");
+    };
+    // `$USER@host`, not a bare username. `sessions` already carries a `host` and catalogs get merged
+    // across machines, so a bare name would not identify who actually did this.
+    let actor = format!(
+        "{}@{}",
+        std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
+        gethostname::gethostname().to_string_lossy()
+    );
+    // Overriding a row that carries a CONCLUSIVE negative to `work` is the one case that also warns,
+    // naming what is being overridden, so the operator cannot do it without seeing what the evidence
+    // said. Printed BEFORE the write, so it is visible even if the write then fails.
+    if scope.eq_ignore_ascii_case(sessions::OVERRIDE_WORK)
+        && let Some(stamp) = db.probe_of(&id)?
+    {
+        println!(
+            "{} {} carries a conclusive negative probe ({}). Forcing `work` overrides recorded \
+             evidence that this cwd had no work remote.",
+            "warning:".yellow(),
+            short_id(&id),
+            stamp,
+        );
+    }
+    let scope = scope.to_ascii_lowercase();
+    if db.set_scope_override(&id, &scope, reason, &actor, chrono::Utc::now())? {
+        println!(
+            "{} {} scope override set to {} by {}",
+            "✓".green(),
+            short_id(&id),
+            scope.cyan(),
+            actor.dimmed()
+        );
+    } else {
+        eprintln!("{} session {id} not found", "✗".red());
+        std::process::exit(1);
+    }
     Ok(())
 }
 

@@ -23,7 +23,7 @@
 //! The module is PURE with respect to the catalog: rule 2's map arrives through the [`PathMap`]
 //! port as a generic, so nothing here links SQLite and the tests need nothing but a `BTreeMap`.
 
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -141,16 +141,22 @@ impl PathMap for HashMap<PathBuf, String> {
     }
 }
 
-/// Rule 1 as a one-shot: resolve `cwd` through `git remote get-url origin`, blocking `$HOME`.
+/// Rule 1 as a one-shot: the git-origin slug for `cwd`, blocking `$HOME`.
+///
+/// Slug-only. A caller that needs to know WHY a probe declined (the routing gate does, so it can
+/// tell a conclusive negative from a transient failure) calls [`detect_with_blocked_roots`] and reads
+/// the [`ProbeOutcome`] directly.
 pub fn detect(cwd: &Path) -> Option<String> {
     let blocked = home_dir_as_blocked();
     detect_with_blocked_roots(cwd, &blocked)
+        .resolved_slug()
+        .map(str::to_string)
 }
 
 /// Rule 1 with a per-cwd memo, the resolved blocked roots, and the full four-rule chain.
 #[derive(Debug, Default)]
 pub struct Resolver {
-    cache: HashMap<PathBuf, Option<String>>,
+    cache: HashMap<PathBuf, ProbeOutcome>,
     blocked: Vec<PathBuf>,
 }
 
@@ -162,15 +168,25 @@ impl Resolver {
         }
     }
 
-    /// Rule 1 only: the git-origin slug for `cwd`, memoized. `None` when the directory is gone, is
-    /// not a repo, has no origin, or resolves to a blocked root.
-    pub fn detect(&mut self, cwd: &Path) -> Option<String> {
+    /// Rule 1's full [`ProbeOutcome`] for `cwd`, memoized. The routing gate reads this rather than
+    /// [`Self::detect`] because it must record a conclusive negative and must NOT record a transient
+    /// failure, and only the typed outcome distinguishes them.
+    ///
+    /// The memo is per-cwd and per-`Resolver`, so one reindex pass spawns at most one pair of `git`
+    /// invocations per distinct directory no matter how many sessions share it.
+    pub fn probe(&mut self, cwd: &Path) -> ProbeOutcome {
         if let Some(cached) = self.cache.get(cwd) {
             return cached.clone();
         }
-        let result = detect_with_blocked_roots(cwd, &self.blocked);
-        self.cache.insert(cwd.to_path_buf(), result.clone());
-        result
+        let outcome = detect_with_blocked_roots(cwd, &self.blocked);
+        self.cache.insert(cwd.to_path_buf(), outcome.clone());
+        outcome
+    }
+
+    /// Rule 1 only: the git-origin slug for `cwd`, memoized. `None` when the directory is gone, is
+    /// not a repo, has no origin, or resolves to a blocked root.
+    pub fn detect(&mut self, cwd: &Path) -> Option<String> {
+        self.probe(cwd).resolved_slug().map(str::to_string)
     }
 
     /// The full chain: rules 1 through 4, first match wins, provenance recorded.
@@ -225,17 +241,105 @@ fn home_dir_as_blocked() -> Vec<PathBuf> {
     dirs::home_dir().map(|h| vec![h]).unwrap_or_default()
 }
 
-/// Rule 1: the git-origin slug for a cwd that still exists on disk.
-pub fn detect_with_blocked_roots(cwd: &Path, blocked: &[PathBuf]) -> Option<String> {
+/// What rule 1 learned about a cwd. **`None` is not evidence, and this enum is why.**
+///
+/// The old `Option<String>` collapsed at least seven distinct outcomes into one `None`: cwd missing,
+/// cwd not a git repo, git absent, a `safe.directory` refusal, a blocked root, no origin configured,
+/// and an origin present but unparseable. The routing gate needs to record a negative, and recording
+/// one on ALL of those turns a transient environment failure into a permanent lockout. That was the
+/// review panel's severest finding.
+///
+/// Only [`Self::NoOrigin`] and [`Self::NotARepo`] are CONCLUSIVE, i.e. git answered the question and
+/// the answer was "there is no work remote here". Everything else records nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// The cwd is a repo and its own config names a parseable `<org>/<repo>` origin.
+    Resolved {
+        /// The `<org>/<repo>` slug.
+        slug: String,
+    },
+    /// The cwd exists, IS a git repo, git answered, and there is no origin. CONCLUSIVE: records.
+    NoOrigin,
+    /// The cwd exists and is not a git repository at all. CONCLUSIVE: records.
+    NotARepo,
+    /// The cwd resolved to a blocked root (today: `$HOME`). Says nothing about a remote, so it
+    /// records nothing: the guard is about what clyde refuses to ATTRIBUTE, not about evidence.
+    Blocked,
+    /// The containment check rejected the resolved root. Also not evidence about a remote, and today
+    /// this fires for every symlink-reached cwd (a confirmed pre-existing bug Phase 6 fixes), so
+    /// stamping it would lock out sessions for a defect of clyde's own.
+    OutsideRoot,
+    /// git did not answer the question asked: the cwd is gone, git is absent, `safe.directory`
+    /// refused, or the origin is present but unparseable. Records NOTHING, and warns.
+    Indeterminate,
+}
+
+impl ProbeOutcome {
+    /// The slug when the probe resolved one, for the callers that only ever wanted the attribution.
+    pub fn resolved_slug(&self) -> Option<&str> {
+        match self {
+            Self::Resolved { slug } => Some(slug.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Whether this outcome is CONCLUSIVE evidence that the cwd had no work remote, and therefore
+    /// whether it may be recorded as a negative. Exactly [`Self::NoOrigin`] and [`Self::NotARepo`].
+    pub fn is_conclusive_negative(&self) -> bool {
+        matches!(self, Self::NoOrigin | Self::NotARepo)
+    }
+
+    /// The stable token persisted in `sessions.repo_probe`. A contract, not a label.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Resolved { .. } => "resolved",
+            Self::NoOrigin => "no-origin",
+            Self::NotARepo => "not-a-repo",
+            Self::Blocked => "blocked",
+            Self::OutsideRoot => "outside-root",
+            Self::Indeterminate => "indeterminate",
+        }
+    }
+}
+
+/// Rule 1: what the cwd's own git config says about its origin.
+///
+/// The origin read is `git config --local --get remote.origin.url`, NOT `git remote get-url origin`,
+/// and both halves of that are load-bearing:
+///
+/// - **`--local`** reads ONLY the repo's own config, so a hostile `~/.gitconfig` or an injected
+///   `GIT_CONFIG_*` cannot contribute a `remote.origin.url`. Measured 2026-07-31: with a hostile
+///   `~/.gitconfig` in place, a repo with NO origin returns rc=1 under `--local` (correctly
+///   conclusive) and rc=0 with a forged work slug without it. It is also the honest primitive: the
+///   question is what remote THIS repo recorded, not what this machine's config would display.
+/// - **`git config`, not `git remote get-url`.** The latter APPLIES `insteadOf` rewriting by design,
+///   so `url.git@github.com:tatari-tv/.insteadOf = git@github.com:scottidler/` silently turns a
+///   personal origin into a work one. `git config` does not rewrite.
+///
+/// Together with [`run_git`]'s `env_clear`, that is three defenses with three distinct jobs: the env
+/// scrub is the only thing that stops `GIT_DIR`, `--local` is the only thing that stops config-scope
+/// forgery, and the primitive change is the only thing that stops `insteadOf`. None is redundant.
+pub fn detect_with_blocked_roots(cwd: &Path, blocked: &[PathBuf]) -> ProbeOutcome {
     trace!("repo::detect: cwd={}", cwd.display());
 
     if !cwd.exists() {
+        // Row 26: an archived session whose cwd is gone. There is nothing to observe, so this must
+        // never be a conclusive negative; a restored checkout has to be able to recover the row.
         debug!("repo::detect: cwd missing on disk: {}", cwd.display());
-        return None;
+        return ProbeOutcome::Indeterminate;
     }
 
-    let toplevel = run_git(cwd, &["rev-parse", "--show-toplevel"])?;
-    let toplevel = PathBuf::from(toplevel.trim());
+    let toplevel = match run_git(cwd, &["rev-parse", "--show-toplevel"]) {
+        GitRun::Answered(tl) => PathBuf::from(tl.trim()),
+        GitRun::Refused(_) => return no_work_tree(cwd),
+        GitRun::Unavailable => {
+            warn!(
+                "repo::detect: git could not be run for {}; recording nothing",
+                cwd.display()
+            );
+            return ProbeOutcome::Indeterminate;
+        }
+    };
 
     if !(toplevel == cwd || cwd.starts_with(&toplevel)) {
         debug!(
@@ -243,7 +347,7 @@ pub fn detect_with_blocked_roots(cwd: &Path, blocked: &[PathBuf]) -> Option<Stri
             toplevel.display(),
             cwd.display()
         );
-        return None;
+        return ProbeOutcome::OutsideRoot;
     }
 
     if blocked.iter().any(|b| b == &toplevel) {
@@ -251,11 +355,105 @@ pub fn detect_with_blocked_roots(cwd: &Path, blocked: &[PathBuf]) -> Option<Stri
             "repo::detect: toplevel {} matches a blocked root (e.g. $HOME); rejecting",
             toplevel.display()
         );
-        return None;
+        return ProbeOutcome::Blocked;
     }
 
-    let origin = run_git(cwd, &["remote", "get-url", "origin"])?;
-    parse_slug(origin.trim())
+    read_origin(cwd)
+}
+
+/// `rev-parse --show-toplevel` failed. Two very different worlds share that failure, and telling
+/// them apart is what keeps Phase 6 safe to land later.
+///
+/// A cwd with no WORK TREE but a real git dir (a bare-repo container root, a plain bare mirror) is
+/// the shape Phase 6 teaches rule 1 to resolve. If this returned the conclusive `NotARepo` for it,
+/// every such session would be stamped with a negative NOW and would keep refusing work scope even
+/// after Phase 6 made it resolvable, because a stamp is never cleared by a later success. So it is
+/// `Indeterminate` until the fallback exists.
+///
+/// A cwd where BOTH probes fail genuinely is not a repository, which is conclusive.
+fn no_work_tree(cwd: &Path) -> ProbeOutcome {
+    match run_git(cwd, &["rev-parse", "--git-common-dir"]) {
+        GitRun::Answered(_) => {
+            debug!(
+                "repo::detect: {} has a git dir but no work tree; recording nothing (Phase 6 resolves this)",
+                cwd.display()
+            );
+            ProbeOutcome::Indeterminate
+        }
+        GitRun::Refused(_) if has_git_marker(cwd) => {
+            // A repository IS present and git could not use it. Measured 2026-07-31: an unreadable
+            // `.git/config` and a `.git` file pointing at a vanished gitdir BOTH exit 128 from both
+            // probes, byte-identically to a plain directory, so the exit code cannot tell them apart
+            // and the design's own arm table has no row that separates them.
+            //
+            // The filesystem can, and it answers the exact question the `NotARepo` arm claims to
+            // ("not a work tree AND NOT A GIT DIR"). Matrix rows 23 and 29.
+            warn!(
+                "repo::detect: {} carries a git marker git could not use (check `safe.directory` \
+                 and .git permissions); recording nothing",
+                cwd.display()
+            );
+            ProbeOutcome::Indeterminate
+        }
+        GitRun::Refused(_) => {
+            debug!("repo::detect: {} is not a git repository", cwd.display());
+            ProbeOutcome::NotARepo
+        }
+        GitRun::Unavailable => ProbeOutcome::Indeterminate,
+    }
+}
+
+/// Whether a `.git` entry exists at `cwd` or any ancestor, i.e. whether a repository is PRESENT
+/// regardless of whether git could read it.
+///
+/// Deliberately more generous than git's own discovery, which stops at a mount point and honors
+/// `GIT_CEILING_DIRECTORIES`. Every disagreement goes one way: this may report a marker git would not
+/// have used, which yields `Indeterminate` and records NOTHING. Under-recording costs a session one
+/// more re-probe; over-recording is a permanent refusal of work scope. The asymmetry is the whole
+/// reason the enum exists, so the conservative direction is the correct one here.
+fn has_git_marker(cwd: &Path) -> bool {
+    cwd.ancestors().any(|dir| dir.join(".git").exists())
+}
+
+/// The origin read, and the arms it maps to. Measured against git 2.53.0, so the implementer does
+/// not have to guess:
+///
+/// | cwd | rc | arm |
+/// |---|---|---|
+/// | repo with an origin | 0 | `Resolved` |
+/// | repo with NO origin (including an empty repo with no commits) | 1 | `NoOrigin`, CONCLUSIVE |
+/// | anything else | non-0/1 | `Indeterminate`, records nothing |
+///
+/// The last row is load-bearing. `rc=1` means git answered and the key is absent, which IS evidence.
+/// Any other failure means git did not answer the question asked, which is not. A `128` here is NOT
+/// collapsed into `NotARepo`: by this point `rev-parse` has already established the cwd is a repo, so
+/// a fatal is an anomaly (row 29, an unreadable `.git/config`), not a finding.
+fn read_origin(cwd: &Path) -> ProbeOutcome {
+    match run_git(cwd, ORIGIN_ARGS) {
+        GitRun::Answered(url) => match parse_slug(url.trim()) {
+            Some(slug) => ProbeOutcome::Resolved { slug },
+            None => {
+                warn!(
+                    "repo::detect: {} has an origin that does not parse to <org>/<repo>; recording nothing",
+                    cwd.display()
+                );
+                ProbeOutcome::Indeterminate
+            }
+        },
+        GitRun::Refused(1) => {
+            debug!("repo::detect: {} is a repo with no origin (conclusive)", cwd.display());
+            ProbeOutcome::NoOrigin
+        }
+        GitRun::Refused(code) => {
+            warn!(
+                "repo::detect: the origin read for {} exited {code}, which is not an answer; \
+                 recording nothing (check `safe.directory` and .git/config permissions)",
+                cwd.display()
+            );
+            ProbeOutcome::Indeterminate
+        }
+        GitRun::Unavailable => ProbeOutcome::Indeterminate,
+    }
 }
 
 /// Rule 2: the longest known prefix of `cwd` in the learned map.
@@ -397,12 +595,96 @@ fn next_normal(components: &mut std::path::Components<'_>) -> Option<String> {
     }
 }
 
-fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(cwd).args(args).output().ok()?;
-    if !out.status.success() {
-        return None;
+/// What one `git` invocation actually did. Three outcomes, never collapsed to `Option`, because the
+/// whole probe design turns on telling "git answered, and the answer is no" apart from "git did not
+/// answer".
+enum GitRun {
+    /// Exit 0. Carries stdout.
+    Answered(String),
+    /// git ran and exited non-zero. Carries the code, which is the evidence:
+    /// `1` from the origin read means the key is absent, anything else means something went wrong.
+    Refused(i32),
+    /// git could not be run at all, or died on a signal. Never evidence about a remote.
+    Unavailable,
+}
+
+/// The environment variables `run_git` forwards. Exactly `PATH`, and deliberately NOT `HOME`.
+///
+/// **An ALLOWLIST, not a scrub list.** A denylist of dangerous `GIT_*` variables was proposed twice
+/// during review and missed a channel both times: first `GIT_DIR`, then `GIT_CONFIG_COUNT` /
+/// `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` / `GIT_CONFIG_GLOBAL`. Enumerating the dangerous set is a
+/// losing game against a tool that keeps adding variables.
+///
+/// **The pattern is harvested from `crate::llm::cli`'s `child_env`; its LIST is not.** That one
+/// forwards `HOME`, `USER` and the proxy vars because `claude` needs Keychain access and network
+/// egress. A git probe is a local filesystem read and needs neither. Forwarding `HOME` would reopen
+/// the hostile-`~/.gitconfig` channel, and `XDG_CONFIG_HOME` is excluded for the same reason: it is
+/// another path to a global config.
+///
+/// `PATH` is here only because [`run_git`] invokes `git` by name. Verified with `HOME` entirely
+/// absent across every shape in the checkout matrix (container root, container child, plain bare
+/// mirror, normal clone subdirectory): all return the correct origin, both `rev-parse` forms work,
+/// and the no-origin repo still returns rc=1.
+const GIT_ENV_ALLOWLIST: &[&str] = &["PATH"];
+
+/// The origin read, as one named argv so the tests that pin its two security properties compare
+/// against the SAME list production uses. Spelling it inline at the call site would let a test go on
+/// passing after someone dropped `--local` from the real code.
+///
+/// See [`read_origin`] for why each token is here.
+const ORIGIN_ARGS: &[&str] = &["config", "--local", "--get", "remote.origin.url"];
+
+/// Run `git` in `cwd` with a CONTROLLED environment.
+///
+/// Without the scrub, `Resolved` is forgeable. Measured 2026-07-31 against `main`:
+///
+/// ```text
+/// $ env GIT_DIR=<clyde>/.git git -C /tmp rev-parse --show-toplevel
+/// /tmp                                    # toplevel == cwd, so containment PASSES
+/// $ env GIT_DIR=<clyde>/.git git -C /tmp remote get-url origin
+/// ssh://git@github.com/tatari-tv/clyde    # an unrelated repo's origin
+/// ```
+///
+/// A session run from `/tmp` with `GIT_DIR` exported would attribute to `tatari-tv/clyde` and route
+/// as WORK on that basis. The containment check does NOT catch it, because git treats the `-C` path
+/// as the work tree when `GIT_DIR` is set without `GIT_WORK_TREE`.
+///
+/// This is a CORRECTNESS fix as much as a security one: in a hook or CI context an inherited
+/// `GIT_DIR` would make every reindexed path resolve against the hook's repo.
+fn run_git(cwd: &Path, args: &[&str]) -> GitRun {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(cwd).args(args).env_clear();
+    for key in GIT_ENV_ALLOWLIST {
+        if let Ok(value) = std::env::var(key) {
+            cmd.env(key, value);
+        }
     }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(e) => {
+            debug!("repo::run_git: git {args:?} in {} could not be run: {e}", cwd.display());
+            return GitRun::Unavailable;
+        }
+    };
+    match out.status.code() {
+        Some(0) => GitRun::Answered(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Some(code) => {
+            trace!(
+                "repo::run_git: git {args:?} in {} exited {code}: {}",
+                cwd.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            GitRun::Refused(code)
+        }
+        // Killed by a signal. Not an answer.
+        None => {
+            debug!(
+                "repo::run_git: git {args:?} in {} was killed by a signal",
+                cwd.display()
+            );
+            GitRun::Unavailable
+        }
+    }
 }
 
 pub fn parse_slug(url: &str) -> Option<String> {

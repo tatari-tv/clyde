@@ -9,6 +9,7 @@ use session::ParsedSession;
 
 use super::*;
 use crate::db::Db;
+use crate::export::{ExportContext, ExportFilters};
 use crate::llm::{Completer, LlmEnrichment};
 
 const WORK_CWD: &str = "/home/saidler/repos/tatari-tv/marquee";
@@ -627,23 +628,21 @@ fn an_evidence_free_skip_is_provisional_and_self_heals_on_the_next_pass() {
     assert_eq!(fake2.calls(), 1);
 }
 
-/// A git-origin attribution is enough on its own: enriched on the FIRST pass, with no reindex, and
-/// SETTLED so no later pass reconsiders it.
+/// A git-origin WORK attribution is enough on its own: enriched on the FIRST pass, with no reindex,
+/// and SETTLED so no later pass reconsiders it.
 ///
 /// This is the teammate case measured on 2026-07-31. Their cwd carries no `repos/<org>` anchor to read
 /// and their catalog has no `outcome_json` yet, so before the git-origin branch every session gated
-/// `skipped-personal` and coverage was 0%.
+/// `skipped-personal` and coverage was 0%. That win is the constraint this whole branch preserves.
 ///
-/// The settled half matters as much as the enriched half. The provisional rule keys on
-/// `Basis::reads_stored_evidence`, and a git-origin decision reads none -- so it must record
-/// `scope_version` even with no evidence stored. Keying it on `evidence.present` instead would leave
-/// every one of these rows NULL forever, and the widened predicate would re-offer all of them on every
-/// pass while `record_enrich_skip`'s bare UPDATE bumped the export cursor each time.
+/// The settled half matters as much as the enriched half: a git-origin decision reads no stored
+/// evidence, so gating its `scope_version` on `evidence.present` would leave every one of these rows
+/// NULL forever and re-offer all of them on every pass.
 ///
-/// BITES: gate `scope_version` on `evidence.present` alone and the personal half of this test reports
-/// `considered: 1` on the second pass instead of 0.
+/// BITES: return `settled: false` from the git-origin WORK arm and the second pass reports
+/// `considered: 1` instead of 0.
 #[test]
-fn a_git_origin_attribution_settles_the_decision_with_no_reindex() {
+fn a_git_origin_work_attribution_settles_the_decision_with_no_reindex() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db = Db::open_memory().unwrap();
 
@@ -658,18 +657,98 @@ fn a_git_origin_attribution_settles_the_decision_with_no_reindex() {
     assert_eq!(stats.skipped_personal, 0);
     assert_eq!(fake.calls(), 1);
 
-    // The personal direction, same shape: a personal remote is a SETTLED skip, not a provisional one.
-    let db2 = Db::open_memory().unwrap();
-    let parent2 = write_transcript(tmp.path(), UUID_B, "personal side project");
-    insert(&db2, tmp.path(), UUID_B, "/Users/luke/Projects/claude", &parent2);
-    set_git_origin(&db2, UUID_B, "scottidler/claude");
-
-    let first = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
-    assert_eq!(first.skipped_personal, 1, "a personal remote must not be sent");
-    let second = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let second = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
     assert_eq!(
         second.considered, 0,
-        "a git-origin decision needs no stored evidence, so it must be settled: {second:?}"
+        "a git-origin WORK decision is settled and must not be reconsidered: {second:?}"
+    );
+}
+
+/// **Problem 3, the mirror of Problem 1, and the reason a personal git-origin decision must NEVER
+/// settle.** A session that genuinely ran in a work repo, whose path now holds a personal checkout,
+/// classifies personal from the remote. Recording that as settled excludes it from
+/// `enrich_candidates` on all four disjuncts, so restoring the work checkout does not recover it:
+/// directionally safe, permanently wrong, and silent.
+///
+/// The asymmetry is deliberate. Work requires first-sight authority; personal is always revisable.
+///
+/// Re-offering is CHEAP, which is what makes it affordable: the routing gate records the skip before
+/// the transport, so the fake completer is never called on the second pass.
+///
+/// BITES: return `settled: true` from the git-origin PERSONAL arm and `considered` drops to 0 on the
+/// second pass, which is the lockout.
+#[test]
+fn a_personal_git_origin_decision_is_re_offered_rather_than_excluded() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    let parent = write_transcript(tmp.path(), UUID_B, "personal side project");
+    insert(&db, tmp.path(), UUID_B, "/Users/luke/Projects/claude", &parent);
+    set_git_origin(&db, UUID_B, "scottidler/claude");
+
+    let first = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(first.skipped_personal, 1, "a personal remote must not be sent");
+
+    let fake = Fake::ok(&["x"]);
+    let second = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        second.considered, 1,
+        "a personal git-origin row must stay a candidate so a corrected checkout can recover it: \
+         {second:?}"
+    );
+    assert_eq!(second.skipped_personal, 1);
+    assert_eq!(
+        fake.calls(),
+        0,
+        "re-offering spends NO tokens: the gate records the skip before the transport"
+    );
+}
+
+/// The other half of what makes provisional-personal affordable: `record_enrich_skip` must not
+/// REWRITE a row whose scope, status and version are all unchanged. It used to be a bare UPDATE, so
+/// every pass fired the v5 revision trigger and forced every `session export --cursor` consumer to
+/// re-fetch the row. With Problem 3's fix creating far more provisional rows, that churn would be
+/// permanent and catalog-wide.
+///
+/// BITES: drop the `AND (scope IS NOT ... )` guard from `record_enrich_skip` and the revision moves.
+#[test]
+fn a_no_change_skip_leaves_the_export_revision_untouched() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    let parent = write_transcript(tmp.path(), UUID_B, "personal side project");
+    insert(&db, tmp.path(), UUID_B, "/Users/luke/Projects/claude", &parent);
+    set_git_origin(&db, UUID_B, "scottidler/claude");
+
+    enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+
+    // Asserted through `session export --cursor`, the CONSUMER-visible surface the revision trigger
+    // exists to drive, rather than by reading `updated_at` directly. That is the behavior the guard
+    // protects: after a no-change pass, an incremental consumer must have nothing to re-fetch.
+    let ctx = ExportContext {
+        now: dt("2026-07-01T00:00:00Z"),
+        host: "desk".into(),
+        dormant_after: chrono::Duration::days(7),
+    };
+    let after_first = db.export(&ExportFilters::default(), &ctx).unwrap().cursor;
+
+    // A second pass re-offers the row (it is provisional) and re-decides it identically.
+    enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+
+    let refetched = db
+        .export(
+            &ExportFilters {
+                cursor: Some(after_first),
+                ..Default::default()
+            },
+            &ctx,
+        )
+        .unwrap();
+    assert!(
+        refetched.sessions.is_empty(),
+        "a no-change skip advanced the export cursor, so every incremental consumer re-fetches this \
+         row after every enrich pass, forever: {:?}",
+        refetched.sessions.iter().map(|s| &s.session_id).collect::<Vec<_>>()
     );
 }
 
@@ -753,4 +832,170 @@ fn a_zero_edit_session_is_settled_after_one_pass() {
         p2.considered, 1,
         "an evidence-FREE decision stays provisional and is reconsidered: {p2:?}"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// v3: the routing gate. Problem 1 (the retro-flip), the override, and the coverage it must keep.
+// ---------------------------------------------------------------------------------------------
+
+/// **AC1, and the whole point of this branch.** No sequence of reindexes may upgrade a recorded
+/// `personal` decision to `work`.
+///
+/// The sequence, which is the shape no test in the tree had before Phase 1:
+///
+/// 1. The session ran in a repo with NO origin. A reindex probes, gets the CONCLUSIVE `NoOrigin`,
+///    and records it. The gate classifies personal.
+/// 2. Someone runs `git remote add origin git@github.com:tatari-tv/side-project.git`, or
+///    `gh repo create tatari-tv/<x> --source=.`, which is an ordinary workflow.
+/// 3. A later reindex probes the SAME cwd, resolves, and writes a work slug at rank 0.
+///
+/// On v0.22.0 step 3 flips the session to `work, would-send=True` and a personal transcript is
+/// queued for the work Anthropic account. Reproduced end to end against the installed binary, and
+/// again in the Phase 1 harness.
+///
+/// What refuses it is the RECORD of step 1, not a timestamp. clyde always looks after the session
+/// ran, so time alone cannot separate this from an ordinary first index; only the earlier FAILED
+/// observation can.
+///
+/// BITES: delete the `facts.repo_probe` branch from `session::scope`'s git-origin arm and this
+/// enriches.
+#[test]
+fn scope_never_upgrades_personal_to_work_on_a_later_probe() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    // An unanchored cwd, so the remote is the only thing that could place this session.
+    let parent = write_transcript(tmp.path(), UUID_A, "my own side project");
+    insert(&db, tmp.path(), UUID_A, "/Users/luke/Projects/side-project", &parent);
+
+    // Step 1: the probe was conclusive, and the reindex recorded it.
+    db.record_probe(
+        UUID_A,
+        &common::repo::ProbeOutcome::NoOrigin,
+        dt("2026-07-01T00:00:00Z"),
+    )
+    .unwrap();
+
+    // Steps 2 and 3: a remote now exists, and a later pass attributed a WORK slug from it.
+    set_git_origin(&db, UUID_A, "tatari-tv/side-project");
+
+    let fake = Fake::ok(&["x"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+
+    assert_eq!(
+        fake.calls(),
+        0,
+        "a personal transcript reached the work account: {stats:?}"
+    );
+    assert_eq!(stats.enriched, 0);
+    assert_eq!(stats.skipped_personal, 1);
+}
+
+/// The constraint the fix must not break, and the reason the register's fix (a) was rejected. An
+/// ordinary teammate's remote was there all along, so the FIRST index resolves and nothing is ever
+/// stamped. Work scope is conferred, and the v0.22.0 coverage win is preserved intact.
+///
+/// A first-sight test (`repo_paths.first_seen <= activity_at`) would refuse this row, because
+/// `first_seen` records when clyde first LOOKED and clyde always looks after the session ran. That
+/// is 0% coverage again, which is the bug v0.22.0 fixed.
+///
+/// BITES: refuse a git-origin work slug unconditionally (rather than only when a negative precedes
+/// it) and this session stops being enriched.
+#[test]
+fn an_ordinary_first_index_still_confers_work_scope() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    let parent = write_transcript(tmp.path(), UUID_A, "the philo rollout");
+    insert(&db, tmp.path(), UUID_A, "/Users/stephen/code/work/philo", &parent);
+    // No probe is ever recorded: the origin resolved on the first look.
+    set_git_origin(&db, UUID_A, "tatari-tv/philo");
+
+    let fake = Fake::ok(&["philo"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(stats.enriched, 1, "the v0.22.0 coverage win must survive: {stats:?}");
+    assert_eq!(fake.calls(), 1);
+}
+
+/// A refusal must stay RECOVERABLE, which is what `--clear-probe --session <id>` is for. Narrow and
+/// explicit: it clears the record for named sessions only, and the next pass re-stamps if the cwd
+/// still declines conclusively.
+///
+/// BITES: make `clear_probe` a no-op and the row stays refused after the operator's repair.
+#[test]
+fn clearing_the_probe_record_recovers_a_refused_session() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+
+    let parent = write_transcript(tmp.path(), UUID_A, "actually a work session");
+    insert(&db, tmp.path(), UUID_A, "/Users/stephen/code/work/philo", &parent);
+    db.record_probe(
+        UUID_A,
+        &common::repo::ProbeOutcome::NoOrigin,
+        dt("2026-07-01T00:00:00Z"),
+    )
+    .unwrap();
+    set_git_origin(&db, UUID_A, "tatari-tv/philo");
+
+    let refused = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    assert_eq!(refused.skipped_personal, 1, "refused while the record stands");
+
+    db.clear_probe(&[UUID_A.to_string()]).unwrap();
+
+    let fake = Fake::ok(&["philo"]);
+    let recovered = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        recovered.enriched, 1,
+        "the row must be recoverable, not permanently locked out: {recovered:?}"
+    );
+    assert_eq!(fake.calls(), 1);
+}
+
+/// The operator override beats every rule, in BOTH directions. It is the escape hatch for a decision
+/// the rules get wrong either way, and it is what makes register item 3 recoverable without a
+/// `SCOPE_VERSION` bump.
+///
+/// BITES: delete the `facts.scope_override` branch and both halves flip.
+#[test]
+fn a_scope_override_beats_a_refusal_in_both_directions() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let now = dt("2026-07-31T12:00:00Z");
+
+    // work-over-refusal: the gate refused a work slug on a recorded negative, and the operator knows
+    // the negative is stale.
+    let db = Db::open_memory().unwrap();
+    let parent = write_transcript(tmp.path(), UUID_A, "genuinely work");
+    insert(&db, tmp.path(), UUID_A, "/Users/stephen/code/work/philo", &parent);
+    db.record_probe(UUID_A, &common::repo::ProbeOutcome::NoOrigin, now)
+        .unwrap();
+    set_git_origin(&db, UUID_A, "tatari-tv/philo");
+    db.set_scope_override(UUID_A, crate::db::OVERRIDE_WORK, "stale probe", "saidler@desk", now)
+        .unwrap();
+
+    let fake = Fake::ok(&["philo"]);
+    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    assert_eq!(stats.enriched, 1, "an operator `work` override must win: {stats:?}");
+
+    // personal-over-work: a cwd anchored to the work org that the operator knows is a misfiled
+    // personal clone. The override must keep it off the work account.
+    let db2 = Db::open_memory().unwrap();
+    let parent2 = write_transcript(tmp.path(), UUID_B, "misfiled personal clone");
+    insert(&db2, tmp.path(), UUID_B, WORK_CWD, &parent2);
+    db2.set_scope_override(
+        UUID_B,
+        crate::db::OVERRIDE_PERSONAL,
+        "personal clone parked under the work org",
+        "saidler@desk",
+        now,
+    )
+    .unwrap();
+
+    let fake2 = Fake::ok(&["x"]);
+    let stats2 = enrich(&db2, Some(&fake2), &EnrichOptions::default()).unwrap();
+    assert_eq!(
+        fake2.calls(),
+        0,
+        "an operator `personal` override must beat the cwd anchor: {stats2:?}"
+    );
+    assert_eq!(stats2.skipped_personal, 1);
 }

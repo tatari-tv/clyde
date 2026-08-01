@@ -40,6 +40,13 @@ fn git(cwd: &Path, args: &[&str]) {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
+        // `env_clear` FIRST, then an explicit set. Naming only `GIT_CONFIG_*` was not enough: the
+        // routing tests in `repo::tests` mutate `GIT_DIR` and `HOME` process-wide under `ENV_LOCK`,
+        // and cargo runs tests in the same binary CONCURRENTLY, so a leaked `GIT_DIR` reached this
+        // builder and every `git init` here failed. A fixture that can be broken by an unrelated
+        // test in the same binary is not a fixture.
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
         .args(args)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")

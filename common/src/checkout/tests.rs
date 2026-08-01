@@ -14,6 +14,11 @@ fn probe(cwd: &Path, args: &[&str]) -> (i32, String) {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
+        // Same scrub as the builder, and for the same reason: a `GIT_DIR` leaked from a concurrent
+        // env-mutating test would silently redirect the probe and make these ground-truth
+        // assertions measure a different repository.
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
         .args(args)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")

@@ -71,16 +71,52 @@ fn touched(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
 /// `classify_with_evidence_reports_the_deciding_basis`.
 fn with_evidence(cwd: Option<&str>, pairs: &[(&str, u64)], files_edited: u64) -> Scope {
     let path = cwd.map(PathBuf::from);
-    classify_with_evidence(path.as_deref(), None, None, &touched(pairs), files_edited).scope
+    // `evidence_present: true`: these rows model a catalog the efficiency pass HAS reached, which is
+    // what makes a touch-set decision settled. The provisional case has its own tests.
+    let facts = RoutingFacts {
+        evidence_present: true,
+        ..Default::default()
+    };
+    classify_with_evidence(path.as_deref(), None, None, &touched(pairs), files_edited, &facts).scope
 }
 
 /// The same, with a repo attribution present. `source` is the stored `repo_source` spelling, parsed the
 /// way `sessions::enrich` parses it, so a typo'd variant name fails here rather than silently becoming
 /// `None` in production.
 fn with_repo(cwd: Option<&str>, repo: &str, source: &str, pairs: &[(&str, u64)], files_edited: u64) -> Decision {
+    with_repo_and_facts(
+        cwd,
+        repo,
+        source,
+        pairs,
+        files_edited,
+        &RoutingFacts {
+            evidence_present: true,
+            ..Default::default()
+        },
+    )
+}
+
+/// The same, plus the v3 routing state: a recorded conclusive negative, an operator override, or
+/// whether the efficiency pass has reached the row.
+fn with_repo_and_facts(
+    cwd: Option<&str>,
+    repo: &str,
+    source: &str,
+    pairs: &[(&str, u64)],
+    files_edited: u64,
+    facts: &RoutingFacts<'_>,
+) -> Decision {
     let path = cwd.map(PathBuf::from);
     let parsed: RepoSource = source.parse().expect("the test names a real RepoSource spelling");
-    classify_with_evidence(path.as_deref(), Some(repo), Some(parsed), &touched(pairs), files_edited)
+    classify_with_evidence(
+        path.as_deref(),
+        Some(repo),
+        Some(parsed),
+        &touched(pairs),
+        files_edited,
+        facts,
+    )
 }
 
 /// The Phase 4 table test. Five rows, one per branch of the widened rule.
@@ -378,20 +414,21 @@ fn cwd_anchor_outranks_the_remote_in_both_directions() {
     assert_eq!(d.basis, Basis::CwdAnchor);
 }
 
-/// The basis is what the caller's provisional-`scope_version` rule keys on, so a wrong basis is a real
-/// defect and not a cosmetic label. Only `TouchSet` may report that it read stored evidence.
+/// The basis names which signal decided, and `settled` says whether to record it. Both are read by
+/// `sessions::enrich`, so a wrong one is a real defect and not a cosmetic label.
 ///
-/// BITES: return `Basis::TouchSet` from the git-origin branch and `sessions::enrich` marks those
-/// decisions provisional, re-offering every such row on every pass forever.
+/// BITES: return `Basis::TouchSet` from the git-origin branch and the ProbeRefused/GitOrigin split
+/// Phase 8 counts on collapses; return `settled: true` from the git-origin PERSONAL arm and a stale
+/// probe locks a genuine work session out forever (Problem 3).
 #[test]
 fn classify_with_evidence_reports_the_deciding_basis() {
-    assert!(Basis::TouchSet.reads_stored_evidence());
-    assert!(!Basis::GitOrigin.reads_stored_evidence());
-    assert!(!Basis::CwdAnchor.reads_stored_evidence());
-
     // No cwd and no attribution: the touch set is the only signal left.
     let path: Option<PathBuf> = None;
-    let d = classify_with_evidence(path.as_deref(), None, None, &touched(&[]), 0);
+    let facts = RoutingFacts {
+        evidence_present: true,
+        ..Default::default()
+    };
+    let d = classify_with_evidence(path.as_deref(), None, None, &touched(&[]), 0, &facts);
     assert_eq!(d.basis, Basis::TouchSet);
     assert_eq!(d.scope, Scope::Personal, "no signal at all must stay fail-safe");
 

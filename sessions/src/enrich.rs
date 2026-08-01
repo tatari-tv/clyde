@@ -115,31 +115,23 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
             rec.repo_source.as_deref().and_then(|s| s.parse().ok()),
             &evidence.repos_touched,
             evidence.files_edited,
+            &session::RoutingFacts {
+                repo_probe: evidence.repo_probe.as_deref(),
+                scope_override: evidence.scope_override.as_deref(),
+                evidence_present: evidence.present,
+            },
         );
         let scope = decision.scope;
-        // PROVISIONAL when the efficiency pass has not REACHED this row, so there was no evidence to
-        // consult at all. Recording the current `SCOPE_VERSION` on an evidence-free decision would
-        // exclude the row from the widened predicate until the next const bump -- and on a catalog that
-        // has never run a full `clyde session reindex`, `outcome_json` is NULL for EVERY row, so that
-        // is the default path, not an edge case. Leaving the column NULL keeps the row a candidate for
-        // the next pass, and re-consideration spends no tokens (the gate below records a skip without
-        // reaching the transport).
+        // Whether to record `SCOPE_VERSION`, straight from the classifier. This used to be re-derived
+        // here as `!basis.reads_stored_evidence() || evidence.present`, and that formulation cannot
+        // express v3: a git-origin decision reads no stored evidence at all, yet a git-origin PERSONAL
+        // one must stay revisable, or a stale probe locks a genuine work session out forever with no
+        // path back (Problem 3). `Decision::settled` is the one place that judgment is made.
         //
-        // The gate is `evidence.present`, NOT `repos_touched.is_empty()`. A session that edited nothing
-        // has PRESENT evidence and an empty touch set, and is a settled decision: keying on emptiness
-        // would leave its `scope_version` NULL forever, so the widened predicate would re-offer it every
-        // pass and `record_enrich_skip`'s bare UPDATE would bump the export revision every time.
-        // Zero-edit sessions are common, so that is a permanent cursor churn for a large set of rows --
-        // the same hazard Phase 3 took a batched trigger sandwich to avoid.
-        //
-        // ...and it applies ONLY when the touch set is what decided. `Basis::reads_stored_evidence` is
-        // the discriminator, from the classifier itself rather than re-derived here. A cwd-anchor or
-        // git-origin decision never consults `outcome_json`, so it is SETTLED even on a catalog that has
-        // never been fully reindexed -- which is the common case for the very hosts the git-origin branch
-        // exists for. Gating those on `evidence.present` would leave their `scope_version` NULL forever
-        // and re-offer every one of their rows on every pass, exactly the churn this rule prevents.
-        let scope_version =
-            (!decision.basis.reads_stored_evidence() || evidence.present).then_some(session::SCOPE_VERSION);
+        // Leaving the column NULL is what keeps the row a candidate for the next pass, and
+        // re-consideration spends no tokens: the routing gate below records a skip without ever
+        // reaching the transport.
+        let scope_version = decision.settled.then_some(session::SCOPE_VERSION);
 
         // --- Routing gate: personal content never leaves the machine. ---
         if !scope.is_work() {

@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::checkout::Matrix;
+use common::repo::ProbeOutcome;
 
 /// A UUID-v4 per matrix row that gets a seeded session. `scan::find_session_files` requires the
 /// stem to be a v4 UUID, so these cannot be arbitrary strings.
@@ -31,8 +32,14 @@ const SID_FORK: &str = "33333333-3333-4333-8333-333333333333";
 const SID_LAYOUT: &str = "44444444-4444-4444-8444-444444444444";
 const SID_DELETABLE: &str = "55555555-5555-4555-8555-555555555555";
 
-/// The rule-1 answer for a matrix cwd, through the REAL resolver with the fixture's blocked roots.
+/// The rule-1 SLUG for a matrix cwd, through the REAL resolver with the fixture's blocked roots.
+/// Rows that care about the slug alone use this; rows about the routing gate use [`probe`].
 fn detect(m: &Matrix, cwd: &Path) -> Option<String> {
+    probe(m, cwd).resolved_slug().map(str::to_string)
+}
+
+/// The full typed [`ProbeOutcome`], for the rows whose whole point is WHICH kind of decline it was.
+fn probe(m: &Matrix, cwd: &Path) -> ProbeOutcome {
     common::repo::detect_with_blocked_roots(cwd, &m.blocked())
 }
 
@@ -74,16 +81,25 @@ fn matrix_row_05_a_bare_container_child() {
     );
 }
 
+/// Problem 1's seed state, and the ONE negative the routing gate records. It must be
+/// CONCLUSIVE, not a bare decline: a transient failure looks identical through an `Option`.
 #[test]
-fn matrix_row_09_a_repo_with_no_origin_declines() {
+fn matrix_row_09_a_repo_with_no_origin_is_conclusively_no_origin() {
     let m = Matrix::build();
-    assert_eq!(detect(&m, &m.no_origin), None);
+    let outcome = probe(&m, &m.no_origin);
+    assert_eq!(outcome, ProbeOutcome::NoOrigin);
+    assert!(
+        outcome.is_conclusive_negative(),
+        "this is the record that refuses the flip"
+    );
 }
 
 #[test]
-fn matrix_row_11_a_non_git_directory_declines() {
+fn matrix_row_11_a_non_git_directory_is_conclusively_not_a_repo() {
     let m = Matrix::build();
-    assert_eq!(detect(&m, &m.not_a_repo), None);
+    let outcome = probe(&m, &m.not_a_repo);
+    assert_eq!(outcome, ProbeOutcome::NotARepo);
+    assert!(outcome.is_conclusive_negative());
 }
 
 #[test]
@@ -126,15 +142,13 @@ fn matrix_rows_14_to_16_the_no_org_level_layouts_all_resolve() {
     }
 }
 
+/// Row 30. An empty repo (no commits) still has a work tree, so it must be `NoOrigin` (conclusive)
+/// and NOT be confused with a repo-discovery failure. Those are opposite answers: one records, the
+/// other must not.
 #[test]
-fn matrix_row_30_an_empty_repo_declines() {
+fn matrix_row_30_an_empty_repo_is_conclusively_no_origin() {
     let m = Matrix::build();
-    assert_eq!(
-        detect(&m, &m.empty_repo),
-        None,
-        "no commits and no origin: rule 1 has nothing to report. Phase 2 upgrades this from a bare \
-         `None` to the CONCLUSIVE `NoOrigin`, which is the distinction that matters"
-    );
+    assert_eq!(probe(&m, &m.empty_repo), ProbeOutcome::NoOrigin);
 }
 
 /// The deliberate gaps, named with the phase that closes each, so an absent row reads as scheduled
@@ -468,5 +482,141 @@ fn matrix_row_16_an_off_layout_work_checkout_still_classifies_work() {
     assert_eq!(
         scope, "work",
         "Keegan's layout resolves through the remote, not the path"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 2 rows: every way the probe record could LIE, and the ones where it must stay silent.
+// ---------------------------------------------------------------------------------------------
+
+/// Row 23. A `safe.directory` / dubious-ownership refusal is a transient ENVIRONMENT failure, not a
+/// statement about a remote. Stamping it would turn one misconfigured host into a permanent refusal
+/// of work scope for every session on it. The panel's severest finding.
+///
+/// Approximated the way it actually manifests: git exits non-zero at the discovery stage for a
+/// reason that is not "this is not a repository". Row 29 covers the origin-read-stage version.
+#[test]
+fn matrix_row_23_a_dubious_ownership_refusal_records_nothing() {
+    let m = Matrix::build();
+    // A `.git` FILE pointing at a gitdir that does not exist: git fails discovery, and there is no
+    // repository to make a conclusive statement about either.
+    let broken = m.home().join("dubious");
+    std::fs::create_dir_all(&broken).expect("create dir");
+    std::fs::write(broken.join(".git"), "gitdir: /nonexistent/clyde-matrix/gone\n").expect("write .git");
+
+    let outcome = probe(&m, &broken);
+    assert!(
+        !outcome.is_conclusive_negative(),
+        "a broken gitdir pointer must not stamp, got {}",
+        outcome.as_str()
+    );
+}
+
+/// Row 26. An archived session whose cwd no longer exists has NOTHING to observe. It must be
+/// `Indeterminate`, never a conclusive negative, so a restored checkout can still recover the row.
+///
+/// BITES: return `NotARepo` for a missing cwd and every archived session is permanently refused.
+#[test]
+fn matrix_row_26_an_archived_cwd_that_no_longer_exists_records_nothing() {
+    let m = Matrix::build();
+    let gone = m.home().join("deleted-long-ago");
+    assert_eq!(probe(&m, &gone), ProbeOutcome::Indeterminate);
+}
+
+/// Row 29. A repo whose `.git/config` cannot be read fails the origin read with a fatal, NOT with
+/// git's "the key is absent" rc=1. It must be `Indeterminate`: `rev-parse` already established the
+/// cwd IS a repo, so a fatal at the origin read is an anomaly, not a finding.
+///
+/// BITES: collapse a non-1 exit at the origin-read stage into `NoOrigin` or `NotARepo` and an
+/// unreadable config becomes a permanent lockout.
+#[test]
+fn matrix_row_29_an_unreadable_git_config_records_nothing() {
+    let m = Matrix::build();
+    if !m.make_config_unreadable() {
+        // Running as root, where mode 0 is still readable. Skip rather than assert a condition the
+        // platform refused to create; a test that silently passes without exercising anything is the
+        // register's own defect class.
+        eprintln!("skipped: this platform cannot make a file unreadable (running as root?)");
+        return;
+    }
+    let outcome = probe(&m, &m.unreadable_config);
+    assert!(
+        !outcome.is_conclusive_negative(),
+        "an unreadable .git/config must not stamp, got {}",
+        outcome.as_str()
+    );
+}
+
+/// Row 28, a CONFIRMED live bug on `main`: an exported `GIT_DIR` forges a `Resolved` and the
+/// containment check does not catch it, because git treats the `-C` path as the work tree when
+/// `GIT_DIR` is set without `GIT_WORK_TREE`.
+///
+/// Driven through the SHIPPED BINARY rather than the library, which is the point of putting it here:
+/// `common`'s unit test proves the function resists the variable, and this proves the variable does
+/// not survive the trip from the operator's shell through `clyde session reindex` into the probe.
+#[test]
+fn matrix_row_28_git_dir_in_the_environment_cannot_forge_an_attribution() {
+    let s = Sandbox::new();
+    // The session ran in a plain directory with no repository of its own.
+    s.seed(SID_NO_ORIGIN, &s.matrix.not_a_repo);
+
+    let out = s
+        .clyde(&["session", "reindex"])
+        .env("GIT_DIR", s.matrix.flat_ssh.join(".git"))
+        .output()
+        .expect("spawn clyde");
+    assert!(
+        out.status.success(),
+        "reindex failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (repo, source) = s.attribution(SID_NO_ORIGIN);
+    assert_eq!(
+        repo, None,
+        "an inherited GIT_DIR reached the probe and forged an attribution to {repo:?} via {source:?}"
+    );
+}
+
+/// Rows 9 and 10 as ONE SEQUENCE, through the shipped binary, at the ROUTING surface. This is
+/// Problem 1 end to end.
+///
+/// It drives `session enrich` and never an explicit `session reindex`, and that is load-bearing
+/// rather than incidental. An explicit reindex runs `reindex_efficiency`, which writes
+/// `outcome_json`, so the decision SETTLES at the current `SCOPE_VERSION` and `enrich_candidates`
+/// excludes the row before the gate is ever consulted. `enrich` refreshes through `lazy_reindex`,
+/// which never runs that pass, so the row stays PROVISIONAL and is re-decided. That provisional
+/// population is exactly the state of a teammate host, which is the population the git-origin branch
+/// was built for and therefore the population the leak reaches.
+///
+/// Measured in the Phase 1 harness before the fix: `personal/false` then `work/true`.
+///
+/// BITES: delete the `facts.repo_probe` branch from the git-origin arm and the second decision
+/// becomes `work, would_send=true`.
+#[test]
+fn matrix_rows_09_and_10_a_later_probe_never_upgrades_personal_to_work() {
+    let s = Sandbox::new();
+    s.seed(SID_NO_ORIGIN, &s.matrix.no_origin);
+
+    let before = s.dry_run_decisions();
+    let (_, scope, send) = before
+        .iter()
+        .find(|(id, _, _)| id == SID_NO_ORIGIN)
+        .expect("the session was considered on the first pass");
+    assert_eq!((scope.as_str(), *send), ("personal", false), "seed state");
+
+    // One command. Nothing about the session is touched. `gh repo create --source=.` produces the
+    // identical state and is an ordinary workflow.
+    s.matrix.add_origin_to_no_origin();
+
+    let after = s.dry_run_decisions();
+    let (_, scope, send) = after
+        .iter()
+        .find(|(id, _, _)| id == SID_NO_ORIGIN)
+        .expect("the session is still a candidate: a personal git-origin row never settles");
+    assert_eq!(
+        (scope.as_str(), *send),
+        ("personal", false),
+        "a personal transcript was queued for the work Anthropic account by a `git remote add`"
     );
 }
