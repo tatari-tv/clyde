@@ -762,8 +762,8 @@ fn a_row_that_reaches_the_refusal_counts_as_probe_refused_and_the_host_flips_it(
     assert_eq!(sole_basis(&db, &mut hosts), Basis::HostRefused);
 }
 
-/// Test 4. Both refusal conditions on one row. HOST wins, pinning the classifier's precedence
-/// (`session/src/scope.rs:288` runs before `:296`).
+/// Test 4. Both refusal conditions on one row. HOST wins, pinning the classifier's precedence:
+/// `classify_with_evidence`'s host-refusal branch runs before its probe-refusal branch.
 ///
 /// This is also what AC3's SQL had to learn: without a `repo_host` clause the criterion
 /// double-counts the moment this shape appears.

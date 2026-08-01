@@ -290,8 +290,8 @@ pub const BASIS_COUNT: usize = 6;
 /// The bases in the CLASSIFIER's own precedence order -- the order `doctor` prints them, so the list
 /// reads top-down the way a decision is actually made.
 ///
-/// `host-refused` before `probe-refused` because the host check (`session/src/scope.rs:288`) runs
-/// before the probe check (`:296`), and an operator reading two refusal counts needs to know which
+/// `host-refused` before `probe-refused` because `classify_with_evidence`'s host-refusal branch runs
+/// before its probe-refusal branch, and an operator reading two refusal counts needs to know which
 /// one wins when a row carries both.
 const BASIS_ORDER: [Basis; BASIS_COUNT] = [
     Basis::Override,

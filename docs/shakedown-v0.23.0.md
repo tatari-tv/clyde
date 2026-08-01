@@ -1,7 +1,9 @@
 # CLI Shakedown Report: clyde v0.23.0
 
 Run 2026-08-01 against a freshly installed `~/.cargo/bin/clyde` (v0.23.0, tag `v0.23.0`, commit
-`21c3a32`). Every command below was executed for real. Mutating commands ran against copies of the
+`21c3a32`). Every command in the **Verified working**, **Findings** and **Edge cases** sections was
+executed for real; **Pipeline recipes** is suggested usage for the reader, not an execution log, and
+is not counted in the 24. Mutating commands ran against copies of the
 live catalog under a scratch `XDG_DATA_HOME`; the live catalog at
 `~/.local/share/clyde/sessions.db` was never written by this sweep. No real `clyde session enrich`
 was run: that ships transcripts off-machine and the maintainer ran it separately.
@@ -212,7 +214,7 @@ clyde session enrich --dry-run --dormant-after 1h \
   | jq -r '.details[] | select(."would-send") | .["session-id"]' | wc -l
 
 # The routing counts alone, for a health check
-clyde doctor | sed -n '/routing:/,$p'
+clyde doctor | sed -n '/routing decisions:/,$p'
 
 # Full-month coverage for a 30-day report
 clyde session enrich --dormant-after 1h
