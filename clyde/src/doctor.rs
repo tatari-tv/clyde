@@ -94,10 +94,16 @@ enum Reachable {
 
 impl Reachable {
     /// Diagnose `path`, reading its layout only when it is a directory that can be listed.
+    ///
+    /// A successful `metadata` is NOT enough to claim [`Self::Yes`]: a directory with execute but
+    /// not read permission (`chmod 111`) stats fine and cannot be listed, and reporting that as
+    /// "readable, and it holds no `<org>/<repo>` pair" is the misdiagnosis this whole enum exists to
+    /// prevent. A layout read that fails is [`Self::Error`], same as a metadata failure.
     fn of(path: &Path) -> Self {
         match std::fs::metadata(path) {
-            Ok(md) if md.is_dir() => Self::Yes {
-                has_org_repo: has_org_repo_pair(path),
+            Ok(md) if md.is_dir() => match has_org_repo_pair(path) {
+                Ok(has_org_repo) => Self::Yes { has_org_repo },
+                Err(e) => Self::Error(e.to_string()),
             },
             Ok(_) => Self::NotADirectory,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::Missing,
@@ -141,21 +147,62 @@ fn attribution(db_path: &Path) -> Result<Option<Attribution>> {
 
 /// Whether `root` holds at least one `<org>/<repo>` directory pair, which is the shape rule 4
 /// matches. Two `read_dir` levels, stopping at the first hit.
-fn has_org_repo_pair(root: &Path) -> bool {
-    let Ok(orgs) = std::fs::read_dir(root) else {
-        return false;
-    };
-    for org in orgs.filter_map(std::result::Result::ok) {
-        if !org.path().is_dir() {
-            continue;
+///
+/// **Failing to LIST the root is an error, not a `false`.** `false` is a claim ("I looked, there is
+/// no pair"), and a root that could not be opened supports no such claim; returning one made
+/// `Reachable::of` report an unreadable directory as readable-and-empty.
+///
+/// Failures BELOW the root are different and are deliberately skipped rather than propagated. One
+/// unreadable org directory does not make the root unreadable, and aborting on it would let a single
+/// bad entry hide a pair that exists in a sibling. Each skip is logged, so a `false` that was reached
+/// over skipped entries is still diagnosable from the DEBUG log.
+fn has_org_repo_pair(root: &Path) -> std::io::Result<bool> {
+    for org in std::fs::read_dir(root)? {
+        let org = match org {
+            Ok(org) => org,
+            Err(e) => {
+                debug!(
+                    "doctor::has_org_repo_pair: skipping an unreadable entry under {}: {e}",
+                    root.display()
+                );
+                continue;
+            }
+        };
+        // `file_type`, not `Path::is_dir`: the latter folds every error into `false`, so a permission
+        // failure would read as "not a directory". Here it reads as what it is and is skipped aloud.
+        match org.file_type() {
+            Ok(ft) if ft.is_dir() => {}
+            Ok(_) => continue,
+            Err(e) => {
+                debug!(
+                    "doctor::has_org_repo_pair: cannot type {}: {e}; skipping",
+                    org.path().display()
+                );
+                continue;
+            }
         }
-        if let Ok(mut repos) = std::fs::read_dir(org.path())
-            && repos.any(|r| r.is_ok_and(|r| r.path().is_dir()))
-        {
-            return true;
+        let repos = match std::fs::read_dir(org.path()) {
+            Ok(repos) => repos,
+            Err(e) => {
+                debug!(
+                    "doctor::has_org_repo_pair: cannot list {}: {e}; skipping",
+                    org.path().display()
+                );
+                continue;
+            }
+        };
+        for repo in repos {
+            match repo.and_then(|r| r.file_type()) {
+                Ok(ft) if ft.is_dir() => return Ok(true),
+                Ok(_) => {}
+                Err(e) => debug!(
+                    "doctor::has_org_repo_pair: skipping an unreadable entry under {}: {e}",
+                    org.path().display()
+                ),
+            }
         }
     }
-    false
+    Ok(false)
 }
 
 fn print_attribution(a: &Attribution) {
