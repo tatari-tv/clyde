@@ -14,7 +14,7 @@ use common::repo::host::{HostPolicy, HostResolver};
 use eyre::{Result, bail};
 use log::{debug, warn};
 use rusqlite::{OptionalExtension, params};
-use session::Basis;
+use session::{Anchors, Basis};
 
 use super::Db;
 
@@ -450,8 +450,8 @@ impl Db {
     ///
     /// `work_remote_hosts` is passed in rather than read here, because the ALLOWLIST is config and
     /// `sessions` does not load config.
-    pub fn routing_summary(&self, work_remote_hosts: &[String]) -> Result<RoutingSummary> {
-        self.routing_summary_with(&mut HostPolicy::new(work_remote_hosts))
+    pub fn routing_summary(&self, anchors: &Anchors, work_remote_hosts: &[String]) -> Result<RoutingSummary> {
+        self.routing_summary_with(anchors, &mut HostPolicy::new(work_remote_hosts))
     }
 
     /// The routing picture, over an explicit [`HostPolicy`] so a test can inject a
@@ -479,7 +479,11 @@ impl Db {
     /// signal rather than aborting the scan, inherited from `evidence_from_row` and
     /// `crate::routing::parse_repo_source` respectively. `doctor` is the command an operator runs
     /// when something is already broken; it is the last place that may die on one bad row.
-    pub fn routing_summary_with<R: HostResolver>(&self, hosts: &mut HostPolicy<R>) -> Result<RoutingSummary> {
+    pub fn routing_summary_with<R: HostResolver>(
+        &self,
+        anchors: &Anchors,
+        hosts: &mut HostPolicy<R>,
+    ) -> Result<RoutingSummary> {
         debug!("Db::routing_summary_with");
         let count = |sql: &str| -> Result<usize> {
             let n: i64 = self.conn.query_row(sql, [], |r| r.get(0))?;
@@ -503,6 +507,7 @@ impl Db {
                 row.repo.as_deref(),
                 row.repo_source.as_deref(),
                 &row.evidence(),
+                anchors,
                 hosts,
             )
             .decision;

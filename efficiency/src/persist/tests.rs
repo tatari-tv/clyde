@@ -128,6 +128,8 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
         now: dt("2026-07-01T00:00:00Z"),
         dormant_after: chrono::Duration::days(7),
         host: "host-01".to_string(),
+        anchors: session::Anchors::new(&[std::path::PathBuf::from("/home/alice/repos")]),
+        work_remote_hosts: vec!["github.com".to_string()],
     };
     let before = db.export(&ExportFilters::default(), &ctx).unwrap();
     let updated_at_before = before.sessions[0].updated_at;

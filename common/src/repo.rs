@@ -490,6 +490,32 @@ impl ProbeOutcome {
             Self::Indeterminate => "indeterminate",
         }
     }
+
+    /// Parse back the outcome from a `sessions.repo_probe` stamp (`'<token>@<rfc3339>'`).
+    ///
+    /// The inverse of [`Self::as_str`], and it lives beside it for the same reason
+    /// [`RepoSource::from_str`] lives beside its own `as_str`: a token contract with its two halves
+    /// in different crates is one rename away from silently reading every stamp as unrecognized.
+    ///
+    /// **Only the two CONCLUSIVE-NEGATIVE tokens are legal here, and that is the column's contract,
+    /// not a shortcut.** `Db::record_probe` enforces at the write that nothing else is ever stored,
+    /// so a `resolved`/`blocked`/`outside-root`/`indeterminate` stamp means a hand-edited catalog or
+    /// a future clyde that changed the write policy without changing this. Both are cases the reader
+    /// must not silently accept: `Resolved` cannot even be reconstructed (the stamp carries no slug
+    /// or host), and accepting `blocked` would let a transient environment failure anchor a routing
+    /// decision. `None` is the fail-safe answer, and the caller warns.
+    ///
+    /// The timestamp is deliberately not returned. It is for the operator reading `doctor`; no
+    /// routing rule has ever compared it, and handing the classifier a clock it does not need is how
+    /// a time-based rule gets written by accident.
+    pub fn from_stamp(stamp: &str) -> Option<Self> {
+        let token = stamp.split_once('@').map_or(stamp, |(token, _)| token);
+        match token {
+            "no-origin" => Some(Self::NoOrigin),
+            "not-a-repo" => Some(Self::NotARepo),
+            _ => None,
+        }
+    }
 }
 
 /// Rule 1: what the cwd's own git config says about its origin.

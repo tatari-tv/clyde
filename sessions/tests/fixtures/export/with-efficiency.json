@@ -3,6 +3,7 @@
   "generated-at": "2026-07-17T00:00:00+00:00",
   "host": "host-01",
   "cursor": 478,
+  "scope-version": 4,
   "sessions": [
     {
       "session-id": "00000000-0000-4000-8000-000000000001",
@@ -22,7 +23,13 @@
       "n-msgs": 2041,
       "model": "example-model-large",
       "summary": "Orchestrated a phased 5-phase Rust port of an API client CLI ... ready for merge to the next release tag post-merge per gated release flow.",
-      "tags": ["rust", "cli", "port", "api-client", "phased-implementation"],
+      "tags": [
+        "rust",
+        "cli",
+        "port",
+        "api-client",
+        "phased-implementation"
+      ],
       "tags-source": "enrich",
       "enriched-at": "2026-07-06T10:04:07.075906295+00:00",
       "enrich-status": "ok",
@@ -43,9 +50,19 @@
             "cache-1h-write-tokens": 10000,
             "cost-usd": 1.2345,
             "turns": 42,
-            "turn-durations-ms": [1200, 4500, 44268, 90000],
+            "turn-durations-ms": [
+              1200,
+              4500,
+              44268,
+              90000
+            ],
             "compactions": [
-              { "trigger": "auto", "pre-tokens": 180000, "post-tokens": 25000, "duration-ms": 15230 }
+              {
+                "trigger": "auto",
+                "pre-tokens": 180000,
+                "post-tokens": 25000,
+                "duration-ms": 15230
+              }
             ],
             "tool-calls": 120,
             "tool-errors": 7,
@@ -56,9 +73,22 @@
             "web-fetch-requests": 1,
             "effort-high": 5,
             "effort-xhigh": 1,
-            "model-mix": { "example-model-large": 40, "example-model-mini": 2 },
-            "by-skill": { "design-review": { "tokens": 50000, "cost-usd": 0.4 } },
-            "by-mcp-tool": { "oracle__query": { "tokens": 12000, "cost-usd": 0.1 } }
+            "model-mix": {
+              "example-model-large": 40,
+              "example-model-mini": 2
+            },
+            "by-skill": {
+              "design-review": {
+                "tokens": 50000,
+                "cost-usd": 0.4
+              }
+            },
+            "by-mcp-tool": {
+              "oracle__query": {
+                "tokens": 12000,
+                "cost-usd": 0.1
+              }
+            }
           },
           "cache-read-share": 0.83,
           "cache-1h-write-fraction": 0.2,
@@ -82,7 +112,10 @@
                 "cache-1h-write-tokens": 2000,
                 "cost-usd": 0.3,
                 "turns": 10,
-                "turn-durations-ms": [1200, 4500],
+                "turn-durations-ms": [
+                  1200,
+                  4500
+                ],
                 "compactions": [],
                 "tool-calls": 30,
                 "tool-errors": 2,
@@ -93,7 +126,9 @@
                 "web-fetch-requests": 0,
                 "effort-high": 1,
                 "effort-xhigh": 0,
-                "model-mix": { "example-model-large": 10 },
+                "model-mix": {
+                  "example-model-large": 10
+                },
                 "by-skill": {},
                 "by-mcp-tool": {}
               },
@@ -109,8 +144,15 @@
           }
         ],
         "flags": [
-          { "kind": "high-tool-error-rate", "observed": 0.0583, "ceiling": 0.05 },
-          { "kind": "auto-compaction", "count": 1 }
+          {
+            "kind": "high-tool-error-rate",
+            "observed": 0.0583,
+            "ceiling": 0.05
+          },
+          {
+            "kind": "auto-compaction",
+            "count": 1
+          }
         ]
       }
     }

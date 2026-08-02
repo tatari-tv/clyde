@@ -414,10 +414,19 @@ fn cmd_export(db: &Db, args: ExportArgs, tz: common::DateTz) -> Result<()> {
     lazy_reindex(db, args.no_reindex);
 
     let host = gethostname::gethostname().to_string_lossy().into_owned();
+    // Export's scope fallback is the ENRICH GATE's classifier now, not a cwd-only rule of its own, so
+    // it needs the same config the gate reads. Loaded here rather than threaded from the caller
+    // because `cmd_export` is the only export entry point and every other config-reading command
+    // loads its own the same way.
+    let cfg = common::config::load().context("failed to load clyde config for the export scope fallback")?;
     let ctx = ExportContext {
         now,
         dormant_after,
         host,
+        // Built ONCE here and passed by reference into every row: constructing it per row would stat
+        // the disk per row.
+        anchors: session::Anchors::new(cfg.repo_roots()),
+        work_remote_hosts: cfg.work_remote_hosts().to_vec(),
     };
 
     if let Some(needle) = &args.id {
@@ -468,6 +477,7 @@ fn cmd_export_one(
         generated_at: ctx.now.to_rfc3339(),
         host: ctx.host.clone(),
         cursor: record.updated_at,
+        scope_version: session::SCOPE_VERSION,
         sessions: vec![record],
     };
     print_json(&envelope);
@@ -948,8 +958,10 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
         max_attempts: args.max_attempts,
         token_budget: args.budget_tokens,
         // The host allowlist reaches the gate through config, never a flag: it decides which remotes
-        // may confer WORK scope, which is policy, not a per-invocation choice.
+        // may confer WORK scope, which is policy, not a per-invocation choice. Same for the roots the
+        // cwd anchor reads, built once here and shared across every row of the sweep.
         work_remote_hosts: cfg.work_remote_hosts().to_vec(),
+        anchors: session::Anchors::new(cfg.repo_roots()),
     };
     let stats = if args.dry_run {
         // No off-machine calls, no `claude` needed: the gate is previewed, not opened.

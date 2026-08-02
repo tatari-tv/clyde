@@ -161,6 +161,26 @@ pub struct Matrix {
     /// resolved root is not an ancestor of the cwd. The only env-var-free shape that genuinely fails
     /// the containment check; see the module docs on row 8.
     pub outside_root: PathBuf,
+    /// P3's defect: a FLAT clone directly under the repo root, with no org level
+    /// (`<home>/repos/philo`), carrying a WORK origin. The v3 anchor matched the literal component
+    /// `repos` and read this `Personal, settled`, excluding it from `enrich_candidates` until the
+    /// next `SCOPE_VERSION` bump WITHOUT ever consulting the remote.
+    pub flat_under_root: PathBuf,
+    /// P3's leak, round 2: a flat repo literally NAMED `tatari-tv` under an OFF-LAYOUT root
+    /// (`<home>/altroot/tatari-tv`), with a PERSONAL origin. Granting Work to any bare work-org
+    /// component under a root sends this to the work account on a directory-name coincidence. The
+    /// mirror of `<repo-root>/scottidler/tatari-tv`, which the predecessor deliberately made
+    /// Personal for exactly this reason.
+    pub work_org_named_repo: PathBuf,
+    /// P3's hole, round 3: an EMPTY repo named `tatari-tv` under an off-layout root
+    /// (`<home>/altroot2/tatari-tv`), with NO origin. It resolves no slug AND is not a plain
+    /// directory, so a rule keyed on "no slug resolved" hands it Work while a rule keyed on
+    /// `NotARepo` correctly defers.
+    pub empty_repo_named_work_org: PathBuf,
+    /// A remote on a non-allowlisted host, at the FLAT `<root>/<repo>` shape
+    /// (`<home>/repos/hostile`). The host guard must still refuse the work slug the widened anchor
+    /// now lets reach the git-origin branch.
+    pub flat_under_root_bad_host: PathBuf,
 }
 
 impl Matrix {
@@ -236,6 +256,21 @@ impl Matrix {
             &home.join("git").join("tatari").join("philo"),
             Some("git@github.com:tatari-tv/philo.git"),
         );
+
+        // P3's rows. `flat_under_root` is the defect itself: no org level, so the v3 anchor read it
+        // settled-personal off the literal `repos` and the remote was never asked.
+        let flat_under_root = repo(&repos.join("philo"), Some("git@github.com:tatari-tv/philo.git"));
+        let flat_under_root_bad_host = repo(&repos.join("hostile"), Some("git@evil.example.com:tatari-tv/x.git"));
+
+        // The two occupants of a bare `<root>/<work-org>` that are NOT the org directory. Each gets
+        // its OWN alternate root, because `<repo-root>/tatari-tv` is already the org DIR and a single
+        // path cannot model both. `altroot`/`altroot2` stand for any operator-configured root.
+        let work_org_named_repo = repo(
+            &mkdir(&home.join("altroot")).join(WORK_ORG),
+            Some("git@github.com:scottidler/tatari-tv.git"),
+        );
+        let empty_repo_named_work_org = mkdir(&mkdir(&home.join("altroot2")).join(WORK_ORG));
+        git(&empty_repo_named_work_org, &["init", "-q", "-b", "main"]);
 
         let fork_in_work_dir = repo(
             &work.join("clyde-fork"),
@@ -314,6 +349,10 @@ impl Matrix {
             unreadable_config,
             empty_repo,
             outside_root,
+            flat_under_root,
+            work_org_named_repo,
+            empty_repo_named_work_org,
+            flat_under_root_bad_host,
         }
     }
 
@@ -331,6 +370,18 @@ impl Matrix {
     /// The fixture's `projects-dir`. Empty until a test writes a transcript into it.
     pub fn projects_dir(&self) -> PathBuf {
         self.home().join("projects")
+    }
+
+    /// The alternate root holding [`Self::work_org_named_repo`]: a stand-in for any root an operator
+    /// configures that is not `<home>/repos`.
+    pub fn alt_root(&self) -> PathBuf {
+        self.home().join("altroot")
+    }
+
+    /// The alternate root holding [`Self::empty_repo_named_work_org`]. A SECOND one, because both
+    /// occupants are named `tatari-tv` and one root cannot hold two directories of the same name.
+    pub fn alt_root2(&self) -> PathBuf {
+        self.home().join("altroot2")
     }
 
     /// The blocked-root set rule 1 must be given for this fixture: exactly `[$HOME]`, mirroring

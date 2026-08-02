@@ -67,11 +67,11 @@ pub struct ScopeEvidence {
 /// A struct because the tuple form is four `Option<String>`s in a row: any two could be swapped at
 /// the destructuring site and the code would still compile, while silently feeding the probe stamp
 /// to the host check. Naming them makes that impossible.
-struct EvidenceRow {
-    outcome_json: Option<String>,
-    repo_probe: Option<String>,
-    repo_host: Option<String>,
-    scope_override: Option<String>,
+pub(crate) struct EvidenceRow {
+    pub(crate) outcome_json: Option<String>,
+    pub(crate) repo_probe: Option<String>,
+    pub(crate) repo_host: Option<String>,
+    pub(crate) scope_override: Option<String>,
 }
 
 /// One catalog row's complete classifier input: the session's own metadata plus the four evidence
@@ -107,7 +107,7 @@ impl RoutingRow {
 /// A malformed blob counts as NOT present: it is unreadable, so the row genuinely has no usable
 /// touch-set evidence, and treating it as settled would freeze a wrong answer behind a recorded
 /// `scope_version`. A reindex rewrites the blob and the row self-heals.
-fn evidence_from_row(session_id: &str, row: &EvidenceRow) -> ScopeEvidence {
+pub(crate) fn evidence_from_row(session_id: &str, row: &EvidenceRow) -> ScopeEvidence {
     // The routing state stands on its own: a row with no `outcome_json` yet can still carry a
     // conclusive negative and an override, and BOTH must reach the classifier. Returning early on
     // an absent blob without them would silently disarm the whole gate on exactly the
