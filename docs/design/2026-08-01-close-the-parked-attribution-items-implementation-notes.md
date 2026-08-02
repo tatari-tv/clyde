@@ -354,3 +354,63 @@ Not changing the code, for three reasons:
 
 Folded instead: the doc's P3 table now says explicitly that the column is the anchor's verdict, so
 the wording cannot invite Codex's reading again.
+
+## Mutation gate: run, red, fixed, green
+
+`otto mutants` is this repo's zero-survivor gate on the routing path. It is deliberately NOT part of
+`otto ci`, and it was **not run once across the four phases that rewrote `session/src/scope.rs`** --
+`otto ci` ran twelve times and the gate that checks whether tests BITE ran zero times. That is the
+process failure behind the leak-direction regression the implementation audit found.
+
+### First run: killed, not failed
+
+`--jobs 8` on a 32-core host produced a load average of 167. `--jobs N` bounds how many mutants are
+tested at once and says nothing about what each test binary then does; `efficiency` links rayon,
+whose pool defaults to `nproc`, so 8 x 32 = 256 runnable threads. That is not merely slow: `.otto.yml`
+picked its 300s timeout as "roughly 15x the idle workspace suite, which absorbs the parallelism",
+calibrated for 8x and not 256x, so the run was drifting back into manufacturing the timeout artifacts
+that comment exists to prevent. Killed and fixed at the config (`f22c8ba`), deriving
+`RAYON_NUM_THREADS` as `cores / jobs` so the two numbers cannot drift apart. Re-run: 11 minutes,
+temps under threshold.
+
+### Second run: 10 survivors, FOUR of them in code written that day
+
+```
+337 mutants tested in 11m: 10 missed, 164 caught, 163 unviable
+```
+
+| Survivor | Why nothing caught it |
+|---|---|
+| `from_stamp`, both match arms | No test AT ALL. The `RecordedProbe` tests construct a `ProbeOutcome` directly, so nothing drove the parser -- the very function just rewritten for a security finding was unverified |
+| `RecordedProbe::token` -> `""` / `"xyzzy"` | Log-only method; nothing asserted its strings |
+| `Anchors::org_slot` and `slug_under_roots`, `>` -> `<` / `==` / `>=` | The depth comparison had one test each, and neither distinguished shallowest-wins from deepest-wins |
+| `Scope::from_stored`, both arms | Pre-existing. Driven end to end by `sessions`, never by its OWN crate -- the v0.23.0 `scope_override` lesson repeating verbatim |
+
+### The `>=` mutants were unkillable, and were designed out rather than annotated
+
+No reachable input has two DISTINCT roots of equal depth both matching one path, so `>` and `>=` are
+behaviorally identical and no test can separate them. `.otto.yml` permits an annotated skip for a
+genuinely unavoidable survivor, but cargo-mutants skips whole FUNCTIONS, which would have suppressed
+the `<` and `==` mutants that ARE killable and that guard a real behavior.
+
+Both sites were rewritten as `max_by_key`. Expressing "deepest wins" as an ordering key deletes the
+operator, so there is nothing left to mutate and no skip to justify. Mutant count dropped 337 -> 331,
+which is exactly the six operator mutants (three per site, two sites) ceasing to exist.
+
+### Third run: clean
+
+```
+331 mutants tested in 11m: 168 caught, 163 unviable
+finished successfully
+```
+
+Zero unannotated survivors, which is the threshold the design doc's Testing Strategy requires
+("Mutation threshold stays zero, per the v0.23.0 decision"). Note that the background-task wrapper
+reported exit 0 for the FAILING run too; the authority is the log line and otto's own exit code, not
+the wrapper's.
+
+### The lesson worth keeping
+
+`otto ci` answers "does the code work". `otto mutants` answers "would we notice if it stopped". Four
+phases of green CI hid a work-scope leak and a completely untested parser. The gate belongs in the
+per-phase loop for any change to the six files it covers, not only before a release.

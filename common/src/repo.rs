@@ -920,31 +920,36 @@ pub fn from_path_guess(cwd: &Path, roots: &[PathBuf]) -> Option<Resolved> {
 /// Being lexical is also why the roots arrive pre-expanded to both spellings: this function cannot
 /// resolve a symlink, and rule 4's whole population is cwds that no longer exist to resolve.
 pub fn slug_under_roots(path: &Path, roots: &[PathBuf]) -> Option<String> {
-    let mut best: Option<(usize, String)> = None;
-    for root in roots {
-        let Ok(rest) = path.strip_prefix(root) else {
-            trace!(
-                "repo::slug_under_roots: {} is not under the root {}",
-                path.display(),
-                root.display()
-            );
-            continue;
-        };
-        let mut components = rest.components();
-        let Some(org) = next_normal(&mut components) else {
-            continue;
-        };
-        let Some(repo) = next_normal(&mut components) else {
-            continue;
-        };
-        // Compare by component count, not by string length: a root with more components is the
-        // deeper one regardless of how its names happen to be spelled.
-        let depth = root.components().count();
-        if best.as_ref().is_none_or(|(seen, _)| depth > *seen) {
-            best = Some((depth, format!("{org}/{repo}")));
-        }
-    }
-    best.map(|(_, slug)| slug)
+    // `max_by_key` rather than a hand-rolled comparison, and that is a mutation-gate lesson rather
+    // than a style choice. The explicit `depth > seen` form left THREE surviving mutants (`<`, `==`,
+    // `>=`), and only two of them are killable: no reachable input has two DISTINCT roots of equal
+    // depth both matching one path, so `>` and `>=` are behaviorally identical and no test can tell
+    // them apart. Expressing "deepest wins" as an ordering key deletes the operator, so there is
+    // nothing left to mutate and no annotated skip to justify.
+    //
+    // Depth is a COMPONENT COUNT, not a string length: a root with more components is the deeper one
+    // regardless of how its names happen to be spelled.
+    roots
+        .iter()
+        .filter_map(|root| {
+            let rest = match path.strip_prefix(root) {
+                Ok(rest) => rest,
+                Err(_) => {
+                    trace!(
+                        "repo::slug_under_roots: {} is not under the root {}",
+                        path.display(),
+                        root.display()
+                    );
+                    return None;
+                }
+            };
+            let mut components = rest.components();
+            let org = next_normal(&mut components)?;
+            let repo = next_normal(&mut components)?;
+            Some((root.components().count(), format!("{org}/{repo}")))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, slug)| slug)
 }
 
 /// The next plain directory name under the repo root, or `None` for an exhausted path or anything

@@ -484,27 +484,26 @@ impl Anchors {
     /// `de_repo_roots` refuses a nested pair of configured roots, so two roots can only both match
     /// through its symlink expansion, and there the deeper one names the org.
     fn org_slot<'p>(&self, cwd: &'p Path) -> Option<(&'p str, bool)> {
-        let mut best: Option<(usize, &'p str, bool)> = None;
-        for root in &self.roots {
-            let Ok(rest) = cwd.strip_prefix(root) else {
-                continue;
-            };
-            let mut comps = rest.components();
-            // NORMAL only. A `..` or a bare separator is not an org name, and treating one as a
-            // component would let `<root>/../tatari-tv/x` read as anchored.
-            let Some(Component::Normal(org)) = comps.next() else {
-                continue;
-            };
-            let Some(org) = org.to_str() else {
-                continue;
-            };
-            let has_following = matches!(comps.next(), Some(Component::Normal(_)));
-            let depth = root.components().count();
-            if best.is_none_or(|(seen, _, _)| depth > seen) {
-                best = Some((depth, org, has_following));
-            }
-        }
-        best.map(|(_, org, following)| (org, following))
+        // `max_by_key`, not a hand-rolled comparison. See `common::repo::slug_under_roots` for the
+        // full reasoning: the explicit form leaves a `>=` mutant no reachable input can kill, and
+        // expressing "deepest wins" as an ordering key removes the operator rather than annotating
+        // around it.
+        self.roots
+            .iter()
+            .filter_map(|root| {
+                let rest = cwd.strip_prefix(root).ok()?;
+                let mut comps = rest.components();
+                // NORMAL only. A `..` or a bare separator is not an org name, and treating one as a
+                // component would let `<root>/../tatari-tv/x` read as anchored.
+                let Some(Component::Normal(org)) = comps.next() else {
+                    return None;
+                };
+                let org = org.to_str()?;
+                let has_following = matches!(comps.next(), Some(Component::Normal(_)));
+                Some((root.components().count(), org, has_following))
+            })
+            .max_by_key(|(depth, _, _)| *depth)
+            .map(|(_, org, following)| (org, following))
     }
 }
 

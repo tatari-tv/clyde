@@ -1219,3 +1219,57 @@ fn an_intact_linked_worktree_is_not_reported_as_an_orphan() {
         "the generic diagnosis stays available for the case it was written for"
     );
 }
+
+/// **`from_stamp` had NO test, and the mutation gate is how that surfaced.** Deleting either match
+/// arm survived: `RecordedProbe`'s tests construct a `ProbeOutcome` directly, so nothing ever drove
+/// the PARSER that turns a stored column into one.
+///
+/// It is the inverse of `as_str`, and both halves of a token contract need pinning or a rename
+/// silently makes every stored stamp unreadable -- which, since an unreadable stamp fails closed,
+/// would silently strip work scope from every refused row.
+///
+/// BITES: delete either arm and its row fails.
+#[test]
+fn from_stamp_round_trips_every_token_record_probe_can_write() {
+    for outcome in [ProbeOutcome::NoOrigin, ProbeOutcome::NotARepo] {
+        assert!(
+            outcome.is_conclusive_negative(),
+            "precondition: only conclusive negatives are ever written"
+        );
+        let stamp = format!("{}@2026-08-01T12:00:00+00:00", outcome.as_str());
+        assert_eq!(
+            ProbeOutcome::from_stamp(&stamp),
+            Some(outcome.clone()),
+            "the column's own round trip must hold for {stamp}"
+        );
+    }
+}
+
+/// The parser must be no more permissive than the WRITER.
+///
+/// `Db::record_probe` emits exactly `<token>@<rfc3339>`, so anything else is a hand-edited catalog
+/// or a future clyde. Each row here is a value that must NOT parse, and the bare-token row is the
+/// one that was accepted before the implementation audit: it let an edited catalog hand the bare
+/// `<root>/<work-org>` anchor a `NotARepo` it never observed.
+///
+/// BITES: restore `split_once('@').map_or(stamp, ..)` and the bare-token rows parse.
+#[test]
+fn from_stamp_refuses_anything_the_writer_cannot_produce() {
+    for bad in [
+        "not-a-repo",                         // the audit finding: no timestamp at all
+        "no-origin",                          // its twin
+        "",                                   // empty column
+        "@2026-08-01",                        // a timestamp with no token
+        "resolved@2026-08-01T12:00:00+00:00", // a real token, but never written to this column
+        "blocked@2026-08-01T12:00:00+00:00",  // ditto, and a transient failure at that
+        "indeterminate@2026-08-01T12:00:00+00:00",
+        "outside-root@2026-08-01T12:00:00+00:00",
+        "garbage@2026-08-01T12:00:00+00:00",
+    ] {
+        assert_eq!(
+            ProbeOutcome::from_stamp(bad),
+            None,
+            "{bad:?} is not a value Db::record_probe can write, so it must not parse"
+        );
+    }
+}

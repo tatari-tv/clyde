@@ -1252,3 +1252,71 @@ fn every_state_of_the_repo_probe_column_pins_its_direction() {
         );
     }
 }
+
+/// `Scope::from_stored` is the export contract's reader for the persisted `scope` column, and both
+/// of its arms survived mutation: no test drove the function directly.
+///
+/// It matters that this is pinned HERE rather than only end-to-end through export: a mutant is only
+/// checked by the tests that run for its own crate, which is the lesson the v0.23.0 mutation pass
+/// already recorded for `scope_override`.
+///
+/// BITES: delete either arm and its row fails; the `None` rows guard the frozen vocabulary.
+#[test]
+fn from_stored_reads_exactly_the_frozen_vocabulary() {
+    assert_eq!(Scope::from_stored("work"), Some(Scope::Work));
+    assert_eq!(Scope::from_stored("personal"), Some(Scope::Personal));
+    // Anything else is a hand-edited or forward-dated catalog. `None` is not a verdict: the export
+    // contract turns it into a LOUD error and the classifier's override step fails closed to
+    // personal, which are different obligations and deliberately so.
+    for bad in ["Work", "PERSONAL", "", " work", "wor", "unknown"] {
+        assert_eq!(
+            Scope::from_stored(bad),
+            None,
+            "{bad:?} is outside the frozen work|personal vocabulary"
+        );
+    }
+}
+
+/// `RecordedProbe::token` is log-only, and both of its string mutants survived. It is asserted
+/// rather than skipped because it is what an operator reads when a work slug was refused, and a
+/// token that says the wrong thing sends them to the wrong remedy -- the exact failure the orphaned
+/// worktree warning was fixed for.
+///
+/// BITES: replace either arm's string and its row fails.
+#[test]
+fn recorded_probe_token_names_what_was_recorded() {
+    assert_eq!(RecordedProbe::Negative(&ProbeOutcome::NoOrigin).token(), "no-origin");
+    assert_eq!(RecordedProbe::Negative(&ProbeOutcome::NotARepo).token(), "not-a-repo");
+    assert_eq!(
+        RecordedProbe::Unreadable.token(),
+        "unreadable",
+        "an operator must be able to tell a stamp we could not parse from one we could"
+    );
+    // The readable variants report the OUTCOME's own token, so the two spellings cannot drift.
+    assert_eq!(
+        RecordedProbe::Negative(&ProbeOutcome::NotARepo).token(),
+        ProbeOutcome::NotARepo.as_str()
+    );
+}
+
+/// The DEEPEST matching root decides the org slot, which is what makes the symlink expansion safe:
+/// a configured spelling can sit under another root's real path, and there the longer one names the
+/// org.
+///
+/// BITES: take the shallowest instead and this reads `link` as the org slot, yielding Personal for a
+/// work checkout.
+#[test]
+fn the_anchor_takes_the_deepest_matching_root() {
+    let nested = Anchors::new(&[PathBuf::from("/a"), PathBuf::from("/a/link")]);
+    assert_eq!(
+        nested.scope_of(&PathBuf::from("/a/link/tatari-tv/clyde"), None),
+        Some(Scope::Work),
+        "under `/a` the org slot would read `link`; under `/a/link` it reads `tatari-tv`"
+    );
+    // Order in the list must not matter, only depth.
+    let reversed = Anchors::new(&[PathBuf::from("/a/link"), PathBuf::from("/a")]);
+    assert_eq!(
+        reversed.scope_of(&PathBuf::from("/a/link/tatari-tv/clyde"), None),
+        Some(Scope::Work)
+    );
+}
