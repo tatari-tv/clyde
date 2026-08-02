@@ -217,6 +217,24 @@ tasks:
       # `replace ProbeOutcome::as_str -> "xyzzy"`, which cannot hang. Those are load artifacts, not
       # findings, and a gate that manufactures them teaches everyone to ignore it. 300s is roughly
       # 15x the idle workspace suite, which absorbs the parallelism.
+      #
+      # `RAYON_NUM_THREADS` caps the INNER parallelism, and without it `--jobs` is not the job count.
+      # `--jobs N` bounds how many mutants are tested at once; it says NOTHING about what each of
+      # those test binaries then does. `efficiency` links rayon, and a rayon pool defaults to `nproc`,
+      # so every concurrent mutant spawns its OWN pool sized to the whole machine. Measured on
+      # desk.lan (32 cores, --jobs 8): 8 x 32 = 256 runnable threads, load average 167, and the
+      # comment directly above becomes false -- 300s was chosen to absorb 8x parallelism, not 256x,
+      # so the run drifts straight back into manufacturing the timeout artifacts it exists to avoid.
+      #
+      # Derived, not hardcoded: `cores / jobs` is the share each mutant is entitled to, so the two
+      # numbers cannot drift apart and a machine with a different core count gets the right answer.
+      # Floored at 1 for a host with fewer cores than jobs. Capping rayon does not change any
+      # assertion -- `par_iter().map().collect()` is order-preserving regardless of pool size, and
+      # none of the mutated files reasons about thread counts.
+      MUTANT_JOBS=8
+      export RAYON_NUM_THREADS=$(( $(nproc) / MUTANT_JOBS > 0 ? $(nproc) / MUTANT_JOBS : 1 ))
+      echo "mutants: --jobs $MUTANT_JOBS x RAYON_NUM_THREADS=$RAYON_NUM_THREADS on $(nproc) cores"
+
       cargo mutants --workspace --timeout 300 \
         -f "session/src/scope.rs" \
         -f "common/src/repo.rs" \
@@ -224,7 +242,7 @@ tasks:
         -f "sessions/src/db/enrich.rs" \
         -f "efficiency/src/outcome.rs" \
         -f "sessions/src/db/migrate.rs" \
-        --jobs 8
+        --jobs "$MUTANT_JOBS"
 
   eval:
     help: "Judged render eval over the committed fixtures (PAID: LLM calls; NOT part of ci)"
