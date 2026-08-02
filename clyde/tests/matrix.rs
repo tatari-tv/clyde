@@ -34,6 +34,7 @@ const SID_DELETABLE: &str = "55555555-5555-4555-8555-555555555555";
 const SID_EVIL_HOST: &str = "66666666-6666-4666-8666-666666666666";
 const SID_ALIAS: &str = "77777777-7777-4777-8777-777777777777";
 const SID_SUBMODULE: &str = "88888888-8888-4888-8888-888888888888";
+const SID_OFFLAYOUT_CONTAINER: &str = "99999999-9999-4999-8999-999999999999";
 
 /// The rule-1 SLUG for a matrix cwd, through the REAL resolver with the fixture's blocked roots.
 /// Rows that care about the slug alone use this; rows about the routing gate use [`probe`].
@@ -794,5 +795,33 @@ fn matrix_row_27_a_pre_v13_row_with_no_recorded_host_keeps_its_work_authority() 
     assert_eq!(
         scope, "work",
         "a NULL repo_host must never strip authority on its own: that is the whole strip-only rule"
+    );
+}
+
+/// **Row 33, through the REAL gate.** A bare-repo container ROOT under an OFF-LAYOUT root: no work
+/// tree AND no readable org slot, which is Keegan's actual case
+/// (`~/git/tatari/airflow-dags`). Rows 6 and 16 each covered one half and nothing composed them, so
+/// the shape that was reported was the one shape nobody asserted.
+///
+/// The cwd sits under NO configured root here, so the anchor abstains and rule 1 answers. That is
+/// the point: the fix for this shape is the remote, not a path convention.
+///
+/// BITES: delete the `--git-common-dir` fallback in `common::repo::no_work_tree_root` and the probe
+/// declines, so the session classifies personal and this fails.
+#[test]
+fn matrix_row_33_an_off_layout_container_root_classifies_work_through_the_gate() {
+    let s = Sandbox::new();
+    s.seed(SID_OFFLAYOUT_CONTAINER, &s.matrix.offlayout_container_root);
+    s.reindex();
+
+    let decisions = s.dry_run_decisions();
+    let (_, scope, _) = decisions
+        .iter()
+        .find(|(id, _, _)| id == SID_OFFLAYOUT_CONTAINER)
+        .expect("the off-layout container session was considered");
+    assert_eq!(
+        scope, "work",
+        "a container root with no work tree, under a root clyde was never told about, still resolves \
+         through its remote"
     );
 }

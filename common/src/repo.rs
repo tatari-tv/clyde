@@ -652,11 +652,7 @@ fn no_work_tree_root(cwd: &Path) -> Result<PathBuf, ProbeOutcome> {
         // `.`) and absolute forms git emits.
         GitRun::Answered(cd) => cwd.join(cd.trim()),
         GitRun::Refused(_) if has_git_marker(cwd) => {
-            warn!(
-                "repo::detect: {} carries a git marker git could not use (check `safe.directory` \
-                 and .git permissions); recording nothing",
-                cwd.display()
-            );
+            warn!("{}", unusable_marker_warning(cwd));
             return Err(ProbeOutcome::Indeterminate);
         }
         GitRun::Refused(_) => {
@@ -680,6 +676,59 @@ fn no_work_tree_root(cwd: &Path) -> Result<PathBuf, ProbeOutcome> {
         GitRun::Answered(_) => cwd.parent().map(Path::to_path_buf).ok_or(ProbeOutcome::Indeterminate),
         _ => Err(ProbeOutcome::Indeterminate),
     }
+}
+
+/// The warning for a cwd carrying a git marker git REFUSED to use.
+///
+/// A function returning the string rather than an inline `warn!`, so a test can assert WHICH
+/// diagnosis was produced. The outcome is `Indeterminate` for both cases, so the outcome cannot
+/// distinguish them and an assertion on it would not bite; the message is the only observable
+/// difference, and it is the part that was wrong.
+///
+/// Two different problems reach this arm and the remedies share nothing. Naming the wrong one is
+/// worse than saying nothing: the `safe.directory` text sends an operator to check a config that was
+/// never involved, they find it correct, and they stop trusting the message.
+fn unusable_marker_warning(cwd: &Path) -> String {
+    match orphaned_worktree_target(cwd) {
+        Some(gitdir) => format!(
+            "repo::detect: {} is an ORPHANED linked worktree: its .git file points at {}, which does \
+             not exist. The main checkout was deleted or moved. Run `git worktree repair` from the \
+             main checkout, or restore it; recording nothing",
+            cwd.display(),
+            gitdir.display()
+        ),
+        None => format!(
+            "repo::detect: {} carries a git marker git could not use (check `safe.directory` and \
+             .git permissions); recording nothing",
+            cwd.display()
+        ),
+    }
+}
+
+/// The `gitdir:` target of an ORPHANED linked worktree at `cwd`, or `None`.
+///
+/// A linked worktree records its git dir in a `.git` FILE (`gitdir: <path>`) pointing into the main
+/// checkout's `.git/worktrees/<name>`. Delete the main checkout and every probe returns 128 with
+/// `fatal: not a git repository: <that path>`, which lands in the marker arm above and used to be
+/// reported as a `safe.directory` or permissions problem. Neither remedy applies, and an operator who
+/// follows the wrong one finds nothing wrong and stops trusting the message.
+///
+/// `Some` ONLY when the pointer exists AND its target does not: an ordinary linked worktree whose
+/// main checkout is intact returns `None` and keeps the generic warning available for the case it
+/// was actually written for. The OUTCOME is unchanged either way -- `Indeterminate`, recording
+/// nothing -- because `git worktree repair` or restoring the main checkout recovers the row, so
+/// nothing conclusive may be written.
+///
+/// A relative `gitdir:` is resolved against `cwd`, which is how git itself reads it.
+fn orphaned_worktree_target(cwd: &Path) -> Option<PathBuf> {
+    let marker = cwd.join(".git");
+    if !marker.is_file() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&marker).ok()?;
+    let target = text.lines().find_map(|line| line.trim().strip_prefix("gitdir:"))?;
+    let target = cwd.join(target.trim());
+    (!target.exists()).then_some(target)
 }
 
 /// Whether a `.git` entry exists at `cwd` or any ancestor, i.e. whether a repository is PRESENT

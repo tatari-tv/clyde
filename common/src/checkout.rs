@@ -181,6 +181,16 @@ pub struct Matrix {
     /// (`<home>/repos/hostile`). The host guard must still refuse the work slug the widened anchor
     /// now lets reach the git-origin branch.
     pub flat_under_root_bad_host: PathBuf,
+    /// Row 33: the ROOT of a bare-repo container, under an OFF-LAYOUT root
+    /// (`<home>/git/tatari/dags`). The composition of rows 6 and 16, and Keegan's ACTUAL case: no
+    /// matrix row previously combined an off-layout root WITH a missing work tree, so each half was
+    /// covered and the shape he reported was not.
+    pub offlayout_container_root: PathBuf,
+    /// Row 34: an ORPHANED linked worktree -- its main checkout has been deleted, so the `gitdir:`
+    /// target its `.git` FILE names no longer exists. Every probe returns 128, and the outcome must
+    /// stay `Indeterminate` (`git worktree repair` recovers the row) while the WARNING names the
+    /// orphan rather than sending the operator to check `safe.directory`.
+    pub orphaned_worktree: PathBuf,
 }
 
 impl Matrix {
@@ -272,6 +282,34 @@ impl Matrix {
         let empty_repo_named_work_org = mkdir(&mkdir(&home.join("altroot2")).join(WORK_ORG));
         git(&empty_repo_named_work_org, &["init", "-q", "-b", "main"]);
 
+        // Row 33: Keegan's actual case. A bare-repo container ROOT, but under `<home>/git/tatari`
+        // rather than under `repo-root`. Rows 6 and 16 each cover one half; nothing covered both.
+        let offlayout_container_root = mkdir(&home.join("git").join("tatari").join("dags"));
+        bare(
+            &offlayout_container_root.join(".bare"),
+            Some("git@github.com:tatari-tv/airflow-dags.git"),
+        );
+        std::fs::write(offlayout_container_root.join(".git"), "gitdir: ./.bare\n")
+            .expect("checkout: off-layout container .git file");
+
+        // Row 34: a linked worktree whose MAIN checkout is then deleted, which is what makes the
+        // `gitdir:` pointer dangle. Built from its own repo so deleting the main checkout cannot
+        // disturb any other row.
+        let orphan_main = repo(&work.join("orphan"), Some("git@github.com:tatari-tv/orphan.git"));
+        let orphaned_worktree = work.join("orphan-ft");
+        git(
+            &orphan_main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "ft",
+                &orphaned_worktree.to_string_lossy(),
+            ],
+        );
+        std::fs::remove_dir_all(&orphan_main).expect("checkout: delete the orphan's main checkout");
+
         let fork_in_work_dir = repo(
             &work.join("clyde-fork"),
             Some("git@github.com:scottidler/clyde-fork.git"),
@@ -353,6 +391,8 @@ impl Matrix {
             work_org_named_repo,
             empty_repo_named_work_org,
             flat_under_root_bad_host,
+            offlayout_container_root,
+            orphaned_worktree,
         }
     }
 
@@ -370,6 +410,12 @@ impl Matrix {
     /// The fixture's `projects-dir`. Empty until a test writes a transcript into it.
     pub fn projects_dir(&self) -> PathBuf {
         self.home().join("projects")
+    }
+
+    /// The off-layout root holding [`Self::offlayout_container_root`]: Keegan's `~/git/tatari`,
+    /// which an operator declares in `repo-roots` exactly as they declare `~/repos`.
+    pub fn offlayout_root(&self) -> PathBuf {
+        self.home().join("git")
     }
 
     /// The alternate root holding [`Self::work_org_named_repo`]: a stand-in for any root an operator

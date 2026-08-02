@@ -1143,3 +1143,79 @@ fn a_git_directory_with_no_head_is_not_a_marker() {
         "a real git dir above the cwd must still suppress the conclusive answer"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Matrix rows 33 and 34. Both are shapes the design doc found MISSING from the matrix: each was
+// covered in halves that never met.
+// ---------------------------------------------------------------------------------------------
+
+/// **Row 33: a bare-repo container ROOT under an OFF-LAYOUT root.** Keegan's actual case, and the
+/// composition of rows 6 (container root) and 16 (off-layout). Each half had a row; nothing composed
+/// them, so the exact shape he reported was the one nobody was asserting.
+///
+/// BITES: delete the `--git-common-dir` fallback in `no_work_tree_root` and this declines. The
+/// container root has NO work tree, so `rev-parse --show-toplevel` refuses, and without the fallback
+/// there is nothing left to resolve it with.
+#[test]
+fn matrix_row_33_a_container_root_under_an_off_layout_root_resolves() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.offlayout_container_root, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/airflow-dags"),
+        "the remote answers regardless of where on disk the container lives"
+    );
+}
+
+/// **Row 34: an ORPHANED linked worktree.** Its main checkout was deleted, so the `gitdir:` its
+/// `.git` FILE names no longer exists and every probe returns 128.
+///
+/// The OUTCOME must stay `Indeterminate`: `git worktree repair` or restoring the main checkout
+/// recovers the row, so nothing conclusive may be recorded. That half was already correct. The
+/// WARNING was not -- it told the operator to check `safe.directory` and `.git` permissions, and
+/// neither remedy applies.
+///
+/// BITES: delete the orphan branch in `unusable_marker_warning` and the message assertion fails.
+/// The outcome assertion CANNOT bite on its own, which is exactly why the message is asserted: both
+/// diagnoses return `Indeterminate`, so the outcome is blind to which one was produced.
+#[test]
+fn matrix_row_34_an_orphaned_worktree_is_diagnosed_as_itself() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.orphaned_worktree, &m.blocked()),
+        ProbeOutcome::Indeterminate,
+        "repairable, so nothing conclusive may be recorded"
+    );
+
+    let warning = unusable_marker_warning(&m.orphaned_worktree);
+    assert!(
+        warning.contains("ORPHANED linked worktree"),
+        "the warning must name the orphan: {warning}"
+    );
+    assert!(
+        warning.contains("git worktree repair"),
+        "and name the remedy that actually applies: {warning}"
+    );
+    assert!(
+        !warning.contains("safe.directory"),
+        "neither `safe.directory` nor .git permissions is involved: {warning}"
+    );
+}
+
+/// The generic marker warning is still produced for the case it was WRITTEN for: a marker git
+/// refused for some other reason. Asserted so the orphan branch cannot swallow it.
+///
+/// An ordinary linked worktree whose main checkout is intact has an existing `gitdir:` target, so it
+/// is not an orphan and `orphaned_worktree_target` declines.
+#[test]
+fn an_intact_linked_worktree_is_not_reported_as_an_orphan() {
+    let m = Matrix::build();
+    assert_eq!(
+        orphaned_worktree_target(&m.worktree),
+        None,
+        "its main checkout is intact, so its gitdir target exists"
+    );
+    assert!(
+        unusable_marker_warning(&m.worktree).contains("safe.directory"),
+        "the generic diagnosis stays available for the case it was written for"
+    );
+}
