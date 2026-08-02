@@ -1167,3 +1167,58 @@ fn export_scope_fallback_agrees_with_the_enrich_gate_for_every_cwd_shape() {
         );
     }
 }
+
+/// **The fourth export column, made to bite (Codex, implementation audit).**
+///
+/// Threading `outcome_json` into export's SELECT is a disclosed deviation from the Phase 3 bullet,
+/// justified by "otherwise a unanimous-work touch set with no stored scope exports personal and
+/// gates work". AC6's other test drives three CWD shapes and never stores a touch set, so DROPPING
+/// the column would not have falsified that rationale -- the deviation was argued, not asserted.
+///
+/// This row is the argument. The cwd is deliberately UNANCHORED, so nothing but the touch set can
+/// decide, and the row carries no stored scope so the fallback is the code path under test.
+///
+/// BITES: remove `outcome_json` from `EXPORT_COLS` (or stop passing it into `evidence_from_row`) and
+/// export reports `personal` while the gate reports `work`.
+#[test]
+fn export_reads_the_touch_set_so_its_fallback_cannot_diverge_from_the_gate() {
+    let tmp = TempDir::new().unwrap();
+    let transcript = tmp.path().join("t.jsonl");
+    fs::write(&transcript, "{}\n").unwrap();
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            transcript.to_str().unwrap(),
+            // No configured root above it, so the anchor abstains and the evidence must decide.
+            "/home/saidler/scratch/widget",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+
+    // A unanimous work touch set, fully accounted for, exactly as `reindex_efficiency` writes it.
+    db.conn
+        .execute(
+            "UPDATE sessions SET outcome_json = ?2 WHERE session_id = ?1",
+            rusqlite::params![
+                UUID_A,
+                // `files-edited` is a COUNT, matching what `evidence_from_row` reads; the sum of
+                // `repos-touched` must equal it or the classifier's totality check refuses.
+                r#"{"repos-touched":{"tatari-tv/philo":2},"files-edited":2}"#
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(
+        gate_scope(&db, UUID_A),
+        "work",
+        "precondition: the gate decides work from the touch set alone"
+    );
+    assert_eq!(
+        exported_scope_of(&db, UUID_A),
+        "work",
+        "export must reach the same answer; without outcome_json it reads an empty touch set"
+    );
+}

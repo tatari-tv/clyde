@@ -15,7 +15,7 @@
 use common::repo::host::{HostPolicy, HostResolver};
 use common::repo::{ProbeOutcome, RepoSource};
 use log::warn;
-use session::{Anchors, Decision, RoutingFacts};
+use session::{Anchors, Decision, RecordedProbe, RoutingFacts};
 
 use crate::db::ScopeEvidence;
 
@@ -60,8 +60,9 @@ pub fn parse_repo_probe(session_id: &str, raw: Option<&str>) -> Option<ProbeOutc
         None => {
             warn!(
                 "routing::parse_repo_probe: {session_id} has an unreadable repo_probe {raw:?}. Only \
-                 the conclusive-negative tokens `no-origin` and `not-a-repo` are ever written. \
-                 Classifying WITHOUT the probe signal, which is the fail-safe direction; run \
+                 `<token>@<rfc3339>` with token `no-origin` or `not-a-repo` is ever written. The \
+                 recorded negative STILL REFUSES a work slug (presence is that signal), but the bare \
+                 `<root>/<work-org>` anchor cannot read which negative it was and defers; run \
                  `clyde session reindex --clear-probe --session {session_id}` then reindex to \
                  rewrite it"
             );
@@ -105,6 +106,14 @@ pub fn classify_row<R: HostResolver>(
 ) -> RowDecision {
     let repo_source = parse_repo_source(session_id, repo_source_raw);
     let repo_probe = parse_repo_probe(session_id, evidence.repo_probe.as_deref());
+    // PRESENCE of the column decides whether a negative was recorded; the PARSE only decides whether
+    // this binary can say which one. An unreadable stamp is therefore `Unreadable`, never absent:
+    // collapsing it to `None` would tell the classifier nothing was recorded and hand a work slug
+    // through the branch that exists to refuse it.
+    let recorded_probe = evidence.repo_probe.as_ref().map(|_| match repo_probe.as_ref() {
+        Some(outcome) => RecordedProbe::Negative(outcome),
+        None => RecordedProbe::Unreadable,
+    });
     let decision = session::classify_with_evidence(
         cwd.map(std::path::Path::new),
         repo,
@@ -113,7 +122,7 @@ pub fn classify_row<R: HostResolver>(
         evidence.files_edited,
         anchors,
         &RoutingFacts {
-            repo_probe: repo_probe.as_ref(),
+            repo_probe: recorded_probe,
             scope_override: evidence.scope_override.as_deref(),
             evidence_present: evidence.present,
             host_confers_work: evidence.repo_host.as_deref().map(|h| hosts.confers_work(h)),

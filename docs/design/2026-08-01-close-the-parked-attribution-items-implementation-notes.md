@@ -274,3 +274,83 @@ Live `clyde doctor` on the maintainer's catalog, with two roots configured, prin
   repo-roots:    /home/saidler/repos
                  /tmp
 ```
+
+## Implementation audit, 2026-08-01 (review-panel: Gemini Architect + Codex Staff Engineer)
+
+The two seats SPLIT on the probe-parsing focus area. Gemini returned PASS; Codex returned two High
+findings there. **Codex is right and Gemini's PASS was a syntax read** -- the Gemini seat is
+plan-mode and cannot run a shell, so its "verified" claims are reads of the source, not executed
+checks. Both High findings were confirmed against the code by hand before being accepted.
+
+### Folded: the two High findings, one root cause
+
+Both are the same mistake seen twice: **this branch changed a security-relevant signal's TYPE and
+silently dropped half of it.** `RoutingFacts.repo_probe` went from `Option<&str>` (PRESENCE of a
+recorded negative) to `Option<&ProbeOutcome>` (its CONTENT). Presence and content answer two
+different questions, and the refactor collapsed the first into the second.
+
+- **An unreadable stamp stopped refusing a work slug.** v3 keyed the git-origin guard on the column
+  being non-NULL, so ANY stored value refused. v4's first form keyed it on the parsed outcome, and
+  `parse_repo_probe` yields `None` for anything it cannot read -- so a hand-edited or forward-dated
+  stamp read as "nothing recorded" and the slug was granted Work. A leak introduced by the change
+  meant to make the signal MORE precise. The doc comment on `parse_repo_probe` even claimed this was
+  "the fail-safe direction", which was false.
+- **`ProbeOutcome::from_stamp` accepted values `Db::record_probe` can never write.** It used
+  `split_once('@').map_or(stamp, ...)`, so a bare `not-a-repo` with no timestamp parsed. The writer
+  emits `<token>@<rfc3339>` and nothing else, so a bare token is a value this binary never produced,
+  and accepting it let an edited catalog hand the bare `<root>/<work-org>` anchor a `NotARepo` it
+  never observed. The `@` half is now REQUIRED: the parser matches the persisted contract rather than
+  the token prefix.
+
+**Fix:** `session::RecordedProbe`, a two-variant type carrying both signals in ONE field so they
+cannot diverge -- `Negative(&ProbeOutcome)` when the stamp parsed, `Unreadable` when it did not.
+Both variants REFUSE a git-origin work slug (presence is that signal). They differ only at the bare
+`<root>/<work-org>` anchor, where a readable `NotARepo` is the one thing that grants Work and
+`Unreadable` defers like every other outcome. Two fields would have been settable inconsistently at
+a call site; the enum makes the inconsistent state unrepresentable.
+
+### Folded: two coverage gaps
+
+- **The `outcome_json` deviation had no biting test** (Codex). Its whole justification was "otherwise
+  a unanimous-work touch set with no stored scope exports personal and gates work", and AC6's test
+  drove three cwd shapes without ever storing a touch set -- so dropping the fourth column would not
+  have falsified the rationale. The deviation was argued, not asserted.
+  `export_reads_the_touch_set_so_its_fallback_cannot_diverge_from_the_gate` now asserts it, and was
+  proven to fail with the column withheld (`left: "personal", right: "work"`).
+- **The doc's `~/code/repos/tatari-tv/x` row was unasserted** (BOTH seats, independently). A literal
+  `repos` component INSIDE a configured off-layout root is an ordinary org slot named `repos`, not an
+  anchor. Now pinned by `a_repos_component_inside_an_off_layout_root_is_an_ordinary_org_slot`.
+
+### Folded: the two doc findings
+
+- The Resolved Decision reading "rule 5 ships despite recovering zero sessions here" was stale
+  relative to what shipped. Corrected to record that the decision was always conditional on Phase 0,
+  that Phase 0 never ran, and that rule 5 is therefore neither built nor struck.
+- "Each entry must be absolute and exist" overstated the invariant: the code deliberately does not
+  validate or canonicalize the DEFAULT `[<home>/repos]`, exactly as the singular default was not
+  validated. Reworded to "each CONFIGURED entry", in both the P1 section and Security.
+
+### PUSHED BACK: the bare-work-org shape reaching Work via the touch set
+
+Codex, Medium: when the anchor abstains for `<root>/<work-org>` (`NoOrigin`, `Indeterminate`,
+`OutsideRoot`, `Blocked`, or nothing recorded), that same cwd can still reach Work through the
+touch-set branch, which the doc's table describes as "fail closed, Personal".
+
+Not changing the code, for three reasons:
+
+1. **The table's column is the ANCHOR's verdict, not the classifier's final one.** Its `Resolved` row
+   reads "defer to git-origin, guards apply", which is explicitly a deferral rather than a verdict,
+   so the column is already understood as "what the anchor does". "Fail closed, Personal" is what the
+   fail-safe default yields absent OTHER evidence.
+2. **It is not a widening.** Measured against v3: `has_work_org("<root>/tatari-tv")` matched the
+   `repos`/`tatari-tv` adjacency and returned Work, SETTLED, without the touch set ever being
+   consulted. Every one of these rows is therefore narrowing-or-equal relative to what shipped in
+   v0.24.0. A leak-direction finding requires a row that gains Work, and none does.
+3. **The touch-set branch is not shape-specific and must not become so.** It applies to every
+   unanchored cwd, requires unanimity AND totality (`sum == files_edited`), and a session that
+   provably edited only work-repo files is work by the rule's own design. Special-casing one path
+   shape out of it would make the evidence branch read the path, which is the coupling this whole
+   design removes.
+
+Folded instead: the doc's P3 table now says explicitly that the column is the anchor's verdict, so
+the wording cannot invite Codex's reading again.

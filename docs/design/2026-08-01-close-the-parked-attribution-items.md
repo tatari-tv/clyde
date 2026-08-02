@@ -113,9 +113,12 @@ Six items, five phases. P4 and P5 share the last phase because both are matrix r
 `repo_root: PathBuf` becomes `repo_roots: Vec<PathBuf>` (`common/src/config.rs:345-346`).
 
 - Default: `[<home>/repos]`. Same behavior as today for anyone who never set it.
-- Each entry validated as it is today: absolute AND an existing directory, or the config fails to
-  load naming the key (`de_repo_root`, `:471-490`). An empty list is rejected: `repo-roots: []` is
-  indistinguishable in effect from "no attribution" and saying so at load beats discovering it.
+- Each CONFIGURED entry validated as it is today: absolute AND an existing directory, or the config
+  fails to load naming the key (`de_repo_root`, `:471-490`). The DEFAULT `[<home>/repos]` is
+  deliberately not validated and not canonicalized, exactly as the singular default was not: a
+  machine with no `~/repos` must still run every clyde command, and there the only consequence is
+  that rule 4 never fires. An empty list is rejected: `repo-roots: []` is indistinguishable in effect
+  from "no attribution" and saying so at load beats discovering it.
 - **Overlapping roots are rejected at load, and the check runs on the CANONICAL paths.** A root that
   is a prefix of another is a config error naming both. Longest-prefix-wins was the first draft and
   it is WRONG: with roots `~/repos` and `~/repos/tatari-tv`, the cwd `~/repos/tatari-tv/clyde/src`
@@ -286,7 +289,7 @@ So the rule is `NotARepo` specifically, not "no slug". Round 3 made both reviewe
 whole enum, and the rule is stated exhaustively rather than by exception, because two rounds of
 "defer unless X" already produced two holes:
 
-| `ProbeOutcome` | means | bare `<root>/<work-org>` verdict |
+| `ProbeOutcome` | means | bare `<root>/<work-org>` ANCHOR verdict |
 |---|---|---|
 | `NotARepo` | observed, and it is a plain directory | **Work by anchor.** The org dir |
 | `Resolved` | it is a checkout with a parseable origin | defer to git-origin, guards apply |
@@ -298,6 +301,13 @@ whole enum, and the rule is stated exhaustively rather than by exception, becaus
 One sentence: **anchor Work only when the probe positively observed a non-repository.** Everything
 else either has a remote to ask or is an absence of evidence, and absence of evidence has never
 granted Work in this codebase.
+
+**That column is the ANCHOR's verdict, not the classifier's final one.** "Fail closed, Personal"
+means the anchor grants nothing and the fail-safe default stands absent OTHER evidence; a row that
+also carries a unanimous, fully-accounted work touch set is still decided by that evidence, exactly
+as it is for every other unanchored cwd. Spelled out after the implementation audit read the column
+as a final verdict. Every row here is narrowing-or-equal against v0.24.0, where the whole shape read
+Work SETTLED off the literal `repos` adjacency without the touch set ever being consulted.
 
 **The panel split on this and I am taking Codex's side.** Gemini's replacement rule was "defer when
 `repo.is_some()`, anchor Work when `repo.is_none()`", which contradicts its own answer to the same
@@ -603,8 +613,14 @@ because it depends on Phase 2's roots.
 
 - **2026-08-01, nothing in this doc is parked.** The owner never approved the three parks it closes.
   Recorded so a future reviewer does not re-park them on cost grounds.
-- **2026-08-01, rule 5 ships despite recovering zero sessions here.** Null result measured and
-  recorded. desk.lan is the host where every layout assumption looks fine; it is not the population.
+- **2026-08-01, rule 5 WOULD ship despite recovering zero sessions here, and did not, because Phase 0
+  never ran.** The null result on desk.lan was measured and recorded, and it is not disqualifying:
+  desk.lan is the host where every layout assumption looks fine, so it is not the population. But the
+  decision this records was always conditional on Phase 0 measuring the three teammate catalogs, and
+  Phase 0 could not run from this host. Neither branch of its decision rule fired, so rule 5 is
+  neither built nor struck and AC4 stands FAILING. Corrected 2026-08-01 during the implementation
+  audit (Codex): the original wording said flatly that rule 5 ships, which is stale relative to what
+  actually shipped.
 - **2026-08-01, rule 5 declines on a colliding basename.** 3 of 67 slugs collide and all three cross
   the work/personal boundary.
 - **2026-08-01, `repo-root` is renamed, not aliased.** One key, one meaning, loud migration error.
@@ -716,8 +732,9 @@ number: a per-row `substr` scan would be a full table scan per unresolved cwd.
 - The anchor change makes MORE sessions reach the `git-origin` branch. That branch is the v3-narrowed
   one (probe refusal, host allowlist), so the widening inherits every guard rather than bypassing
   them.
-- `repo-roots` is operator config, not remote input. Each entry must be absolute and exist, so a
-  relative or typo'd root fails at load rather than silently matching nothing.
+- `repo-roots` is operator config, not remote input. Each CONFIGURED entry must be absolute and
+  exist, so a relative or typo'd root fails at load rather than silently matching nothing. The
+  built-in default is exempt, and its failure mode is inert rather than unsafe.
 
 ### Testing Strategy
 Every shape goes in `common/src/checkout.rs` as a real-`git` fixture row and is asserted through the

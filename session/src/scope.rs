@@ -301,13 +301,16 @@ pub fn classify_with_evidence(
                     settled: false,
                 };
             }
-            if let Some(probe) = facts.repo_probe
-                && probe.is_conclusive_negative()
-            {
+            // PRESENCE, not content. The column is written only for a conclusive negative, so ANY
+            // value means one was recorded; an UNREADABLE one is still a recorded negative and must
+            // still refuse. Keying this on the parsed outcome let a hand-edited or forward-dated
+            // stamp read as "nothing recorded" and grant Work, which is the one direction this
+            // branch exists to prevent.
+            if let Some(probe) = facts.repo_probe {
                 trace!(
                     "scope::classify_with_evidence: repo={slug} via git-origin REFUSED, conclusive \
                      negative {} recorded",
-                    probe.as_str()
+                    probe.token()
                 );
                 return Decision {
                     scope: Scope::Personal,
@@ -363,6 +366,44 @@ pub fn classify_with_evidence(
     }
 }
 
+/// One session's `sessions.repo_probe` column: a conclusive negative was recorded, and either this
+/// binary could read WHICH one or it could not.
+///
+/// Two states in one value rather than two fields, because the two are not independent and a pair of
+/// fields could be set inconsistently at a call site. The column's own contract is what makes the
+/// enum total: `Db::record_probe` refuses to write anything but a conclusive negative, so "a value is
+/// present" already means "a negative was observed" without reading it. Reading it only ever answers
+/// the narrower question of WHICH negative.
+///
+/// Both variants REFUSE a git-origin work slug. They differ only at the bare `<root>/<work-org>`
+/// anchor, where [`Self::Negative`] carrying `NotARepo` is the one thing that grants Work and
+/// [`Self::Unreadable`] defers like every other outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordedProbe<'a> {
+    /// The stamp parsed: `NoOrigin` or `NotARepo`, the only two the column can hold.
+    Negative(&'a ProbeOutcome),
+    /// A value is stored that this binary cannot read. Fails CLOSED in both directions.
+    Unreadable,
+}
+
+impl<'a> RecordedProbe<'a> {
+    /// The parsed outcome, or `None` when the stamp was unreadable.
+    pub fn outcome(self) -> Option<&'a ProbeOutcome> {
+        match self {
+            Self::Negative(outcome) => Some(outcome),
+            Self::Unreadable => None,
+        }
+    }
+
+    /// A short token for logs. Never read for a routing decision; the decision matches the variant.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Negative(outcome) => outcome.as_str(),
+            Self::Unreadable => "unreadable",
+        }
+    }
+}
+
 /// The configured clone roots, in the form the cwd anchor matches a path against.
 ///
 /// **Built EXACTLY ONCE, immediately after `Config::load()`, and passed by reference from there.**
@@ -414,7 +455,7 @@ impl Anchors {
     /// outright preserves the org dir and simultaneously ships the other three to the work account on
     /// a directory-name coincidence. Only [`ProbeOutcome::NotARepo`] means "this is a plain
     /// directory", so only it anchors; see [`bare_work_org_is_an_org_dir`] for the exhaustive table.
-    pub fn scope_of(&self, cwd: &Path, probe: Option<&ProbeOutcome>) -> Option<Scope> {
+    pub fn scope_of(&self, cwd: &Path, probe: Option<RecordedProbe<'_>>) -> Option<Scope> {
         let (org, has_following) = self.org_slot(cwd)?;
         let work_org = WORK_ORGS.contains(&org);
         let scope = match (work_org, has_following) {
@@ -429,7 +470,7 @@ impl Anchors {
         trace!(
             "scope::Anchors::scope_of: cwd={} org={org} following={has_following} probe={:?} -> {:?}",
             cwd.display(),
-            probe.map(ProbeOutcome::as_str),
+            probe.map(RecordedProbe::token),
             scope.map(Scope::as_str)
         );
         scope
@@ -479,10 +520,14 @@ impl Anchors {
 /// a 21-session regression at the org dir, then a leak for a flat repo named `tatari-tv` -- and a
 /// third was found by walking the shape's occupants rather than by the panel. An enumeration is the
 /// only form that cannot hide a fourth.
-fn bare_work_org_is_an_org_dir(probe: Option<&ProbeOutcome>) -> bool {
+fn bare_work_org_is_an_org_dir(probe: Option<RecordedProbe<'_>>) -> bool {
     // Nothing recorded. `Db::record_probe` writes only conclusive negatives, so this is a resolved
     // probe, a vanished cwd, a blocked root, or a containment rejection. Defer to the remote.
     let Some(probe) = probe else { return false };
+    // Recorded, but this binary cannot read it: a hand-edited catalog, or a stamp a future clyde
+    // wrote. It still REFUSES a work slug one branch up, and here it must not ANCHOR one either --
+    // granting Work would mean trusting a string we just admitted we cannot parse.
+    let Some(probe) = probe.outcome() else { return false };
     match probe {
         // Observed, and it is a plain directory: no `.git` at or above it. This IS the org dir, and
         // it is the 21 sessions at `~/repos/tatari-tv` a naive fix would silently demote.
@@ -514,21 +559,30 @@ fn bare_work_org_is_an_org_dir(probe: Option<&ProbeOutcome>) -> bool {
 /// meaning has to be counted out against the signature.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RoutingFacts<'a> {
-    /// The recorded probe OUTCOME for this session's cwd, parsed, or `None` when nothing is recorded.
+    /// The `sessions.repo_probe` column for this session, or `None` when the column is NULL.
     ///
-    /// Typed rather than a presence flag, because the anchor needs to tell `NotARepo` (a plain
-    /// directory, so `<root>/tatari-tv` is the org dir) from `NoOrigin` (it IS a repo, just without a
-    /// remote, so `<root>/tatari-tv` may be an empty personal repo whose name is a coincidence). A
-    /// bool cannot express that difference, and the two verdicts are opposite.
+    /// **PRESENCE and CONTENT answer two different questions, and conflating them was a leak.**
+    /// Presence alone refuses a git-origin work slug: the column is written only for a conclusive
+    /// negative, so a value AT ALL means the cwd was once observed to carry no work remote. The
+    /// CONTENT is needed by ONE caller -- the bare `<root>/<work-org>` anchor, which must tell
+    /// `NotARepo` (a plain directory, so this is the org dir) from `NoOrigin` (it IS a repo, just
+    /// without a remote, so it may be an empty personal repo whose name is a coincidence). Those two
+    /// verdicts are opposite, which is why a bare bool cannot serve.
     ///
-    /// `None` covers four distinct realities and every one of them is handled by DEFERRING, so the
+    /// [`RecordedProbe`] carries both in ONE field so they cannot diverge. An earlier version of this
+    /// change made it `Option<&ProbeOutcome>` and let an unreadable stamp collapse to `None`, which
+    /// silently turned "a negative was recorded" into "nothing was recorded" and let the git-origin
+    /// branch grant Work on a value it could not read. Fail-closed means the UNREADABLE case still
+    /// refuses.
+    ///
+    /// `None` covers four distinct realities and every one of them is handled by DEFERRING, so that
     /// collapse costs nothing: `Db::record_probe` writes only [`ProbeOutcome::is_conclusive_negative`]
     /// outcomes, so a resolved probe, a vanished cwd, a blocked root and a containment rejection all
     /// record nothing. A transient failure (`safe.directory`, an unmounted drive) therefore refuses
     /// nothing, which is what keeps this from being a lockout.
     ///
     /// Borrowed so [`RoutingFacts`] stays `Copy`; the caller owns the parsed value for the row.
-    pub repo_probe: Option<&'a ProbeOutcome>,
+    pub repo_probe: Option<RecordedProbe<'a>>,
     /// An operator override, `work` or `personal`. Beats every rule.
     pub scope_override: Option<&'a str>,
     /// Whether the HOST this session's remote-derived slug came from may confer Work scope.

@@ -57,7 +57,7 @@ fn the_work_org_directory_itself_is_work_when_the_probe_saw_a_plain_directory() 
     assert_eq!(
         anchors().scope_of(
             &PathBuf::from("/home/saidler/repos/tatari-tv"),
-            Some(&ProbeOutcome::NotARepo)
+            Some(RecordedProbe::Negative(&ProbeOutcome::NotARepo))
         ),
         Some(Scope::Work)
     );
@@ -221,7 +221,7 @@ fn no_roots_at_all_anchors_nothing() {
     assert_eq!(
         none.scope_of(
             &PathBuf::from("/home/saidler/repos/tatari-tv"),
-            Some(&ProbeOutcome::NotARepo)
+            Some(RecordedProbe::Negative(&ProbeOutcome::NotARepo))
         ),
         None
     );
@@ -241,34 +241,38 @@ fn no_roots_at_all_anchors_nothing() {
 #[test]
 fn bare_work_org_anchors_only_on_a_positively_observed_non_repository() {
     let bare = PathBuf::from("/home/saidler/repos/tatari-tv");
-    let at = |probe: Option<&ProbeOutcome>| anchors().scope_of(&bare, probe);
+    let at = |probe: Option<RecordedProbe<'_>>| anchors().scope_of(&bare, probe);
 
     // The org DIRECTORY: git answered, and there is no repository here.
-    assert_eq!(at(Some(&ProbeOutcome::NotARepo)), Some(Scope::Work), "the org dir");
+    assert_eq!(
+        at(Some(RecordedProbe::Negative(&ProbeOutcome::NotARepo))),
+        Some(Scope::Work),
+        "the org dir"
+    );
     // A checkout with a parseable origin: defer, and let the git-origin branch's guards apply. This
     // is the flat repo literally NAMED `tatari-tv`, the leak found in round 2.
     assert_eq!(
-        at(Some(&ProbeOutcome::Resolved {
+        at(Some(RecordedProbe::Negative(&ProbeOutcome::Resolved {
             slug: "scottidler/tatari-tv".into(),
             host: "github.com".into(),
-        })),
+        }))),
         None,
         "the remote decides, not the directory name"
     );
     // It IS a repo, it just has no remote. The EMPTY personal repo, the hole found in round 3.
     assert_eq!(
-        at(Some(&ProbeOutcome::NoOrigin)),
+        at(Some(RecordedProbe::Negative(&ProbeOutcome::NoOrigin))),
         None,
         "an empty repo is not an org dir"
     );
     // The cwd is gone, or git could not answer. Absence of evidence.
-    assert_eq!(at(Some(&ProbeOutcome::Indeterminate)), None);
+    assert_eq!(at(Some(RecordedProbe::Negative(&ProbeOutcome::Indeterminate))), None);
     // The repo boundary is not at or above the cwd.
-    assert_eq!(at(Some(&ProbeOutcome::OutsideRoot)), None);
+    assert_eq!(at(Some(RecordedProbe::Negative(&ProbeOutcome::OutsideRoot))), None);
     // The nearest boundary is a blocked root. Fails closed AGAINST one reviewer's advice: the
     // inference that `Blocked` implies "not its own checkout" is probably right, but a Work-granting
     // branch does not rest on one line of reasoning. The lost coverage is recoverable; a leak is not.
-    assert_eq!(at(Some(&ProbeOutcome::Blocked)), None);
+    assert_eq!(at(Some(RecordedProbe::Negative(&ProbeOutcome::Blocked))), None);
     // And nothing recorded at all, which is what every non-negative outcome persists as.
     assert_eq!(at(None), None);
 }
@@ -960,7 +964,7 @@ fn the_work_org_directory_stays_work_through_the_real_gate() {
         &org_dir,
         &[m.repo_root()],
         &RoutingFacts {
-            repo_probe: Some(&probe),
+            repo_probe: Some(RecordedProbe::Negative(&probe)),
             evidence_present: true,
             ..Default::default()
         },
@@ -989,7 +993,7 @@ fn a_flat_repo_named_after_the_work_org_is_personal_by_its_remote() {
         &m.work_org_named_repo,
         &[m.alt_root()],
         &RoutingFacts {
-            repo_probe: Some(&probe),
+            repo_probe: Some(RecordedProbe::Negative(&probe)),
             evidence_present: true,
             ..Default::default()
         },
@@ -1024,7 +1028,7 @@ fn an_empty_repo_named_after_the_work_org_is_not_an_org_dir() {
         &m.empty_repo_named_work_org,
         &[m.alt_root2()],
         &RoutingFacts {
-            repo_probe: Some(&probe),
+            repo_probe: Some(RecordedProbe::Negative(&probe)),
             evidence_present: true,
             ..Default::default()
         },
@@ -1062,7 +1066,7 @@ fn the_git_origin_guards_still_refuse_at_the_newly_reachable_flat_shape() {
         &m.flat_under_root,
         &[m.repo_root()],
         &RoutingFacts {
-            repo_probe: Some(&negative),
+            repo_probe: Some(RecordedProbe::Negative(&negative)),
             evidence_present: true,
             ..Default::default()
         },
@@ -1091,4 +1095,160 @@ fn the_anchor_table_holds_at_every_shape_the_path_can_answer() {
     assert_eq!(at("/home/saidler/repos/scottidler/tatari-tv"), Some(Scope::Personal));
     // Unchanged: the ordinary work checkout.
     assert_eq!(at("/home/saidler/repos/tatari-tv/clyde"), Some(Scope::Work));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Implementation-audit findings (Codex, 2026-08-01). Both are leak-direction regressions this
+// branch introduced by making the probe signal TYPED without keeping presence as its own signal.
+// ---------------------------------------------------------------------------------------------
+
+/// **An UNREADABLE `repo_probe` still refuses a git-origin work slug.**
+///
+/// v3 keyed this branch on the column being non-NULL, so any stored value refused. The first version
+/// of v4 keyed it on the PARSED outcome, so a stamp this binary could not read collapsed to "nothing
+/// recorded" and the slug was granted Work -- a leak introduced by the very change meant to make the
+/// signal more precise. The column is written only for a conclusive negative, so its presence is the
+/// evidence; reading it only ever says WHICH negative.
+///
+/// BITES: key the git-origin guard on `facts.repo_probe.and_then(RecordedProbe::outcome)` and this
+/// returns Work.
+#[test]
+fn an_unreadable_probe_stamp_still_refuses_a_work_slug() {
+    let m = Matrix::build();
+    let d = classify_under(
+        &m,
+        &m.flat_under_root,
+        &[m.repo_root()],
+        &RoutingFacts {
+            repo_probe: Some(RecordedProbe::Unreadable),
+            evidence_present: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        d.scope,
+        Scope::Personal,
+        "a recorded negative we cannot parse is still a recorded negative"
+    );
+    assert_eq!(d.basis, Basis::ProbeRefused);
+}
+
+/// **An UNREADABLE `repo_probe` does not anchor a bare `<root>/<work-org>` as Work either.**
+///
+/// The mirror of the case above, one branch up. `NotARepo` is the ONLY thing that means "this is the
+/// org directory", and a string we just admitted we cannot parse is not that.
+///
+/// BITES: treat `Unreadable` as `NotARepo` (or drop the `outcome()` guard) and this returns Work.
+#[test]
+fn an_unreadable_probe_stamp_does_not_anchor_the_bare_work_org() {
+    let a = Anchors::new(&[PathBuf::from("/home/saidler/repos")]);
+    assert_eq!(
+        a.scope_of(
+            &PathBuf::from("/home/saidler/repos/tatari-tv"),
+            Some(RecordedProbe::Unreadable)
+        ),
+        None,
+        "unreadable defers, exactly like every outcome that is not NotARepo"
+    );
+}
+
+/// **The doc's `~/code/repos/tatari-tv/x` row**, which both audit seats found unasserted. A literal
+/// `repos` component sitting INSIDE a configured off-layout root is an ordinary org slot named
+/// `repos`, not an anchor: the org is `repos`, which is not a work org, so it settles Personal.
+///
+/// This is the narrowing half of the same fix that kills the inner-`repos` bug one row below it.
+///
+/// BITES: restore the literal-`repos` match and this reads Work.
+#[test]
+fn a_repos_component_inside_an_off_layout_root_is_an_ordinary_org_slot() {
+    let off = Anchors::new(&[PathBuf::from("/home/stephen/code")]);
+    assert_eq!(
+        off.scope_of(&PathBuf::from("/home/stephen/code/repos/tatari-tv/x"), None),
+        Some(Scope::Personal),
+        "the org slot is the literal directory `repos`, and `repos` is not a work org"
+    );
+}
+
+/// **The class-killing test, and the reason it exists.**
+///
+/// The regression above (an unreadable stamp granting Work) shipped through a full `otto ci` because
+/// every existing probe test fed a WELL-FORMED stamp. The change preserved behavior for well-formed
+/// input and altered it only for malformed input, so the suite was blind to it BY CONSTRUCTION: no
+/// test named the input class that changed. Mutation testing does not close this either -- it asks
+/// "does a test observe this code", not "does a test observe this INPUT".
+///
+/// So the column's states are enumerated here and each one's DIRECTION is pinned. A new state (or a
+/// new reading of an existing one) has to come through this table, which is what makes the bug class
+/// unable to recur rather than merely fixed once.
+///
+/// The invariant, in one line: **only a NULL column may leave a git-origin work slug at Work.**
+///
+/// BITES: any change that lets a non-NULL column reach Work flips a row here.
+#[test]
+fn every_state_of_the_repo_probe_column_pins_its_direction() {
+    let m = Matrix::build();
+    let no_origin = common::repo::ProbeOutcome::NoOrigin;
+    let not_a_repo = common::repo::ProbeOutcome::NotARepo;
+
+    // (what the column holds, what the git-origin branch must do with a WORK slug)
+    let rows: &[(&str, Option<RecordedProbe<'_>>, Scope)] = &[
+        ("NULL: nothing was ever recorded", None, Scope::Work),
+        (
+            "a readable no-origin negative",
+            Some(RecordedProbe::Negative(&no_origin)),
+            Scope::Personal,
+        ),
+        (
+            "a readable not-a-repo negative",
+            Some(RecordedProbe::Negative(&not_a_repo)),
+            Scope::Personal,
+        ),
+        (
+            "a value this binary cannot read",
+            Some(RecordedProbe::Unreadable),
+            Scope::Personal,
+        ),
+    ];
+
+    for (name, probe, want) in rows {
+        let d = classify_under(
+            &m,
+            &m.flat_under_root,
+            &[m.repo_root()],
+            &RoutingFacts {
+                repo_probe: *probe,
+                evidence_present: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            d.scope,
+            *want,
+            "repo_probe state {name:?} must classify {:?}",
+            want.as_str()
+        );
+    }
+
+    // And the same totality at the bare `<root>/<work-org>` anchor, where the question is narrower:
+    // only a READABLE NotARepo may grant Work, because only it means "a plain directory".
+    let bare = m.repo_root().join("tatari-tv");
+    let anchors = Anchors::new(&[m.repo_root()]);
+    assert_eq!(
+        anchors.scope_of(&bare, Some(RecordedProbe::Negative(&not_a_repo))),
+        Some(Scope::Work)
+    );
+    for (name, probe) in [
+        (
+            "a readable no-origin negative",
+            Some(RecordedProbe::Negative(&no_origin)),
+        ),
+        ("a value this binary cannot read", Some(RecordedProbe::Unreadable)),
+        ("NULL", None),
+    ] {
+        assert_eq!(
+            anchors.scope_of(&bare, probe),
+            None,
+            "only a readable not-a-repo anchors the bare work org; {name} must defer"
+        );
+    }
 }
