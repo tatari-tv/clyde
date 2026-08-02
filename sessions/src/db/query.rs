@@ -11,9 +11,11 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
+use common::repo::host::{HostPolicy, HostResolver};
 use eyre::{Context, Result, ensure};
 use log::{debug, trace, warn};
 use rusqlite::{OptionalExtension, params};
+use session::Anchors;
 
 use super::{Db, append_repo_filter, escape_like, parse_dt};
 use crate::export::{
@@ -31,7 +33,7 @@ const EXPORT_COLS: &str = "s.session_id, s.host, s.cwd, s.project_dir, s.git_bra
      s.modified, s.updated_at, s.title, s.first_prompt, s.n_msgs, s.model, s.summary, s.tags, \
      s.tags_source, s.enriched_at, s.enrich_status, s.enrich_model, s.prompt_version, \
      s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.efficiency_json, s.repo, \
-     s.scope, s.scope_override";
+     s.scope, s.scope_override, s.repo_source, s.repo_probe, s.repo_host, s.outcome_json";
 
 impl Db {
     /// Bulk metadata export: the versioned envelope of [`ExportRecord`] for every row matching
@@ -103,9 +105,13 @@ impl Db {
         let raws: Vec<ExportRaw> = stmt
             .query_map(bind_refs.as_slice(), map_export_raw)?
             .collect::<rusqlite::Result<_>>()?;
+        // ONE host policy for the whole page, for the same reason the enrich sweep builds one for the
+        // whole sweep: `confers_work` memoizes alias resolution, so an `ssh -G` costs once per
+        // distinct non-literal host rather than once per row. Only the scope fallback consults it.
+        let mut hosts = HostPolicy::new(&ctx.work_remote_hosts);
         let sessions: Vec<ExportRecord> = raws
             .into_iter()
-            .map(|raw| build_export_record(raw, ctx.now, ctx.dormant_after))
+            .map(|raw| build_export_record(raw, ctx.now, ctx.dormant_after, &ctx.anchors, &mut hosts))
             .collect::<Result<_>>()?;
         // Max revision in the page, or the request cursor when the page is empty.
         let cursor = sessions
@@ -119,6 +125,7 @@ impl Db {
             generated_at: ctx.now.to_rfc3339(),
             host: ctx.host.clone(),
             cursor,
+            scope_version: session::SCOPE_VERSION,
             sessions,
         })
     }
@@ -154,7 +161,8 @@ impl Db {
             &raw.project_dir,
             raw.staged_path.as_deref().map(Path::new),
         );
-        let mut record = build_export_record(raw, ctx.now, ctx.dormant_after)?;
+        let mut hosts = HostPolicy::new(&ctx.work_remote_hosts);
+        let mut record = build_export_record(raw, ctx.now, ctx.dormant_after, &ctx.anchors, &mut hosts)?;
         if with_body {
             record.body = Some(resolve_body(session_id, layout, max_body_bytes));
         }
@@ -245,6 +253,14 @@ struct ExportRaw {
     scope: Option<String>,
     /// An operator override (schema v13); `None` when no human has overridden this row.
     scope_override: Option<String>,
+    /// Which rule attributed [`Self::repo`]. Read ONLY by the scope fallback below, never emitted.
+    repo_source: Option<String>,
+    /// The recorded conclusive-negative probe stamp. Fallback input; never emitted.
+    repo_probe: Option<String>,
+    /// The host the origin came from. Fallback input; never emitted.
+    repo_host: Option<String>,
+    /// The per-session outcome blob. Fallback input, and parsed LAZILY: see [`build_export_record`].
+    outcome_json: Option<String>,
 }
 
 /// Map one row to [`ExportRaw`]. Index order mirrors [`EXPORT_COLS`] exactly.
@@ -277,6 +293,10 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
         repo: row.get(24)?,
         scope: row.get(25)?,
         scope_override: row.get(26)?,
+        repo_source: row.get(27)?,
+        repo_probe: row.get(28)?,
+        repo_host: row.get(29)?,
+        outcome_json: row.get(30)?,
     })
 }
 
@@ -291,8 +311,13 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
 /// Fails LOUDLY (fail closed) when the stored `enrich_status` TEXT is a non-null value outside the
 /// frozen [`EnrichStatus`] vocabulary: a non-contract value must never silently reach the wire. `NULL`
 /// maps to `None` (never-attempted); a known value to `Some(variant)`.
-fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono::Duration) -> Result<ExportRecord> {
-    let cwd_path = raw.cwd.as_deref().map(Path::new);
+fn build_export_record<R: HostResolver>(
+    raw: ExportRaw,
+    now: DateTime<Utc>,
+    dormant_after: chrono::Duration,
+    anchors: &Anchors,
+    hosts: &mut HostPolicy<R>,
+) -> Result<ExportRecord> {
     // **The scope that was actually DECIDED, in the classifier's own precedence, first match wins:**
     //
     //   scope_override  ->  stored `scope`  ->  classify(cwd)
@@ -303,17 +328,25 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
     // contract's "never null" guarantee for rows that have neither.
     //
     // **This corrects `finding S1`, it does not reverse it.** S1's reason for avoiding the stored
-    // column was NULLability, and the `classify(cwd)` fallback answers that: the field is still never
-    // null. What S1 got wrong was using the cwd rule as the PRIMARY source. `session::classify` is
-    // the LEGACY cwd-only rule (work iff the cwd has a `repos/<work-org>` anchor) and it ignores
-    // overrides, git-origin attribution and the touch set -- so 31 rows on the live catalog exported
+    // column was NULLability, and the fallback answers that: the field is still never null. What S1
+    // got wrong was using the cwd rule as the PRIMARY source -- 31 rows on the live catalog exported
     // a scope contradicting the catalog, and every session an operator forced to `work` would have
     // exported `personal`, the exact opposite of what the operator asked for.
     //
-    // Rejected: running the full `classify_with_evidence` here. It needs five more columns plus an
-    // `outcome_json` parse per row on the bulk paged endpoint whose whole point is being cheap, and
-    // it would make export a THIRD site re-implementing the routing decision. Reading what the gate
-    // already decided is the decomposition that cannot drift.
+    // **Step 3 is `routing::classify_row`, the gate's own seam, and the cwd-only classifier it
+    // replaces is DELETED rather than kept beside it.** It used to be `session::classify(cwd)`, a
+    // second implementation of the routing question that read only the literal-`repos` anchor. Once
+    // the anchor started reading the CONFIGURED roots, keeping it would have meant export answering
+    // with the old rule while the gate answered with the new one: two answers to one question, which
+    // is the defect this whole change exists to remove.
+    //
+    // The earlier objection to an evidence-based fallback -- that it changes emitted values for rows
+    // that have evidence -- was WRONG, and it is recorded here so nobody restores the old form. This
+    // arm executes ONLY when `scope_override` AND the stored `scope` are both absent, which is a row
+    // the gate has never decided. A gated row reads its stored decision above and never reaches here.
+    //
+    // The `outcome_json` parse the old comment refused is paid LAZILY: the column is selected (free)
+    // and parsed only inside this arm. On a catalog the gate has processed, that is no rows.
     // The stored sources are VALIDATED before they reach the wire, not passed through. Both columns
     // are plain nullable TEXT with no `CHECK`, so a hand-edited catalog (or one written by a future
     // clyde that learned a third scope) can hold `'Work'`, `'garbage'`, or `''`. Emitting those
@@ -327,7 +360,7 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
     // stored values in this function whose vocabulary is frozen. A corrupt catalog makes the export
     // ERROR and name the session, which is actionable; silently substituting a different answer is
     // not, and silently forwarding the bad token is worse. Found by the review panel (Codex).
-    let stored_scope = raw.scope_override.or(raw.scope);
+    let stored_scope = raw.scope_override.clone().or_else(|| raw.scope.clone());
     let scope = match stored_scope {
         Some(token) => session::Scope::from_stored(&token)
             .ok_or_else(|| {
@@ -339,8 +372,32 @@ fn build_export_record(raw: ExportRaw, now: DateTime<Utc>, dormant_after: chrono
             })?
             .as_str()
             .to_string(),
-        // Neither source present: the cwd rule answers, preserving the never-null guarantee.
-        None => session::classify(cwd_path).as_str().to_string(),
+        // Neither source present: the gate's own classifier answers, preserving the never-null
+        // guarantee AND giving the same answer the gate would give for this row.
+        None => {
+            let evidence = crate::db::enrich::evidence_from_row(
+                &raw.session_id,
+                &crate::db::enrich::EvidenceRow {
+                    outcome_json: raw.outcome_json.clone(),
+                    repo_probe: raw.repo_probe.clone(),
+                    repo_host: raw.repo_host.clone(),
+                    scope_override: raw.scope_override.clone(),
+                },
+            );
+            crate::routing::classify_row(
+                &raw.session_id,
+                raw.cwd.as_deref(),
+                raw.repo.as_deref(),
+                raw.repo_source.as_deref(),
+                &evidence,
+                anchors,
+                hosts,
+            )
+            .decision
+            .scope
+            .as_str()
+            .to_string()
+        }
     };
     // `repo` is the PERSISTED v10 column, NOT `session::repo_slug(cwd)`. Deriving it from the cwd
     // here meant export and `report collect` answered differently for the same session the moment a

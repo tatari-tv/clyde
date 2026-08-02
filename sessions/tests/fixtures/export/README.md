@@ -15,6 +15,13 @@ Purpose (Phase 0 success criteria):
 These fixtures are the schema Phase 3 validates its emitted envelope against. The
 SHAPE and field names are the contract; the values are synthetic placeholders.
 
+The envelope carries a top-level `scope-version` (`session::SCOPE_VERSION`): which
+revision of the CLASSIFIER produced these `scope` values. It was added ADDITIVELY
+under `schema-version: 2`, with precedent in `prompt-version` -- a classifier
+revision changes accuracy, not `scope`'s type, vocabulary or meaning, so it is not
+a schema bump. `ExportEnvelope` defaults it to `0` on deserialize, so an envelope
+written before the field existed still reads.
+
 ## Fixtures
 
 | File | Session | State exercised |
@@ -33,10 +40,10 @@ confirmed against the live schema; derived fields note their computation.
 |---|---|---|
 | `session-id` | col `session_id` | |
 | `host` | col `host` | NOT NULL |
-| `scope` | DERIVED `scope::classify(cwd)` | stored col `scope` is nullable (343 legacy/unenriched rows NULL); re-derive so the field is never null. See finding S1. |
+| `scope` | `COALESCE(scope_override, scope, <the enrich gate's own classifier>)` | stored col `scope` is nullable (343 legacy/unenriched rows NULL); the fallback keeps the field never-null. It runs `routing::classify_row`, the SAME seam the gate uses, so export cannot answer differently from the catalog. It used to be a cwd-only `classify(cwd)` of export's own, which is finding S1's correction and, once the anchor started reading configured roots, would have been a second classifier reading a retired rule. |
 | `cwd` | col `cwd` | nullable |
 | `project-dir` | col `project_dir` | NOT NULL |
-| `repo` | DERIVED from `cwd` (`~/repos/<org>/<repo>`) | `null` when cwd has no `repos/<org>/<repo>`. No existing helper; Phase 2 writes it (same convention as `scope.rs`). Finding R1. |
+| `repo` | col `repo` (the PERSISTED v10 attribution) | `null` until a rule has fired. Resolved at index time while the evidence existed, never re-derived from the cwd here: deriving it at export made export and `report collect` answer differently the moment a worktree was deleted. Finding R1. |
 | `git-branch` | col `git_branch` | nullable; value can be `HEAD` |
 | `created` | col `created` | TEXT ISO8601, nullable |
 | `modified` | col `modified` | TEXT ISO8601, NOT NULL; equals transcript mtime |

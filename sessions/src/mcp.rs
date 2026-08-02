@@ -23,7 +23,7 @@
 //! and `Connection` is `!Sync`, so every tool runs its query inside `block_in_place_compat` and
 //! releases the lock before serializing -- never holding it across `.await`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use eyre::Result;
@@ -524,18 +524,18 @@ pub fn build_server(
     db_path: &Path,
     projects_dir: &Path,
     reindex_on_start: bool,
-    repo_root: &Path,
+    roots: &[PathBuf],
 ) -> Result<SessionsMcpServer> {
     info!(
-        "build_server: db_path={} projects_dir={} reindex_on_start={} repo_root={}",
+        "build_server: db_path={} projects_dir={} reindex_on_start={} roots={}",
         db_path.display(),
         projects_dir.display(),
         reindex_on_start,
-        repo_root.display(),
+        roots.len(),
     );
     let db = Db::open_at(db_path)?;
     if reindex_on_start {
-        let stats = crate::reindex(&db, projects_dir, repo_root)?;
+        let stats = crate::reindex(&db, projects_dir, roots)?;
         info!(
             "build_server: startup reindex scanned={} upserted={} skipped={} archived={}",
             stats.scanned, stats.upserted, stats.skipped_unchanged, stats.archived,

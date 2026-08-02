@@ -3,6 +3,7 @@
   "generated-at": "2026-07-17T00:00:00+00:00",
   "host": "host-01",
   "cursor": 478,
+  "scope-version": 4,
   "sessions": [
     {
       "session-id": "00000000-0000-4000-8000-000000000001",
@@ -22,7 +23,13 @@
       "n-msgs": 2041,
       "model": "example-model-large",
       "summary": "Orchestrated a phased 5-phase Rust port of an API client CLI ... ready for merge to the next release tag post-merge per gated release flow.",
-      "tags": ["rust", "cli", "port", "api-client", "phased-implementation"],
+      "tags": [
+        "rust",
+        "cli",
+        "port",
+        "api-client",
+        "phased-implementation"
+      ],
       "tags-source": "enrich",
       "enriched-at": "2026-07-06T10:04:07.075906295+00:00",
       "enrich-status": "ok",

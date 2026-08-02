@@ -9,12 +9,14 @@
 //! Design: `docs/design/2026-07-31-attribution-and-routing.md` ("The routing fix").
 
 use chrono::{DateTime, Utc};
-use common::repo::ProbeOutcome;
 use common::repo::host::{HostPolicy, HostResolver};
+use common::repo::{ProbeOutcome, RepoSource};
 use eyre::{Result, bail};
 use log::{debug, warn};
 use rusqlite::{OptionalExtension, params};
-use session::Basis;
+use session::{Anchors, Basis};
+
+use std::path::Path;
 
 use super::Db;
 
@@ -450,8 +452,8 @@ impl Db {
     ///
     /// `work_remote_hosts` is passed in rather than read here, because the ALLOWLIST is config and
     /// `sessions` does not load config.
-    pub fn routing_summary(&self, work_remote_hosts: &[String]) -> Result<RoutingSummary> {
-        self.routing_summary_with(&mut HostPolicy::new(work_remote_hosts))
+    pub fn routing_summary(&self, anchors: &Anchors, work_remote_hosts: &[String]) -> Result<RoutingSummary> {
+        self.routing_summary_with(anchors, &mut HostPolicy::new(work_remote_hosts))
     }
 
     /// The routing picture, over an explicit [`HostPolicy`] so a test can inject a
@@ -479,7 +481,11 @@ impl Db {
     /// signal rather than aborting the scan, inherited from `evidence_from_row` and
     /// `crate::routing::parse_repo_source` respectively. `doctor` is the command an operator runs
     /// when something is already broken; it is the last place that may die on one bad row.
-    pub fn routing_summary_with<R: HostResolver>(&self, hosts: &mut HostPolicy<R>) -> Result<RoutingSummary> {
+    pub fn routing_summary_with<R: HostResolver>(
+        &self,
+        anchors: &Anchors,
+        hosts: &mut HostPolicy<R>,
+    ) -> Result<RoutingSummary> {
         debug!("Db::routing_summary_with");
         let count = |sql: &str| -> Result<usize> {
             let n: i64 = self.conn.query_row(sql, [], |r| r.get(0))?;
@@ -496,19 +502,34 @@ impl Db {
         }
 
         let mut by_basis = [0usize; BASIS_COUNT];
+        // Tallied in the SAME pass, from the SAME classifier, for the reason this module exists: the
+        // disagreement count used to be its own SQL predicate hardcoding `/repos/`, which mirrored
+        // the now-DELETED `session::has_work_org`. With the anchor reading configured roots, that
+        // predicate would miss every conflict under an off-layout root and invent conflicts under a
+        // `repos` directory that is not a configured root. Two answers to one question, which is the
+        // defect the whole design removes.
+        let mut anchor_remote_disagreement = 0usize;
         for row in self.routing_rows()? {
-            let decision = crate::routing::classify_row(
+            let evaluated = crate::routing::classify_row(
                 &row.session_id,
                 row.cwd.as_deref(),
                 row.repo.as_deref(),
                 row.repo_source.as_deref(),
                 &row.evidence(),
+                anchors,
                 hosts,
-            )
-            .decision;
-            by_basis[basis_index(decision.basis)] += 1;
+            );
+            by_basis[basis_index(evaluated.decision.basis)] += 1;
+            // Only a git-origin row can disagree: the comparison is anchor-vs-REMOTE, and the other
+            // sources carry no remote to conflict with.
+            if evaluated.repo_source == Some(RepoSource::GitOrigin)
+                && let (Some(cwd), Some(repo)) = (row.cwd.as_deref(), row.repo.as_deref())
+                && session::anchor_disagrees_with_remote(Path::new(cwd), repo, anchors).is_some()
+            {
+                anchor_remote_disagreement += 1;
+            }
         }
-        debug!("Db::routing_summary_with: by_basis={by_basis:?}");
+        debug!("Db::routing_summary_with: by_basis={by_basis:?} disagreements={anchor_remote_disagreement}");
 
         Ok(RoutingSummary {
             by_basis,
@@ -517,16 +538,10 @@ impl Db {
                 "SELECT COUNT(*) FROM sessions WHERE repo_host IS NULL AND repo_source = 'git-origin'",
             )?,
             overrides: count("SELECT COUNT(*) FROM sessions WHERE scope_override IS NOT NULL")?,
-            // The disagreement predicate mirrors `session::has_work_org`: the org is the component
-            // immediately after a `repos` component, which SQLite can express as a LIKE against the
-            // anchored shape. Only git-origin rows can disagree, because only they carry a remote.
-            anchor_remote_disagreement: count(
-                "SELECT COUNT(*) FROM sessions WHERE repo_source = 'git-origin' AND cwd IS NOT NULL \
-                 AND repo IS NOT NULL AND ( \
-                   (cwd LIKE '%/repos/tatari-tv/%' AND repo NOT LIKE 'tatari-tv/%') \
-                   OR (cwd LIKE '%/repos/%' AND cwd NOT LIKE '%/repos/tatari-tv/%' \
-                       AND repo LIKE 'tatari-tv/%') )",
-            )?,
+            // Computed in the row loop above by CALLING the classifier, never by a SQL predicate
+            // that restates its rule. SQLite cannot express "the org slot under any configured
+            // root", and the LIKE form that tried hardcoded `/repos/` against a deleted rule.
+            anchor_remote_disagreement,
             reprobe_candidates: self.reprobe_candidates()?,
             by_source,
         })

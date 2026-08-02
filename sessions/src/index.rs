@@ -22,7 +22,7 @@
 //! I/O: [`reindex`] already parses every session before the upsert loop, so the value is in hand and
 //! only the DB write was being skipped.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use common::repo::{RepoSource, Resolver};
@@ -37,14 +37,14 @@ use crate::model::ReindexStats;
 /// post-efficiency [`resolve_repos`] pass (the write is upgrade-only), so it is skipped there.
 const FILES_TOUCHED_RANK: i64 = RepoSource::FilesTouched.rank();
 
-/// Run a full incremental reindex against `projects_dir`, writing into `db`. `repo_root` is the
-/// configured clone root rule 4 (`common::repo::from_path_guess`) matches against -- `clyde.yml`'s
-/// `repo-root`, default `<home>/repos`.
-pub fn reindex(db: &Db, projects_dir: &Path, repo_root: &Path) -> Result<ReindexStats> {
+/// Run a full incremental reindex against `projects_dir`, writing into `db`. `roots` are the
+/// configured clone roots rule 4 (`common::repo::from_path_guess`) matches against -- `clyde.yml`'s
+/// `repo-roots`, default `[<home>/repos]`.
+pub fn reindex(db: &Db, projects_dir: &Path, roots: &[PathBuf]) -> Result<ReindexStats> {
     debug!(
-        "index::reindex: projects_dir={} repo_root={}",
+        "index::reindex: projects_dir={} roots={}",
         projects_dir.display(),
-        repo_root.display()
+        roots.len()
     );
     let files = scan::find_session_files(projects_dir)?;
     let sessions = parse::parse_sessions(&files);
@@ -74,7 +74,7 @@ pub fn reindex(db: &Db, projects_dir: &Path, repo_root: &Path) -> Result<Reindex
             // Rule 3's input comes from the PERSISTED `outcome_json` (empty for a session the
             // efficiency pass has not reached yet); `resolve_repos` closes that gap after it has.
             let repos_touched = db.repos_touched(&parsed.session_id)?;
-            apply_chain(db, &mut resolver, &parsed.session_id, cwd, &repos_touched, repo_root)?;
+            apply_chain(db, &mut resolver, &parsed.session_id, cwd, &repos_touched, roots)?;
         }
     }
     stats.backfilled = db.set_parse_derived_many(&pending_parse_derived)?;
@@ -95,8 +95,8 @@ pub fn reindex(db: &Db, projects_dir: &Path, repo_root: &Path) -> Result<Reindex
 ///
 /// Call this AFTER `efficiency::reindex_efficiency`. Calling it before is harmless but pointless --
 /// every `repos_touched` would still be empty and rule 3 would abstain everywhere.
-pub fn resolve_repos(db: &Db, repo_root: &Path) -> Result<usize> {
-    debug!("index::resolve_repos: repo_root={}", repo_root.display());
+pub fn resolve_repos(db: &Db, roots: &[PathBuf]) -> Result<usize> {
+    debug!("index::resolve_repos: roots={}", roots.len());
     let candidates = db.repo_candidates(FILES_TOUCHED_RANK)?;
     let mut resolver = Resolver::new();
     for candidate in &candidates {
@@ -106,7 +106,7 @@ pub fn resolve_repos(db: &Db, repo_root: &Path) -> Result<usize> {
             &candidate.session_id,
             Path::new(&candidate.cwd),
             &candidate.repos_touched,
-            repo_root,
+            roots,
         )?;
     }
     info!(
@@ -128,7 +128,7 @@ fn apply_chain(
     session_id: &str,
     cwd: &Path,
     repos_touched: &std::collections::BTreeMap<String, u64>,
-    repo_root: &Path,
+    roots: &[PathBuf],
 ) -> Result<()> {
     // Record the NEGATIVE first, before anything is resolved. This is the observation the routing
     // gate needs and the only thing that separates the Problem 1 leak (the session ran with no
@@ -149,7 +149,7 @@ fn apply_chain(
         db.record_repo_host(session_id, host)?;
     }
 
-    let Some(resolved) = resolver.resolve(cwd, db, repos_touched, repo_root) else {
+    let Some(resolved) = resolver.resolve(cwd, db, repos_touched, roots) else {
         return Ok(());
     };
     db.upsert_repo(session_id, &resolved)?;

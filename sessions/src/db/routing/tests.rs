@@ -5,6 +5,13 @@ use chrono::DateTime;
 use session::ParsedSession;
 use std::path::PathBuf;
 
+/// The root every cwd in this file is written against. `~/repos` is the layout the v3 anchor
+/// hardcoded, so keeping it here means these tests still exercise the same shapes -- now through the
+/// configured-root path instead of a literal component match.
+fn test_anchors() -> session::Anchors {
+    session::Anchors::new(&[PathBuf::from("/home/saidler/repos")])
+}
+
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
 
@@ -586,7 +593,7 @@ fn github_only() -> Vec<String> {
 /// The single row's basis. Asserts the catalog holds exactly one row, so a stray fixture cannot make
 /// a wrong answer look right.
 fn sole_basis<R: HostResolver>(db: &Db, hosts: &mut HostPolicy<R>) -> Basis {
-    let summary = db.routing_summary_with(hosts).unwrap();
+    let summary = db.routing_summary_with(&test_anchors(), hosts).unwrap();
     assert_eq!(summary.decisions_total(), 1, "expected exactly one row in the catalog");
     let found: Vec<Basis> = BASIS_ORDER
         .iter()
@@ -684,7 +691,7 @@ fn the_basis_tally_sums_to_the_catalog_row_count() {
     }
 
     let mut hosts = HostPolicy::with_resolver(&github_only(), NullResolver);
-    let summary = db.routing_summary_with(&mut hosts).unwrap();
+    let summary = db.routing_summary_with(&test_anchors(), &mut hosts).unwrap();
 
     let rows: usize = db
         .conn
@@ -729,7 +736,12 @@ fn a_probe_stamp_under_a_work_anchored_cwd_counts_as_cwd_anchor() {
 
     // The CONDITION is still reported, under its own honest name, because `--clear-probe` is the
     // remedy for a stale stamp and an operator has no other way to find these rows.
-    assert_eq!(db.routing_summary_with(&mut hosts).unwrap().probe_recorded, 1);
+    assert_eq!(
+        db.routing_summary_with(&test_anchors(), &mut hosts)
+            .unwrap()
+            .probe_recorded,
+        1
+    );
 }
 
 /// Test 3. The shape that GENUINELY reaches the probe refusal, plus the host flip on the same row.
@@ -842,7 +854,7 @@ fn the_override_basis_count_equals_the_override_sql_count() {
     );
 
     let mut hosts = HostPolicy::with_resolver(&github_only(), NullResolver);
-    let summary = db.routing_summary_with(&mut hosts).unwrap();
+    let summary = db.routing_summary_with(&test_anchors(), &mut hosts).unwrap();
     let sql: usize = db
         .conn
         .query_row(
@@ -901,4 +913,107 @@ fn an_unreadable_repo_source_classifies_without_the_remote() {
 
     let mut hosts = HostPolicy::with_resolver(&github_only(), NullResolver);
     assert_eq!(sole_basis(&db, &mut hosts), Basis::TouchSet);
+}
+
+/// **CodeRabbit, PR #86, Functional/Major.** `anchor_remote_disagreement` was its own SQL predicate
+/// hardcoding `/repos/`, mirroring the now-DELETED `session::has_work_org`. With the anchor reading
+/// CONFIGURED roots, that predicate answers a different question from the classifier: it misses
+/// every conflict under an off-layout root and invents conflicts under a `repos` directory that is
+/// not a configured root.
+///
+/// Both directions are asserted, because a count that is wrong in either one is a `doctor` line an
+/// operator cannot act on.
+///
+/// BITES: restore the LIKE predicate and the off-layout row counts 0 while the non-root row counts 1.
+#[test]
+fn the_disagreement_count_follows_the_configured_roots_not_a_literal_repos() {
+    // A conflict under an OFF-LAYOUT configured root: work anchor, personal remote. The old SQL
+    // could not see this at all, because the cwd has no `/repos/` component.
+    let db = Db::open_memory().unwrap();
+    seed_shape(
+        &db,
+        "00000000-0000-4000-8000-00000000d001",
+        &Shape {
+            cwd: Some("/home/stephen/code/tatari-tv/philo-fork"),
+            repo: Some("scottidler/philo-fork"),
+            repo_source: Some("git-origin"),
+            repo_host: Some("github.com"),
+            ..Default::default()
+        },
+    );
+    let off_layout = session::Anchors::new(&[PathBuf::from("/home/stephen/code")]);
+    let mut hosts = HostPolicy::new(&github_only());
+    assert_eq!(
+        db.routing_summary_with(&off_layout, &mut hosts)
+            .unwrap()
+            .anchor_remote_disagreement,
+        1,
+        "a work anchor with a personal remote conflicts, wherever the root lives"
+    );
+
+    // The SAME row under a config that does NOT declare that root: the cwd is unanchored, so it
+    // expresses no opinion and there is nothing to conflict WITH.
+    let elsewhere = session::Anchors::new(&[PathBuf::from("/home/saidler/repos")]);
+    assert_eq!(
+        db.routing_summary_with(&elsewhere, &mut hosts)
+            .unwrap()
+            .anchor_remote_disagreement,
+        0,
+        "an unanchored cwd cannot disagree, so declaring a different root must zero this"
+    );
+}
+
+/// The mirror: a literal `repos` component that is NOT under any configured root must no longer
+/// manufacture a disagreement. This is the row the old SQL counted and the classifier never saw.
+///
+/// BITES: restore the LIKE predicate and this reads 1.
+#[test]
+fn a_repos_component_outside_every_configured_root_is_not_a_disagreement() {
+    let db = Db::open_memory().unwrap();
+    seed_shape(
+        &db,
+        "00000000-0000-4000-8000-00000000d002",
+        &Shape {
+            cwd: Some("/elsewhere/repos/tatari-tv/philo"),
+            repo: Some("scottidler/philo"),
+            repo_source: Some("git-origin"),
+            repo_host: Some("github.com"),
+            ..Default::default()
+        },
+    );
+    let mut hosts = HostPolicy::new(&github_only());
+    assert_eq!(
+        db.routing_summary_with(&test_anchors(), &mut hosts)
+            .unwrap()
+            .anchor_remote_disagreement,
+        0,
+        "`/elsewhere/repos/...` is under no configured root, so the anchor abstains"
+    );
+}
+
+/// Only a git-origin row can disagree: the comparison is anchor-vs-REMOTE, and the other sources
+/// carry no remote to conflict with. A path-guess row with the same shape must not count.
+///
+/// BITES: drop the `repo_source == GitOrigin` guard and this reads 1.
+#[test]
+fn only_a_remote_derived_row_can_disagree_with_the_anchor() {
+    let db = Db::open_memory().unwrap();
+    seed_shape(
+        &db,
+        "00000000-0000-4000-8000-00000000d003",
+        &Shape {
+            cwd: Some("/home/saidler/repos/tatari-tv/philo"),
+            repo: Some("scottidler/philo"),
+            repo_source: Some("path-guess"),
+            ..Default::default()
+        },
+    );
+    let mut hosts = HostPolicy::new(&github_only());
+    assert_eq!(
+        db.routing_summary_with(&test_anchors(), &mut hosts)
+            .unwrap()
+            .anchor_remote_disagreement,
+        0,
+        "a guessed slug is not a remote, so there is nothing authoritative to conflict with"
+    );
 }

@@ -20,12 +20,49 @@ fn dt(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
 }
 
+/// The root every cwd in this file is written against, so the scope fallback anchors the same way
+/// the gate would.
+fn test_root() -> std::path::PathBuf {
+    std::path::PathBuf::from("/home/saidler/repos")
+}
+
 fn export_ctx(now: &str) -> ExportContext {
     ExportContext {
         now: dt(now),
         dormant_after: chrono::Duration::days(7),
         host: "desk".to_string(),
+        anchors: session::Anchors::new(&[test_root()]),
+        work_remote_hosts: vec!["github.com".to_string()],
     }
+}
+
+/// The scope the ENRICH GATE would decide for one row, through the gate's own seam.
+///
+/// AC6's instrument. Export's fallback is no longer a classifier of its own, so "export agrees with
+/// the gate" is asserted by driving both over the same row rather than by re-stating the rule.
+fn gate_scope(db: &Db, id: &str) -> String {
+    let evidence = db.scope_evidence(id).unwrap();
+    let (cwd, repo, repo_source): (Option<String>, Option<String>, Option<String>) = db
+        .conn
+        .query_row(
+            "SELECT cwd, repo, repo_source FROM sessions WHERE session_id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    crate::routing::classify_row(
+        id,
+        cwd.as_deref(),
+        repo.as_deref(),
+        repo_source.as_deref(),
+        &evidence,
+        &session::Anchors::new(&[test_root()]),
+        &mut common::repo::host::HostPolicy::new(&["github.com".to_string()]),
+    )
+    .decision
+    .scope
+    .as_str()
+    .to_string()
 }
 
 /// A minimal `ParsedSession` with an explicit `cwd` (drives scope/repo derivation), `transcript`
@@ -835,11 +872,8 @@ fn export_emits_the_stored_scope_over_the_cwd_guess() {
     )
     .unwrap();
 
-    // Precondition: the legacy rule says personal for this cwd. That is the answer `main` emitted.
-    assert_eq!(
-        session::classify(Some(std::path::Path::new(UNPLACEABLE_CWD))).as_str(),
-        "personal"
-    );
+    // Precondition: with no stored decision and no evidence, the fallback says personal for this cwd.
+    assert_eq!(gate_scope(&db, UUID_A), "personal");
     assert_eq!(
         exported_scope_of(&db, UUID_A),
         "personal",
@@ -976,13 +1010,8 @@ fn no_exported_row_disagrees_with_the_three_step_precedence() {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        let want = if stored.is_empty() {
-            session::classify(cwd.as_deref().map(std::path::Path::new))
-                .as_str()
-                .to_string()
-        } else {
-            stored
-        };
+        let _ = &cwd;
+        let want = if stored.is_empty() { gate_scope(&db, &id) } else { stored };
         if emitted != want {
             disagreements.push((id, emitted, want));
         }
@@ -1093,4 +1122,103 @@ fn every_exported_scope_is_a_frozen_contract_token() {
             "session {id} exported a non-contract scope token {scope:?}"
         );
     }
+}
+
+/// **AC6.** Export's scope fallback and the enrich gate return the SAME scope for the same cwd under
+/// the same config, asserted by driving both.
+///
+/// Before this, `query.rs` ran `session::classify(cwd)` -- a second implementation of the routing
+/// question that read only the literal-`repos` anchor -- while the gate ran `classify_with_evidence`.
+/// The two could already disagree, and once the anchor started reading CONFIGURED roots they would
+/// have disagreed on every off-layout cwd and on every flat `<root>/<repo>`.
+///
+/// The shapes are chosen to be exactly the ones where the v3 rule and the v4 rule differ, so a
+/// reintroduced second classifier cannot pass by accident.
+///
+/// BITES: restore `session::classify(cwd_path)` in `build_export_record` and the flat-repo and
+/// off-layout rows disagree.
+#[test]
+fn export_scope_fallback_agrees_with_the_enrich_gate_for_every_cwd_shape() {
+    const SHAPES: &[(&str, &str)] = &[
+        (UUID_A, "/home/saidler/repos/tatari-tv/clyde"),
+        (UUID_B, "/home/saidler/repos/clyde"),
+        (UUID_C, "/home/saidler/repos/scottidler/repos/tatari-tv/x"),
+    ];
+
+    let tmp = TempDir::new().unwrap();
+    let db = Db::open_memory().unwrap();
+    for (i, (id, cwd)) in SHAPES.iter().enumerate() {
+        let transcript = tmp.path().join(format!("t{i}.jsonl"));
+        fs::write(&transcript, "{}\n").unwrap();
+        db.upsert_session(
+            &parsed_cwd(id, transcript.to_str().unwrap(), cwd, "2026-06-21T10:00:00Z"),
+            "desk",
+        )
+        .unwrap();
+    }
+
+    // Every row is deliberately left with NO stored scope and NO override, which is the only state
+    // in which the fallback runs at all. A gated row reads its stored decision and never reaches it.
+    for (id, cwd) in SHAPES {
+        assert_eq!(
+            exported_scope_of(&db, id),
+            gate_scope(&db, id),
+            "export and the gate disagree for cwd {cwd}"
+        );
+    }
+}
+
+/// **The fourth export column, made to bite (Codex, implementation audit).**
+///
+/// Threading `outcome_json` into export's SELECT is a disclosed deviation from the Phase 3 bullet,
+/// justified by "otherwise a unanimous-work touch set with no stored scope exports personal and
+/// gates work". AC6's other test drives three CWD shapes and never stores a touch set, so DROPPING
+/// the column would not have falsified that rationale -- the deviation was argued, not asserted.
+///
+/// This row is the argument. The cwd is deliberately UNANCHORED, so nothing but the touch set can
+/// decide, and the row carries no stored scope so the fallback is the code path under test.
+///
+/// BITES: remove `outcome_json` from `EXPORT_COLS` (or stop passing it into `evidence_from_row`) and
+/// export reports `personal` while the gate reports `work`.
+#[test]
+fn export_reads_the_touch_set_so_its_fallback_cannot_diverge_from_the_gate() {
+    let tmp = TempDir::new().unwrap();
+    let transcript = tmp.path().join("t.jsonl");
+    fs::write(&transcript, "{}\n").unwrap();
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(
+        &parsed_cwd(
+            UUID_A,
+            transcript.to_str().unwrap(),
+            // No configured root above it, so the anchor abstains and the evidence must decide.
+            "/home/saidler/scratch/widget",
+            "2026-06-21T10:00:00Z",
+        ),
+        "desk",
+    )
+    .unwrap();
+
+    // A unanimous work touch set, fully accounted for, exactly as `reindex_efficiency` writes it.
+    db.conn
+        .execute(
+            "UPDATE sessions SET outcome_json = ?2 WHERE session_id = ?1",
+            rusqlite::params![
+                UUID_A,
+                // `files-edited` is a COUNT, matching what `evidence_from_row` reads; the sum of
+                // `repos-touched` must equal it or the classifier's totality check refuses.
+                r#"{"repos-touched":{"tatari-tv/philo":2},"files-edited":2}"#
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(
+        gate_scope(&db, UUID_A),
+        "work",
+        "precondition: the gate decides work from the touch set alone"
+    );
+    assert_eq!(
+        exported_scope_of(&db, UUID_A),
+        "work",
+        "export must reach the same answer; without outcome_json it reads an empty touch set"
+    );
 }

@@ -23,8 +23,11 @@
 //! - Confluence / Jira / Slack: assistant `tool_use` whose name suffix (after the final `__`) matches
 //!   the outcome vocabulary, counted ONLY when the paired `tool_result` is not an error.
 //! - Files edited: `tool_use` name `Edit` / `Write`, distinct `input.file_path` across successful calls.
-//! - Repos touched (v10): the same edited-file paths, bucketed by the `<repo-root>/<org>/<repo>`
-//!   shape via `common::repo::slug_under_root`. Pure path parsing; see [`union`].
+//! - Repos touched (v10): the same edited-file paths, bucketed by ASKING GIT where each edited file
+//!   lives, through the shared rule-1 resolver. NOT a path parse: the `<root>/<org>/<repo>` form
+//!   this used to read was replaced in v0.23.0 (Problem 5) because it could not see an off-layout
+//!   checkout, and a non-allowlisted remote is refused here exactly as rule 1 refuses it. See
+//!   [`union`].
 //! - Lines written / replaced (Phase 7): from the SAME successful Edit/Write calls, the line counts
 //!   of `input.new_string` / `input.old_string` (Edit) and `input.content` (Write). Volume of change,
 //!   the thing `files_edited`'s bare path count cannot say.

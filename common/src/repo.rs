@@ -194,21 +194,21 @@ impl Resolver {
     /// The full chain: rules 1 through 4, first match wins, provenance recorded.
     ///
     /// `paths` is the learned map (rule 2), `repos_touched` the per-repo edited-file counts for
-    /// THIS session (rule 3; empty until the caller has them), `repo_root` the configured clone
-    /// root (rule 4). `None` means every rule declined, which is the honest answer for a `$HOME` or
+    /// THIS session (rule 3; empty until the caller has them), `roots` the configured clone roots
+    /// (rule 4). `None` means every rule declined, which is the honest answer for a `$HOME` or
     /// temp-dir cwd with no other evidence.
     pub fn resolve<M: PathMap>(
         &mut self,
         cwd: &Path,
         paths: &M,
         repos_touched: &BTreeMap<String, u64>,
-        repo_root: &Path,
+        roots: &[PathBuf],
     ) -> Option<Resolved> {
         debug!(
-            "repo::Resolver::resolve: cwd={} repos-touched={} repo-root={}",
+            "repo::Resolver::resolve: cwd={} repos-touched={} roots={}",
             cwd.display(),
             repos_touched.len(),
-            repo_root.display()
+            roots.len()
         );
 
         if let Some(repo) = self.detect(cwd) {
@@ -218,7 +218,7 @@ impl Resolver {
 
         let resolved = from_known_path(cwd, paths, &self.blocked)
             .or_else(|| from_files_touched(repos_touched))
-            .or_else(|| from_path_guess(cwd, repo_root));
+            .or_else(|| from_path_guess(cwd, roots));
 
         match &resolved {
             Some(r) => debug!(
@@ -490,6 +490,45 @@ impl ProbeOutcome {
             Self::Indeterminate => "indeterminate",
         }
     }
+
+    /// Parse back the outcome from a `sessions.repo_probe` stamp (`'<token>@<rfc3339>'`).
+    ///
+    /// The inverse of [`Self::as_str`], and it lives beside it for the same reason
+    /// [`RepoSource::from_str`] lives beside its own `as_str`: a token contract with its two halves
+    /// in different crates is one rename away from silently reading every stamp as unrecognized.
+    ///
+    /// **Only the two CONCLUSIVE-NEGATIVE tokens are legal here, and that is the column's contract,
+    /// not a shortcut.** `Db::record_probe` enforces at the write that nothing else is ever stored,
+    /// so a `resolved`/`blocked`/`outside-root`/`indeterminate` stamp means a hand-edited catalog or
+    /// a future clyde that changed the write policy without changing this. Both are cases the reader
+    /// must not silently accept: `Resolved` cannot even be reconstructed (the stamp carries no slug
+    /// or host), and accepting `blocked` would let a transient environment failure anchor a routing
+    /// decision. `None` is the fail-safe answer, and the caller warns.
+    ///
+    /// The timestamp is deliberately not returned. It is for the operator reading `doctor`; no
+    /// routing rule has ever compared it, and handing the classifier a clock it does not need is how
+    /// a time-based rule gets written by accident.
+    pub fn from_stamp(stamp: &str) -> Option<Self> {
+        // The `@<rfc3339>` half is REQUIRED **and PARSED**. `Db::record_probe` writes exactly
+        // `<token>@<rfc3339>` and nothing else, so a bare `not-a-repo` is a value this binary can
+        // never have produced. Accepting it would let a hand-edited catalog hand the bare
+        // `<root>/<work-org>` anchor a `NotARepo` it never observed, which grants Work scope on an
+        // edited string.
+        //
+        // Requiring the `@` alone was NOT enough, and `not-a-repo@invalid` is why: it has the shape
+        // and no valid stamp, and `NotARepo` is the one outcome that ANCHORS Work rather than merely
+        // deferring. Validating the timestamp is what makes the parser exactly as permissive as the
+        // writer and no more. The parsed value is deliberately discarded -- no routing rule has ever
+        // compared it, and handing the classifier a clock it does not need is how a time-based rule
+        // gets written by accident.
+        let (token, stamped_at) = stamp.split_once('@')?;
+        chrono::DateTime::parse_from_rfc3339(stamped_at).ok()?;
+        match token {
+            "no-origin" => Some(Self::NoOrigin),
+            "not-a-repo" => Some(Self::NotARepo),
+            _ => None,
+        }
+    }
 }
 
 /// Rule 1: what the cwd's own git config says about its origin.
@@ -626,11 +665,7 @@ fn no_work_tree_root(cwd: &Path) -> Result<PathBuf, ProbeOutcome> {
         // `.`) and absolute forms git emits.
         GitRun::Answered(cd) => cwd.join(cd.trim()),
         GitRun::Refused(_) if has_git_marker(cwd) => {
-            warn!(
-                "repo::detect: {} carries a git marker git could not use (check `safe.directory` \
-                 and .git permissions); recording nothing",
-                cwd.display()
-            );
+            warn!("{}", unusable_marker_warning(cwd));
             return Err(ProbeOutcome::Indeterminate);
         }
         GitRun::Refused(_) => {
@@ -654,6 +689,59 @@ fn no_work_tree_root(cwd: &Path) -> Result<PathBuf, ProbeOutcome> {
         GitRun::Answered(_) => cwd.parent().map(Path::to_path_buf).ok_or(ProbeOutcome::Indeterminate),
         _ => Err(ProbeOutcome::Indeterminate),
     }
+}
+
+/// The warning for a cwd carrying a git marker git REFUSED to use.
+///
+/// A function returning the string rather than an inline `warn!`, so a test can assert WHICH
+/// diagnosis was produced. The outcome is `Indeterminate` for both cases, so the outcome cannot
+/// distinguish them and an assertion on it would not bite; the message is the only observable
+/// difference, and it is the part that was wrong.
+///
+/// Two different problems reach this arm and the remedies share nothing. Naming the wrong one is
+/// worse than saying nothing: the `safe.directory` text sends an operator to check a config that was
+/// never involved, they find it correct, and they stop trusting the message.
+fn unusable_marker_warning(cwd: &Path) -> String {
+    match orphaned_worktree_target(cwd) {
+        Some(gitdir) => format!(
+            "repo::detect: {} is an ORPHANED linked worktree: its .git file points at {}, which does \
+             not exist. The main checkout was deleted or moved. Run `git worktree repair` from the \
+             main checkout, or restore it; recording nothing",
+            cwd.display(),
+            gitdir.display()
+        ),
+        None => format!(
+            "repo::detect: {} carries a git marker git could not use (check `safe.directory` and \
+             .git permissions); recording nothing",
+            cwd.display()
+        ),
+    }
+}
+
+/// The `gitdir:` target of an ORPHANED linked worktree at `cwd`, or `None`.
+///
+/// A linked worktree records its git dir in a `.git` FILE (`gitdir: <path>`) pointing into the main
+/// checkout's `.git/worktrees/<name>`. Delete the main checkout and every probe returns 128 with
+/// `fatal: not a git repository: <that path>`, which lands in the marker arm above and used to be
+/// reported as a `safe.directory` or permissions problem. Neither remedy applies, and an operator who
+/// follows the wrong one finds nothing wrong and stops trusting the message.
+///
+/// `Some` ONLY when the pointer exists AND its target does not: an ordinary linked worktree whose
+/// main checkout is intact returns `None` and keeps the generic warning available for the case it
+/// was actually written for. The OUTCOME is unchanged either way -- `Indeterminate`, recording
+/// nothing -- because `git worktree repair` or restoring the main checkout recovers the row, so
+/// nothing conclusive may be written.
+///
+/// A relative `gitdir:` is resolved against `cwd`, which is how git itself reads it.
+fn orphaned_worktree_target(cwd: &Path) -> Option<PathBuf> {
+    let marker = cwd.join(".git");
+    if !marker.is_file() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&marker).ok()?;
+    let target = text.lines().find_map(|line| line.trim().strip_prefix("gitdir:"))?;
+    let target = cwd.join(target.trim());
+    (!target.exists()).then_some(target)
 }
 
 /// Whether a `.git` entry exists at `cwd` or any ancestor, i.e. whether a repository is PRESENT
@@ -809,48 +897,66 @@ pub fn from_files_touched(repos_touched: &BTreeMap<String, u64>) -> Option<Resol
     }
 }
 
-/// Rule 4: the last-resort pattern guess, `<repo-root>/<org>/<repo>[/...]`.
+/// Rule 4: the last-resort pattern guess, `<root>/<org>/<repo>[/...]`, against every configured root.
 ///
 /// This is the only rule that can FABRICATE a slug (a vanished sibling worktree
 /// `<root>/tatari-tv/clyde-ft` guesses `tatari-tv/clyde-ft`, which never existed), so it runs last
 /// and its output is marked [`RepoSource::PathGuess`] everywhere it is rendered. It is kept because
 /// on a cold start it is the only rule that can serve a path never seen alive, and it resolves the
 /// dominant such case correctly.
-pub fn from_path_guess(cwd: &Path, repo_root: &Path) -> Option<Resolved> {
-    debug!(
-        "repo::from_path_guess: cwd={} repo-root={}",
-        cwd.display(),
-        repo_root.display()
-    );
-    let slug = slug_under_root(cwd, repo_root)?;
+pub fn from_path_guess(cwd: &Path, roots: &[PathBuf]) -> Option<Resolved> {
+    debug!("repo::from_path_guess: cwd={} roots={}", cwd.display(), roots.len());
+    let slug = slug_under_roots(cwd, roots)?;
     debug!("repo::from_path_guess: {} -> {slug} (guessed)", cwd.display());
     Some(Resolved::new(slug, RepoSource::PathGuess))
 }
 
-/// The `<org>/<repo>` slug named by the first two path components under `repo_root`, or `None` when
-/// `path` is not under the root or does not carry two plain directory names there.
+/// The `<org>/<repo>` slug named by the first two path components under the LONGEST matching root,
+/// or `None` when `path` is under no root or does not carry two plain directory names there.
+///
+/// Longest match wins. `de_repo_roots` refuses a nested pair of CONFIGURED roots, so the only way
+/// two roots can both match is the symlink expansion it performs (a root's configured spelling can
+/// sit under another root's real path), and there the longer one is the one that names the repo.
 ///
 /// PURE path parsing, no filesystem and no catalog: this is the one definition of the
-/// `<repo-root>/<org>/<repo>` shape, shared by rule 4 ([`from_path_guess`], which reads a session's
-/// cwd) and by `efficiency::outcome::union` (which reads the EDITED FILE paths that back rule 3).
-/// Two readers deriving the same shape independently is exactly how the two would drift.
-pub fn slug_under_root(path: &Path, repo_root: &Path) -> Option<String> {
-    let rest = match path.strip_prefix(repo_root) {
-        Ok(rest) => rest,
-        Err(_) => {
-            trace!(
-                "repo::slug_under_root: {} is not under the repo root {}",
-                path.display(),
-                repo_root.display()
-            );
-            return None;
-        }
-    };
-
-    let mut components = rest.components();
-    let org = next_normal(&mut components)?;
-    let repo = next_normal(&mut components)?;
-    Some(format!("{org}/{repo}"))
+/// `<root>/<org>/<repo>` shape, and rule 4 ([`from_path_guess`], which reads a session's cwd) is its
+/// ONLY caller. It used to be shared with `efficiency::outcome::union`, and is not since v0.23.0
+/// moved rule 3 off the path shape onto the git-backed resolver (Problem 5). Nothing in
+/// `efficiency` calls this, so nothing there constrains its signature.
+///
+/// Being lexical is also why the roots arrive pre-expanded to both spellings: this function cannot
+/// resolve a symlink, and rule 4's whole population is cwds that no longer exist to resolve.
+pub fn slug_under_roots(path: &Path, roots: &[PathBuf]) -> Option<String> {
+    // `max_by_key` rather than a hand-rolled comparison, and that is a mutation-gate lesson rather
+    // than a style choice. The explicit `depth > seen` form left THREE surviving mutants (`<`, `==`,
+    // `>=`), and only two of them are killable: no reachable input has two DISTINCT roots of equal
+    // depth both matching one path, so `>` and `>=` are behaviorally identical and no test can tell
+    // them apart. Expressing "deepest wins" as an ordering key deletes the operator, so there is
+    // nothing left to mutate and no annotated skip to justify.
+    //
+    // Depth is a COMPONENT COUNT, not a string length: a root with more components is the deeper one
+    // regardless of how its names happen to be spelled.
+    roots
+        .iter()
+        .filter_map(|root| {
+            let rest = match path.strip_prefix(root) {
+                Ok(rest) => rest,
+                Err(_) => {
+                    trace!(
+                        "repo::slug_under_roots: {} is not under the root {}",
+                        path.display(),
+                        root.display()
+                    );
+                    return None;
+                }
+            };
+            let mut components = rest.components();
+            let org = next_normal(&mut components)?;
+            let repo = next_normal(&mut components)?;
+            Some((root.components().count(), format!("{org}/{repo}")))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, slug)| slug)
 }
 
 /// The next plain directory name under the repo root, or `None` for an exhausted path or anything

@@ -59,6 +59,13 @@ pub struct EnrichOptions {
     /// like `max_attempts` and `token_budget`, and because a `Default` that resolves to
     /// `["github.com"]` is what keeps every existing caller correct rather than merely compiling.
     pub work_remote_hosts: Vec<String>,
+    /// The configured clone roots the cwd anchor matches against (`clyde.yml`'s `repo-roots`).
+    ///
+    /// Carried here for the same reason `work_remote_hosts` is: it is sweep configuration, and
+    /// `sessions` does not load config. The `Default` is `Anchors::default()`, an EMPTY root list,
+    /// which anchors nothing and defers every cwd to the remote and the touch set. That is the
+    /// fail-safe direction: a caller that forgets to set it loses coverage, it does not gain scope.
+    pub anchors: session::Anchors,
 }
 
 impl Default for EnrichOptions {
@@ -72,6 +79,7 @@ impl Default for EnrichOptions {
             max_attempts: DEFAULT_MAX_ATTEMPTS,
             token_budget: None,
             work_remote_hosts: DEFAULT_WORK_REMOTE_HOSTS.iter().map(|h| (*h).to_string()).collect(),
+            anchors: session::Anchors::default(),
         }
     }
 }
@@ -135,6 +143,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
             rec.repo.as_deref(),
             rec.repo_source.as_deref(),
             &evidence,
+            &opts.anchors,
             &mut hosts,
         );
         let scope = decision.scope;
@@ -144,7 +153,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         // rather than resolved. `clyde doctor` counts these; this names the one that just happened.
         if let (Some(cwd), Some(slug)) = (rec.cwd.as_deref(), rec.repo.as_deref())
             && repo_source == Some(common::repo::RepoSource::GitOrigin)
-            && let Some(d) = session::anchor_disagrees_with_remote(std::path::Path::new(cwd), slug)
+            && let Some(d) = session::anchor_disagrees_with_remote(std::path::Path::new(cwd), slug, &opts.anchors)
         {
             warn!(
                 "enrich::enrich: {} cwd anchor and remote DISAGREE: cwd {cwd} reads {} but origin slug \

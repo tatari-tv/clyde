@@ -45,14 +45,66 @@ pub fn run(db_path: &Path) -> Result<i32> {
 struct Attribution {
     /// The resolved config file path, or `None` when no config file exists.
     config_path: Option<PathBuf>,
-    /// The effective `repo-root`, and whether it exists on disk.
-    repo_root: PathBuf,
-    repo_root_exists: bool,
-    /// Whether `repo-root` contains at least one `<org>/<repo>` pair. When it does not, rule 4 is
-    /// INERT on this host and says so, rather than looking like it is simply not firing.
-    repo_root_has_org_repo: bool,
+    /// One entry per effective `repo-roots` entry, in configured order. Reported PER ROOT rather
+    /// than folded into a single verdict: with two roots, a summary line saying "exists" cannot say
+    /// WHICH one exists, and a teammate whose second root is typo'd would read a healthy line.
+    repo_roots: Vec<RepoRootState>,
     work_remote_hosts: Vec<String>,
     routing: sessions::RoutingSummary,
+}
+
+/// One configured root's own diagnosis. Every field is about THAT root; nothing here is a rollup.
+struct RepoRootState {
+    path: PathBuf,
+    reachable: Reachable,
+    /// Whether this root contains at least one `<org>/<repo>` pair RIGHT NOW, or `None` when the
+    /// directory could not be read.
+    ///
+    /// A LAYOUT OBSERVATION, not a verdict on rule 4. This used to print "rule 4 is INERT for this
+    /// root", and that claim is wrong: rule 4 classifies the STORED cwd of a past session against
+    /// the configured roots and never stats the directory, so a root with no pair on disk today can
+    /// still be attributing catalog rows from before a checkout was deleted. Reporting the layout is
+    /// useful; concluding a rule is dead from it is not.
+    has_org_repo: Option<bool>,
+}
+
+/// Whether a configured root could be reached, keeping the THREE outcomes `Path::is_dir` collapses
+/// into one `false`.
+///
+/// `doctor` is the command an operator runs when something is already broken, so telling them a root
+/// "does not exist" when the truth is a permissions error sends them to create a directory that is
+/// already there. Different causes, different remedies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Reachable {
+    /// A directory, readable.
+    Yes,
+    /// Nothing at that path.
+    Missing,
+    /// The path exists but is not a directory.
+    NotADirectory,
+    /// Metadata could not be read at all: permissions, a dead mount, an I/O error.
+    Error(String),
+}
+
+impl Reachable {
+    fn of(path: &Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(md) if md.is_dir() => Self::Yes,
+            Ok(_) => Self::NotADirectory,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::Missing,
+            Err(e) => Self::Error(e.to_string()),
+        }
+    }
+
+    /// The parenthetical `doctor` prints after the path, or `None` when the root is fine.
+    fn note(&self) -> Option<String> {
+        match self {
+            Self::Yes => None,
+            Self::Missing => Some("(does not exist)".to_string()),
+            Self::NotADirectory => Some("(not a directory)".to_string()),
+            Self::Error(e) => Some(format!("(unreadable: {e})")),
+        }
+    }
 }
 
 /// Read the attribution picture, or `Ok(None)` when there is no catalog to read.
@@ -62,14 +114,23 @@ fn attribution(db_path: &Path) -> Result<Option<Attribution>> {
     }
     let cfg = common::config::load().context("failed to load clyde config")?;
     let db = sessions::Db::open_at(db_path)?;
-    let repo_root = cfg.repo_root().to_path_buf();
+    let repo_roots: Vec<RepoRootState> = cfg
+        .repo_roots()
+        .iter()
+        .map(|path| {
+            let reachable = Reachable::of(path);
+            RepoRootState {
+                has_org_repo: matches!(reachable, Reachable::Yes).then(|| has_org_repo_pair(path)),
+                reachable,
+                path: path.clone(),
+            }
+        })
+        .collect();
     Ok(Some(Attribution {
         config_path: common::config::config_file_path().filter(|p| p.exists()),
-        repo_root_exists: repo_root.is_dir(),
-        repo_root_has_org_repo: has_org_repo_pair(&repo_root),
+        repo_roots,
         work_remote_hosts: cfg.work_remote_hosts().to_vec(),
-        routing: db.routing_summary(cfg.work_remote_hosts())?,
-        repo_root,
+        routing: db.routing_summary(&session::Anchors::new(cfg.repo_roots()), cfg.work_remote_hosts())?,
     }))
 }
 
@@ -98,19 +159,28 @@ fn print_attribution(a: &Attribution) {
         Some(path) => println!("  config:        {}", path.display()),
         None => println!("  config:        {} (all defaults)", "none".dimmed()),
     }
-    let root_state = if a.repo_root_exists {
-        "".to_string()
-    } else {
-        format!(" {}", "(does not exist)".red())
-    };
-    println!("  repo-root:     {}{}", a.repo_root.display(), root_state);
-    if a.repo_root_exists && !a.repo_root_has_org_repo {
-        // Not a failure: plenty of hosts have no `<org>/<repo>` layout at all. But rule 4 silently
-        // never firing looks identical to rule 4 being broken, and this is the difference.
-        println!(
-            "    {} no <org>/<repo> pair under this root, so rule 4 (path-guess) is INERT on this host",
-            "note:".yellow()
-        );
+    // One line per root, not one line for "the root". A folded verdict cannot name WHICH of two
+    // roots is missing, which is the whole reason the key became a list.
+    for (i, root) in a.repo_roots.iter().enumerate() {
+        let label = if i == 0 { "  repo-roots:  " } else { "               " };
+        let state = match root.reachable.note() {
+            Some(note) => format!(" {}", note.red()),
+            None => String::new(),
+        };
+        println!("{label}  {}{}", root.path.display(), state);
+        if root.has_org_repo == Some(false) {
+            // A LAYOUT observation, deliberately not a verdict on rule 4. Plenty of hosts have no
+            // `<org>/<repo>` layout at all, and the operator wants to know that. But rule 4 reads a
+            // session's STORED cwd against the configured roots and never stats the directory, so an
+            // empty root today says nothing about whether rule 4 is attributing catalog rows from
+            // before a checkout was deleted. The `resolved by:` counts below answer that question
+            // with evidence; this line answers only "what is on disk right now".
+            println!(
+                "    {} no <org>/<repo> pair under this root today, so rule 4 (path-guess) will not \
+                 match a NEW cwd here; see `resolved by: path-guess` for what it already attributed",
+                "note:".yellow()
+            );
+        }
     }
     if a.work_remote_hosts.is_empty() {
         // An empty allowlist is fail-closed at the GATE (`HostPolicy::confers_work` matches nothing,

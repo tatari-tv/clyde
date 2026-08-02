@@ -41,6 +41,13 @@ fn git_config(dir: &Path, key: &str, value: &str) {
     git_setup(dir, &["config", "--local", key, value]);
 }
 
+/// One configured root in the slice form every path rule takes. The plural is the shape; a
+/// single-root test says so by wrapping rather than by a second single-root entry point, which is
+/// how the two would drift.
+fn roots(root: &Path) -> Vec<PathBuf> {
+    vec![root.to_path_buf()]
+}
+
 /// `(host, slug)` for a URL, or `None`. The two fields are asserted TOGETHER everywhere below,
 /// because discarding the host while keeping the slug is precisely Problem 2.
 fn split(url: &str) -> Option<(String, String)> {
@@ -521,7 +528,7 @@ fn known_path_resolves_a_vanished_directory() {
 
     let paths = map(&[(cwd.as_path(), "tatari-tv/clyde")]);
     let mut resolver = Resolver::new();
-    let resolved = resolver.resolve(&cwd, &paths, &BTreeMap::new(), &root);
+    let resolved = resolver.resolve(&cwd, &paths, &BTreeMap::new(), &roots(&root));
 
     assert_eq!(
         resolved,
@@ -583,7 +590,7 @@ fn an_empty_map_falls_through_to_a_labeled_guess() {
     assert_eq!(from_known_path(&cwd, &empty, &[]), None, "rule 2 must not guess");
 
     let mut resolver = Resolver::new();
-    let resolved = resolver.resolve(&cwd, &empty, &BTreeMap::new(), &root).unwrap();
+    let resolved = resolver.resolve(&cwd, &empty, &BTreeMap::new(), &roots(&root)).unwrap();
     assert_eq!(resolved.repo, "tatari-tv/clyde-ft");
     assert_eq!(
         resolved.source,
@@ -634,9 +641,9 @@ fn files_touched_ignores_zero_counts_and_an_empty_map() {
 
 #[test]
 fn path_guess_matches_org_and_repo_under_the_root() {
-    let root = Path::new("/home/someone/repos");
+    let root = roots(Path::new("/home/someone/repos"));
     assert_eq!(
-        from_path_guess(&root.join("tatari-tv").join("clyde"), root),
+        from_path_guess(&root[0].join("tatari-tv").join("clyde"), &root),
         Some(Resolved {
             repo: "tatari-tv/clyde".into(),
             source: RepoSource::PathGuess,
@@ -644,7 +651,7 @@ fn path_guess_matches_org_and_repo_under_the_root() {
     );
     // Deeper paths keep the first two components: the 136-session dominant case.
     assert_eq!(
-        from_path_guess(&root.join("tatari-tv/clyde/main/report/src"), root)
+        from_path_guess(&root[0].join("tatari-tv/clyde/main/report/src"), &root)
             .unwrap()
             .repo,
         "tatari-tv/clyde"
@@ -653,12 +660,12 @@ fn path_guess_matches_org_and_repo_under_the_root() {
 
 #[test]
 fn path_guess_declines_outside_the_root_or_too_shallow() {
-    let root = Path::new("/home/someone/repos");
-    assert_eq!(from_path_guess(Path::new("/home/someone"), root), None);
-    assert_eq!(from_path_guess(Path::new("/tmp/scratch/foo/bar"), root), None);
-    assert_eq!(from_path_guess(root, root), None, "the root itself is not a repo");
+    let root = roots(Path::new("/home/someone/repos"));
+    assert_eq!(from_path_guess(Path::new("/home/someone"), &root), None);
+    assert_eq!(from_path_guess(Path::new("/tmp/scratch/foo/bar"), &root), None);
+    assert_eq!(from_path_guess(&root[0], &root), None, "the root itself is not a repo");
     assert_eq!(
-        from_path_guess(&root.join("tatari-tv"), root),
+        from_path_guess(&root[0].join("tatari-tv"), &root),
         None,
         "an org with no repo component is not a slug"
     );
@@ -682,14 +689,19 @@ fn a_home_cwd_resolves_to_none() {
         blocked: vec![home.clone()],
     };
     assert_eq!(
-        resolver.resolve(&home, &BTreeMap::new(), &BTreeMap::new(), &home.join("repos")),
+        resolver.resolve(&home, &BTreeMap::new(), &BTreeMap::new(), &roots(&home.join("repos"))),
         None
     );
 
     if let Some(real_home) = dirs::home_dir() {
         let mut real = Resolver::new();
         assert_eq!(
-            real.resolve(&real_home, &BTreeMap::new(), &BTreeMap::new(), &real_home.join("repos")),
+            real.resolve(
+                &real_home,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &roots(&real_home.join("repos"))
+            ),
             None,
             "the real $HOME must not attribute to any repo"
         );
@@ -709,7 +721,12 @@ fn a_live_worktree_resolves_via_git_origin() {
     let paths = map(&[(real.as_path(), "wrong/answer")]);
     let mut resolver = Resolver::new();
     let resolved = resolver
-        .resolve(&real, &paths, &touched(&[("also/wrong", 9)]), real.parent().unwrap())
+        .resolve(
+            &real,
+            &paths,
+            &touched(&[("also/wrong", 9)]),
+            &roots(real.parent().unwrap()),
+        )
         .unwrap();
 
     assert_eq!(resolved.repo, "tatari-tv/claude-report");
@@ -727,18 +744,25 @@ fn the_chain_prefers_the_higher_confidence_rule() {
 
     let mut resolver = Resolver::new();
     let known = resolver
-        .resolve(&cwd, &map(&[(cwd.as_path(), "tatari-tv/clyde")]), &counts, &root)
+        .resolve(
+            &cwd,
+            &map(&[(cwd.as_path(), "tatari-tv/clyde")]),
+            &counts,
+            &roots(&root),
+        )
         .unwrap();
     assert_eq!(known.repo, "tatari-tv/clyde");
     assert_eq!(known.source, RepoSource::KnownPath);
 
-    let files = resolver.resolve(&cwd, &BTreeMap::new(), &counts, &root).unwrap();
+    let files = resolver
+        .resolve(&cwd, &BTreeMap::new(), &counts, &roots(&root))
+        .unwrap();
     assert_eq!(files.repo, "scottidler/obsidian");
     assert_eq!(files.source, RepoSource::FilesTouched);
 
     // A tie in rule 3 falls through to rule 4 rather than picking a slug-ordered winner.
     let tie = touched(&[("scottidler/obsidian", 1), ("tatari-tv/clyde", 1)]);
-    let guessed = resolver.resolve(&cwd, &BTreeMap::new(), &tie, &root).unwrap();
+    let guessed = resolver.resolve(&cwd, &BTreeMap::new(), &tie, &roots(&root)).unwrap();
     assert_eq!(guessed.repo, "tatari-tv/clyde-ft");
     assert_eq!(guessed.source, RepoSource::PathGuess);
 }
@@ -755,44 +779,89 @@ fn the_chain_returns_none_when_every_rule_declines() {
             &cwd,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            Path::new("/home/someone/repos")
+            &roots(Path::new("/home/someone/repos"))
         ),
         None
     );
 }
 
-/// `slug_under_root` is the ONE definition of the `<repo-root>/<org>/<repo>` shape: rule 4 reads a
-/// session's cwd through it, and `efficiency::outcome::union` reads every edited file's parent
-/// directory through it to build rule 3's input. Two readers deriving the shape independently is
-/// exactly how the two would drift.
+/// `slug_under_roots` is the ONE definition of the `<root>/<org>/<repo>` shape, and rule 4 reads a
+/// session's cwd through it. It used to be shared with `efficiency::outcome::union`; v0.23.0 moved
+/// rule 3 onto the git-backed resolver, so this is now the shape's only reader.
 #[test]
-fn slug_under_root_reads_the_first_two_components_only() {
-    let root = Path::new("/home/saidler/repos");
+fn slug_under_roots_reads_the_first_two_components_only() {
+    let root = roots(Path::new("/home/saidler/repos"));
     assert_eq!(
-        slug_under_root(&root.join("tatari-tv/clyde"), root).as_deref(),
+        slug_under_roots(&root[0].join("tatari-tv/clyde"), &root).as_deref(),
         Some("tatari-tv/clyde")
     );
     assert_eq!(
-        slug_under_root(&root.join("tatari-tv/clyde/report/src"), root).as_deref(),
+        slug_under_roots(&root[0].join("tatari-tv/clyde/report/src"), &root).as_deref(),
         Some("tatari-tv/clyde"),
         "depth below the repo slot does not change the slug"
     );
 }
 
 #[test]
-fn slug_under_root_declines_anything_that_is_not_the_shape() {
-    let root = Path::new("/home/saidler/repos");
-    assert_eq!(slug_under_root(root, root), None, "the root itself names no repo");
+fn slug_under_roots_declines_anything_that_is_not_the_shape() {
+    let root = roots(Path::new("/home/saidler/repos"));
+    assert_eq!(slug_under_roots(&root[0], &root), None, "the root itself names no repo");
     assert_eq!(
-        slug_under_root(&root.join("tatari-tv"), root),
+        slug_under_roots(&root[0].join("tatari-tv"), &root),
         None,
         "an org with no repo component is not a slug"
     );
     assert_eq!(
-        slug_under_root(Path::new("/tmp/scratch/a/b"), root),
+        slug_under_roots(Path::new("/tmp/scratch/a/b"), &root),
         None,
-        "matching is confined to the configured root, so an arbitrary path cannot manufacture an org"
+        "matching is confined to the configured roots, so an arbitrary path cannot manufacture an org"
     );
+}
+
+/// P1: a teammate with TWO roots resolves a rule-4 cwd under EACH. One `PathBuf` silently cost the
+/// second root all attribution, which is Stephen's measured case (`~/code/work` and `~/wt`).
+///
+/// BITES: drop the second entry and the `~/wt` assertion returns `None`.
+#[test]
+fn slug_under_roots_matches_every_configured_root() {
+    let both = vec![
+        PathBuf::from("/home/stephen/code/work"),
+        PathBuf::from("/home/stephen/wt"),
+    ];
+    assert_eq!(
+        slug_under_roots(Path::new("/home/stephen/code/work/tatari-tv/philo"), &both).as_deref(),
+        Some("tatari-tv/philo")
+    );
+    assert_eq!(
+        slug_under_roots(Path::new("/home/stephen/wt/tatari-tv/clyde/src"), &both).as_deref(),
+        Some("tatari-tv/clyde")
+    );
+    assert_eq!(
+        slug_under_roots(Path::new("/home/stephen/elsewhere/tatari-tv/philo"), &both),
+        None,
+        "a path under NO configured root still declines"
+    );
+}
+
+/// The longest matching root wins. `de_repo_roots` refuses a nested pair of CONFIGURED roots, so
+/// the only way two roots both match is its symlink expansion (a configured spelling sitting under
+/// another root's real path), and there the deeper one is the one that names the repo.
+///
+/// BITES: replace the depth comparison with "first match wins" and this yields `link/tatari-tv`.
+#[test]
+fn slug_under_roots_takes_the_longest_matching_root() {
+    let nested = vec![PathBuf::from("/a"), PathBuf::from("/a/link")];
+    assert_eq!(
+        slug_under_roots(Path::new("/a/link/tatari-tv/philo"), &nested).as_deref(),
+        Some("tatari-tv/philo")
+    );
+}
+
+/// An empty root list matches nothing rather than matching everything. `de_repo_roots` refuses an
+/// empty `repo-roots:`, so this is the in-code fail-closed backstop for a caller that builds one.
+#[test]
+fn slug_under_roots_declines_with_no_roots_at_all() {
+    assert_eq!(slug_under_roots(Path::new("/home/me/repos/tatari-tv/clyde"), &[]), None);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1073,4 +1142,134 @@ fn a_git_directory_with_no_head_is_not_a_marker() {
         !detect_with_blocked_roots(&under, &[]).is_conclusive_negative(),
         "a real git dir above the cwd must still suppress the conclusive answer"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Matrix rows 33 and 34. Both are shapes the design doc found MISSING from the matrix: each was
+// covered in halves that never met.
+// ---------------------------------------------------------------------------------------------
+
+/// **Row 33: a bare-repo container ROOT under an OFF-LAYOUT root.** Keegan's actual case, and the
+/// composition of rows 6 (container root) and 16 (off-layout). Each half had a row; nothing composed
+/// them, so the exact shape he reported was the one nobody was asserting.
+///
+/// BITES: delete the `--git-common-dir` fallback in `no_work_tree_root` and this declines. The
+/// container root has NO work tree, so `rev-parse --show-toplevel` refuses, and without the fallback
+/// there is nothing left to resolve it with.
+#[test]
+fn matrix_row_33_a_container_root_under_an_off_layout_root_resolves() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.offlayout_container_root, &m.blocked()).resolved_slug(),
+        Some("tatari-tv/airflow-dags"),
+        "the remote answers regardless of where on disk the container lives"
+    );
+}
+
+/// **Row 34: an ORPHANED linked worktree.** Its main checkout was deleted, so the `gitdir:` its
+/// `.git` FILE names no longer exists and every probe returns 128.
+///
+/// The OUTCOME must stay `Indeterminate`: `git worktree repair` or restoring the main checkout
+/// recovers the row, so nothing conclusive may be recorded. That half was already correct. The
+/// WARNING was not -- it told the operator to check `safe.directory` and `.git` permissions, and
+/// neither remedy applies.
+///
+/// BITES: delete the orphan branch in `unusable_marker_warning` and the message assertion fails.
+/// The outcome assertion CANNOT bite on its own, which is exactly why the message is asserted: both
+/// diagnoses return `Indeterminate`, so the outcome is blind to which one was produced.
+#[test]
+fn matrix_row_34_an_orphaned_worktree_is_diagnosed_as_itself() {
+    let m = Matrix::build();
+    assert_eq!(
+        detect_with_blocked_roots(&m.orphaned_worktree, &m.blocked()),
+        ProbeOutcome::Indeterminate,
+        "repairable, so nothing conclusive may be recorded"
+    );
+
+    let warning = unusable_marker_warning(&m.orphaned_worktree);
+    assert!(
+        warning.contains("ORPHANED linked worktree"),
+        "the warning must name the orphan: {warning}"
+    );
+    assert!(
+        warning.contains("git worktree repair"),
+        "and name the remedy that actually applies: {warning}"
+    );
+    assert!(
+        !warning.contains("safe.directory"),
+        "neither `safe.directory` nor .git permissions is involved: {warning}"
+    );
+}
+
+/// The generic marker warning is still produced for the case it was WRITTEN for: a marker git
+/// refused for some other reason. Asserted so the orphan branch cannot swallow it.
+///
+/// An ordinary linked worktree whose main checkout is intact has an existing `gitdir:` target, so it
+/// is not an orphan and `orphaned_worktree_target` declines.
+#[test]
+fn an_intact_linked_worktree_is_not_reported_as_an_orphan() {
+    let m = Matrix::build();
+    assert_eq!(
+        orphaned_worktree_target(&m.worktree),
+        None,
+        "its main checkout is intact, so its gitdir target exists"
+    );
+    assert!(
+        unusable_marker_warning(&m.worktree).contains("safe.directory"),
+        "the generic diagnosis stays available for the case it was written for"
+    );
+}
+
+/// **`from_stamp` had NO test, and the mutation gate is how that surfaced.** Deleting either match
+/// arm survived: `RecordedProbe`'s tests construct a `ProbeOutcome` directly, so nothing ever drove
+/// the PARSER that turns a stored column into one.
+///
+/// It is the inverse of `as_str`, and both halves of a token contract need pinning or a rename
+/// silently makes every stored stamp unreadable -- which, since an unreadable stamp fails closed,
+/// would silently strip work scope from every refused row.
+///
+/// BITES: delete either arm and its row fails.
+#[test]
+fn from_stamp_round_trips_every_token_record_probe_can_write() {
+    for outcome in [ProbeOutcome::NoOrigin, ProbeOutcome::NotARepo] {
+        assert!(
+            outcome.is_conclusive_negative(),
+            "precondition: only conclusive negatives are ever written"
+        );
+        let stamp = format!("{}@2026-08-01T12:00:00+00:00", outcome.as_str());
+        assert_eq!(
+            ProbeOutcome::from_stamp(&stamp),
+            Some(outcome.clone()),
+            "the column's own round trip must hold for {stamp}"
+        );
+    }
+}
+
+/// The parser must be no more permissive than the WRITER.
+///
+/// `Db::record_probe` emits exactly `<token>@<rfc3339>`, so anything else is a hand-edited catalog
+/// or a future clyde. Each row here is a value that must NOT parse, and the bare-token row is the
+/// one that was accepted before the implementation audit: it let an edited catalog hand the bare
+/// `<root>/<work-org>` anchor a `NotARepo` it never observed.
+///
+/// BITES: restore `split_once('@').map_or(stamp, ..)` and the bare-token rows parse.
+#[test]
+fn from_stamp_refuses_anything_the_writer_cannot_produce() {
+    for bad in [
+        "not-a-repo",                         // the audit finding: no timestamp at all
+        "no-origin",                          // its twin
+        "",                                   // empty column
+        "@2026-08-01",                        // a timestamp with no token
+        "resolved@2026-08-01T12:00:00+00:00", // a real token, but never written to this column
+        "blocked@2026-08-01T12:00:00+00:00",  // ditto, and a transient failure at that
+        "indeterminate@2026-08-01T12:00:00+00:00",
+        "outside-root@2026-08-01T12:00:00+00:00",
+        "garbage@2026-08-01T12:00:00+00:00",
+    ] {
+        assert_eq!(
+            ProbeOutcome::from_stamp(bad),
+            None,
+            "{bad:?} is not a value Db::record_probe can write, so it must not parse"
+        );
+    }
 }

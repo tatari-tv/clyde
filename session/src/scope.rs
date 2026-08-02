@@ -44,9 +44,9 @@
 //! still the acceptable one.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
-use common::repo::RepoSource;
+use common::repo::{ProbeOutcome, RepoSource};
 use log::trace;
 
 /// Version of the CLASSIFIER below. Bumped whenever the rules change in a way that could give a
@@ -63,13 +63,15 @@ use log::trace;
 /// v3 NARROWS: a git-origin work slug is refused when a conclusive negative probe precedes it
 /// (Problem 1), a git-origin PERSONAL decision stops settling so it can be recovered (Problem 3),
 /// and an operator [`RoutingFacts::scope_override`] beats every rule.
-pub const SCOPE_VERSION: i64 = 3;
+/// v4 makes the cwd anchor read the CONFIGURED roots ([`Anchors`]) instead of the literal path
+/// component `repos`. It widens in one direction (a flat `<root>/<repo>` stops being settled-personal
+/// and reaches the remote; an off-layout `<root>/<work-org>/<repo>` gains Work) and narrows in
+/// another (a `repos/<work-org>` adjacency OUTSIDE every configured root stops anchoring Work). Both
+/// are answers the classifier used to get wrong, which is exactly what a version bump re-offers.
+pub const SCOPE_VERSION: i64 = 4;
 
 /// The org names that mark a session as work-scoped, matched only in the org slot.
 const WORK_ORGS: &[&str] = &["tatari-tv"];
-/// The path component that, by the `~/repos/<org>/<repo>` convention, immediately precedes the
-/// org. Classification reads the component right after this, never an org name found elsewhere.
-const REPOS_ANCHOR: &str = "repos";
 
 /// Which signal decided a classification.
 ///
@@ -163,18 +165,6 @@ impl Scope {
     }
 }
 
-/// Classify a session from its working directory. `None` (no recorded `cwd`) and any path that
-/// does not sit under a recognized work org classify as [`Scope::Personal`] -- the fail-safe
-/// direction that keeps personal content off the work account.
-pub fn classify(cwd: Option<&Path>) -> Scope {
-    let scope = match cwd {
-        Some(path) if has_work_org(path) => Scope::Work,
-        _ => Scope::Personal,
-    };
-    trace!("scope::classify: cwd={:?} -> {}", cwd, scope.as_str());
-    scope
-}
-
 /// Classify with the repo evidence the catalog already holds, for the sessions `cwd` alone cannot
 /// place. Decided in four steps, first match wins:
 ///
@@ -206,6 +196,7 @@ pub fn classify_with_evidence(
     repo_source: Option<RepoSource>,
     repos_touched: &BTreeMap<String, u64>,
     files_edited: u64,
+    anchors: &Anchors,
     facts: &RoutingFacts<'_>,
 ) -> Decision {
     // Step 0: an operator said so. Beats every rule below, in BOTH directions, and it is what makes
@@ -230,25 +221,21 @@ pub fn classify_with_evidence(
             settled: true,
         };
     }
-    // The existing cwd-only rule wins outright: a work-anchored cwd is work.
+    // The cwd anchor, now read against the CONFIGURED roots rather than the literal component
+    // `repos`. One branch instead of v3's two, because the work and personal verdicts are two answers
+    // from one org-slot read and splitting them is what let `<root>/<repo>` fall into the personal
+    // arm on a path shape that says nothing. A cwd anchored to ANY org has already been judged by
+    // that anchor; only an unanchored cwd (or no cwd at all) is "unclassifiable", and only there does
+    // the evidence below get a say. See [`Anchors::scope_of`] for the full table.
     if let Some(path) = cwd
-        && has_work_org(path)
+        && let Some(scope) = anchors.scope_of(path, facts.repo_probe)
     {
-        trace!("scope::classify_with_evidence: cwd={cwd:?} work by cwd anchor");
+        trace!(
+            "scope::classify_with_evidence: cwd={cwd:?} {} by cwd anchor",
+            scope.as_str()
+        );
         return Decision {
-            scope: Scope::Work,
-            basis: Basis::CwdAnchor,
-            settled: true,
-        };
-    }
-    // A cwd anchored to ANY org has already been judged by that anchor. Only an unanchored cwd (or no
-    // cwd at all) is "unclassifiable", and only there does the evidence get a say.
-    if let Some(path) = cwd
-        && has_repos_anchor(path)
-    {
-        trace!("scope::classify_with_evidence: cwd={cwd:?} anchored to a non-work org -> personal");
-        return Decision {
-            scope: Scope::Personal,
+            scope,
             basis: Basis::CwdAnchor,
             settled: true,
         };
@@ -314,10 +301,16 @@ pub fn classify_with_evidence(
                     settled: false,
                 };
             }
-            if let Some(stamp) = facts.repo_probe {
+            // PRESENCE, not content. The column is written only for a conclusive negative, so ANY
+            // value means one was recorded; an UNREADABLE one is still a recorded negative and must
+            // still refuse. Keying this on the parsed outcome let a hand-edited or forward-dated
+            // stamp read as "nothing recorded" and grant Work, which is the one direction this
+            // branch exists to prevent.
+            if let Some(probe) = facts.repo_probe {
                 trace!(
                     "scope::classify_with_evidence: repo={slug} via git-origin REFUSED, conclusive \
-                     negative recorded at {stamp}"
+                     negative {} recorded",
+                    probe.token()
                 );
                 return Decision {
                     scope: Scope::Personal,
@@ -373,6 +366,190 @@ pub fn classify_with_evidence(
     }
 }
 
+/// One session's `sessions.repo_probe` column: a conclusive negative was recorded, and either this
+/// binary could read WHICH one or it could not.
+///
+/// Two states in one value rather than two fields, because the two are not independent and a pair of
+/// fields could be set inconsistently at a call site. The column's own contract is what makes the
+/// enum total: `Db::record_probe` refuses to write anything but a conclusive negative, so "a value is
+/// present" already means "a negative was observed" without reading it. Reading it only ever answers
+/// the narrower question of WHICH negative.
+///
+/// Both variants REFUSE a git-origin work slug. They differ only at the bare `<root>/<work-org>`
+/// anchor, where [`Self::Negative`] carrying `NotARepo` is the one thing that grants Work and
+/// [`Self::Unreadable`] defers like every other outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordedProbe<'a> {
+    /// The stamp parsed: `NoOrigin` or `NotARepo`, the only two the column can hold.
+    Negative(&'a ProbeOutcome),
+    /// A value is stored that this binary cannot read. Fails CLOSED in both directions.
+    Unreadable,
+}
+
+impl<'a> RecordedProbe<'a> {
+    /// The parsed outcome, or `None` when the stamp was unreadable.
+    pub fn outcome(self) -> Option<&'a ProbeOutcome> {
+        match self {
+            Self::Negative(outcome) => Some(outcome),
+            Self::Unreadable => None,
+        }
+    }
+
+    /// A short token for logs. Never read for a routing decision; the decision matches the variant.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Negative(outcome) => outcome.as_str(),
+            Self::Unreadable => "unreadable",
+        }
+    }
+}
+
+/// The configured clone roots, in the form the cwd anchor matches a path against.
+///
+/// **Built EXACTLY ONCE, immediately after `Config::load()`, and passed by reference from there.**
+/// Never constructed inside a row loop: `common::config` canonicalizes each root at load, which stats
+/// the disk, and building this inside `Db::routing_summary`'s iteration would put that cost on every
+/// row of every pass. [`classify_with_evidence`] stays pure and takes no config; this is how the
+/// operator's roots reach it.
+///
+/// A newtype rather than a bare `&[PathBuf]` parameter, because the list has a meaning the slice type
+/// does not carry: these are the roots the OPERATOR declared, and declaring one is what authorizes
+/// the work-org slot under it to confer Work scope.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Anchors {
+    roots: Vec<PathBuf>,
+}
+
+impl Anchors {
+    /// Build from `Config::repo_roots()`. The roots arrive already validated, canonicalized and
+    /// expanded to both spellings; nothing here re-derives any of that.
+    pub fn new(roots: &[PathBuf]) -> Self {
+        Self { roots: roots.to_vec() }
+    }
+
+    /// The anchor's verdict for `cwd`, or `None` when the cwd is UNANCHORED and the repo evidence
+    /// gets a say. `probe` is the recorded probe outcome, consulted for exactly one shape.
+    ///
+    /// The rule reads off the first component under the longest matching root (the ORG SLOT) and
+    /// whether a component follows it:
+    ///
+    /// | org slot | follower | verdict |
+    /// |---|---|---|
+    /// | a work org | yes | **Work.** `<root>/tatari-tv/clyde` |
+    /// | a work org | no | Work iff the probe positively observed a NON-repository; see below |
+    /// | not a work org | yes | **Personal.** `<root>/scottidler/x`, and `<root>/repos/tatari-tv/x` |
+    /// | not a work org | no | unanchored. A flat `<root>/clyde`: the path says nothing |
+    /// | no matched root | -- | unanchored |
+    ///
+    /// **The last two rows are the defect this closes.** v3 matched the literal component `repos`
+    /// anywhere in the path, so `~/repos/clyde` (a flat clone with no org level) read
+    /// `Personal, settled` and was excluded from `enrich_candidates` until the next version bump,
+    /// with the remote never consulted. `~/repos/scottidler/repos/tatari-tv/x` read WORK off the
+    /// INNER `repos`, which is the "contains a work org somewhere" bug the org-slot rule was written
+    /// to avoid and missed one level down.
+    ///
+    /// **`<root>/<work-org>` with nothing under it has four possible occupants and the path
+    /// separates none of them.** Measured against git 2.53.0: the org DIRECTORY (21 sessions on the
+    /// maintainer's catalog), a flat repo literally NAMED `tatari-tv` with a personal origin, a bare
+    /// container of the same name, and an EMPTY repo with no origin. Granting Work to the shape
+    /// outright preserves the org dir and simultaneously ships the other three to the work account on
+    /// a directory-name coincidence. Only [`ProbeOutcome::NotARepo`] means "this is a plain
+    /// directory", so only it anchors; see [`bare_work_org_is_an_org_dir`] for the exhaustive table.
+    pub fn scope_of(&self, cwd: &Path, probe: Option<RecordedProbe<'_>>) -> Option<Scope> {
+        let (org, has_following) = self.org_slot(cwd)?;
+        let work_org = WORK_ORGS.contains(&org);
+        let scope = match (work_org, has_following) {
+            (true, true) => Some(Scope::Work),
+            (true, false) => bare_work_org_is_an_org_dir(probe).then_some(Scope::Work),
+            (false, true) => Some(Scope::Personal),
+            // A single non-work-org component under a root. `<root>/clyde` is a flat clone whose org
+            // the path cannot name, and `<root>/scottidler` is an org dir with no repo. Neither is a
+            // statement about scope, so both defer.
+            (false, false) => None,
+        };
+        trace!(
+            "scope::Anchors::scope_of: cwd={} org={org} following={has_following} probe={:?} -> {:?}",
+            cwd.display(),
+            probe.map(RecordedProbe::token),
+            scope.map(Scope::as_str)
+        );
+        scope
+    }
+
+    /// The org slot for `cwd`: the first NORMAL component under the longest matching root, plus
+    /// whether another normal component follows it. `None` when `cwd` is under no configured root, or
+    /// is a root itself.
+    ///
+    /// Longest match wins, for the same reason `common::repo::slug_under_roots` takes the longest:
+    /// `de_repo_roots` refuses a nested pair of configured roots, so two roots can only both match
+    /// through its symlink expansion, and there the deeper one names the org.
+    fn org_slot<'p>(&self, cwd: &'p Path) -> Option<(&'p str, bool)> {
+        // `max_by_key`, not a hand-rolled comparison. See `common::repo::slug_under_roots` for the
+        // full reasoning: the explicit form leaves a `>=` mutant no reachable input can kill, and
+        // expressing "deepest wins" as an ordering key removes the operator rather than annotating
+        // around it.
+        self.roots
+            .iter()
+            .filter_map(|root| {
+                let rest = cwd.strip_prefix(root).ok()?;
+                let mut comps = rest.components();
+                // NORMAL only. A `..` or a bare separator is not an org name, and treating one as a
+                // component would let `<root>/../tatari-tv/x` read as anchored.
+                let Some(Component::Normal(org)) = comps.next() else {
+                    return None;
+                };
+                let org = org.to_str()?;
+                let has_following = matches!(comps.next(), Some(Component::Normal(_)));
+                Some((root.components().count(), org, has_following))
+            })
+            .max_by_key(|(depth, _, _)| *depth)
+            .map(|(_, org, following)| (org, following))
+    }
+}
+
+/// Whether a bare `<root>/<work-org>` cwd is the ORG DIRECTORY, which is the only occupant of that
+/// shape the anchor may grant Work to.
+///
+/// **One sentence: anchor Work only when the probe positively observed a non-repository.** Everything
+/// else either has a remote to ask (so the git-origin branch decides, with all its guards) or is an
+/// absence of evidence, and absence of evidence has never granted Work in this codebase.
+///
+/// Stated EXHAUSTIVELY rather than by exception, and matched without a wildcard so a seventh
+/// [`ProbeOutcome`] variant is a compile error. Two rounds of "defer unless X" produced two holes --
+/// a 21-session regression at the org dir, then a leak for a flat repo named `tatari-tv` -- and a
+/// third was found by walking the shape's occupants rather than by the panel. An enumeration is the
+/// only form that cannot hide a fourth.
+fn bare_work_org_is_an_org_dir(probe: Option<RecordedProbe<'_>>) -> bool {
+    // Nothing recorded. `Db::record_probe` writes only conclusive negatives, so this is a resolved
+    // probe, a vanished cwd, a blocked root, or a containment rejection. Defer to the remote.
+    let Some(probe) = probe else { return false };
+    // Recorded, but this binary cannot read it: a hand-edited catalog, or a stamp a future clyde
+    // wrote. It still REFUSES a work slug one branch up, and here it must not ANCHOR one either --
+    // granting Work would mean trusting a string we just admitted we cannot parse.
+    let Some(probe) = probe.outcome() else { return false };
+    match probe {
+        // Observed, and it is a plain directory: no `.git` at or above it. This IS the org dir, and
+        // it is the 21 sessions at `~/repos/tatari-tv` a naive fix would silently demote.
+        ProbeOutcome::NotARepo => true,
+        // It is a checkout with a parseable origin. The remote knows the answer, so defer to the
+        // git-origin branch and let its host and probe guards apply.
+        ProbeOutcome::Resolved { .. } => false,
+        // It IS a repository, it just has no remote. An EMPTY repo named `tatari-tv` resolves no slug
+        // and is not a plain directory, so "no slug means Work" would ship a personal repo's content
+        // to the work account on a directory-name coincidence. Fail closed.
+        ProbeOutcome::NoOrigin => false,
+        // The cwd is gone, or git could not answer. Absence of evidence. Fail closed.
+        ProbeOutcome::Indeterminate => false,
+        // The repo boundary is not at or above the cwd. Says nothing about a remote. Fail closed.
+        ProbeOutcome::OutsideRoot => false,
+        // The nearest boundary is a blocked root (`$HOME`). It probably implies the cwd is not its
+        // own checkout, and that inference is DELIBERATELY not acted on: it would be a Work-granting
+        // branch resting on one reviewer's reasoning. The lost coverage is recoverable by the gate on
+        // a later pass or by an operator override; a leak is not. Fail closed.
+        ProbeOutcome::Blocked => false,
+    }
+}
+
 /// The routing state a classification consults beyond the session's own metadata.
 ///
 /// A struct rather than four more positional parameters, and it carries a [`Default`] so a caller
@@ -381,13 +558,30 @@ pub fn classify_with_evidence(
 /// meaning has to be counted out against the signature.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RoutingFacts<'a> {
-    /// The recorded CONCLUSIVE-negative probe stamp for this session's cwd, or `None`.
+    /// The `sessions.repo_probe` column for this session, or `None` when the column is NULL.
     ///
-    /// PRESENCE is the signal: `sessions.repo_probe` is written only for `NoOrigin` and `NotARepo`,
-    /// so a value at all means the cwd was once observed to carry no work remote. A transient
-    /// failure (`safe.directory`, a vanished drive, a blocked root) records nothing and therefore
-    /// refuses nothing, which is what keeps this from being a lockout.
-    pub repo_probe: Option<&'a str>,
+    /// **PRESENCE and CONTENT answer two different questions, and conflating them was a leak.**
+    /// Presence alone refuses a git-origin work slug: the column is written only for a conclusive
+    /// negative, so a value AT ALL means the cwd was once observed to carry no work remote. The
+    /// CONTENT is needed by ONE caller -- the bare `<root>/<work-org>` anchor, which must tell
+    /// `NotARepo` (a plain directory, so this is the org dir) from `NoOrigin` (it IS a repo, just
+    /// without a remote, so it may be an empty personal repo whose name is a coincidence). Those two
+    /// verdicts are opposite, which is why a bare bool cannot serve.
+    ///
+    /// [`RecordedProbe`] carries both in ONE field so they cannot diverge. An earlier version of this
+    /// change made it `Option<&ProbeOutcome>` and let an unreadable stamp collapse to `None`, which
+    /// silently turned "a negative was recorded" into "nothing was recorded" and let the git-origin
+    /// branch grant Work on a value it could not read. Fail-closed means the UNREADABLE case still
+    /// refuses.
+    ///
+    /// `None` covers four distinct realities and every one of them is handled by DEFERRING, so that
+    /// collapse costs nothing: `Db::record_probe` writes only [`ProbeOutcome::is_conclusive_negative`]
+    /// outcomes, so a resolved probe, a vanished cwd, a blocked root and a containment rejection all
+    /// record nothing. A transient failure (`safe.directory`, an unmounted drive) therefore refuses
+    /// nothing, which is what keeps this from being a lockout.
+    ///
+    /// Borrowed so [`RoutingFacts`] stays `Copy`; the caller owns the parsed value for the row.
+    pub repo_probe: Option<RecordedProbe<'a>>,
     /// An operator override, `work` or `personal`. Beats every rule.
     pub scope_override: Option<&'a str>,
     /// Whether the HOST this session's remote-derived slug came from may confer Work scope.
@@ -419,24 +613,6 @@ pub struct RoutingFacts<'a> {
     pub evidence_present: bool,
 }
 
-/// True iff the path's org slot -- the component immediately after a `repos` component -- is a work
-/// org. Requires the `repos/<org>` adjacency, so an org name appearing anywhere else (a repo named
-/// `tatari-tv`, a `/tmp/tatari-tv/` scratch dir) does not classify as work.
-fn has_work_org(path: &Path) -> bool {
-    let comps: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
-    comps
-        .windows(2)
-        .any(|w| w[0] == REPOS_ANCHOR && WORK_ORGS.contains(&w[1]))
-}
-
-/// True iff the path carries a `repos/<something>` adjacency at all, work org or not. This is the
-/// "was this cwd placeable?" test: a cwd with an anchor has already been judged by [`has_work_org`],
-/// so the repo evidence must not be allowed to overturn it.
-fn has_repos_anchor(path: &Path) -> bool {
-    let comps: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
-    comps.windows(2).any(|w| w[0] == REPOS_ANCHOR)
-}
-
 /// Whether the cwd ANCHOR and a trusted REMOTE disagree about this session's scope.
 ///
 /// Register item 5's disclosure. clyde does not resolve the disagreement, because it cannot: a
@@ -446,11 +622,11 @@ fn has_repos_anchor(path: &Path) -> bool {
 ///
 /// `None` when there is nothing to compare: no anchor to read, or no slug. Only an ANCHORED cwd can
 /// disagree, because an unanchored one expresses no opinion.
-pub fn anchor_disagrees_with_remote(cwd: &Path, slug: &str) -> Option<Disagreement> {
-    if !has_repos_anchor(cwd) {
-        return None;
-    }
-    let anchor = if has_work_org(cwd) { Scope::Work } else { Scope::Personal };
+pub fn anchor_disagrees_with_remote(cwd: &Path, slug: &str, anchors: &Anchors) -> Option<Disagreement> {
+    // The BARE-work-org shape is deliberately excluded, by passing no probe: it is the one anchor
+    // that is not a path fact, so calling it a disagreement would report a conflict between the
+    // remote and a verdict the remote itself helped decide.
+    let anchor = anchors.scope_of(cwd, None)?;
     let remote = if is_work_slug(slug) { Scope::Work } else { Scope::Personal };
     (anchor != remote).then_some(Disagreement { anchor, remote })
 }
@@ -471,15 +647,16 @@ pub struct Disagreement {
 /// (measured: `tatari-tv/thoughts`, `scottidler/claude`), so the org is the segment before the first
 /// `/`.
 ///
-/// This is a DIFFERENT matching form from [`has_work_org`] and the two must not be "unified".
-/// `has_work_org` walks path COMPONENTS looking for the slot after `repos`, which is exactly what
-/// makes `~/repos/scottidler/tatari-tv` personal. Both consult the same [`WORK_ORGS`]; only the
+/// This is a DIFFERENT matching form from [`Anchors::scope_of`] and the two must not be "unified".
+/// The anchor walks path COMPONENTS looking for the slot under a configured ROOT, which is exactly
+/// what makes `~/repos/scottidler/tatari-tv` personal. Both consult the same [`WORK_ORGS`]; only the
 /// extraction differs, and each has its own test.
 /// Every departure from the exact `<org>/<repo>` shape fails CLOSED, because this function is consulted
-/// by the gate that decides whether a session body leaves the machine. `slug_under_root` (the only
-/// writer) requires two normal path components, so it can never produce an empty segment or a second
-/// slash -- these guards exist for a corrupt or hand-edited `outcome_json`, which is a STORED blob this
-/// function reads rather than something it computes.
+/// by the gate that decides whether a session body leaves the machine. `efficiency::outcome::union`
+/// (the only writer) takes its keys from the shared rule-1 resolver, which emits a git-observed
+/// `<org>/<repo>` slug, so it can never produce an empty segment or a second slash -- these guards
+/// exist for a corrupt or hand-edited `outcome_json`, which is a STORED blob this function reads
+/// rather than something it computes.
 fn is_work_slug(slug: &str) -> bool {
     match slug.split_once('/') {
         // The repo segment must be present and must itself be a single component. `"tatari-tv/"` would

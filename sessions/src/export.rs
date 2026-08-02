@@ -109,6 +109,22 @@ pub struct ExportEnvelope {
     /// The max `updated-at` revision across the result set; echoes the request cursor when the
     /// result is empty, so a consumer always persists a monotonic cursor.
     pub cursor: i64,
+    /// `session::SCOPE_VERSION`: which revision of the CLASSIFIER produced the `scope` on these
+    /// records. ADDITIVE at schema v2, under the contract's own rule for new envelope fields, with
+    /// precedent in `prompt-version`. It is not a schema bump: `scope`'s type, vocabulary and
+    /// meaning are unchanged, and a classifier revision is an accuracy change, not a contract one.
+    /// Git history agrees -- `SCOPE_VERSION` moved 1 -> 2 and 2 -> 3 with `EXPORT_SCHEMA_VERSION`
+    /// unchanged both times.
+    ///
+    /// Emitted so a consumer that caches scopes can tell "clyde reclassified" from "nothing changed",
+    /// which was previously invisible: `SCOPE_VERSION` was exposed nowhere at all.
+    ///
+    /// `#[serde(default)]` because additive means additive IN BOTH DIRECTIONS: an envelope stored
+    /// before this field existed must still deserialize, or "no schema bump" is a claim the code
+    /// contradicts. The default `0` is not a real classifier version, which is exactly right -- it
+    /// reads as "this envelope predates the field" rather than as v1's rules.
+    #[serde(default)]
+    pub scope_version: i64,
     pub sessions: Vec<ExportRecord>,
 }
 
@@ -271,6 +287,16 @@ pub struct ExportContext {
     pub dormant_after: chrono::Duration,
     /// The generating machine's hostname, stamped on the envelope.
     pub host: String,
+    /// The configured clone roots (`clyde.yml`'s `repo-roots`), for the scope fallback.
+    ///
+    /// Export used to run its OWN cwd-only classifier for a row the gate had never decided, which is
+    /// two answers to one question. It now calls `crate::routing::classify_row`, the same seam the
+    /// gate uses, so it needs the same config the gate has. `sessions` does not load config, so both
+    /// arrive here.
+    pub anchors: session::Anchors,
+    /// Hosts a git remote may confer WORK scope from (`clyde.yml`'s `work-remote-hosts`), for the
+    /// same fallback.
+    pub work_remote_hosts: Vec<String>,
 }
 
 #[cfg(test)]

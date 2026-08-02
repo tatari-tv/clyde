@@ -337,13 +337,32 @@ pub struct Config {
     /// Thresholds `clyde efficiency` scores a session against. Absent -> all-defaults.
     #[serde(default)]
     efficiency: EfficiencyConfig,
-    /// Where `<org>/<repo>` clones live. Absent -> `<home>/repos`.
+    /// The REMOVED singular spelling, retained ONLY to produce a migration error. Deserializing it
+    /// always fails, naming `repo-roots`.
     ///
-    /// Read by [`crate::repo`]'s rule 4, the last-resort `<repo-root>/<org>/<repo>[/...]` guess. It
-    /// is config rather than a wildcard on purpose: rule 4 matches only under this root, so an
-    /// arbitrary path cannot manufacture an org.
-    #[serde(default = "default_repo_root", deserialize_with = "de_repo_root")]
-    repo_root: PathBuf,
+    /// `deny_unknown_fields` already rejects an old `repo-root:` key, but its generic message names
+    /// an unknown field without saying what replaced it, and a teammate reading it has no way to
+    /// know the value simply became a list. The rename is NOT aliased: two keys meaning one value is
+    /// what the house rules forbid, so this is one loud signal instead of two ways to spell one
+    /// thing.
+    #[serde(default, deserialize_with = "de_repo_root_renamed")]
+    repo_root: RemovedKey,
+    /// Where `<org>/<repo>` clones live, plural. Absent -> `[<home>/repos]`.
+    ///
+    /// Read by [`crate::repo`]'s rule 4 (the last-resort `<root>/<org>/<repo>[/...]` guess) and by
+    /// `session::scope`'s cwd anchor. It is config rather than a wildcard on purpose: both match
+    /// only under a declared root, so an arbitrary path cannot manufacture an org.
+    ///
+    /// A LIST because a teammate can run more than one (measured: Stephen runs both
+    /// `~/code/work/<repo>` and `~/wt/<repo>`), and a single `PathBuf` silently costs the second one
+    /// all attribution.
+    ///
+    /// Each entry is stored in BOTH its configured and its canonicalized spelling (deduped), because
+    /// the matchers are lexical by design: a root reached through a symlink would otherwise never
+    /// match a cwd recorded through the real path, and rule 4 would silently stop firing. See
+    /// [`de_repo_roots`] for the validation, which also refuses an overlapping pair.
+    #[serde(default = "default_repo_roots", deserialize_with = "de_repo_roots")]
+    repo_roots: Vec<PathBuf>,
     /// Enrichment-coverage floor for `report collect`, as a fraction in `0.0..=1.0`. Absent -> `0.5`.
     ///
     /// The report's themes are supposed to cite each session's enrich `summary`, so a window where
@@ -441,51 +460,147 @@ impl Default for Config {
             projects_dir: None,
             reindex_on_start: default_reindex_on_start(),
             efficiency: EfficiencyConfig::default(),
-            repo_root: default_repo_root(),
+            repo_root: RemovedKey,
+            repo_roots: default_repo_roots(),
             min_enrichment: default_min_enrichment(),
             work_remote_hosts: default_work_remote_hosts(),
         }
     }
 }
 
-/// The default clone root when `repo-root` is unset: `<home>/repos`.
-///
-/// With no `$HOME` at all this yields the relative `repos`, which rule 4 can never match against an
-/// absolute cwd. That is the fail-closed answer: no attribution rather than a fabricated one.
-fn default_repo_root() -> PathBuf {
-    dirs::home_dir()
-        .map(|h| h.join("repos"))
-        .unwrap_or_else(|| PathBuf::from("repos"))
-}
+/// The absent value of a removed config key. Its presence in the YAML is the only thing that can be
+/// observed about it, and [`de_repo_root_renamed`] turns that into a load error, so the only value
+/// that ever reaches a [`Config`] is `Default`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemovedKey;
 
-/// Validate an explicitly configured `repo-root`: it must be an absolute path AND an existing
-/// directory.
+/// Reject an old `repo-root:` key with the migration, rather than with `deny_unknown_fields`'
+/// generic "unknown field" message.
 ///
-/// Both halves are load-time errors because both fail SILENTLY at use time: a relative root never
-/// matches an absolute cwd, and a typo'd root matches nothing, so in either case rule 4 just stops
-/// firing and attribution quietly degrades with no signal. The key is hardcoded into the message
-/// for the same reason the render ceilings each carry theirs (see [`nonzero_ceiling`]).
-///
-/// The DEFAULT is deliberately not existence-checked: a machine with no `~/repos` must still run
-/// every clyde command, and there the only consequence is that rule 4 never fires.
-fn de_repo_root<'de, D>(deserializer: D) -> std::result::Result<PathBuf, D::Error>
+/// This deserializer is called ONLY when the key is present (the field is `#[serde(default)]`), and
+/// it never succeeds. There is deliberately no alias and no fallback read: a config that still says
+/// `repo-root:` fails to load until it is edited, which is the loud signal. Silently accepting the
+/// old spelling would leave two keys meaning one value indefinitely.
+fn de_repo_root_renamed<'de, D>(deserializer: D) -> std::result::Result<RemovedKey, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let path = PathBuf::deserialize(deserializer)?;
-    if !path.is_absolute() {
-        return Err(serde::de::Error::custom(format!(
-            "repo-root must be an absolute path, got {}",
-            path.display()
-        )));
+    // The value is consumed before erroring so the message is about the KEY, not about whatever
+    // shape the old value happened to have.
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "`repo-root` is now `repo-roots`, a list: replace `repo-root: /path` with `repo-roots: [/path]`",
+    ))
+}
+
+/// The default clone roots when `repo-roots` is unset: `[<home>/repos]`.
+///
+/// With no `$HOME` at all this yields the relative `repos`, which rule 4 can never match against an
+/// absolute cwd. That is the fail-closed answer: no attribution rather than a fabricated one.
+///
+/// NOT canonicalized and NOT existence-checked, unlike a configured root: a machine with no
+/// `~/repos` must still run every clyde command, and there the only consequence is that rule 4 never
+/// fires.
+fn default_repo_roots() -> Vec<PathBuf> {
+    vec![
+        dirs::home_dir()
+            .map(|h| h.join("repos"))
+            .unwrap_or_else(|| PathBuf::from("repos")),
+    ]
+}
+
+/// Validate an explicitly configured `repo-roots` list and expand each entry to both spellings.
+///
+/// Four checks, each a load-time error because each fails SILENTLY at use time:
+///
+/// - **The list is non-empty.** `repo-roots: []` is indistinguishable in effect from "no
+///   attribution", and saying so at load beats discovering it from a report full of unattributed
+///   sessions.
+/// - **Each entry is absolute.** A relative root never matches an absolute cwd.
+/// - **Each entry is an existing directory.** A typo'd root matches nothing, so rule 4 just stops
+///   firing and attribution quietly degrades with no signal.
+/// - **No entry's canonical form is a prefix of another's.** With roots `/repos` and
+///   `/repos/tatari-tv`, the cwd `/repos/tatari-tv/clyde/src` takes the longer root and yields the
+///   slug `clyde/src`. There is no tie-break that makes a nested pair mean one thing, so the pair is
+///   refused, naming both. The check runs on CANONICAL paths: `[/home/me/repos, /data/code]` does
+///   not overlap textually, but if `/data/code` is a symlink to `/home/me/repos/tatari-tv` the
+///   canonical pair does, and matching both spellings would resurrect the exact ambiguity the
+///   rejection exists to prevent.
+///
+/// The returned list carries each entry in both its configured and its canonical spelling, deduped
+/// and in configured order. They coincide for a root that is not reached through a symlink, so the
+/// common case returns exactly what was configured. Both are kept because the matchers are lexical
+/// (`crate::repo::slug_under_roots` does pure path parsing, no filesystem) and because rule 4 runs
+/// when the cwd is GONE, so a recorded cwd cannot be canonicalized retroactively to meet a
+/// single-spelling root.
+///
+/// Each key is hardcoded into its message for the same reason the render ceilings each carry theirs
+/// (see [`nonzero_ceiling`]).
+fn de_repo_roots<'de, D>(deserializer: D) -> std::result::Result<Vec<PathBuf>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let configured = Vec::<PathBuf>::deserialize(deserializer)?;
+    if configured.is_empty() {
+        return Err(serde::de::Error::custom(
+            "repo-roots must name at least one root; an empty list disables repo attribution entirely",
+        ));
     }
-    if !path.is_dir() {
-        return Err(serde::de::Error::custom(format!(
-            "repo-root must be an existing directory, but {} is not one",
-            path.display()
-        )));
+
+    let mut canonical: Vec<PathBuf> = Vec::with_capacity(configured.len());
+    for path in &configured {
+        if !path.is_absolute() {
+            return Err(serde::de::Error::custom(format!(
+                "repo-roots entries must be absolute paths, got {}",
+                path.display()
+            )));
+        }
+        if !path.is_dir() {
+            return Err(serde::de::Error::custom(format!(
+                "repo-roots entries must be existing directories, but {} is not one",
+                path.display()
+            )));
+        }
+        // The `is_dir` stat above already touched the disk, so canonicalizing here is free. A
+        // failure at this point is a race (the directory vanished between the two calls), and
+        // falling back to the configured spelling is the honest answer: it is what was asked for.
+        let real = path.canonicalize().unwrap_or_else(|_| path.clone());
+        canonical.push(real);
     }
-    Ok(path)
+
+    for (i, a) in canonical.iter().enumerate() {
+        for (j, b) in canonical.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            if a == b {
+                return Err(serde::de::Error::custom(format!(
+                    "repo-roots entries must be distinct, but {} and {} both resolve to {}",
+                    configured[i].display(),
+                    configured[j].display(),
+                    a.display(),
+                )));
+            }
+            if b.starts_with(a) {
+                return Err(serde::de::Error::custom(format!(
+                    "repo-roots entries must not nest, but {} is inside {} (resolved from {} and {}); \
+                     a cwd under both has no single correct slug, so remove one",
+                    b.display(),
+                    a.display(),
+                    configured[j].display(),
+                    configured[i].display(),
+                )));
+            }
+        }
+    }
+
+    let mut roots: Vec<PathBuf> = Vec::with_capacity(configured.len() * 2);
+    for path in configured.into_iter().chain(canonical) {
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
+    Ok(roots)
 }
 
 /// The serde default for `reindex-on-start`: on. A one-shot startup reindex keeps the served
@@ -560,9 +675,13 @@ impl Config {
         &self.efficiency
     }
 
-    /// The clone root repo attribution's rule 4 matches against (`<home>/repos` when unset).
-    pub fn repo_root(&self) -> &Path {
-        &self.repo_root
+    /// The clone roots repo attribution's rule 4 and the cwd anchor match against
+    /// (`[<home>/repos]` when unset).
+    ///
+    /// A configured root appears here in both its configured and its canonical spelling; see
+    /// [`de_repo_roots`]. Callers match a cwd against ALL of them and take the longest match.
+    pub fn repo_roots(&self) -> &[PathBuf] {
+        &self.repo_roots
     }
 
     /// The enrichment-coverage floor `report collect` warns below, as a fraction (`0.5` when unset).

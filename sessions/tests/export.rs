@@ -231,6 +231,12 @@ fn parsed(id: &str, cwd: &str, dir: &Path, parent: &Path) -> ParsedSession {
 fn enrich_one(db: &Db, id: &str, completer: &Fake) {
     let opts = EnrichOptions {
         only: Some(id.to_string()),
+        // The cwd anchor reads the operator's CONFIGURED roots as of v4, not the literal component
+        // `repos`, so a fixture cwd of `/home/alice/repos/tatari-tv/...` only anchors Work when the
+        // test declares that root -- exactly as `clyde.yml` declares it in production.
+        // `EnrichOptions::default()` carries an empty list on purpose (a forgetful caller loses
+        // coverage rather than gaining scope), which would classify every work fixture personal.
+        anchors: session::Anchors::new(&[PathBuf::from("/home/alice/repos")]),
         ..Default::default()
     };
     enrich(db, Some(completer), &opts).unwrap();
@@ -295,6 +301,8 @@ fn export_emits_only_the_frozen_enrich_status_vocabulary() {
         now: dt("2026-07-01T00:00:00Z"),
         dormant_after: chrono::Duration::days(7),
         host: "host-01".to_string(),
+        anchors: session::Anchors::new(&[PathBuf::from("/home/alice/repos")]),
+        work_remote_hosts: vec!["github.com".to_string()],
     };
     let env = db.export(&ExportFilters::default(), &ctx).unwrap();
 

@@ -21,6 +21,21 @@ fn dt(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
 }
 
+/// The sweep options every test in this file runs with.
+///
+/// It exists because the cwd anchor is ROOT-RELATIVE as of v4: it reads the operator's configured
+/// `repo-roots`, not the literal component `repos` wherever it appears. So a test that wants
+/// [`WORK_CWD`] to anchor Work has to declare the root that cwd sits under, exactly as production
+/// declares it in `clyde.yml`. `EnrichOptions::default()` carries an EMPTY root list on purpose --
+/// a caller that forgets loses coverage rather than gaining scope -- so `..Default::default()` here
+/// would silently reclassify every work fixture as personal.
+fn test_opts() -> EnrichOptions {
+    EnrichOptions {
+        anchors: session::Anchors::new(&[PathBuf::from("/home/saidler/repos"), PathBuf::from("/home/alice/repos")]),
+        ..Default::default()
+    }
+}
+
 /// A deterministic completer that records every call (proving the routing gate) and can be set to
 /// fail. It panics if asked about an obviously personal payload would be impossible to detect -- so
 /// the gate is asserted by call *count*, not payload inspection.
@@ -141,7 +156,7 @@ fn work_session_is_enriched_and_written() {
     insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
 
     let fake = Fake::ok(&["terraform", "s3"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(stats.enriched, 1);
     assert_eq!(stats.skipped_personal, 0);
@@ -164,7 +179,7 @@ fn personal_session_is_never_sent_to_the_completer() {
     insert(&db, tmp.path(), UUID_A, PERSONAL_CWD, &parent);
 
     let fake = Fake::ok(&["x"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(fake.calls(), 0, "personal content must never reach the work account");
     assert_eq!(stats.skipped_personal, 1);
@@ -183,7 +198,7 @@ fn empty_body_is_skipped() {
     insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
 
     let fake = Fake::ok(&["x"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(stats.skipped_empty, 1);
     assert_eq!(fake.calls(), 0);
@@ -197,7 +212,7 @@ fn failure_is_recorded_and_bumps_attempts() {
     insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
 
     let fake = Fake::failing();
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(stats.failed, 1);
     assert!(db.get(UUID_A).unwrap().unwrap().summary.is_none());
 
@@ -222,7 +237,7 @@ fn dry_run_reports_decisions_without_sending() {
 
     let opts = EnrichOptions {
         dry_run: true,
-        ..Default::default()
+        ..test_opts()
     };
     let stats = enrich::<Fake>(&db, None, &opts).unwrap();
 
@@ -249,7 +264,7 @@ fn manual_tags_preserved_by_default_overwritten_with_all() {
 
     // Default pass: summary written, manual tags preserved.
     let fake = Fake::ok(&["auto-tag"]);
-    enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    enrich(&db, Some(&fake), &test_opts()).unwrap();
     let rec = db.get(UUID_A).unwrap().unwrap();
     assert_eq!(rec.summary.as_deref(), Some("a durable summary"));
     assert_eq!(rec.tags, vec!["manual-tag".to_string()], "manual tags preserved");
@@ -258,7 +273,7 @@ fn manual_tags_preserved_by_default_overwritten_with_all() {
     let fake2 = Fake::ok(&["auto-tag"]);
     let opts = EnrichOptions {
         all: true,
-        ..Default::default()
+        ..test_opts()
     };
     enrich(&db, Some(&fake2), &opts).unwrap();
     let rec = db.get(UUID_A).unwrap().unwrap();
@@ -276,7 +291,7 @@ fn manual_retag_after_enrichment_survives_later_default_reenrich() {
 
     // First default enrich: auto tags written (tags_source = 'enrich').
     let fake = Fake::ok(&["auto-one"]);
-    enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    enrich(&db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(db.get(UUID_A).unwrap().unwrap().tags, vec!["auto-one".to_string()]);
 
     // Operator manually curates tags after enrichment (tags_source -> 'manual').
@@ -289,7 +304,7 @@ fn manual_retag_after_enrichment_survives_later_default_reenrich() {
 
     // Default re-enrich: must refresh summary/state but PRESERVE the manual tags.
     let fake2 = Fake::ok(&["auto-two"]);
-    let stats = enrich(&db, Some(&fake2), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake2), &test_opts()).unwrap();
     assert_eq!(stats.enriched, 1, "grown session was re-enriched");
     let rec = db.get(UUID_A).unwrap().unwrap();
     assert_eq!(
@@ -302,7 +317,7 @@ fn manual_retag_after_enrichment_survives_later_default_reenrich() {
 #[test]
 fn live_pass_without_completer_errors() {
     let db = Db::open_memory().unwrap();
-    let err = enrich::<Fake>(&db, None, &EnrichOptions::default());
+    let err = enrich::<Fake>(&db, None, &test_opts());
     assert!(err.is_err(), "a live pass requires a completer");
 }
 
@@ -421,7 +436,7 @@ fn a_sweep_fatal_failure_leaves_the_attempts_budget_untouched_on_every_candidate
     assert_eq!(before, 0, "the fixture starts unspent");
 
     let fake = Flaky::new(&[1], false, true);
-    let err = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap_err();
+    let err = enrich(&s.db, Some(&fake), &test_opts()).unwrap_err();
 
     assert_eq!(fake.calls(), 1, "the sweep must stop at the first record, not grind on");
     assert_eq!(
@@ -440,7 +455,7 @@ fn a_sweep_fatal_failure_leaves_the_attempts_budget_untouched_on_every_candidate
 fn an_ordinary_failure_charges_exactly_one_attempt_and_the_sweep_continues() {
     let s = seed(SEEDED_ROWS);
     let fake = Flaky::new(&[1], false, false);
-    let stats = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&s.db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(fake.calls(), SEEDED_ROWS, "every candidate is still visited");
     assert_eq!(stats.failed, 1);
@@ -455,7 +470,7 @@ fn an_ordinary_failure_charges_exactly_one_attempt_and_the_sweep_continues() {
 fn the_sweep_fatal_split_is_by_type_not_by_message_text() {
     let s = seed(SEEDED_ROWS);
     let fake = Flaky::new(&[1], false, false).saying("the `claude` CLI is unavailable: not really");
-    let stats = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&s.db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(stats.failed, 1, "the words must not abort the sweep");
     assert_eq!(attempts_sum(&s.path), 1, "and the attempt is still charged");
 }
@@ -469,7 +484,7 @@ fn the_sweep_fatal_split_is_by_type_not_by_message_text() {
 fn three_consecutive_failures_abort_the_sweep_charging_only_those_three() {
     let s = seed(SEEDED_ROWS);
     let fake = Flaky::new(&[], true, false);
-    let err = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap_err();
+    let err = enrich(&s.db, Some(&fake), &test_opts()).unwrap_err();
 
     assert_eq!(fake.calls(), CONSECUTIVE_FAILURE_LIMIT, "it must abort, not grind");
     assert_eq!(
@@ -487,7 +502,7 @@ fn three_consecutive_failures_abort_the_sweep_charging_only_those_three() {
 fn a_single_failure_does_not_abort_the_sweep() {
     let s = seed(SEEDED_ROWS);
     let fake = Flaky::new(&[2], false, false);
-    let stats = enrich(&s.db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&s.db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(fake.calls(), SEEDED_ROWS);
     assert_eq!(stats.failed, 1);
@@ -496,7 +511,7 @@ fn a_single_failure_does_not_abort_the_sweep() {
     // Two non-adjacent failures are still under the limit: the counter resets on the success between.
     let s2 = seed(SEEDED_ROWS);
     let fake2 = Flaky::new(&[2, 5], false, false);
-    let stats2 = enrich(&s2.db, Some(&fake2), &EnrichOptions::default()).unwrap();
+    let stats2 = enrich(&s2.db, Some(&fake2), &test_opts()).unwrap();
     assert_eq!(fake2.calls(), SEEDED_ROWS, "non-consecutive failures must not abort");
     assert_eq!(stats2.failed, 2);
     assert_eq!(attempts_sum(&s2.path), 2);
@@ -548,7 +563,7 @@ fn an_unanchored_cwd_with_unanimous_work_evidence_is_enriched() {
     set_scope_evidence(&db, UUID_A, &[("tatari-tv/marquee", 3)], 3);
 
     let fake = Fake::ok(&["terraform", "s3"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(stats.enriched, 1, "the evidence places the session: {stats:?}");
     assert_eq!(stats.skipped_personal, 0);
@@ -574,7 +589,7 @@ fn an_unanchored_cwd_with_a_mixed_touch_set_stays_personal() {
     );
 
     let fake = Fake::ok(&["x"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(
         fake.calls(),
@@ -586,7 +601,7 @@ fn an_unanchored_cwd_with_a_mixed_touch_set_stays_personal() {
     // Decided WITH evidence, so the skip is SETTLED: a second pass does not reconsider it. This is the
     // observable form of "the current scope_version was recorded" (the column itself is asserted in
     // `db/tests/scope.rs`, which can reach the connection).
-    let second = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let second = enrich(&db, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
     assert_eq!(
         second.considered, 0,
         "an evidence-backed personal skip is not reconsidered: {second:?}"
@@ -605,7 +620,7 @@ fn an_unaccounted_for_edit_keeps_the_session_off_the_work_account() {
     set_scope_evidence(&db, UUID_A, &[("tatari-tv/philo", 1)], 3);
 
     let fake = Fake::ok(&["x"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(fake.calls(), 0, "unanimity over a FILTERED set is not unanimity");
     assert_eq!(stats.skipped_personal, 1);
@@ -628,14 +643,14 @@ fn an_evidence_free_skip_is_provisional_and_self_heals_on_the_next_pass() {
 
     // Pass 1: no evidence at all -> personal, and deliberately no recorded classifier version.
     let fake = Fake::ok(&["x"]);
-    let first = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let first = enrich(&db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(first.skipped_personal, 1);
     assert_eq!(fake.calls(), 0);
 
     // The full reindex lands the evidence. Pass 2 reconsiders the row and gets it right.
     set_scope_evidence(&db, UUID_A, &[("tatari-tv/marquee", 3)], 3);
     let fake2 = Fake::ok(&["terraform"]);
-    let second = enrich(&db, Some(&fake2), &EnrichOptions::default()).unwrap();
+    let second = enrich(&db, Some(&fake2), &test_opts()).unwrap();
     assert_eq!(
         second.considered, 1,
         "the provisional row is still a candidate: {second:?}"
@@ -668,12 +683,12 @@ fn a_git_origin_work_attribution_settles_the_decision_with_no_reindex() {
     set_git_origin(&db, UUID_A, "tatari-tv/philo");
 
     let fake = Fake::ok(&["terraform"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(stats.enriched, 1, "the remote must place this session: {stats:?}");
     assert_eq!(stats.skipped_personal, 0);
     assert_eq!(fake.calls(), 1);
 
-    let second = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let second = enrich(&db, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
     assert_eq!(
         second.considered, 0,
         "a git-origin WORK decision is settled and must not be reconsidered: {second:?}"
@@ -702,11 +717,11 @@ fn a_personal_git_origin_decision_is_re_offered_rather_than_excluded() {
     insert(&db, tmp.path(), UUID_B, "/Users/luke/Projects/claude", &parent);
     set_git_origin(&db, UUID_B, "scottidler/claude");
 
-    let first = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let first = enrich(&db, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
     assert_eq!(first.skipped_personal, 1, "a personal remote must not be sent");
 
     let fake = Fake::ok(&["x"]);
-    let second = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let second = enrich(&db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(
         second.considered, 1,
         "a personal git-origin row must stay a candidate so a corrected checkout can recover it: \
@@ -736,7 +751,7 @@ fn a_no_change_skip_leaves_the_export_revision_untouched() {
     insert(&db, tmp.path(), UUID_B, "/Users/luke/Projects/claude", &parent);
     set_git_origin(&db, UUID_B, "scottidler/claude");
 
-    enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    enrich(&db, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
 
     // Asserted through `session export --cursor`, the CONSUMER-visible surface the revision trigger
     // exists to drive, rather than by reading `updated_at` directly. That is the behavior the guard
@@ -745,11 +760,13 @@ fn a_no_change_skip_leaves_the_export_revision_untouched() {
         now: dt("2026-07-01T00:00:00Z"),
         host: "desk".into(),
         dormant_after: chrono::Duration::days(7),
+        anchors: session::Anchors::new(&[std::path::PathBuf::from("/home/alice/repos")]),
+        work_remote_hosts: vec!["github.com".to_string()],
     };
     let after_first = db.export(&ExportFilters::default(), &ctx).unwrap().cursor;
 
     // A second pass re-offers the row (it is provisional) and re-decides it identically.
-    enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    enrich(&db, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
 
     let refetched = db
         .export(
@@ -824,14 +841,14 @@ fn a_zero_edit_session_is_settled_after_one_pass() {
     set_scope_evidence(&db, UUID_A, &[], 0);
 
     let fake = Fake::ok(&["x"]);
-    let first = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let first = enrich(&db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(first.considered, 1, "the row is a candidate on the first pass");
     assert_eq!(first.skipped_personal, 1, "no work evidence, so it is personal");
     assert_eq!(fake.calls(), 0);
 
     // The decision was made WITH evidence, so it is settled: no later pass reconsiders it, which is
     // what stops both the pointless re-skip and the export-cursor churn it would cause.
-    let second = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let second = enrich(&db, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
     assert_eq!(
         second.considered, 0,
         "a zero-edit session with stored evidence must be settled, not reconsidered: {second:?}"
@@ -841,9 +858,9 @@ fn a_zero_edit_session_is_settled_after_one_pass() {
     let db2 = Db::open_memory().unwrap();
     let parent2 = write_transcript(tmp.path(), UUID_B, "same shape, but never reindexed");
     insert(&db2, tmp.path(), UUID_B, "/home/saidler/notes", &parent2);
-    let p1 = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let p1 = enrich(&db2, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
     assert_eq!(p1.skipped_personal, 1);
-    let p2 = enrich(&db2, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let p2 = enrich(&db2, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
     assert_eq!(
         p2.considered, 1,
         "an evidence-FREE decision stays provisional and is reconsidered: {p2:?}"
@@ -896,7 +913,7 @@ fn scope_never_upgrades_personal_to_work_on_a_later_probe() {
     set_git_origin(&db, UUID_A, "tatari-tv/side-project");
 
     let fake = Fake::ok(&["x"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(
         fake.calls(),
@@ -928,7 +945,7 @@ fn an_ordinary_first_index_still_confers_work_scope() {
     set_git_origin(&db, UUID_A, "tatari-tv/philo");
 
     let fake = Fake::ok(&["philo"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(stats.enriched, 1, "the v0.22.0 coverage win must survive: {stats:?}");
     assert_eq!(fake.calls(), 1);
 }
@@ -953,13 +970,13 @@ fn clearing_the_probe_record_recovers_a_refused_session() {
     .unwrap();
     set_git_origin(&db, UUID_A, "tatari-tv/philo");
 
-    let refused = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let refused = enrich(&db, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
     assert_eq!(refused.skipped_personal, 1, "refused while the record stands");
 
     db.clear_probe(&[UUID_A.to_string()]).unwrap();
 
     let fake = Fake::ok(&["philo"]);
-    let recovered = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let recovered = enrich(&db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(
         recovered.enriched, 1,
         "the row must be recoverable, not permanently locked out: {recovered:?}"
@@ -989,7 +1006,7 @@ fn a_scope_override_beats_a_refusal_in_both_directions() {
         .unwrap();
 
     let fake = Fake::ok(&["philo"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
     assert_eq!(stats.enriched, 1, "an operator `work` override must win: {stats:?}");
 
     // personal-over-work: a cwd anchored to the work org that the operator knows is a misfiled
@@ -1007,7 +1024,7 @@ fn a_scope_override_beats_a_refusal_in_both_directions() {
     .unwrap();
 
     let fake2 = Fake::ok(&["x"]);
-    let stats2 = enrich(&db2, Some(&fake2), &EnrichOptions::default()).unwrap();
+    let stats2 = enrich(&db2, Some(&fake2), &test_opts()).unwrap();
     assert_eq!(
         fake2.calls(),
         0,
@@ -1094,7 +1111,7 @@ fn an_unreadable_repo_source_warns_instead_of_being_swallowed() {
     // Prime the logger before the run so the pass's own output is captured.
     captured_containing("prime");
     let fake = Fake::ok(&["x"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
 
     let lines = captured_containing(SID);
     assert!(
@@ -1124,7 +1141,7 @@ fn a_cwd_anchor_disagreeing_with_the_remote_is_warned_and_still_decides() {
 
     captured_containing("prime");
     let fake = Fake::ok(&["x"]);
-    let stats = enrich(&db, Some(&fake), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&fake), &test_opts()).unwrap();
 
     assert_eq!(
         stats.enriched, 1,
@@ -1219,7 +1236,7 @@ fn the_token_budget_halts_the_sweep_once_the_total_reaches_it() {
         Some(&fake),
         &EnrichOptions {
             token_budget: Some(12),
-            ..Default::default()
+            ..test_opts()
         },
     )
     .unwrap();
@@ -1243,7 +1260,7 @@ fn the_token_budget_halts_the_sweep_once_the_total_reaches_it() {
         Some(&fake),
         &EnrichOptions {
             token_budget: Some(1_000),
-            ..Default::default()
+            ..test_opts()
         },
     )
     .unwrap();
@@ -1273,7 +1290,7 @@ fn the_sweep_counters_accumulate_across_sessions() {
     insert(&db, tmp.path(), UUID_A, WORK_CWD, &a);
     insert(&db, tmp.path(), UUID_B, WORK_CWD, &b);
 
-    let stats = enrich(&db, Some(&Fake::ok(&["x"])), &EnrichOptions::default()).unwrap();
+    let stats = enrich(&db, Some(&Fake::ok(&["x"])), &test_opts()).unwrap();
     assert_eq!(
         stats.skipped_empty, 2,
         "the empty-skip counter must ACCUMULATE: {stats:?}"
@@ -1292,7 +1309,7 @@ fn the_sweep_counters_accumulate_across_sessions() {
         Some(&Fake::ok(&["x"])),
         &EnrichOptions {
             dry_run: true,
-            ..Default::default()
+            ..test_opts()
         },
     )
     .unwrap();
@@ -1314,7 +1331,7 @@ fn manual_tags_survive_an_ordinary_sweep_but_not_an_explicit_one() {
     db.set_tags(UUID_A, &["hand-picked".to_string()]).unwrap();
 
     // An ordinary sweep must PRESERVE them: not forced, tags non-empty, tags are manual.
-    enrich(&db, Some(&Fake::ok(&["machine"])), &EnrichOptions::default()).unwrap();
+    enrich(&db, Some(&Fake::ok(&["machine"])), &test_opts()).unwrap();
     assert_eq!(
         db.get(UUID_A).unwrap().unwrap().tags,
         vec!["hand-picked".to_string()],
@@ -1327,7 +1344,7 @@ fn manual_tags_survive_an_ordinary_sweep_but_not_an_explicit_one() {
         Some(&Fake::ok(&["machine"])),
         &EnrichOptions {
             all: true,
-            ..Default::default()
+            ..test_opts()
         },
     )
     .unwrap();
@@ -1362,7 +1379,7 @@ fn the_token_budget_sums_the_two_counts_rather_than_multiplying_them() {
         Some(&fake),
         &EnrichOptions {
             token_budget: Some(10),
-            ..Default::default()
+            ..test_opts()
         },
     )
     .unwrap();
@@ -1395,7 +1412,7 @@ fn enrichment_owned_tags_are_refreshed_by_a_later_sweep() {
     insert(&db, tmp.path(), UUID_A, WORK_CWD, &parent);
 
     // First sweep: enrichment writes the tags, so they are enrich-owned and non-empty.
-    enrich(&db, Some(&Fake::ok(&["first"])), &EnrichOptions::default()).unwrap();
+    enrich(&db, Some(&Fake::ok(&["first"])), &test_opts()).unwrap();
     assert_eq!(db.get(UUID_A).unwrap().unwrap().tags, vec!["first".to_string()]);
     assert!(
         !db.tags_are_manual(UUID_A).unwrap(),
@@ -1412,7 +1429,7 @@ fn enrichment_owned_tags_are_refreshed_by_a_later_sweep() {
     };
     db.upsert_session(&grown, "desk").unwrap();
 
-    enrich(&db, Some(&Fake::ok(&["second"])), &EnrichOptions::default()).unwrap();
+    enrich(&db, Some(&Fake::ok(&["second"])), &test_opts()).unwrap();
     assert_eq!(
         db.get(UUID_A).unwrap().unwrap().tags,
         vec!["second".to_string()],
@@ -1447,7 +1464,7 @@ fn an_archived_session_with_no_staged_copy_counts_as_an_empty_skip() {
         Some(&fake),
         &EnrichOptions {
             only: Some(UUID_A.to_string()),
-            ..Default::default()
+            ..test_opts()
         },
     )
     .unwrap();

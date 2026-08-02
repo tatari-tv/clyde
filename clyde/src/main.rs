@@ -131,7 +131,7 @@ fn dispatch(cli: Cli, log_path: &Path) -> Result<()> {
         let reindex_on_start = cfg.reindex_on_start();
         let io = mcp_io::mcp_io!();
         std::process::exit(cmd.run(&io, || {
-            sessions::build_server(&db_path, &projects_dir, reindex_on_start, cfg.repo_root())
+            sessions::build_server(&db_path, &projects_dir, reindex_on_start, cfg.repo_roots())
         }));
     }
 
@@ -414,10 +414,19 @@ fn cmd_export(db: &Db, args: ExportArgs, tz: common::DateTz) -> Result<()> {
     lazy_reindex(db, args.no_reindex);
 
     let host = gethostname::gethostname().to_string_lossy().into_owned();
+    // Export's scope fallback is the ENRICH GATE's classifier now, not a cwd-only rule of its own, so
+    // it needs the same config the gate reads. Loaded here rather than threaded from the caller
+    // because `cmd_export` is the only export entry point and every other config-reading command
+    // loads its own the same way.
+    let cfg = common::config::load().context("failed to load clyde config for the export scope fallback")?;
     let ctx = ExportContext {
         now,
         dormant_after,
         host,
+        // Built ONCE here and passed by reference into every row: constructing it per row would stat
+        // the disk per row.
+        anchors: session::Anchors::new(cfg.repo_roots()),
+        work_remote_hosts: cfg.work_remote_hosts().to_vec(),
     };
 
     if let Some(needle) = &args.id {
@@ -468,6 +477,7 @@ fn cmd_export_one(
         generated_at: ctx.now.to_rfc3339(),
         host: ctx.host.clone(),
         cursor: record.updated_at,
+        scope_version: session::SCOPE_VERSION,
         sessions: vec![record],
     };
     print_json(&envelope);
@@ -762,7 +772,7 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
         );
     }
 
-    let stats = sessions::reindex(db, &projects_dir, cfg.repo_root())?;
+    let stats = sessions::reindex(db, &projects_dir, cfg.repo_roots())?;
 
     // Close the reap-before-stage race: copy every dormant session's transcript to the staged root
     // BEFORE the efficiency pass prices it, so a durable copy exists before Claude Code's TTL can
@@ -790,7 +800,7 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     // deliberately does NOT advance the export `updated_at` cursor. Wired here (the explicit reindex),
     // not into `lazy_reindex`, so a query's cheap incremental refresh never pays the transcript
     // re-read the efficiency compute costs.
-    let eff = efficiency::reindex_efficiency(db, cfg.efficiency(), cfg.repo_root(), cfg.work_remote_hosts())?;
+    let eff = efficiency::reindex_efficiency(db, cfg.efficiency(), cfg.work_remote_hosts())?;
     // Repo attribution's rule 3 reads `Outcomes::repos_touched`, which the efficiency pass above is
     // what writes. Re-run the chain now that those blobs exist, so a session whose cwd is `$HOME` or
     // a temp dir is attributed within THIS command rather than on some later reindex. Scoped to
@@ -800,9 +810,9 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     // rank, so it waits until the last possible moment -- every fallible step above has already
     // succeeded, and the only step left is the one that repopulates what the clear erased.
     let reresolved = if args.reresolve_repo {
-        reresolve_repo(db, targets.as_deref(), cfg.repo_root())?
+        reresolve_repo(db, targets.as_deref(), cfg.repo_roots())?
     } else {
-        sessions::resolve_repos(db, cfg.repo_root())?
+        sessions::resolve_repos(db, cfg.repo_roots())?
     };
     debug!("cmd_reindex: post-efficiency repo pass evaluated {reresolved} session(s)");
     print_reindex(&stats, &stage, &eff);
@@ -819,8 +829,8 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
 /// erased, and no later reindex able to notice anything is missing. A restore failure is reported
 /// alongside the original error rather than replacing it -- the cause of the run failing is the more
 /// useful of the two.
-fn reresolve_repo(db: &Db, targets: Option<&[String]>, repo_root: &std::path::Path) -> Result<usize> {
-    debug!("reresolve_repo: targets={targets:?} repo_root={}", repo_root.display());
+fn reresolve_repo(db: &Db, targets: Option<&[String]>, roots: &[PathBuf]) -> Result<usize> {
+    debug!("reresolve_repo: targets={targets:?} roots={}", roots.len());
     let snapshot = match targets {
         Some(ids) => {
             let mut rows = Vec::new();
@@ -847,7 +857,7 @@ fn reresolve_repo(db: &Db, targets: Option<&[String]>, repo_root: &std::path::Pa
         cleared
     );
 
-    match sessions::resolve_repos(db, repo_root) {
+    match sessions::resolve_repos(db, roots) {
         Ok(evaluated) => Ok(evaluated),
         Err(e) => {
             warn!(
@@ -948,8 +958,10 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
         max_attempts: args.max_attempts,
         token_budget: args.budget_tokens,
         // The host allowlist reaches the gate through config, never a flag: it decides which remotes
-        // may confer WORK scope, which is policy, not a per-invocation choice.
+        // may confer WORK scope, which is policy, not a per-invocation choice. Same for the roots the
+        // cwd anchor reads, built once here and shared across every row of the sweep.
         work_remote_hosts: cfg.work_remote_hosts().to_vec(),
+        anchors: session::Anchors::new(cfg.repo_roots()),
     };
     let stats = if args.dry_run {
         // No off-machine calls, no `claude` needed: the gate is previewed, not opened.
@@ -1106,7 +1118,7 @@ fn lazy_reindex(db: &Db, skip: bool) {
             return;
         }
     };
-    let repo_root = cfg.repo_root().to_path_buf();
+    let repo_roots = cfg.repo_roots().to_vec();
     // Through the shared resolver, which is what makes a configured `projects-dir` reach the lazy
     // refresh at all. It previously read the platform default unconditionally, so on a host with
     // `projects-dir` set, every `ls`/`search`/`enrich` silently reindexed the WRONG tree.
@@ -1117,7 +1129,7 @@ fn lazy_reindex(db: &Db, skip: bool) {
             return;
         }
     };
-    if let Err(e) = sessions::reindex(db, &projects_dir, &repo_root) {
+    if let Err(e) = sessions::reindex(db, &projects_dir, &repo_roots) {
         warn!("lazy_reindex: reindex failed, querying stored data only: {e}");
     }
 }

@@ -13,8 +13,6 @@
 //! the SAME computed [`SessionEfficiency`] that is serialized into `efficiency_json`, so an indexed
 //! scalar can never diverge from the JSON it was materialized from (single computation path).
 
-use std::path::Path;
-
 use common::EfficiencyConfig;
 use eyre::{Context, Result};
 use log::{debug, info};
@@ -98,8 +96,8 @@ impl OwnedEfficiency {
 /// `upsert_session` NULLs efficiency on a content change) sessions without ever re-touching or
 /// re-bumping an already-annotated one.
 ///
-/// `repo_root` reaches `outcome::union`, which buckets each session's edited-file paths into
-/// `Outcomes::repos_touched` (repo attribution's rule 3). That coupling is why the single
+/// `outcome::union` buckets each session's edited-file paths into `Outcomes::repos_touched` (repo
+/// attribution's rule 3) as part of the same pass. That coupling is why the single
 /// `efficiency_json IS NULL` predicate is enough for steady state: a grown transcript NULLs
 /// efficiency, this pass re-picks the row, and `repos_touched` is recomputed with it.
 ///
@@ -108,19 +106,14 @@ impl OwnedEfficiency {
 /// second). That is what lets an ARCHIVED row be priced from its staged copy, which the previous
 /// whole-tree scan structurally could not do. Candidates with no bytes anywhere are counted in
 /// [`PersistStats::unrecoverable`] rather than silently vanishing from the total.
-pub fn reindex_efficiency(
-    db: &Db,
-    config: &EfficiencyConfig,
-    repo_root: &Path,
-    work_remote_hosts: &[String],
-) -> Result<PersistStats> {
-    debug!("reindex_efficiency: repo_root={}", repo_root.display());
+pub fn reindex_efficiency(db: &Db, config: &EfficiencyConfig, work_remote_hosts: &[String]) -> Result<PersistStats> {
+    debug!("reindex_efficiency: work_remote_hosts={}", work_remote_hosts.len());
     let candidates = db
         .sessions_missing_efficiency()
         .context("reindex_efficiency: failed to query sessions missing efficiency")?;
     debug!("reindex_efficiency: candidates={}", candidates.len());
 
-    let collected = collect_layouts(&candidates, config, repo_root, work_remote_hosts)?;
+    let collected = collect_layouts(&candidates, config, work_remote_hosts)?;
     let owned: Vec<OwnedEfficiency> = collected
         .sessions
         .iter()

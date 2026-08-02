@@ -100,6 +100,7 @@ fn envelope_round_trips_losslessly_through_serde() {
         host: "host-01".to_string(),
         cursor: 478,
         sessions: vec![metadata_record(), body_record()],
+        scope_version: session::SCOPE_VERSION,
     };
     let json = serde_json::to_string(&envelope).unwrap();
     let back: ExportEnvelope = serde_json::from_str(&json).unwrap();
@@ -161,6 +162,27 @@ fn a_v2_envelope_parses_and_is_what_the_producer_stamps() {
     let env: ExportEnvelope = serde_json::from_str(json).expect("a v2 envelope must deserialize");
     assert_eq!(env.schema_version, 2);
     assert_eq!(env.schema_version, EXPORT_SCHEMA_VERSION);
+    // A v2 envelope written BEFORE `scope-version` existed still parses, defaulting to 0. This is
+    // what makes "additive, no schema bump" true rather than merely asserted: the field was added
+    // under version 2 and every previously-written version-2 envelope must still read.
+    assert_eq!(env.scope_version, 0, "an envelope predating the field reads as 0");
+}
+
+/// `scope-version` is EMITTED, and it is the classifier's own constant.
+///
+/// The classifier's revision was exposed nowhere at all before this, so a consumer caching scopes
+/// could not tell "clyde reclassified everything" from "nothing changed". The v3 -> v4 anchor change
+/// is exactly the event this exists to announce.
+///
+/// BITES: hardcode a literal here or in the producer and the two drift on the next bump.
+#[test]
+fn the_envelope_stamps_the_live_scope_version() {
+    let json = format!(
+        r#"{{"schema-version":2,"generated-at":"x","host":"h","cursor":0,"scope-version":{},"sessions":[]}}"#,
+        session::SCOPE_VERSION
+    );
+    let env: ExportEnvelope = serde_json::from_str(&json).expect("must deserialize");
+    assert_eq!(env.scope_version, session::SCOPE_VERSION);
 }
 
 #[test]

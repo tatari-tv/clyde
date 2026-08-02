@@ -3,6 +3,7 @@
   "generated-at": "2026-07-17T00:00:00+00:00",
   "host": "host-01",
   "cursor": 7,
+  "scope-version": 4,
   "sessions": [
     {
       "session-id": "00000000-0000-4000-8000-000000000002",
