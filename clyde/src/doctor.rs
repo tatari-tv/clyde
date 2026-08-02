@@ -56,10 +56,55 @@ struct Attribution {
 /// One configured root's own diagnosis. Every field is about THAT root; nothing here is a rollup.
 struct RepoRootState {
     path: PathBuf,
-    exists: bool,
-    /// Whether this root contains at least one `<org>/<repo>` pair. When it does not, rule 4 is
-    /// INERT for this root and says so, rather than looking like it is simply not firing.
-    has_org_repo: bool,
+    reachable: Reachable,
+    /// Whether this root contains at least one `<org>/<repo>` pair RIGHT NOW, or `None` when the
+    /// directory could not be read.
+    ///
+    /// A LAYOUT OBSERVATION, not a verdict on rule 4. This used to print "rule 4 is INERT for this
+    /// root", and that claim is wrong: rule 4 classifies the STORED cwd of a past session against
+    /// the configured roots and never stats the directory, so a root with no pair on disk today can
+    /// still be attributing catalog rows from before a checkout was deleted. Reporting the layout is
+    /// useful; concluding a rule is dead from it is not.
+    has_org_repo: Option<bool>,
+}
+
+/// Whether a configured root could be reached, keeping the THREE outcomes `Path::is_dir` collapses
+/// into one `false`.
+///
+/// `doctor` is the command an operator runs when something is already broken, so telling them a root
+/// "does not exist" when the truth is a permissions error sends them to create a directory that is
+/// already there. Different causes, different remedies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Reachable {
+    /// A directory, readable.
+    Yes,
+    /// Nothing at that path.
+    Missing,
+    /// The path exists but is not a directory.
+    NotADirectory,
+    /// Metadata could not be read at all: permissions, a dead mount, an I/O error.
+    Error(String),
+}
+
+impl Reachable {
+    fn of(path: &Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(md) if md.is_dir() => Self::Yes,
+            Ok(_) => Self::NotADirectory,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::Missing,
+            Err(e) => Self::Error(e.to_string()),
+        }
+    }
+
+    /// The parenthetical `doctor` prints after the path, or `None` when the root is fine.
+    fn note(&self) -> Option<String> {
+        match self {
+            Self::Yes => None,
+            Self::Missing => Some("(does not exist)".to_string()),
+            Self::NotADirectory => Some("(not a directory)".to_string()),
+            Self::Error(e) => Some(format!("(unreadable: {e})")),
+        }
+    }
 }
 
 /// Read the attribution picture, or `Ok(None)` when there is no catalog to read.
@@ -72,10 +117,13 @@ fn attribution(db_path: &Path) -> Result<Option<Attribution>> {
     let repo_roots: Vec<RepoRootState> = cfg
         .repo_roots()
         .iter()
-        .map(|path| RepoRootState {
-            exists: path.is_dir(),
-            has_org_repo: has_org_repo_pair(path),
-            path: path.clone(),
+        .map(|path| {
+            let reachable = Reachable::of(path);
+            RepoRootState {
+                has_org_repo: matches!(reachable, Reachable::Yes).then(|| has_org_repo_pair(path)),
+                reachable,
+                path: path.clone(),
+            }
         })
         .collect();
     Ok(Some(Attribution {
@@ -115,18 +163,21 @@ fn print_attribution(a: &Attribution) {
     // roots is missing, which is the whole reason the key became a list.
     for (i, root) in a.repo_roots.iter().enumerate() {
         let label = if i == 0 { "  repo-roots:  " } else { "               " };
-        let state = if root.exists {
-            String::new()
-        } else {
-            format!(" {}", "(does not exist)".red())
+        let state = match root.reachable.note() {
+            Some(note) => format!(" {}", note.red()),
+            None => String::new(),
         };
         println!("{label}  {}{}", root.path.display(), state);
-        if root.exists && !root.has_org_repo {
-            // Not a failure: plenty of hosts have no `<org>/<repo>` layout at all. But rule 4
-            // silently never firing looks identical to rule 4 being broken, and this is the
-            // difference. Per root, because one root can be inert while another is not.
+        if root.has_org_repo == Some(false) {
+            // A LAYOUT observation, deliberately not a verdict on rule 4. Plenty of hosts have no
+            // `<org>/<repo>` layout at all, and the operator wants to know that. But rule 4 reads a
+            // session's STORED cwd against the configured roots and never stats the directory, so an
+            // empty root today says nothing about whether rule 4 is attributing catalog rows from
+            // before a checkout was deleted. The `resolved by:` counts below answer that question
+            // with evidence; this line answers only "what is on disk right now".
             println!(
-                "    {} no <org>/<repo> pair under this root, so rule 4 (path-guess) is INERT for it",
+                "    {} no <org>/<repo> pair under this root today, so rule 4 (path-guess) will not \
+                 match a NEW cwd here; see `resolved by: path-guess` for what it already attributed",
                 "note:".yellow()
             );
         }

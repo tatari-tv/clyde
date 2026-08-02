@@ -412,12 +412,6 @@ impl Matrix {
         self.home().join("projects")
     }
 
-    /// The off-layout root holding [`Self::offlayout_container_root`]: Keegan's `~/git/tatari`,
-    /// which an operator declares in `repo-roots` exactly as they declare `~/repos`.
-    pub fn offlayout_root(&self) -> PathBuf {
-        self.home().join("git")
-    }
-
     /// The alternate root holding [`Self::work_org_named_repo`]: a stand-in for any root an operator
     /// configures that is not `<home>/repos`.
     pub fn alt_root(&self) -> PathBuf {

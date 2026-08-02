@@ -438,6 +438,13 @@ and gets its own warning naming that. Outcome unchanged.
 
 ### Data Model
 
+> **SUPERSEDED IN PART, 2026-08-01.** The `name-guess` token below is rule 5's, and **rule 5 was not
+> built**: Phase 4 is gated on Phase 0, which never ran. `RepoSource` still has FOUR variants
+> (`git-origin`, `known-path`, `files-touched`, `path-guess`) and nothing writes `name-guess`. Read
+> this block as the proposal it is, not as the shipped schema. The `scope_version` paragraph at the
+> end DID ship. See the Status block at the top.
+
+
 - `sessions.repo_source` gains the token `name-guess`, rank 4. Existing tokens unchanged. Ranks are
   "lower is better" and the catalog writes only on a strict improvement
   (`common/src/repo.rs:51-61`), so a `name-guess` can never overwrite an existing attribution.
@@ -452,6 +459,14 @@ and gets its own warning naming that. Outcome unchanged.
 - `scope_version` rows at 3 become re-offer candidates at 4. Same mechanism as the 2 -> 3 bump.
 
 ### API Design
+
+> **SUPERSEDED IN PART, 2026-08-01.** Every rule-5 signature below (`NameMap`, `from_name_guess`, and
+> the `names: &N` parameter on `Resolver::resolve`) is UNBUILT. The shipped signature is
+> `resolve(&mut self, cwd, paths, repos_touched, roots)` with no `names`. `repo_roots()`,
+> `from_path_guess`, `slug_under_roots`, `Anchors` and `classify_with_evidence` all shipped as
+> sketched, except that `classify_with_evidence` also takes `&RoutingFacts` carrying a
+> `RecordedProbe`, and `collect_layouts` dropped `repo_root` entirely rather than replacing it.
+
 
 ```rust
 // common/src/config.rs
@@ -530,8 +545,12 @@ because it depends on Phase 2's roots.
 - Export's fallback at `query.rs:343` calls `routing::classify_row` instead of `session::classify`;
   `EXPORT_COLS` / `ExportRaw` gain `repo_source`, `repo_probe`, `repo_host`. Export gains a top-level
   `scope-version` field (additive, no schema bump).
-- `has_work_org` / `has_repos_anchor` match configured roots. Work org anchors Work with or without a
-  following component; a non-work-org component anchors Personal only when a component follows.
+- `has_work_org` / `has_repos_anchor` match configured roots. A non-work-org component anchors
+  Personal only when a component follows.
+  > **SUPERSEDED, round 3.** This bullet originally read "Work org anchors Work with or without a
+  > following component", which is the LEAK round 3 found: a bare `<root>/<work-org>` has four
+  > possible occupants and the path separates none of them. The rule that shipped anchors Work only
+  > on a conclusive `ProbeOutcome::NotARepo`. The exhaustive table in P3 above is the contract.
 - `SCOPE_VERSION` 3 -> 4.
 - **Success criteria:**
   - `<root>/<repo>` with a work origin classifies Work via `GitOrigin`, not Personal via `CwdAnchor`.

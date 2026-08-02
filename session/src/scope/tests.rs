@@ -351,8 +351,11 @@ fn classify_at_with_facts(
         source,
         &touched(pairs),
         files_edited,
-        // The matrix fixture lives under a temp dir, not under `~/repos`, so its cwds are UNANCHORED
-        // and every assertion below is genuinely about the rule under test rather than about a path
+        // The fixture's OWN repo root is the configured anchor, so a `<repo-root>/<org>/<repo>` row
+        // IS anchored, which is exactly what `cwd_anchor_outranks_the_remote_in_both_directions`
+        // asserts. The off-layout rows (`layout_code_work`, `layout_projects`, `layout_git_tatari`)
+        // sit under no configured root and are therefore unanchored, which is what makes
+        // `git_origin_classifies_every_real_world_layout` a test of the remote rather than of a path
         // convention that happens to agree.
         &Anchors::new(&[m.repo_root()]),
         facts,

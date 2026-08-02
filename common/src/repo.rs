@@ -509,13 +509,20 @@ impl ProbeOutcome {
     /// routing rule has ever compared it, and handing the classifier a clock it does not need is how
     /// a time-based rule gets written by accident.
     pub fn from_stamp(stamp: &str) -> Option<Self> {
-        // The `@<rfc3339>` half is REQUIRED, not optional. `Db::record_probe` writes exactly
+        // The `@<rfc3339>` half is REQUIRED **and PARSED**. `Db::record_probe` writes exactly
         // `<token>@<rfc3339>` and nothing else, so a bare `not-a-repo` is a value this binary can
         // never have produced. Accepting it would let a hand-edited catalog hand the bare
         // `<root>/<work-org>` anchor a `NotARepo` it never observed, which grants Work scope on an
-        // edited string. Matching the persisted CONTRACT rather than just the token prefix is what
-        // keeps the parser from being more permissive than the writer.
-        let (token, _) = stamp.split_once('@')?;
+        // edited string.
+        //
+        // Requiring the `@` alone was NOT enough, and `not-a-repo@invalid` is why: it has the shape
+        // and no valid stamp, and `NotARepo` is the one outcome that ANCHORS Work rather than merely
+        // deferring. Validating the timestamp is what makes the parser exactly as permissive as the
+        // writer and no more. The parsed value is deliberately discarded -- no routing rule has ever
+        // compared it, and handing the classifier a clock it does not need is how a time-based rule
+        // gets written by accident.
+        let (token, stamped_at) = stamp.split_once('@')?;
+        chrono::DateTime::parse_from_rfc3339(stamped_at).ok()?;
         match token {
             "no-origin" => Some(Self::NoOrigin),
             "not-a-repo" => Some(Self::NotARepo),
