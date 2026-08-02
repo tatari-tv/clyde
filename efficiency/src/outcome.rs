@@ -82,8 +82,9 @@ pub struct Outcomes {
     /// `<org>/<repo>` -> distinct edited-file count, derived from the same Edit/Write paths that
     /// `files_edited` collapses to a bare count. Backs repo attribution's rule 3
     /// ([`common::repo::from_files_touched`]): a session whose cwd is `$HOME` or a temp dir can
-    /// still be attributed to the repo it actually edited. Empty when no edited path fell under the
-    /// configured `repo-root`.
+    /// still be attributed to the repo it actually edited. Empty when git could not place any edited
+    /// path in a checkout whose origin is on an allowlisted host. NOT a path parse since v0.23.0
+    /// (Problem 5); see [`union`].
     ///
     /// The PATHS themselves are deliberately not persisted (4,242 distinct paths in one 30-day
     /// window is payload nobody asked for); the slug counts carry the whole signal.

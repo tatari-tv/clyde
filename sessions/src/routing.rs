@@ -53,8 +53,11 @@ pub fn parse_repo_source(session_id: &str, raw: Option<&str>) -> Option<RepoSour
 /// `Db::record_probe` enforces at the write that only the two conclusive-negative tokens are ever
 /// stored, so an unparseable stamp means a hand-edited catalog. `None` classifies WITHOUT the probe
 /// signal, which defers to the remote and is the fail-safe direction.
-pub fn parse_repo_probe(session_id: &str, raw: Option<&str>) -> Option<ProbeOutcome> {
-    let raw = raw?;
+///
+/// Takes a `&str`, not an `Option<&str>`: whether the column is PRESENT is a different question from
+/// what it says, and `RecordedProbe::of` is the one place they are joined. Answering both here is
+/// what let an unreadable stamp read as "nothing recorded".
+pub fn parse_repo_probe(session_id: &str, raw: &str) -> Option<ProbeOutcome> {
     match ProbeOutcome::from_stamp(raw) {
         Some(outcome) => Some(outcome),
         None => {
@@ -105,15 +108,14 @@ pub fn classify_row<R: HostResolver>(
     hosts: &mut HostPolicy<R>,
 ) -> RowDecision {
     let repo_source = parse_repo_source(session_id, repo_source_raw);
-    let repo_probe = parse_repo_probe(session_id, evidence.repo_probe.as_deref());
     // PRESENCE of the column decides whether a negative was recorded; the PARSE only decides whether
-    // this binary can say which one. An unreadable stamp is therefore `Unreadable`, never absent:
-    // collapsing it to `None` would tell the classifier nothing was recorded and hand a work slug
-    // through the branch that exists to refuse it.
-    let recorded_probe = evidence.repo_probe.as_ref().map(|_| match repo_probe.as_ref() {
-        Some(outcome) => RecordedProbe::Negative(outcome),
-        None => RecordedProbe::Unreadable,
-    });
+    // this binary can say which one. `RecordedProbe::of` is what joins them, so an unreadable stamp
+    // is `Unreadable` and never absent: collapsing it would tell the classifier nothing was recorded
+    // and hand a work slug through the branch that exists to refuse it. The owned parse is bound here
+    // because `RecordedProbe` borrows it for the rest of the row.
+    let raw_probe = evidence.repo_probe.as_deref();
+    let repo_probe = raw_probe.and_then(|raw| parse_repo_probe(session_id, raw));
+    let recorded_probe = RecordedProbe::of(raw_probe, repo_probe.as_ref());
     let decision = session::classify_with_evidence(
         cwd.map(std::path::Path::new),
         repo,

@@ -732,7 +732,7 @@ fn cmd_reindex(db: &Db, args: ReindexArgs) -> Result<()> {
     // Load and validate clyde.yml BEFORE the content reindex mutates the catalog: an invalid
     // `efficiency:` section (a typo'd key, an out-of-range threshold) must fail closed, before any
     // write happens, not after the catalog has already been rewritten. Config supplies the scoring
-    // thresholds for the efficiency pass below, `repo-root` for repo attribution's rule 4, and
+    // thresholds for the efficiency pass below, `repo-roots` for repo attribution's rule 4, and
     // `projects-dir` for the resolver on the next line.
     let cfg = common::config::load().context("failed to load clyde config for the efficiency pass")?;
     // Loaded FIRST, then resolved: this call used to skip config entirely and jump from the flag to
@@ -1101,7 +1101,7 @@ fn lazy_reindex(db: &Db, skip: bool) {
         return;
     }
     // A broken clyde.yml SKIPS the refresh entirely rather than falling back to the default
-    // repo-root. Reindexing writes repo attribution, and that write is strictly-improving: rule 4
+    // repo-roots. Reindexing writes repo attribution, and that write is strictly-improving: rule 4
     // resolving a session against the WRONG root persists an answer of equal rank that no later
     // pass -- including one run after the config is fixed -- can ever overwrite. The operator would
     // then need `--reresolve-repo` to undo damage a mistyped config key caused silently.
@@ -1113,12 +1113,11 @@ fn lazy_reindex(db: &Db, skip: bool) {
         Err(e) => {
             warn!(
                 "lazy_reindex: failed to load clyde config, skipping the incremental refresh so a \
-                 default repo-root cannot persist wrong attribution; querying stored data only: {e}"
+                 default repo-roots cannot persist wrong attribution; querying stored data only: {e}"
             );
             return;
         }
     };
-    let repo_roots = cfg.repo_roots().to_vec();
     // Through the shared resolver, which is what makes a configured `projects-dir` reach the lazy
     // refresh at all. It previously read the platform default unconditionally, so on a host with
     // `projects-dir` set, every `ls`/`search`/`enrich` silently reindexed the WRONG tree.
@@ -1129,7 +1128,7 @@ fn lazy_reindex(db: &Db, skip: bool) {
             return;
         }
     };
-    if let Err(e) = sessions::reindex(db, &projects_dir, &repo_roots) {
+    if let Err(e) = sessions::reindex(db, &projects_dir, cfg.repo_roots()) {
         warn!("lazy_reindex: reindex failed, querying stored data only: {e}");
     }
 }

@@ -57,27 +57,33 @@ struct Attribution {
 struct RepoRootState {
     path: PathBuf,
     reachable: Reachable,
-    /// Whether this root contains at least one `<org>/<repo>` pair RIGHT NOW, or `None` when the
-    /// directory could not be read.
-    ///
-    /// A LAYOUT OBSERVATION, not a verdict on rule 4. This used to print "rule 4 is INERT for this
-    /// root", and that claim is wrong: rule 4 classifies the STORED cwd of a past session against
-    /// the configured roots and never stats the directory, so a root with no pair on disk today can
-    /// still be attributing catalog rows from before a checkout was deleted. Reporting the layout is
-    /// useful; concluding a rule is dead from it is not.
-    has_org_repo: Option<bool>,
 }
 
 /// Whether a configured root could be reached, keeping the THREE outcomes `Path::is_dir` collapses
-/// into one `false`.
+/// into one `false`, and carrying the layout reading that is only meaningful for a reachable one.
 ///
 /// `doctor` is the command an operator runs when something is already broken, so telling them a root
 /// "does not exist" when the truth is a permissions error sends them to create a directory that is
 /// already there. Different causes, different remedies.
+///
+/// The layout flag rides ON [`Self::Yes`] rather than sitting beside this enum as its own
+/// `Option<bool>`, because it is not independent of it: it can only be read from a directory that
+/// could be listed, so the pair "unreachable, and here is what is inside it" is a state that must
+/// not be constructible. As two fields it was, and the `None` case had to be documented as meaning
+/// three different things.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Reachable {
     /// A directory, readable.
-    Yes,
+    Yes {
+        /// Whether this root contains at least one `<org>/<repo>` pair RIGHT NOW.
+        ///
+        /// A LAYOUT OBSERVATION, not a verdict on rule 4. This used to print "rule 4 is INERT for
+        /// this root", and that claim is wrong: rule 4 classifies the STORED cwd of a past session
+        /// against the configured roots and never stats the directory, so a root with no pair on
+        /// disk today can still be attributing catalog rows from before a checkout was deleted.
+        /// Reporting the layout is useful; concluding a rule is dead from it is not.
+        has_org_repo: bool,
+    },
     /// Nothing at that path.
     Missing,
     /// The path exists but is not a directory.
@@ -87,9 +93,12 @@ enum Reachable {
 }
 
 impl Reachable {
+    /// Diagnose `path`, reading its layout only when it is a directory that can be listed.
     fn of(path: &Path) -> Self {
         match std::fs::metadata(path) {
-            Ok(md) if md.is_dir() => Self::Yes,
+            Ok(md) if md.is_dir() => Self::Yes {
+                has_org_repo: has_org_repo_pair(path),
+            },
             Ok(_) => Self::NotADirectory,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::Missing,
             Err(e) => Self::Error(e.to_string()),
@@ -99,7 +108,7 @@ impl Reachable {
     /// The parenthetical `doctor` prints after the path, or `None` when the root is fine.
     fn note(&self) -> Option<String> {
         match self {
-            Self::Yes => None,
+            Self::Yes { .. } => None,
             Self::Missing => Some("(does not exist)".to_string()),
             Self::NotADirectory => Some("(not a directory)".to_string()),
             Self::Error(e) => Some(format!("(unreadable: {e})")),
@@ -117,13 +126,9 @@ fn attribution(db_path: &Path) -> Result<Option<Attribution>> {
     let repo_roots: Vec<RepoRootState> = cfg
         .repo_roots()
         .iter()
-        .map(|path| {
-            let reachable = Reachable::of(path);
-            RepoRootState {
-                has_org_repo: matches!(reachable, Reachable::Yes).then(|| has_org_repo_pair(path)),
-                reachable,
-                path: path.clone(),
-            }
+        .map(|path| RepoRootState {
+            reachable: Reachable::of(path),
+            path: path.clone(),
         })
         .collect();
     Ok(Some(Attribution {
@@ -163,12 +168,12 @@ fn print_attribution(a: &Attribution) {
     // roots is missing, which is the whole reason the key became a list.
     for (i, root) in a.repo_roots.iter().enumerate() {
         let label = if i == 0 { "  repo-roots:  " } else { "               " };
-        let state = match root.reachable.note() {
-            Some(note) => format!(" {}", note.red()),
-            None => String::new(),
-        };
+        let state = root
+            .reachable
+            .note()
+            .map_or(String::new(), |note| format!(" {}", note.red()));
         println!("{label}  {}{}", root.path.display(), state);
-        if root.has_org_repo == Some(false) {
+        if root.reachable == (Reachable::Yes { has_org_repo: false }) {
             // A LAYOUT observation, deliberately not a verdict on rule 4. Plenty of hosts have no
             // `<org>/<repo>` layout at all, and the operator wants to know that. But rule 4 reads a
             // session's STORED cwd against the configured roots and never stats the directory, so an

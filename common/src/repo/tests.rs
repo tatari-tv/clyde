@@ -1228,15 +1228,27 @@ fn an_intact_linked_worktree_is_not_reported_as_an_orphan() {
 /// silently makes every stored stamp unreadable -- which, since an unreadable stamp fails closed,
 /// would silently strip work scope from every refused row.
 ///
-/// BITES: delete either arm and its row fails.
+/// Driven through [`ProbeOutcome::stamp`], the REAL writer `Db::record_probe` calls, rather than a
+/// `format!` re-spelled here. A test that hand-builds the string only pins the parser: change the
+/// separator or the timestamp format in the writer and a hand-built round trip still passes while
+/// every stamp the binary actually writes stops parsing.
+///
+/// BITES: delete either arm and its row fails; change the writer's format and every row fails.
 #[test]
 fn from_stamp_round_trips_every_token_record_probe_can_write() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-08-01T12:00:00+00:00")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
     for outcome in [ProbeOutcome::NoOrigin, ProbeOutcome::NotARepo] {
         assert!(
             outcome.is_conclusive_negative(),
             "precondition: only conclusive negatives are ever written"
         );
-        let stamp = format!("{}@2026-08-01T12:00:00+00:00", outcome.as_str());
+        let stamp = outcome.stamp(now);
+        assert!(
+            stamp.starts_with(&format!("{}@", outcome.as_str())),
+            "the stamp is `<token>@<rfc3339>`, got {stamp}"
+        );
         assert_eq!(
             ProbeOutcome::from_stamp(&stamp),
             Some(outcome.clone()),

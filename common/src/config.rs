@@ -471,8 +471,11 @@ impl Default for Config {
 /// The absent value of a removed config key. Its presence in the YAML is the only thing that can be
 /// observed about it, and [`de_repo_root_renamed`] turns that into a load error, so the only value
 /// that ever reaches a [`Config`] is `Default`.
+///
+/// Private: it is reachable only from a private field and a private deserializer, and a type whose
+/// entire job is to fail deserialization has no business in `common`'s public API.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct RemovedKey;
+struct RemovedKey;
 
 /// Reject an old `repo-root:` key with the migration, rather than with `deny_unknown_fields`'
 /// generic "unknown field" message.

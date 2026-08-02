@@ -312,7 +312,7 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
 /// frozen [`EnrichStatus`] vocabulary: a non-contract value must never silently reach the wire. `NULL`
 /// maps to `None` (never-attempted); a known value to `Some(variant)`.
 fn build_export_record<R: HostResolver>(
-    raw: ExportRaw,
+    mut raw: ExportRaw,
     now: DateTime<Utc>,
     dormant_after: chrono::Duration,
     anchors: &Anchors,
@@ -345,8 +345,13 @@ fn build_export_record<R: HostResolver>(
     // arm executes ONLY when `scope_override` AND the stored `scope` are both absent, which is a row
     // the gate has never decided. A gated row reads its stored decision above and never reaches here.
     //
-    // The `outcome_json` parse the old comment refused is paid LAZILY: the column is selected (free)
-    // and parsed only inside this arm. On a catalog the gate has processed, that is no rows.
+    // The `outcome_json` PARSE the old comment refused is paid lazily -- only inside this arm -- but
+    // the column is still SELECTED for every row, and that is not free: rusqlite allocates the blob
+    // per row (measured on the maintainer's catalog: 2,205 rows, ~175 B average, ~385 KB per full
+    // export) while roughly 244 of them reach this arm. Kept as one query anyway. Deferring the blob
+    // to a second per-row `scope_evidence` lookup would trade ~2,000 allocations for ~244 extra
+    // SQLite round trips on the same endpoint, which is the worse half of the trade, and it is small
+    // either way next to the 1.6 KB/row `efficiency_json` this already selects.
     // The stored sources are VALIDATED before they reach the wire, not passed through. Both columns
     // are plain nullable TEXT with no `CHECK`, so a hand-edited catalog (or one written by a future
     // clyde that learned a third scope) can hold `'Work'`, `'garbage'`, or `''`. Emitting those
@@ -360,7 +365,11 @@ fn build_export_record<R: HostResolver>(
     // stored values in this function whose vocabulary is frozen. A corrupt catalog makes the export
     // ERROR and name the session, which is actionable; silently substituting a different answer is
     // not, and silently forwarding the bad token is worse. Found by the review panel (Codex).
-    let stored_scope = raw.scope_override.clone().or_else(|| raw.scope.clone());
+    //
+    // MOVED out with `take`, never cloned: this runs on every row of the bulk paged endpoint whose
+    // whole point is being cheap, and none of these four columns is read again below (they are
+    // inputs to the fallback and to this check, never emitted).
+    let stored_scope = raw.scope_override.take().or_else(|| raw.scope.take());
     let scope = match stored_scope {
         Some(token) => session::Scope::from_stored(&token)
             .ok_or_else(|| {
@@ -378,10 +387,13 @@ fn build_export_record<R: HostResolver>(
             let evidence = crate::db::enrich::evidence_from_row(
                 &raw.session_id,
                 &crate::db::enrich::EvidenceRow {
-                    outcome_json: raw.outcome_json.clone(),
-                    repo_probe: raw.repo_probe.clone(),
-                    repo_host: raw.repo_host.clone(),
-                    scope_override: raw.scope_override.clone(),
+                    outcome_json: raw.outcome_json.take(),
+                    repo_probe: raw.repo_probe.take(),
+                    repo_host: raw.repo_host.take(),
+                    // Provably `None`, not merely absent-in-practice: this arm is reached only when
+                    // `scope_override.or(scope)` was `None`, so the override column is NULL. Passing
+                    // the field would suggest the override step below it can fire here; it cannot.
+                    scope_override: None,
                 },
             );
             crate::routing::classify_row(

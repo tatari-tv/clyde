@@ -1155,6 +1155,41 @@ fn an_unreadable_probe_stamp_does_not_anchor_the_bare_work_org() {
     );
 }
 
+/// **`RecordedProbe::of` joins PRESENCE and CONTENT, and presence comes from the RAW column.**
+///
+/// The pairing used to live at `sessions::routing::classify_row` as two locals combined under a
+/// comment, so nothing stopped a caller reporting `Unreadable` for a readable stamp or -- the leak
+/// the audit found -- collapsing a present-but-unparseable column to `None`, telling the classifier
+/// nothing was recorded and letting the git-origin branch grant Work on a string it could not read.
+///
+/// All four combinations are pinned. The third row is the leak; the fourth cannot occur from the one
+/// caller (a parse only succeeds when there is a column to parse) and is asserted anyway, because the
+/// constructor's contract is that RAW alone decides presence.
+///
+/// BITES: key presence on `parsed` instead of `raw` and rows 2 and 3 both change.
+#[test]
+fn recorded_probe_of_takes_presence_from_the_column_and_content_from_the_parse() {
+    let not_a_repo = ProbeOutcome::NotARepo;
+
+    // No column: nothing was recorded, so there is nothing to refuse.
+    assert_eq!(RecordedProbe::of(None, None), None);
+
+    // A column that parsed: the outcome is available to the bare-work-org anchor.
+    assert_eq!(
+        RecordedProbe::of(Some("not-a-repo@2026-08-01T12:00:00+00:00"), Some(&not_a_repo)),
+        Some(RecordedProbe::Negative(&not_a_repo)),
+    );
+
+    // A column that did NOT parse: still a RECORDED negative, so `Unreadable`, never `None`.
+    assert_eq!(
+        RecordedProbe::of(Some("garbage"), None),
+        Some(RecordedProbe::Unreadable)
+    );
+
+    // Raw decides presence even if a parsed value is somehow handed in without one.
+    assert_eq!(RecordedProbe::of(None, Some(&not_a_repo)), None);
+}
+
 /// **The doc's `~/code/repos/tatari-tv/x` row**, which both audit seats found unasserted. A literal
 /// `repos` component sitting INSIDE a configured off-layout root is an ordinary org slot named
 /// `repos`, not an anchor: the org is `repos`, which is not a work org, so it settles Personal.
