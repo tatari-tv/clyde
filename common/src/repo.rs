@@ -18,7 +18,8 @@
 //!    `tatari-tv/clyde-ft`).
 //! 3. [`RepoSource::FilesTouched`] - unique argmax over the repos a session edited files in. A tie
 //!    is evidence of ambiguity, not of a resolvable repo, so it abstains.
-//! 4. [`RepoSource::PathGuess`] - last resort: the cwd matches `<repo-root>/<org>/<repo>[/...]`.
+//! 4. [`RepoSource::PathGuess`] - last resort: the cwd matches `<root>/<org>/<repo>[/...]` under
+//!    one of the configured `repo-roots`.
 //!    Kept because it resolves the dominant cold-start case correctly, and honest because
 //!    `repo_source` marks it as a guess wherever it is rendered.
 //!
@@ -43,7 +44,8 @@ pub enum RepoSource {
     KnownPath,
     /// Rule 3: unique argmax over the repos whose files the session edited.
     FilesTouched,
-    /// Rule 4: the cwd pattern-matches `<repo-root>/<org>/<repo>[/...]`.
+    /// Rule 4: the cwd pattern-matches `<root>/<org>/<repo>[/...]` under a configured `repo-roots`
+    /// entry.
     PathGuess,
 }
 
@@ -491,11 +493,27 @@ impl ProbeOutcome {
         }
     }
 
+    /// Render the `sessions.repo_probe` stamp for this outcome: `'<token>@<rfc3339>'`.
+    ///
+    /// The WRITER half of the stamp contract, beside [`Self::from_stamp`] which reads it, for the
+    /// reason that function's own doc gives: a contract whose two halves live in different crates is
+    /// one rename away from silently reading every stamp as unrecognized. The format used to be a
+    /// `format!` inside `sessions::Db::record_probe` while the parser lived here, which is exactly
+    /// the split that warning describes.
+    ///
+    /// Does NOT check [`Self::is_conclusive_negative`]. Which outcomes may be PERSISTED is the
+    /// column's write policy and belongs at the write (`Db::record_probe` enforces it, so a future
+    /// caller cannot reintroduce a `Blocked` stamp); this function only renders.
+    pub fn stamp(&self, now: chrono::DateTime<chrono::Utc>) -> String {
+        format!("{}@{}", self.as_str(), now.to_rfc3339())
+    }
+
     /// Parse back the outcome from a `sessions.repo_probe` stamp (`'<token>@<rfc3339>'`).
     ///
-    /// The inverse of [`Self::as_str`], and it lives beside it for the same reason
-    /// [`RepoSource::from_str`] lives beside its own `as_str`: a token contract with its two halves
-    /// in different crates is one rename away from silently reading every stamp as unrecognized.
+    /// The inverse of [`Self::as_str`] and of [`Self::stamp`], and it lives beside them for the same
+    /// reason [`RepoSource::from_str`] lives beside its own `as_str`: a token contract with its two
+    /// halves in different crates is one rename away from silently reading every stamp as
+    /// unrecognized.
     ///
     /// **Only the two CONCLUSIVE-NEGATIVE tokens are legal here, and that is the column's contract,
     /// not a shortcut.** `Db::record_probe` enforces at the write that nothing else is ever stored,
@@ -911,12 +929,63 @@ pub fn from_path_guess(cwd: &Path, roots: &[PathBuf]) -> Option<Resolved> {
     Some(Resolved::new(slug, RepoSource::PathGuess))
 }
 
+/// Read `shape` off `path`'s remainder under the DEEPEST configured root that both contains `path`
+/// and satisfies `shape`. `None` when no root does.
+///
+/// **The ONE definition of "which configured root does this path sit under".** Rule 4
+/// ([`slug_under_roots`], which wants `<org>/<repo>`) and the cwd anchor
+/// (`session::scope::Anchors::org_slot`, which wants the org slot plus whether anything follows it)
+/// read different shapes off the same walk, so the walk is the part that is shared and the shape is
+/// the part each caller passes in. They are supposed to agree by construction: the config
+/// validator's nesting rejection and its symlink both-spellings expansion exist to serve exactly one
+/// matching rule, and two hand-synced copies of it is how that guarantee would quietly lapse.
+///
+/// **`shape` runs INSIDE the selection, not after it, and that is load-bearing.** A root that
+/// contains `path` but whose remainder does not fit is skipped, so a SHALLOWER root can still win:
+/// with roots `[/a, /a/link]` and path `/a/link/philo`, the deeper root leaves the bare `philo`
+/// (no org slot) and the shallower one leaves `link/philo`, which is the slug rule 4 guesses.
+/// Selecting the deepest root first and applying the shape afterwards would decline instead. That is
+/// a different answer, not a tidier spelling of this one.
+///
+/// `max_by_key` rather than a hand-rolled comparison, and that is a mutation-gate lesson rather than
+/// a style choice. The explicit `depth > seen` form left THREE surviving mutants (`<`, `==`, `>=`),
+/// and only two of them are killable: no reachable input has two DISTINCT roots of equal depth both
+/// matching one path, so `>` and `>=` are behaviorally identical and no test can tell them apart.
+/// Expressing "deepest wins" as an ordering key deletes the operator, so there is nothing left to
+/// mutate and no annotated skip to justify.
+///
+/// Depth is a COMPONENT COUNT, not a string length: a root with more components is the deeper one
+/// regardless of how its names happen to be spelled.
+pub fn under_deepest_root<'p, T>(
+    path: &'p Path,
+    roots: &[PathBuf],
+    shape: impl Fn(&'p Path) -> Option<T>,
+) -> Option<T> {
+    roots
+        .iter()
+        .filter_map(|root| {
+            let Ok(rest) = path.strip_prefix(root) else {
+                trace!(
+                    "repo::under_deepest_root: {} is not under the root {}",
+                    path.display(),
+                    root.display()
+                );
+                return None;
+            };
+            Some((root.components().count(), shape(rest)?))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, shaped)| shaped)
+}
+
 /// The `<org>/<repo>` slug named by the first two path components under the LONGEST matching root,
 /// or `None` when `path` is under no root or does not carry two plain directory names there.
 ///
 /// Longest match wins. `de_repo_roots` refuses a nested pair of CONFIGURED roots, so the only way
 /// two roots can both match is the symlink expansion it performs (a root's configured spelling can
-/// sit under another root's real path), and there the longer one is the one that names the repo.
+/// sit under another root's real path), and there the longer one is the one that names the repo. The
+/// walk itself is [`under_deepest_root`], shared with the cwd anchor; this function is only the
+/// SHAPE it reads.
 ///
 /// PURE path parsing, no filesystem and no catalog: this is the one definition of the
 /// `<root>/<org>/<repo>` shape, and rule 4 ([`from_path_guess`], which reads a session's cwd) is its
@@ -927,46 +996,30 @@ pub fn from_path_guess(cwd: &Path, roots: &[PathBuf]) -> Option<Resolved> {
 /// Being lexical is also why the roots arrive pre-expanded to both spellings: this function cannot
 /// resolve a symlink, and rule 4's whole population is cwds that no longer exist to resolve.
 pub fn slug_under_roots(path: &Path, roots: &[PathBuf]) -> Option<String> {
-    // `max_by_key` rather than a hand-rolled comparison, and that is a mutation-gate lesson rather
-    // than a style choice. The explicit `depth > seen` form left THREE surviving mutants (`<`, `==`,
-    // `>=`), and only two of them are killable: no reachable input has two DISTINCT roots of equal
-    // depth both matching one path, so `>` and `>=` are behaviorally identical and no test can tell
-    // them apart. Expressing "deepest wins" as an ordering key deletes the operator, so there is
-    // nothing left to mutate and no annotated skip to justify.
-    //
-    // Depth is a COMPONENT COUNT, not a string length: a root with more components is the deeper one
-    // regardless of how its names happen to be spelled.
-    roots
-        .iter()
-        .filter_map(|root| {
-            let rest = match path.strip_prefix(root) {
-                Ok(rest) => rest,
-                Err(_) => {
-                    trace!(
-                        "repo::slug_under_roots: {} is not under the root {}",
-                        path.display(),
-                        root.display()
-                    );
-                    return None;
-                }
-            };
-            let mut components = rest.components();
-            let org = next_normal(&mut components)?;
-            let repo = next_normal(&mut components)?;
-            Some((root.components().count(), format!("{org}/{repo}")))
-        })
-        .max_by_key(|(depth, _)| *depth)
-        .map(|(_, slug)| slug)
+    under_deepest_root(path, roots, |rest| {
+        let mut components = rest.components();
+        let org = next_normal(&mut components)?;
+        let repo = next_normal(&mut components)?;
+        Some(format!("{org}/{repo}"))
+    })
 }
 
-/// The next plain directory name under the repo root, or `None` for an exhausted path or anything
-/// that is not a normal component (`..`, a root, a prefix). A non-UTF-8 name is declined rather
-/// than lossily mangled: a slug is compared as a string everywhere downstream.
-fn next_normal(components: &mut std::path::Components<'_>) -> Option<String> {
+/// The next plain directory name under a configured root, or `None` for an exhausted path or
+/// anything that is not a normal component (`..`, a root, a prefix). A non-UTF-8 name is declined
+/// rather than lossily mangled: a slug is compared as a string everywhere downstream.
+///
+/// BORROWED from the path, not copied: the cwd anchor returns the org slot by reference and runs per
+/// catalog row, so an owned `String` here would be an allocation per component per row for a value
+/// that is only ever compared. `slug_under_roots` allocates once, in its own `format!`.
+///
+/// Public because the anchor in the `session` crate reads the same component the same way. It is the
+/// second half of what [`under_deepest_root`] shares: the walk plus this reader is the whole of both
+/// callers, so a change to what counts as a NORMAL component lands in one place.
+pub fn next_normal<'a>(components: &mut std::path::Components<'a>) -> Option<&'a str> {
     match components.next()? {
-        Component::Normal(name) => name.to_str().map(str::to_string),
+        Component::Normal(name) => name.to_str(),
         other => {
-            debug!("repo::slug_under_root: unexpected path component {other:?}; declining");
+            debug!("repo::next_normal: unexpected path component {other:?}; declining");
             None
         }
     }

@@ -8,6 +8,8 @@
 //!
 //! Design: `docs/design/2026-07-31-attribution-and-routing.md` ("The routing fix").
 
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 use common::repo::host::{HostPolicy, HostResolver};
 use common::repo::{ProbeOutcome, RepoSource};
@@ -15,8 +17,6 @@ use eyre::{Result, bail};
 use log::{debug, warn};
 use rusqlite::{OptionalExtension, params};
 use session::{Anchors, Basis};
-
-use std::path::Path;
 
 use super::Db;
 
@@ -62,7 +62,9 @@ impl Db {
             );
             return Ok(false);
         }
-        let stamp = format!("{}@{}", outcome.as_str(), now.to_rfc3339());
+        // Rendered by the outcome itself, never formatted here: `ProbeOutcome::from_stamp` in the
+        // same file parses it back, and the two halves of the format must not sit in two crates.
+        let stamp = outcome.stamp(now);
         debug!("Db::record_probe: session_id={session_id} stamp={stamp}");
         // Guarded against a no-change write for the same reason `record_enrich_skip` is: this runs on
         // EVERY session on EVERY reindex pass, and an unconditional UPDATE would fire the v5 revision

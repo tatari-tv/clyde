@@ -574,3 +574,56 @@ fn doctor_reports_absent_when_any_single_reindex_piece_is_missing() {
         );
     }
 }
+
+/// **A root that stats fine but cannot be LISTED is `Error`, never `Yes { has_org_repo: false }`.**
+///
+/// `chmod 111` grants execute without read: `metadata` succeeds, `read_dir` fails with EACCES. The
+/// old helper folded that into `false`, so `doctor` told the operator the root was readable and held
+/// no `<org>/<repo>` pair. That is the precise misdiagnosis `Reachable` was introduced to prevent,
+/// one level down from the `is_dir` collapse it already fixed: the remedy for "empty" is to clone
+/// something, and the remedy here is to fix the mode.
+///
+/// BITES: return `false` from `has_org_repo_pair` on a `read_dir` error and this reads `Yes`.
+#[test]
+#[cfg(unix)]
+fn an_unlistable_root_is_an_error_not_an_empty_one() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("repos");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir_all(root.join("tatari-tv").join("clyde")).unwrap();
+
+    // Execute but not read. The pair below is real, so a helper that could list would say `true`.
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o111)).unwrap();
+    let state = Reachable::of(&root);
+    // Restore before asserting, so a failure cannot leave an unremovable TempDir behind.
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        matches!(state, Reachable::Error(_)),
+        "an unlistable root must name the read failure, got {state:?}"
+    );
+    assert!(
+        state.note().is_some_and(|n| n.contains("unreadable")),
+        "and it must print as unreadable, got {:?}",
+        state.note()
+    );
+
+    // The control: same root, listable, and the pair is found.
+    assert_eq!(Reachable::of(&root), Reachable::Yes { has_org_repo: true });
+}
+
+/// The other half: a root that IS listable and genuinely holds no pair still reads `Yes` with the
+/// layout flag clear. Without this, "return Error unconditionally" would pass the test above.
+#[test]
+fn a_listable_root_with_no_pair_is_yes_with_the_flag_clear() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("repos");
+    fs::create_dir_all(root.join("tatari-tv")).unwrap();
+    assert_eq!(
+        Reachable::of(&root),
+        Reachable::Yes { has_org_repo: false },
+        "an org dir with no repo under it is a real, readable, empty layout"
+    );
+}

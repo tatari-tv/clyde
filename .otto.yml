@@ -232,8 +232,9 @@ tasks:
       # assertion -- `par_iter().map().collect()` is order-preserving regardless of pool size, and
       # none of the mutated files reasons about thread counts.
       MUTANT_JOBS=8
-      export RAYON_NUM_THREADS=$(( $(nproc) / MUTANT_JOBS > 0 ? $(nproc) / MUTANT_JOBS : 1 ))
-      echo "mutants: --jobs $MUTANT_JOBS x RAYON_NUM_THREADS=$RAYON_NUM_THREADS on $(nproc) cores"
+      CORES=$(nproc)
+      export RAYON_NUM_THREADS=$(( CORES / MUTANT_JOBS > 0 ? CORES / MUTANT_JOBS : 1 ))
+      echo "mutants: --jobs $MUTANT_JOBS x RAYON_NUM_THREADS=$RAYON_NUM_THREADS on $CORES cores"
 
       cargo mutants --workspace --timeout 300 \
         -f "session/src/scope.rs" \

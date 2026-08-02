@@ -168,8 +168,9 @@ impl Scope {
 /// Classify with the repo evidence the catalog already holds, for the sessions `cwd` alone cannot
 /// place. Decided in four steps, first match wins:
 ///
-/// 1. The cwd's org slot is a work org -> Work (the original rule, unchanged).
-/// 2. The cwd carries a `repos/<org>` anchor whose org is not a work org -> Personal.
+/// 1. An operator [`RoutingFacts::scope_override`] said so. Beats every rule below, both directions.
+/// 2. The cwd anchor ([`Anchors::scope_of`]) reads the org slot under a CONFIGURED root: a work org
+///    there is Work, any other org is Personal. One branch, not v3's two -- see that method's table.
 /// 3. The session's repo was attributed from the GIT REMOTE ([`RepoSource::GitOrigin`]) -> Work or
 ///    Personal from that slug's org. Authoritative and layout-independent; see the branch's comment.
 /// 4. Otherwise the touch set decides, and only when all of: the session touched at least one repo,
@@ -177,10 +178,11 @@ impl Scope {
 ///    edited (`repos_touched.values().sum() == files_edited`).
 ///
 /// That fourth condition is what makes the unanimity real rather than nominal. `repos_touched`
-/// (`efficiency::outcome`) silently DROPS any edited path that does not resolve to
-/// `<repo_root>/<org>/<repo>`, logging the skip at `trace!` only, so without the totality check a
-/// session that edited two files in `$HOME` and one work file presents as a unanimous work touch set
-/// and its whole transcript -- personal content included -- would go to the work account.
+/// (`efficiency::outcome`) silently DROPS any edited path git cannot attribute to an allowlisted
+/// remote -- a file in `$HOME`, a temp dir, or a checkout whose origin is on a refused host --
+/// logging the skip at `trace!` only. So without the totality check, a session that edited two files
+/// in `$HOME` and one work file presents as a unanimous work touch set, and its whole transcript --
+/// personal content included -- would go to the work account.
 ///
 /// The fail-safe direction is preserved in every new direction. A cwd anchored to a personal org is
 /// personal no matter what it touched, a mixed touch set is personal, an empty touch set is personal,
@@ -387,6 +389,24 @@ pub enum RecordedProbe<'a> {
 }
 
 impl<'a> RecordedProbe<'a> {
+    /// Combine the column's PRESENCE with the result of parsing it. The only way to build one.
+    ///
+    /// **The two halves answer different questions and this is where they are joined, once.** `raw`
+    /// is the column: `Some` means a conclusive negative was recorded, whatever it says. `parsed` is
+    /// what a reader could make of it. A caller holding both loose values can pair them wrongly --
+    /// report `Unreadable` for a stamp that parsed, or collapse a present-but-unreadable column to
+    /// `None` and tell the classifier nothing was recorded, which is the exact leak this type was
+    /// introduced to close. Making the pairing a constructor is what moves that guarantee off the
+    /// call site's comment and onto the type.
+    ///
+    /// `parsed` is BORROWED and outlives the call, so the caller keeps ownership of the value its
+    /// parser returned; that borrow is also what keeps [`RoutingFacts`] `Copy`.
+    pub fn of(raw: Option<&str>, parsed: Option<&'a ProbeOutcome>) -> Option<Self> {
+        // `raw`, not `parsed`, decides presence. An unreadable stamp is a RECORDED negative.
+        raw?;
+        Some(parsed.map_or(Self::Unreadable, Self::Negative))
+    }
+
     /// The parsed outcome, or `None` when the stamp was unreadable.
     pub fn outcome(self) -> Option<&'a ProbeOutcome> {
         match self {
@@ -480,30 +500,22 @@ impl Anchors {
     /// whether another normal component follows it. `None` when `cwd` is under no configured root, or
     /// is a root itself.
     ///
-    /// Longest match wins, for the same reason `common::repo::slug_under_roots` takes the longest:
-    /// `de_repo_roots` refuses a nested pair of configured roots, so two roots can only both match
-    /// through its symlink expansion, and there the deeper one names the org.
+    /// The WALK is [`common::repo::under_deepest_root`], shared with rule 4's
+    /// `common::repo::slug_under_roots`; this function is only the SHAPE it reads off the remainder.
+    /// The two are supposed to agree about which root a cwd sits under -- `de_repo_roots` refuses a
+    /// nested pair of configured roots, and expands each to both spellings, precisely so there is ONE
+    /// matching rule -- and a second hand-written copy of the walk here is how that guarantee would
+    /// quietly lapse. Longest match wins: two roots can only both match through that symlink
+    /// expansion, and there the deeper one names the org.
     fn org_slot<'p>(&self, cwd: &'p Path) -> Option<(&'p str, bool)> {
-        // `max_by_key`, not a hand-rolled comparison. See `common::repo::slug_under_roots` for the
-        // full reasoning: the explicit form leaves a `>=` mutant no reachable input can kill, and
-        // expressing "deepest wins" as an ordering key removes the operator rather than annotating
-        // around it.
-        self.roots
-            .iter()
-            .filter_map(|root| {
-                let rest = cwd.strip_prefix(root).ok()?;
-                let mut comps = rest.components();
-                // NORMAL only. A `..` or a bare separator is not an org name, and treating one as a
-                // component would let `<root>/../tatari-tv/x` read as anchored.
-                let Some(Component::Normal(org)) = comps.next() else {
-                    return None;
-                };
-                let org = org.to_str()?;
-                let has_following = matches!(comps.next(), Some(Component::Normal(_)));
-                Some((root.components().count(), org, has_following))
-            })
-            .max_by_key(|(depth, _, _)| *depth)
-            .map(|(_, org, following)| (org, following))
+        common::repo::under_deepest_root(cwd, &self.roots, |rest| {
+            let mut comps = rest.components();
+            // NORMAL only, via the shared reader. A `..` or a bare separator is not an org name, and
+            // treating one as a component would let `<root>/../tatari-tv/x` read as anchored.
+            let org = common::repo::next_normal(&mut comps)?;
+            let has_following = matches!(comps.next(), Some(Component::Normal(_)));
+            Some((org, has_following))
+        })
     }
 }
 

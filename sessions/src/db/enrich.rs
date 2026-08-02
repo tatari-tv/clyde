@@ -33,8 +33,8 @@ const FILES_EDITED_KEY: &str = "files-edited";
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScopeEvidence {
     /// `<org>/<repo>` slug -> count of edited files attributed to it. Silently INCOMPLETE by design:
-    /// `efficiency::outcome` drops every edited path that does not resolve under the configured
-    /// `repo_root`, which is why the classifier also requires `sum == files_edited`.
+    /// `efficiency::outcome` drops every edited path the shared rule-1 resolver cannot attribute to
+    /// an allowlisted remote, which is why the classifier also requires `sum == files_edited`.
     pub repos_touched: BTreeMap<String, u64>,
     /// Distinct file paths across the session's successful Edit/Write calls. The denominator of the
     /// totality check.
