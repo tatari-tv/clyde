@@ -13,7 +13,7 @@ use eyre::{Context, Result};
 use log::debug;
 use rusqlite::Connection;
 
-use super::{SCHEMA_SQL, SCHEMA_VERSION, V5_TRIGGERS_SQL};
+use super::{SCHEMA_SQL, SCHEMA_VERSION, V5_TRIGGERS_SQL, without_revision_trigger};
 
 /// Snapshot the on-disk DB file to `<path>.pre-v10.bak` (plus any `-wal`/`-shm` sidecars) before the
 /// v10 migration's first run, per the house migration-verification rule (`rules/rust.md`: "Snapshot
@@ -240,17 +240,14 @@ fn migrate_v7_reset_efficiency(conn: &Connection, from_version: i64) -> Result<(
     if from_version != 6 {
         return Ok(());
     }
-    // Suppress the revision UPDATE trigger for the invalidation (see `Db::set_efficiency_many`).
-    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
-        .context("v7: suppress the revision UPDATE trigger")?;
-    let reset = conn
-        .execute(
+    // Suppress the revision UPDATE trigger for the invalidation (see `without_revision_trigger`).
+    let reset = without_revision_trigger(conn, "v7", || {
+        conn.execute(
             "UPDATE sessions SET efficiency_json=NULL, cache_read_share=NULL, tool_errors=NULL, cost_usd=NULL",
             [],
         )
-        .context("v7: null efficiency columns to force recompute")?;
-    conn.execute_batch(V5_TRIGGERS_SQL)
-        .context("v7: restore the revision UPDATE trigger")?;
+        .context("v7: null efficiency columns to force recompute")
+    })?;
     debug!("migrate_v7_reset_efficiency: invalidated efficiency on {reset} rows (updated_at unchanged)");
     Ok(())
 }
@@ -278,18 +275,15 @@ fn migrate_v8_extend_efficiency(conn: &Connection, from_version: i64) -> Result<
     if !(6..8).contains(&from_version) {
         return Ok(());
     }
-    // Suppress the revision UPDATE trigger for the invalidation (see `Db::set_efficiency_many`).
-    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
-        .context("v8: suppress the revision UPDATE trigger")?;
-    let reset = conn
-        .execute(
+    // Suppress the revision UPDATE trigger for the invalidation (see `without_revision_trigger`).
+    let reset = without_revision_trigger(conn, "v8", || {
+        conn.execute(
             "UPDATE sessions SET efficiency_json=NULL, cache_read_share=NULL, tool_errors=NULL, cost_usd=NULL, \
              outcome_json=NULL",
             [],
         )
-        .context("v8: null efficiency + outcome columns to force recompute")?;
-    conn.execute_batch(V5_TRIGGERS_SQL)
-        .context("v8: restore the revision UPDATE trigger")?;
+        .context("v8: null efficiency + outcome columns to force recompute")
+    })?;
     debug!("migrate_v8_extend_efficiency: invalidated efficiency+outcomes on {reset} rows (updated_at unchanged)");
     Ok(())
 }
@@ -312,16 +306,13 @@ fn migrate_v9_reset_efficiency(conn: &Connection, from_version: i64) -> Result<(
     if from_version != 8 {
         return Ok(());
     }
-    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
-        .context("v9: suppress the revision UPDATE trigger")?;
-    let reset = conn
-        .execute(
+    let reset = without_revision_trigger(conn, "v9", || {
+        conn.execute(
             "UPDATE sessions SET efficiency_json=NULL, cache_read_share=NULL, tool_errors=NULL, cost_usd=NULL",
             [],
         )
-        .context("v9: null efficiency columns to force recompute with the per-message usage dedupe")?;
-    conn.execute_batch(V5_TRIGGERS_SQL)
-        .context("v9: restore the revision UPDATE trigger")?;
+        .context("v9: null efficiency columns to force recompute with the per-message usage dedupe")
+    })?;
     debug!("migrate_v9_reset_efficiency: invalidated efficiency on {reset} rows (updated_at unchanged)");
     Ok(())
 }
@@ -369,18 +360,15 @@ fn migrate_v10_repo(conn: &Connection, from_version: i64) -> Result<()> {
     if !(6..10).contains(&from_version) {
         return Ok(());
     }
-    // Suppress the revision UPDATE trigger for the invalidation (see `Db::set_efficiency_many`).
-    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
-        .context("v10: suppress the revision UPDATE trigger")?;
-    let reset = conn
-        .execute(
+    // Suppress the revision UPDATE trigger for the invalidation (see `without_revision_trigger`).
+    let reset = without_revision_trigger(conn, "v10", || {
+        conn.execute(
             "UPDATE sessions SET efficiency_json=NULL, cache_read_share=NULL, tool_errors=NULL, cost_usd=NULL, \
              outcome_json=NULL",
             [],
         )
-        .context("v10: null efficiency + outcome columns so repos_touched is computed")?;
-    conn.execute_batch(V5_TRIGGERS_SQL)
-        .context("v10: restore the revision UPDATE trigger")?;
+        .context("v10: null efficiency + outcome columns so repos_touched is computed")
+    })?;
     debug!("migrate_v10_repo: invalidated efficiency+outcomes on {reset} rows (updated_at unchanged)");
     Ok(())
 }

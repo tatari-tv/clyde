@@ -19,6 +19,11 @@ use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
 use eyre::{Context, Result};
 use log::{LevelFilter, debug, error, warn};
+// The 8-char display id, from the crate that already renders it into report output. This file
+// carried its own `id.chars().take(8).collect()` copy, which allocated per call and did not strip
+// the `host/` prefix a merged report key carries -- two definitions of "short id", one of them
+// wrong for merged keys.
+use report::fmt::short_id;
 
 use cli::{
     Cli, Command, EnrichArgs, ExportArgs, LsArgs, ReindexArgs, ResumeArgs, SearchArgs, SessionsCommand, StageArgs,
@@ -456,18 +461,7 @@ fn cmd_export_one(
     with_body: bool,
     max_body_bytes: Option<usize>,
 ) -> Result<()> {
-    let ids = db.resolve_id(needle)?;
-    let id = match ids.as_slice() {
-        [id] => id.clone(),
-        [] => {
-            eprintln!("{} no session matches {:?}", "✗".red(), needle);
-            std::process::exit(1);
-        }
-        many => {
-            eprintln!("{} {:?} is ambiguous ({} matches)", "✗".red(), needle, many.len());
-            std::process::exit(1);
-        }
-    };
+    let id = resolve_one_or_exit(db, needle)?;
     let Some(record) = db.export_one(&id, ctx, with_body, max_body_bytes)? else {
         eprintln!("{} no session matches {:?}", "✗".red(), needle);
         std::process::exit(1);
@@ -564,18 +558,7 @@ fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
         args.extra.len()
     );
     lazy_reindex(db, args.no_reindex);
-    let ids = db.resolve_id(&args.id)?;
-    let id = match ids.as_slice() {
-        [id] => id.clone(),
-        [] => {
-            eprintln!("{} no session matches {:?}", "✗".red(), args.id);
-            std::process::exit(1);
-        }
-        many => {
-            eprintln!("{} {:?} is ambiguous ({} matches)", "✗".red(), args.id, many.len());
-            std::process::exit(1);
-        }
-    };
+    let id = resolve_one_or_exit(db, &args.id)?;
     let rec = db
         .get(&id)?
         .ok_or_else(|| eyre::eyre!("session {id} resolved but not found in the catalog"))?;
@@ -703,18 +686,7 @@ fn launch_resume(dir: &Path, id: &str, extra: &[String]) -> Result<()> {
 }
 
 fn cmd_tag(db: &Db, args: TagArgs) -> Result<()> {
-    let ids = db.resolve_id(&args.id)?;
-    let id = match ids.as_slice() {
-        [id] => id.clone(),
-        [] => {
-            eprintln!("{} no session matches {:?}", "✗".red(), args.id);
-            std::process::exit(1);
-        }
-        many => {
-            eprintln!("{} {:?} is ambiguous ({} matches)", "✗".red(), args.id, many.len());
-            std::process::exit(1);
-        }
-    };
+    let id = resolve_one_or_exit(db, &args.id)?;
     if db.set_tags(&id, &args.tags)? {
         if args.tags.is_empty() {
             println!("{} cleared tags for {}", "✓".green(), short_id(&id));
@@ -901,6 +873,27 @@ fn resolve_one_session_id(db: &Db, needle: &str) -> Result<String> {
     }
 }
 
+/// Resolve `needle` to exactly one session id, or print the failure and exit 1.
+///
+/// The CLI-surface twin of [`resolve_one_session_id`]: same resolution, but the zero/ambiguous cases
+/// are an operator-facing message and a non-zero exit rather than an `Err` that would print with an
+/// `Error:` chain. Four commands (`export`, `resume`, `tag`, `enrich`) each carried this identical
+/// ten-line `match ids.as_slice()`, so the wording of "no session matches" and "is ambiguous" was
+/// four independent copies that had to be kept in step by hand.
+fn resolve_one_or_exit(db: &Db, needle: &str) -> Result<String> {
+    match db.resolve_id(needle)?.as_slice() {
+        [id] => Ok(id.clone()),
+        [] => {
+            eprintln!("{} no session matches {:?}", "✗".red(), needle);
+            std::process::exit(1);
+        }
+        many => {
+            eprintln!("{} {:?} is ambiguous ({} matches)", "✗".red(), needle, many.len());
+            std::process::exit(1);
+        }
+    }
+}
+
 fn cmd_stage(db: &Db, args: StageArgs, tz: common::DateTz) -> Result<()> {
     // Stage off fresh mtimes, so dormancy reflects the latest activity.
     lazy_reindex(db, false);
@@ -936,17 +929,7 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
     };
     // Resolve a manual id/prefix to one concrete session (same fuzzy contract as resume/tag).
     let only = match &args.id {
-        Some(needle) => match db.resolve_id(needle)?.as_slice() {
-            [id] => Some(id.clone()),
-            [] => {
-                eprintln!("{} no session matches {:?}", "✗".red(), needle);
-                std::process::exit(1);
-            }
-            many => {
-                eprintln!("{} {:?} is ambiguous ({} matches)", "✗".red(), needle, many.len());
-                std::process::exit(1);
-            }
-        },
+        Some(needle) => Some(resolve_one_or_exit(db, needle)?),
         None => None,
     };
     let opts = EnrichOptions {
@@ -1395,10 +1378,6 @@ fn print_json<T: serde::Serialize + ?Sized>(value: &T) {
         Ok(s) => println!("{s}"),
         Err(e) => eprintln!("{} failed to serialize output: {e}", "✗".red()),
     }
-}
-
-fn short_id(id: &str) -> String {
-    id.chars().take(8).collect()
 }
 
 #[cfg(test)]

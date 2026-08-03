@@ -7,11 +7,11 @@
 //! `SessionRecord::dormancy_at`; what lives here is the write side.
 
 use chrono::{DateTime, Utc};
-use eyre::{Context, Result};
+use eyre::Result;
 use log::{debug, trace};
 use rusqlite::{OptionalExtension, params};
 
-use super::{Db, V5_TRIGGERS_SQL, parse_dt};
+use super::{Db, parse_dt, without_revision_trigger};
 
 /// The incremental-reindex skip key stored on a catalog row, as read by [`Db::skip_key_of`]. A struct
 /// rather than a tuple so the two `Option`s can never be swapped at a call site.
@@ -84,32 +84,31 @@ impl Db {
             return Ok(0);
         }
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
-            .context("set_parse_derived: suppress the revision UPDATE trigger")?;
-        let mut written = 0usize;
-        for w in writes {
-            let n = tx.execute(
-                "UPDATE sessions SET activity_at=?2, title=?3, parse_version=?4 WHERE session_id=?1",
-                params![
-                    w.session_id,
-                    w.activity_at.map(|d| d.to_rfc3339()),
-                    w.title,
-                    session::PARSE_VERSION
-                ],
-            )?;
-            written += n;
-            // Keep the FTS title in step with the column, in this same transaction. Scoped by the
-            // session's rowid via a subquery rather than a separate SELECT, so a row that vanished
-            // between the two statements updates nothing instead of touching the wrong rowid.
-            tx.execute(
-                "UPDATE sessions_fts SET title=?2 \
-                 WHERE rowid = (SELECT id FROM sessions WHERE session_id=?1)",
-                params![w.session_id, w.title.as_deref().unwrap_or("")],
-            )?;
-            trace!("Db::set_parse_derived_many: session_id={} rows={n}", w.session_id);
-        }
-        tx.execute_batch(V5_TRIGGERS_SQL)
-            .context("set_parse_derived: restore the revision UPDATE trigger")?;
+        let written = without_revision_trigger(&tx, "set_parse_derived", || {
+            let mut written = 0usize;
+            for w in writes {
+                let n = tx.execute(
+                    "UPDATE sessions SET activity_at=?2, title=?3, parse_version=?4 WHERE session_id=?1",
+                    params![
+                        w.session_id,
+                        w.activity_at.map(|d| d.to_rfc3339()),
+                        w.title,
+                        session::PARSE_VERSION
+                    ],
+                )?;
+                written += n;
+                // Keep the FTS title in step with the column, in this same transaction. Scoped by
+                // the session's rowid via a subquery rather than a separate SELECT, so a row that
+                // vanished between the two statements updates nothing instead of the wrong rowid.
+                tx.execute(
+                    "UPDATE sessions_fts SET title=?2 \
+                     WHERE rowid = (SELECT id FROM sessions WHERE session_id=?1)",
+                    params![w.session_id, w.title.as_deref().unwrap_or("")],
+                )?;
+                trace!("Db::set_parse_derived_many: session_id={} rows={n}", w.session_id);
+            }
+            Ok(written)
+        })?;
         tx.commit()?;
         debug!("Db::set_parse_derived_many: backfilled {written} rows (updated_at unchanged)");
         Ok(written)

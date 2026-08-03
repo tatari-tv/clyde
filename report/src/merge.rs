@@ -310,23 +310,20 @@ fn write_output(output: &Output, json: &str) -> Result<OutputDest> {
     }
 }
 
-/// Write `json` to `path` atomically: a temp file in the target's own directory, flushed, then
-/// renamed over the destination (matches [`crate::report::write_json`]'s durability contract).
+/// Write `json` to `path` atomically, creating the output directory first.
+///
+/// The atomic write itself is [`common::write_atomic`], not a copy of it. This module used to
+/// hand-roll the same temp-in-target-dir/flush/persist sequence, which meant `common`'s
+/// permission-preservation step never reached `report merge`'s output: a rename would silently
+/// strip an existing file's mode. Only the `create_dir_all` is local, because `common` requires the
+/// parent to exist and `-o` may name a directory that does not yet.
 fn write_file_atomic(path: &Path, json: &str) -> Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
-
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
-    tmp.write_all(json.as_bytes())
-        .context("failed to write merged JSON to temp file")?;
-    tmp.flush().context("failed to flush temp file")?;
-    tmp.persist(path)
-        .with_context(|| format!("failed to atomically rename temp file to {}", path.display()))?;
-    Ok(())
+    common::write_atomic(path, json.as_bytes())
 }
 
 #[cfg(test)]

@@ -158,51 +158,54 @@ fn attribution(db_path: &Path) -> Result<Option<Attribution>> {
 /// over skipped entries is still diagnosable from the DEBUG log.
 fn has_org_repo_pair(root: &Path) -> std::io::Result<bool> {
     for org in std::fs::read_dir(root)? {
-        let org = match org {
-            Ok(org) => org,
-            Err(e) => {
-                debug!(
-                    "doctor::has_org_repo_pair: skipping an unreadable entry under {}: {e}",
-                    root.display()
-                );
-                continue;
-            }
+        let Some(org) = dir_child(org, root) else {
+            continue;
         };
-        // `file_type`, not `Path::is_dir`: the latter folds every error into `false`, so a permission
-        // failure would read as "not a directory". Here it reads as what it is and is skipped aloud.
-        match org.file_type() {
-            Ok(ft) if ft.is_dir() => {}
-            Ok(_) => continue,
-            Err(e) => {
-                debug!(
-                    "doctor::has_org_repo_pair: cannot type {}: {e}; skipping",
-                    org.path().display()
-                );
-                continue;
-            }
-        }
-        let repos = match std::fs::read_dir(org.path()) {
+        let mut repos = match std::fs::read_dir(&org) {
             Ok(repos) => repos,
             Err(e) => {
                 debug!(
                     "doctor::has_org_repo_pair: cannot list {}: {e}; skipping",
-                    org.path().display()
+                    org.display()
                 );
                 continue;
             }
         };
-        for repo in repos {
-            match repo.and_then(|r| r.file_type()) {
-                Ok(ft) if ft.is_dir() => return Ok(true),
-                Ok(_) => {}
-                Err(e) => debug!(
-                    "doctor::has_org_repo_pair: skipping an unreadable entry under {}: {e}",
-                    org.path().display()
-                ),
-            }
+        if repos.any(|repo| dir_child(repo, &org).is_some()) {
+            return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// The path of `entry` when it names a directory, or `None` for a non-directory and for every entry
+/// that could not be read or typed. `parent` names the listing the entry came from, for the log.
+///
+/// Both levels of [`has_org_repo_pair`] read an entry the same way, so they read it through the same
+/// function: four hand-copied `Err(e) => { debug!(..); continue }` arms is how the two levels drift
+/// into disagreeing about what counts as a directory.
+///
+/// `file_type`, not `Path::is_dir`: the latter folds every error into `false`, so a permission
+/// failure would read as "not a directory". Here it reads as what it is and is skipped aloud.
+fn dir_child(entry: std::io::Result<std::fs::DirEntry>, parent: &Path) -> Option<PathBuf> {
+    let entry = entry
+        .inspect_err(|e| {
+            debug!(
+                "doctor::dir_child: skipping an unreadable entry under {}: {e}",
+                parent.display()
+            );
+        })
+        .ok()?;
+    let file_type = entry
+        .file_type()
+        .inspect_err(|e| {
+            debug!(
+                "doctor::dir_child: cannot type {}: {e}; skipping",
+                entry.path().display()
+            );
+        })
+        .ok()?;
+    file_type.is_dir().then(|| entry.path())
 }
 
 fn print_attribution(a: &Attribution) {
@@ -220,7 +223,7 @@ fn print_attribution(a: &Attribution) {
             .note()
             .map_or(String::new(), |note| format!(" {}", note.red()));
         println!("{label}  {}{}", root.path.display(), state);
-        if root.reachable == (Reachable::Yes { has_org_repo: false }) {
+        if matches!(root.reachable, Reachable::Yes { has_org_repo: false }) {
             // A LAYOUT observation, deliberately not a verdict on rule 4. Plenty of hosts have no
             // `<org>/<repo>` layout at all, and the operator wants to know that. But rule 4 reads a
             // session's STORED cwd against the configured roots and never stats the directory, so an
