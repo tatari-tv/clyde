@@ -516,6 +516,41 @@ mod tests {
         Rules::default()
     }
 
+    /// **A prefix matches the whole command or a `' '`/`':'` word boundary, and NOTHING else.**
+    ///
+    /// This gates the risk tier a Bash call is classified into, so a prefix that matched too
+    /// greedily would silently downgrade a dangerous command to safe. `matches_command_list` was
+    /// rewritten from `cmd == p || starts_with("{p} ") || starts_with("{p}:")` to a `strip_prefix`
+    /// plus a boundary check on the remainder, dropping two `String` allocations per prefix on a
+    /// path that runs inside the PreToolUse hook for every Bash call in every session. Nothing
+    /// exercised the `':'` arm before this.
+    ///
+    /// BITES: drop the boundary check (a bare `strip_prefix(..).is_some()`) and the `git-status`,
+    /// `gitfoo`, and `git/status` rows all start matching, which is the greedy classification this
+    /// guards against.
+    #[test]
+    fn matches_command_list_respects_only_space_and_colon_boundaries() {
+        let list = vec!["git status".to_string(), "git".to_string()];
+        for (cmd, want) in [
+            ("git", true),          // exact
+            ("git status", true),   // exact, the longer entry
+            ("git diff", true),     // space boundary
+            ("git:diff", true),     // colon boundary, previously untested
+            ("git-status", false),  // hyphen is not a boundary
+            ("gitfoo", false),      // no boundary at all
+            ("git/status", false),  // slash is not a boundary
+            ("gi", false),          // shorter than any prefix
+            ("", false),            // empty command matches nothing
+            (" git status", false), // leading space: not a prefix match
+        ] {
+            assert_eq!(
+                matches_command_list(cmd, &list),
+                want,
+                "matches_command_list({cmd:?}) should be {want}"
+            );
+        }
+    }
+
     // --- Deny list tests ---
 
     #[test]

@@ -317,11 +317,13 @@ fn write_output(output: &Output, json: &str) -> Result<OutputDest> {
 /// permission-preservation step never reached `report merge`'s output: a rename would silently
 /// strip an existing file's mode. Only the `create_dir_all` is local, because `common` requires the
 /// parent to exist and `-o` may name a directory that does not yet.
+///
+/// The directory comes from [`common::atomic::parent_dir`], the same resolver `write_atomic` uses,
+/// NOT from a local `parent().unwrap_or(".")`. A local copy is what broke `-o merged.json`: this
+/// function defaulted a bare filename to `.` for `create_dir_all` while `write_atomic` rejected the
+/// empty parent outright, so the two disagreed about the same path.
 fn write_file_atomic(path: &Path, json: &str) -> Result<()> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+    let dir = common::atomic::parent_dir(path)?;
     fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
     common::write_atomic(path, json.as_bytes())
 }
