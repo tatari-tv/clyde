@@ -608,6 +608,7 @@ impl Db {
             })?
             .collect::<rusqlite::Result<_>>()?;
         let mut archived_count = 0usize;
+        let mut flips: Vec<(i64, i64)> = Vec::new();
         for (id, path, was_archived) in rows {
             let exists = Path::new(&path).exists();
             if !exists {
@@ -615,12 +616,28 @@ impl Db {
             }
             if exists == was_archived {
                 // exists && archived -> clear; !exists && !archived -> set.
-                self.conn.execute(
-                    "UPDATE sessions SET archived = ?2 WHERE id = ?1",
-                    params![id, (!exists) as i64],
-                )?;
+                flips.push((id, (!exists) as i64));
             }
         }
+        // ONE transaction, like every other bulk writer in this file (`set_efficiency_many`,
+        // `set_parse_derived_many`, `clear_probe`, `restore_repo`). This runs over the entire
+        // catalog on every reindex, and unbatched each flip autocommits on its own: a bulk
+        // archive/unarchive event or a TTL sweep that reaps many transcripts at once paid N commits
+        // where one does.
+        if !flips.is_empty() {
+            let tx = self.conn.unchecked_transaction()?;
+            {
+                let mut stmt = tx.prepare("UPDATE sessions SET archived = ?2 WHERE id = ?1")?;
+                for (id, archived) in &flips {
+                    stmt.execute(params![id, archived])?;
+                }
+            }
+            tx.commit()?;
+        }
+        debug!(
+            "Db::reconcile_archived: archived={archived_count} flipped={}",
+            flips.len()
+        );
         Ok(archived_count)
     }
 

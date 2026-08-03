@@ -458,10 +458,17 @@ fn starts_with_env_var(cmd: &str) -> bool {
     i < bytes.len() && bytes[i] == b'='
 }
 
-/// Check if a command matches any prefix in the given list.
+/// Check if a command matches any prefix in the given list, where a match is the whole command or
+/// the prefix followed by a word boundary (a space or a `:`).
+///
+/// The boundary is tested on the REMAINDER rather than by building `format!("{prefix} ")` and
+/// `format!("{prefix}:")` to compare against. This runs inside the `PreToolUse` hook, once per Bash
+/// call in every session, against lists of ~90 prefixes; the `format!` form allocated two `String`s
+/// per prefix per call for values that were compared and dropped immediately.
 fn matches_command_list(cmd: &str, list: &[String]) -> bool {
     list.iter().any(|prefix| {
-        cmd == prefix.as_str() || cmd.starts_with(&format!("{prefix} ")) || cmd.starts_with(&format!("{prefix}:"))
+        cmd.strip_prefix(prefix.as_str())
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', ':']))
     })
 }
 
