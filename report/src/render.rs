@@ -749,17 +749,23 @@ fn build_totals_view(report: &Report) -> TotalsView {
         .len();
     let total_tokens: u64 = report.totals.models.values().map(|m| m.total).sum();
 
+    // Counted in ONE pass over the sessions, not one pass per model. The per-model
+    // `sessions.values().filter(..).count()` this replaces was O(models x sessions), rescanning the
+    // whole session set once for every model, on a window that runs to thousands of sessions.
+    let mut sessions_using: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for entry in report.sessions.values() {
+        for model in entry.models.keys() {
+            *sessions_using.entry(model.as_str()).or_insert(0) += 1;
+        }
+    }
+
     let mut models: Vec<ModelRow> = report
         .totals
         .models
         .iter()
         .map(|(model, mt)| ModelRow {
             model: model.clone(),
-            sessions_using: report
-                .sessions
-                .values()
-                .filter(|e| e.models.contains_key(model))
-                .count(),
+            sessions_using: sessions_using.get(model.as_str()).copied().unwrap_or(0),
             tokens_human: format_tokens_human(mt.total),
             spend_usd: mt.spend_usd,
             spend: format_optional_usd(mt.spend_usd),

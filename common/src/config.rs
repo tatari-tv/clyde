@@ -742,13 +742,7 @@ fn config_path() -> Option<PathBuf> {
 /// returns `~/Library/Application Support` on macOS, so config a user drops in `~/.config` would be
 /// silently never found there. This resolves to the same XDG layout on every platform.
 fn xdg_config_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        let path = PathBuf::from(dir);
-        if path.is_absolute() {
-            return Some(path);
-        }
-    }
-    dirs::home_dir().map(|h| h.join(".config"))
+    crate::paths::xdg_config_dir()
 }
 
 #[cfg(test)]

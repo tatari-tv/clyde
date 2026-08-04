@@ -71,18 +71,31 @@ impl<'de> Deserialize<'de> for TokenTotals {
             cache_read: u64,
         }
         let r = Raw::deserialize(deserializer)?;
-        Ok(TokenTotals {
+        let mut totals = TokenTotals {
             input: r.input,
             output: r.output,
             cache_5m_write: r.cache_5m_write,
             cache_1h_write: r.cache_1h_write,
             cache_read: r.cache_read,
-            total: r.input + r.output + r.cache_5m_write + r.cache_1h_write + r.cache_read,
-        })
+            total: 0,
+        };
+        totals.recompute_total();
+        Ok(totals)
     }
 }
 
 impl TokenTotals {
+    /// Re-derive `total` from the five component counters. THE definition of the sum.
+    ///
+    /// The docs on `deserialize`/[`Self::add`]/[`Self::merge`] all promise "there is exactly one
+    /// definition of `total`, and it is the sum, everywhere". They each used to spell that sum out
+    /// themselves, so the promise held by convention across three sites: adding a sixth counter
+    /// meant remembering all three, and a miss would produce a `total` that silently disagrees with
+    /// its own parts. Now the three mutation paths call this and the promise is structural.
+    fn recompute_total(&mut self) {
+        self.total = self.input + self.output + self.cache_5m_write + self.cache_1h_write + self.cache_read;
+    }
+
     /// Fold one record's usage in. `total` is recomputed from the other five fields on every
     /// call, never carried forward independently -- it can't drift from its own components.
     pub fn add(&mut self, usage: &TokenUsage) {
@@ -91,7 +104,7 @@ impl TokenTotals {
         self.cache_5m_write += usage.cache_5m_write_tokens;
         self.cache_1h_write += usage.cache_1h_write_tokens;
         self.cache_read += usage.cache_read_tokens;
-        self.total = self.input + self.output + self.cache_5m_write + self.cache_1h_write + self.cache_read;
+        self.recompute_total();
     }
 
     /// Union `other` into `self` (the additive step of the Aggregation invariant): every field
@@ -102,7 +115,7 @@ impl TokenTotals {
         self.cache_5m_write += other.cache_5m_write;
         self.cache_1h_write += other.cache_1h_write;
         self.cache_read += other.cache_read;
-        self.total = self.input + self.output + self.cache_5m_write + self.cache_1h_write + self.cache_read;
+        self.recompute_total();
     }
 
     /// Recast the accumulated totals as a single `TokenUsage`, the shape [`price`] (and

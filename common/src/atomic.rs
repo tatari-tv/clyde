@@ -24,13 +24,39 @@ use tempfile::NamedTempFile;
 /// would otherwise silently strip e.g. an existing executable bit (the same lesson
 /// `clyde/src/bootstrap.rs::repoint_statusline` already learned). A read-only parent directory (or
 /// any other create/write/rename failure) surfaces as a typed `eyre::Result` error, never a panic.
+/// The directory to create the temp file in: `path`'s parent, with an EMPTY parent resolved to `.`.
+///
+/// **An empty parent is the current directory, not an absent one.** `Path::new("x").parent()` is
+/// `Some("")` -- a bare relative filename, whose directory is `.` -- while only a root (`/`) has a
+/// genuinely absent parent and yields `None`. Folding the two together with a
+/// `filter(|p| !p.as_os_str().is_empty())` made [`write_atomic`] reject `x` outright, which is how
+/// `report merge -o merged.json` broke when that module started delegating here: it computes its own
+/// `.` fallback for `create_dir_all`, then passes the ORIGINAL path down, so the empty parent was
+/// re-derived and errored.
+///
+/// The `None` arm is KEPT rather than folded into the same `.` default. It is the real "no parent"
+/// case, and a blanket `unwrap_or(".")` would silently retarget a root write instead of failing.
+///
+/// A free function, and the reason is testability: the empty-parent case is only reachable through a
+/// RELATIVE path, and asserting it end-to-end would mean mutating the process cwd -- global state
+/// that would break any other test in this binary that resolves a relative path. Pure in, pure out,
+/// so the distinction is pinned without touching the process.
+///
+/// `pub` for one caller: `report::merge::write_file_atomic` has to `create_dir_all` the output
+/// directory before writing, and it must target the SAME directory [`write_atomic`] will resolve.
+/// Computing that separately is how the rule ends up spelled twice and drifts.
+pub fn parent_dir(path: &Path) -> Result<&Path> {
+    match path.parent() {
+        Some(p) if p.as_os_str().is_empty() => Ok(Path::new(".")),
+        Some(p) => Ok(p),
+        None => Err(eyre::eyre!("path has no parent directory: {}", path.display())),
+    }
+}
+
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     log::debug!("write_atomic: path={} bytes={}", path.display(), bytes.len());
 
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| eyre::eyre!("path has no parent directory: {}", path.display()))?;
+    let parent = parent_dir(path)?;
 
     let existing_perms = match fs::metadata(path) {
         Ok(meta) => Some(meta.permissions()),

@@ -10,31 +10,21 @@ where
         return items;
     }
 
-    let matched_indices = |f: &dyn Fn(&str, &str) -> bool| -> Vec<usize> {
-        items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| patterns.iter().any(|p| f(key(item), p)))
-            .map(|(i, _)| i)
-            .collect()
-    };
-
-    type Matcher = Box<dyn Fn(&str, &str) -> bool>;
+    type Matcher = fn(&str, &str) -> bool;
     let levels: [Matcher; 3] = [
-        Box::new(|k: &str, p: &str| k == p),
-        Box::new(|k: &str, p: &str| k.starts_with(p)),
-        Box::new(|k: &str, p: &str| k.contains(p)),
+        |k: &str, p: &str| k == p,
+        |k: &str, p: &str| k.starts_with(p),
+        |k: &str, p: &str| k.contains(p),
     ];
 
-    for level in &levels {
-        let indices = matched_indices(level.as_ref());
-        if !indices.is_empty() {
-            return items
-                .into_iter()
-                .enumerate()
-                .filter(|(i, _)| indices.contains(i))
-                .map(|(_, item)| item)
-                .collect();
+    // Two passes over the winning level: one to find it, one to keep its items. The old form built
+    // a `Vec<usize>` of matching indices and rebuilt the result with `indices.contains(i)`, which is
+    // a linear scan of that vec per item -- quadratic in the match count, to answer a question the
+    // predicate itself answers directly.
+    for level in levels {
+        let matches = |item: &T| patterns.iter().any(|p| level(key(item), p));
+        if items.iter().any(&matches) {
+            return items.into_iter().filter(|item| matches(item)).collect();
         }
     }
 

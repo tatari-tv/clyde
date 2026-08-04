@@ -11,7 +11,7 @@ use crate::cents;
 use crate::chart::{self, Charts};
 use crate::fmt::{format_optional_usd, format_tokens_human, format_usd, short_id};
 use crate::outcome::{self, Outcomes};
-use crate::report::Report;
+use crate::report::{Report, SessionEntry};
 use chrono::NaiveDate;
 use claude_pricing::{Pricing, TokenUsage};
 use common::repo::RepoSource;
@@ -961,10 +961,25 @@ pub fn compute_unit_costs(report: &Report, by_day: &[DayRow]) -> UnitCosts {
 
 /// Top-`outliers_n` sessions by spend (untracked/unpriced sessions rank as $0, ties broken by
 /// short-id for determinism).
+///
+/// Ranked as REFERENCES first, and only the surviving `outliers_n` are materialized into
+/// `OutlierRow`. Building a full row per session up front and truncating afterwards cloned each
+/// session's title, repo, and whole `Outcomes` payload (commit and PR vectors, per-repo maps) for
+/// every session in the window, then dropped all but ten of them.
 fn compute_outliers(report: &Report, outliers_n: usize) -> Vec<OutlierRow> {
-    let mut rows: Vec<OutlierRow> = report
-        .sessions
-        .iter()
+    let mut ranked: Vec<(&String, &SessionEntry)> = report.sessions.iter().collect();
+    ranked.sort_by(|(a_sid, a), (b_sid, b)| {
+        b.spend_usd
+            .unwrap_or(0.0)
+            .partial_cmp(&a.spend_usd.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // Tie-break on the SHORT id, not the full key: that is the ordering the old form
+            // produced, because it sorted rows whose `short_id` was already truncated.
+            .then_with(|| short_id(a_sid).cmp(short_id(b_sid)))
+    });
+    ranked.truncate(outliers_n);
+    ranked
+        .into_iter()
         .map(|(sid, entry)| {
             let tokens = entry.total_tokens();
             OutlierRow {
@@ -978,16 +993,7 @@ fn compute_outliers(report: &Report, outliers_n: usize) -> Vec<OutlierRow> {
                 outcomes: entry.outcomes.clone(),
             }
         })
-        .collect();
-    rows.sort_by(|a, b| {
-        b.spend_raw
-            .unwrap_or(0.0)
-            .partial_cmp(&a.spend_raw.unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.short_id.cmp(&b.short_id))
-    });
-    rows.truncate(outliers_n);
-    rows
+        .collect()
 }
 
 #[cfg(test)]

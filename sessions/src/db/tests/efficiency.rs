@@ -859,3 +859,68 @@ fn the_v8_and_v9_resets_refuse_a_version_outside_their_hop() {
         "a v11 catalog is past every reset window; no step may invalidate it"
     );
 }
+
+/// **A failure inside `without_revision_trigger` leaves the trigger INTACT.**
+///
+/// The helper deliberately does NOT restore the trigger on its error path, and that is only safe
+/// because every one of its six call sites runs inside a transaction whose rollback undoes the
+/// `DROP TRIGGER` along with everything else. That reasoning is written in the helper's doc; this
+/// test is what holds it. If a future caller ever invokes the helper OUTSIDE a transaction, the
+/// suppression leaks and the export cursor silently stops advancing for every later write on the
+/// connection -- the exact failure the six hand-copied sandwiches were one mistake away from.
+///
+/// BITES: move the `execute_batch(V5_TRIGGERS_SQL)` restore so it is skipped on rollback, or call
+/// the helper outside a transaction, and the post-rollback assertion fails.
+#[test]
+fn a_failed_trigger_suppressed_write_rolls_the_drop_back() {
+    let db = Db::open_memory().unwrap();
+    db.upsert_session(&parsed(UUID_A, "/tmp/a.jsonl"), "desk").unwrap();
+    assert!(
+        revision_trigger_exists(&db),
+        "precondition: the v5 UPDATE trigger exists on a fresh catalog"
+    );
+
+    // Exactly the shape every caller uses: open a transaction, suppress, fail inside, propagate.
+    let tx = db.conn.unchecked_transaction().unwrap();
+    let err = super::super::without_revision_trigger(&tx, "test", || {
+        // Prove the DROP took effect before the failure, so the rollback is doing real work.
+        assert!(
+            !trigger_exists_on(&tx),
+            "the helper must have dropped the trigger before running the closure"
+        );
+        // `::<(), _>` because this closure never returns `Ok`, so `T` has nothing to infer from.
+        Err::<(), _>(eyre::eyre!("the write failed"))
+    })
+    .expect_err("the closure's error must propagate");
+    assert!(err.to_string().contains("the write failed"), "got {err}");
+    drop(tx); // no commit -> rollback
+
+    assert!(
+        revision_trigger_exists(&db),
+        "the rollback must restore the dropped trigger; a leaked suppression stops the cursor"
+    );
+
+    // And the cursor still advances, which is what the trigger is FOR.
+    let before = revision_counter(&db);
+    db.set_tags(UUID_A, &["after".to_string()]).unwrap();
+    assert!(
+        revision_counter(&db) > before,
+        "a content write after the rolled-back suppression still moves the cursor"
+    );
+}
+
+/// Whether the v5 `sessions_updated_at_update` trigger is present on the catalog.
+fn revision_trigger_exists(db: &Db) -> bool {
+    trigger_exists_on(&db.conn)
+}
+
+/// The same check against any connection or transaction handle.
+fn trigger_exists_on(conn: &rusqlite::Connection) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='sessions_updated_at_update'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap()
+        > 0
+}

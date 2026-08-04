@@ -21,9 +21,41 @@
 use eyre::{Context, Result, bail};
 use log::debug;
 use std::io::{Read, Write};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
+
+/// Wait for `child` up to `timeout`, killing AND reaping it on overrun or on a wait error.
+///
+/// THE kill-then-reap sequence, which is the whole reason this module exists ("a child that is
+/// killed AND reaped on overrun rather than left to hang the render"). [`run_bounded`] and
+/// `run_with_payload` each hand-rolled it, and the two copies had already drifted: their wait-error
+/// bail messages carried different detail. `timeout_msg` is a closure rather than a string so the
+/// two callers keep their genuinely different overrun messages without either building one on the
+/// happy path.
+fn wait_bounded(
+    child: &mut Child,
+    label: &str,
+    timeout: Duration,
+    timeout_msg: impl FnOnce() -> String,
+) -> Result<ExitStatus> {
+    fn kill_and_reap(child: &mut Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) => Ok(status),
+        Ok(None) => {
+            log::warn!("proc::wait_bounded: {label} timed out after {timeout:?}, killing child");
+            kill_and_reap(child);
+            bail!("{}", timeout_msg())
+        }
+        Err(e) => {
+            kill_and_reap(child);
+            bail!("{label}: failed while waiting: {e}")
+        }
+    }
+}
 
 /// Wall-clock ceiling for the `claude -p` LLM call. Its own const, deliberately NOT
 /// [`SUBPROCESS_TIMEOUT`]: the 2026-07-24 keyless spike measured 145s (markdown) and 204s (html) on a
@@ -59,20 +91,9 @@ pub fn run_bounded(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(spawn_err)?;
-    let status = match child.wait_timeout(SUBPROCESS_TIMEOUT) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            log::warn!("proc::run_bounded: {label} timed out after {SUBPROCESS_TIMEOUT:?}, killing child");
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("{label} timed out after {SUBPROCESS_TIMEOUT:?}");
-        }
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("{label}: failed while waiting: {e}");
-        }
-    };
+    let status = wait_bounded(&mut child, label, SUBPROCESS_TIMEOUT, || {
+        format!("{label} timed out after {SUBPROCESS_TIMEOUT:?}")
+    })?;
     // `wait_timeout` has already reaped the child, so `wait_with_output()` (a second wait on the
     // same PID) would fail with ECHILD. Read the piped handles directly instead -- the process has
     // exited, and callers only route commands whose output stays well under the pipe buffer here
@@ -154,23 +175,12 @@ pub fn run_with_payload(
         .spawn()
         .map_err(spawn_err)?;
 
-    let status = match child.wait_timeout(CLAUDE_TIMEOUT) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            log::warn!("proc::run_with_payload: {label} timed out after {CLAUDE_TIMEOUT:?}, killing child");
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!(
-                "{label} timed out after {CLAUDE_TIMEOUT:?} and was killed; the generation did not \
-                 complete, so no artifact was written"
-            );
-        }
-        Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("{label}: failed while waiting: {e}");
-        }
-    };
+    let status = wait_bounded(&mut child, label, CLAUDE_TIMEOUT, || {
+        format!(
+            "{label} timed out after {CLAUDE_TIMEOUT:?} and was killed; the generation did not \
+             complete, so no artifact was written"
+        )
+    })?;
 
     // The child has exited and both streams were files, so these reads cannot block.
     let stdout = std::fs::read(&stdout_path).with_context(|| format!("failed to read stdout of {label}"))?;

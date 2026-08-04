@@ -5,13 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// XDG config dir, honoring `$XDG_CONFIG_HOME` and falling back to `$HOME/.config`.
 fn xdg_config_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        let path = PathBuf::from(dir);
-        if path.is_absolute() {
-            return Some(path);
-        }
-    }
-    dirs::home_dir().map(|h| h.join(".config"))
+    common::paths::xdg_config_dir()
 }
 
 /// XDG data dir, honoring `$XDG_DATA_HOME` and falling back to `$HOME/.local/share`.

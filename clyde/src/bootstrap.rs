@@ -414,19 +414,35 @@ fn backup(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Atomic write: temp file in the target's own dir, then rename over the target.
+/// Point `link` at `timer` in the systemd wants directory, replacing whatever is already there.
+///
+/// Both timer installers ran this same sequence inline. `symlink_metadata`, never `exists()`: the
+/// latter FOLLOWS the link and reports false for a dangling one, which would leave a stale link in
+/// place and the timer un-enabled. That reasoning was written down at one of the two call sites and
+/// not the other, which is the shape of the drift this shared function removes.
+fn enable_timer_symlink(paths: &Paths, timer: &Path, link: &Path) -> Result<()> {
+    fs::create_dir_all(paths.wants_dir())
+        .with_context(|| format!("failed to create {}", paths.wants_dir().display()))?;
+    if fs::symlink_metadata(link).is_ok() {
+        fs::remove_file(link).with_context(|| format!("failed to replace enable symlink {}", link.display()))?;
+    }
+    unixfs::symlink(timer, link).with_context(|| format!("failed to create enable symlink {}", link.display()))
+}
+
+/// Atomic write that also creates the target's parent directory.
+///
+/// The write itself is [`common::write_atomic`], which was extracted FROM this function and then
+/// never wired back into it. Two copies is how this one fell behind: `common`'s version captures
+/// and restores the target's existing mode across the rename, so every call site here now keeps a
+/// file's exec bit for free, and `repoint_statusline` no longer needs its own permission dance.
+/// The `create_dir_all` stays local because `common` requires the parent to exist and several
+/// bootstrap targets (systemd unit dirs) may not yet.
 fn write_atomic(target: &Path, contents: &str) -> Result<()> {
     let parent = target
         .parent()
         .ok_or_else(|| eyre::eyre!("path has no parent: {}", target.display()))?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let tmp = parent.join(format!(
-        ".{}.clyde.tmp",
-        target.file_name().and_then(|n| n.to_str()).unwrap_or("clyde")
-    ));
-    fs::write(&tmp, contents).with_context(|| format!("failed to write temp {}", tmp.display()))?;
-    fs::rename(&tmp, target).with_context(|| format!("failed to rename {} -> {}", tmp.display(), target.display()))?;
-    Ok(())
+    common::write_atomic(target, contents.as_bytes())
 }
 
 /// Move a single config file `legacy -> dest`. `force` governs overwriting an existing dest.
@@ -880,14 +896,11 @@ fn repoint_statusline(paths: &Paths, dry_run: bool) -> Result<bool> {
         // A rewrite WOULD happen (the read above is read-only). Report without backing up or writing.
         return Ok(true);
     }
-    // write_atomic renames a fresh temp over the target, which would land 0644 and drop the 0755
-    // exec bit Claude Code needs to run the statusline. Capture and re-apply the original mode.
-    let perms = fs::metadata(&path).map(|m| m.permissions()).ok();
+    // The 0755 exec bit Claude Code needs to run the statusline survives the rename because
+    // `write_atomic` restores the target's original mode. This used to be hand-rolled here, around
+    // a local atomic write that dropped the mode; the shared helper does it for every caller.
     backup(&path)?;
     write_atomic(&path, &rewritten)?;
-    if let Some(perms) = perms {
-        fs::set_permissions(&path, perms).with_context(|| format!("failed to restore perms on {}", path.display()))?;
-    }
     info!("repointed statusline {} (ccu -> clyde cost)", path.display());
     Ok(true)
 }
@@ -1190,13 +1203,7 @@ fn install_clyde_timer(paths: &Paths) -> Result<bool> {
         WantedBy=timers.target\n";
     write_atomic(&tmr, tmr_body)?;
 
-    let link = paths.clyde_wants_link();
-    fs::create_dir_all(paths.wants_dir())
-        .with_context(|| format!("failed to create {}", paths.wants_dir().display()))?;
-    if fs::symlink_metadata(&link).is_ok() {
-        fs::remove_file(&link).with_context(|| format!("failed to replace enable symlink {}", link.display()))?;
-    }
-    unixfs::symlink(&tmr, &link).with_context(|| format!("failed to create enable symlink {}", link.display()))?;
+    enable_timer_symlink(paths, &tmr, &paths.clyde_wants_link())?;
     info!("installed clyde enrich service + timer + enable symlink");
     Ok(true)
 }
@@ -1253,15 +1260,7 @@ pub(crate) fn install_clyde_reindex_timer(paths: &Paths) -> Result<bool> {
         WantedBy=timers.target\n";
     write_atomic(&tmr, tmr_body)?;
 
-    let link = paths.clyde_reindex_wants_link();
-    fs::create_dir_all(paths.wants_dir())
-        .with_context(|| format!("failed to create {}", paths.wants_dir().display()))?;
-    // `symlink_metadata`, never `exists()`: the latter follows the link and reports false for a
-    // dangling one, which would leave a stale link in place and the timer un-enabled.
-    if fs::symlink_metadata(&link).is_ok() {
-        fs::remove_file(&link).with_context(|| format!("failed to replace enable symlink {}", link.display()))?;
-    }
-    unixfs::symlink(&tmr, &link).with_context(|| format!("failed to create enable symlink {}", link.display()))?;
+    enable_timer_symlink(paths, &tmr, &paths.clyde_reindex_wants_link())?;
     info!("installed clyde reindex service + timer + enable symlink");
     Ok(true)
 }

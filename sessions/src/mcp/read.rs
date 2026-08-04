@@ -13,17 +13,9 @@
 //! window short and flags the top-level `truncated`.
 
 use log::trace;
-use session::{Message, Role};
+use session::Message;
 
 use super::tools::{READ_MESSAGE_MAX_CHARS, READ_RESPONSE_MAX_CHARS, READ_TRUNCATION_MARKER, ReadMessage};
-
-/// Render a [`Role`] as the wire string an agent sees (`user` / `assistant`).
-fn role_str(role: Role) -> String {
-    match role {
-        Role::User => "user".to_string(),
-        Role::Assistant => "assistant".to_string(),
-    }
-}
 
 /// Cap one message's text at [`READ_MESSAGE_MAX_CHARS`] chars (char boundary). Returns the possibly
 /// truncated text (with [`READ_TRUNCATION_MARKER`] appended when it fired) and whether it fired.
@@ -65,7 +57,7 @@ pub fn read_messages(messages: &[Message], offset: usize, limit: usize) -> (Vec<
             msg_index, msg.role, msg.subagent, cost, msg_truncated
         );
         out.push(ReadMessage {
-            role: role_str(msg.role),
+            role: msg.role.as_str().to_string(),
             subagent: msg.subagent,
             text,
             truncated: msg_truncated,

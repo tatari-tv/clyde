@@ -7,17 +7,9 @@
 //! body FTS missed (the body index is char-capped; grep reads the whole transcript).
 
 use log::trace;
-use session::{Message, Role};
+use session::Message;
 
 use super::tools::{GREP_EXCERPT_MAX_CHARS, GrepMatch};
-
-/// Render a [`Role`] as the wire string an agent sees (`user` / `assistant`).
-fn role_str(role: Role) -> String {
-    match role {
-        Role::User => "user".to_string(),
-        Role::Assistant => "assistant".to_string(),
-    }
-}
 
 /// Search `messages` for `query` (plain substring, case-insensitive) per line, returning up to
 /// `limit` matches plus whether the cap cut off further hits.
@@ -58,7 +50,7 @@ pub fn grep_messages(messages: &[Message], query: &str, context_lines: usize, li
                 excerpt.chars().count()
             );
             matches.push(GrepMatch {
-                role: role_str(msg.role),
+                role: msg.role.as_str().to_string(),
                 subagent: msg.subagent,
                 excerpt,
                 msg_index,

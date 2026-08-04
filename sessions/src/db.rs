@@ -487,30 +487,27 @@ impl Db {
             return Ok(0);
         }
         let tx = self.conn.unchecked_transaction()?;
-        // Suppress the revision trigger for the batch (see the method doc). The INSERT trigger is
-        // never dropped -- only the UPDATE trigger can fire on these writes.
-        tx.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
-            .context("set_efficiency: suppress the revision UPDATE trigger")?;
-        let mut written = 0usize;
-        for w in writes {
-            let n = tx.execute(
-                "UPDATE sessions SET efficiency_json=?2, cache_read_share=?3, tool_errors=?4, cost_usd=?5, \
-                 outcome_json=?6 WHERE session_id=?1",
-                params![
-                    w.session_id,
-                    w.efficiency_json,
-                    w.cache_read_share,
-                    w.tool_errors,
-                    w.cost_usd,
-                    w.outcome_json
-                ],
-            )?;
-            written += n;
-            trace!("Db::set_efficiency_many: session_id={} rows={}", w.session_id, n);
-        }
-        // Recreate the UPDATE trigger (IF NOT EXISTS; the INSERT trigger, never dropped, is a no-op).
-        tx.execute_batch(V5_TRIGGERS_SQL)
-            .context("set_efficiency: restore the revision UPDATE trigger")?;
+        // Suppress the revision trigger for the batch (see the method doc).
+        let written = without_revision_trigger(&tx, "set_efficiency", || {
+            let mut written = 0usize;
+            for w in writes {
+                let n = tx.execute(
+                    "UPDATE sessions SET efficiency_json=?2, cache_read_share=?3, tool_errors=?4, cost_usd=?5, \
+                     outcome_json=?6 WHERE session_id=?1",
+                    params![
+                        w.session_id,
+                        w.efficiency_json,
+                        w.cache_read_share,
+                        w.tool_errors,
+                        w.cost_usd,
+                        w.outcome_json
+                    ],
+                )?;
+                written += n;
+                trace!("Db::set_efficiency_many: session_id={} rows={}", w.session_id, n);
+            }
+            Ok(written)
+        })?;
         tx.commit()?;
         debug!("Db::set_efficiency_many: wrote efficiency for {written} rows (updated_at unchanged)");
         Ok(written)
@@ -611,6 +608,7 @@ impl Db {
             })?
             .collect::<rusqlite::Result<_>>()?;
         let mut archived_count = 0usize;
+        let mut flips: Vec<(i64, i64)> = Vec::new();
         for (id, path, was_archived) in rows {
             let exists = Path::new(&path).exists();
             if !exists {
@@ -618,12 +616,28 @@ impl Db {
             }
             if exists == was_archived {
                 // exists && archived -> clear; !exists && !archived -> set.
-                self.conn.execute(
-                    "UPDATE sessions SET archived = ?2 WHERE id = ?1",
-                    params![id, (!exists) as i64],
-                )?;
+                flips.push((id, (!exists) as i64));
             }
         }
+        // ONE transaction, like every other bulk writer in this file (`set_efficiency_many`,
+        // `set_parse_derived_many`, `clear_probe`, `restore_repo`). This runs over the entire
+        // catalog on every reindex, and unbatched each flip autocommits on its own: a bulk
+        // archive/unarchive event or a TTL sweep that reaps many transcripts at once paid N commits
+        // where one does.
+        if !flips.is_empty() {
+            let tx = self.conn.unchecked_transaction()?;
+            {
+                let mut stmt = tx.prepare("UPDATE sessions SET archived = ?2 WHERE id = ?1")?;
+                for (id, archived) in &flips {
+                    stmt.execute(params![id, archived])?;
+                }
+            }
+            tx.commit()?;
+        }
+        debug!(
+            "Db::reconcile_archived: archived={archived_count} flipped={}",
+            flips.len()
+        );
         Ok(archived_count)
     }
 
@@ -1077,6 +1091,29 @@ fn append_repo_filter(sql: &mut String, binds: &mut Vec<Box<dyn rusqlite::types:
 /// is matched as a literal, not a pattern. Paired with an `ESCAPE '\'` clause on the `LIKE`.
 fn escape_like(s: &str) -> String {
     s.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_")
+}
+
+/// Run `f` with the `sessions_updated_at_update` revision trigger dropped, then recreate it.
+///
+/// THE definition of "write derived annotations without advancing `updated_at`". Six sites spelled
+/// this sandwich out by hand -- `set_efficiency_many`, `set_parse_derived_many`, and the v7/v8/v9/v10
+/// migration resets -- and it is exactly the kind of sequence that must not be hand-copied: drop
+/// without restore and the revision cursor stops advancing for every later write on the connection.
+/// `label` prefixes both error contexts so a failure still names which write was running.
+///
+/// The INSERT trigger is never dropped; only the UPDATE trigger can fire on these writes.
+///
+/// NOT restored on the error path, deliberately and unchanged from the six copies: every caller runs
+/// this inside a transaction (its own, or the caller's migration transaction), so a propagated error
+/// rolls the DROP back with everything else. A restore here would run against a transaction that is
+/// about to be discarded.
+pub(crate) fn without_revision_trigger<T>(conn: &Connection, label: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    conn.execute_batch("DROP TRIGGER IF EXISTS sessions_updated_at_update;")
+        .with_context(|| format!("{label}: suppress the revision UPDATE trigger"))?;
+    let out = f()?;
+    conn.execute_batch(V5_TRIGGERS_SQL)
+        .with_context(|| format!("{label}: restore the revision UPDATE trigger"))?;
+    Ok(out)
 }
 
 /// Apply the four mandatory PRAGMAs. WAL is per-database (sticky); the rest are per-connection.

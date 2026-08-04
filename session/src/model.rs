@@ -134,6 +134,20 @@ pub enum Role {
     Assistant,
 }
 
+impl Role {
+    /// The wire string an agent sees for this role (`user` / `assistant`).
+    ///
+    /// On the type, not on each consumer. `session_grep` and `session_read` each carried a private
+    /// `role_str` copy of this match, so a third `Role` variant would have compiled fine while one
+    /// of the two MCP surfaces silently kept rendering the old vocabulary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
 /// One role-labeled message from the served index space: the noise-excluded user + assistant
 /// sequence -- parent transcript in order first, then each subagent file in path order -- that
 /// `session::parse::parse_messages` yields. This is EXACTLY what `ParsedSession.body` folded into
