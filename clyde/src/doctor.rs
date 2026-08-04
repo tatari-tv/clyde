@@ -185,8 +185,17 @@ fn has_org_repo_pair(root: &Path) -> std::io::Result<bool> {
 /// function: four hand-copied `Err(e) => { debug!(..); continue }` arms is how the two levels drift
 /// into disagreeing about what counts as a directory.
 ///
-/// `file_type`, not `Path::is_dir`: the latter folds every error into `false`, so a permission
-/// failure would read as "not a directory". Here it reads as what it is and is skipped aloud.
+/// **`fs::metadata`, which FOLLOWS a symlink, and not `DirEntry::file_type`, which describes the
+/// link itself.** A symlinked org or repo directory is an ordinary part of this layout -- the config
+/// validator expands a root to BOTH spellings precisely because roots get symlinked -- so typing the
+/// link rather than its target made `doctor` skip a real `<org>/<repo>` pair and report the root as
+/// holding none. Reporting "clone something here" at a root that is already populated is the
+/// misdiagnosis [`Reachable`] exists to prevent, one level further down than the `is_dir` collapse it
+/// already fixed. A dangling link now stats as an error and is skipped aloud rather than silently.
+///
+/// Still not `Path::is_dir`, which follows symlinks but folds every error into `false`, so a
+/// permission failure would read as "not a directory". Matching on `metadata` gets both: the link is
+/// resolved AND a failure to resolve it reads as what it is.
 fn dir_child(entry: std::io::Result<std::fs::DirEntry>, parent: &Path) -> Option<PathBuf> {
     let entry = entry
         .inspect_err(|e| {
@@ -196,16 +205,11 @@ fn dir_child(entry: std::io::Result<std::fs::DirEntry>, parent: &Path) -> Option
             );
         })
         .ok()?;
-    let file_type = entry
-        .file_type()
-        .inspect_err(|e| {
-            debug!(
-                "doctor::dir_child: cannot type {}: {e}; skipping",
-                entry.path().display()
-            );
-        })
+    let path = entry.path();
+    let metadata = std::fs::metadata(&path)
+        .inspect_err(|e| debug!("doctor::dir_child: cannot stat {}: {e}; skipping", path.display()))
         .ok()?;
-    file_type.is_dir().then(|| entry.path())
+    metadata.is_dir().then_some(path)
 }
 
 fn print_attribution(a: &Attribution) {

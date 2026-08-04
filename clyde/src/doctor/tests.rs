@@ -627,3 +627,61 @@ fn a_listable_root_with_no_pair_is_yes_with_the_flag_clear() {
         "an org dir with no repo under it is a real, readable, empty layout"
     );
 }
+
+/// **A SYMLINKED org or repo directory is a real pair, at either level.**
+///
+/// `DirEntry::file_type()` describes the LINK, not its target, so typing entries that way made
+/// `doctor` walk straight past a symlinked checkout and report the root as holding no
+/// `<org>/<repo>` pair. That is a live layout here, not a hypothetical: the config validator expands
+/// a configured root to both its spellings precisely because roots get symlinked, and the remedy
+/// `doctor` implies for "no pair" is to clone something into a directory that is already populated.
+///
+/// Both levels are covered because they are separate `read_dir` passes through the same helper, and
+/// a fix applied to one only would leave the other blind.
+///
+/// BITES: swap `fs::metadata` back to `entry.file_type()` in `dir_child` and both asserts fail.
+#[test]
+#[cfg(unix)]
+fn a_symlinked_org_or_repo_still_counts_as_a_pair() {
+    // Level 2: real org directory, symlinked repo inside it.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("repos");
+    let real_repo = dir.path().join("elsewhere").join("clyde");
+    fs::create_dir_all(&real_repo).unwrap();
+    fs::create_dir_all(root.join("tatari-tv")).unwrap();
+    std::os::unix::fs::symlink(&real_repo, root.join("tatari-tv").join("clyde")).unwrap();
+    assert_eq!(
+        Reachable::of(&root),
+        Reachable::Yes { has_org_repo: true },
+        "a symlinked repo under a real org is a pair"
+    );
+
+    // Level 1: the whole org directory is a symlink.
+    let dir2 = TempDir::new().unwrap();
+    let root2 = dir2.path().join("repos");
+    let real_org = dir2.path().join("elsewhere").join("tatari-tv");
+    fs::create_dir_all(real_org.join("clyde")).unwrap();
+    fs::create_dir(&root2).unwrap();
+    std::os::unix::fs::symlink(&real_org, root2.join("tatari-tv")).unwrap();
+    assert_eq!(
+        Reachable::of(&root2),
+        Reachable::Yes { has_org_repo: true },
+        "a symlinked org holding a real repo is a pair"
+    );
+}
+
+/// A DANGLING symlink is not a pair, and must not be mistaken for one now that the walk resolves
+/// links. `fs::metadata` fails on it, so it is skipped aloud rather than counted or crashed on.
+#[test]
+#[cfg(unix)]
+fn a_dangling_symlink_is_not_a_pair() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("repos");
+    fs::create_dir_all(root.join("tatari-tv")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("gone"), root.join("tatari-tv").join("clyde")).unwrap();
+    assert_eq!(
+        Reachable::of(&root),
+        Reachable::Yes { has_org_repo: false },
+        "a link to nothing is not a repo"
+    );
+}
