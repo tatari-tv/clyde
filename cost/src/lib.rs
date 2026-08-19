@@ -4,9 +4,9 @@
 #![deny(unused_variables)]
 
 //! `cost` (was `ccu`): Claude Code cost/usage tracking over JSONL logs. Library form for the
-//! clyde umbrella; the `ccu` compat shim in `src/bin/ccu.rs` and `clyde cost` both drive
-//! [`run`]. `run` owns the statusline/pricing pre-flight special-casing, logging setup, and the
-//! process exit code, preserving the pre-merge tool's behavior exactly.
+//! clyde umbrella; `clyde cost` drives [`run`], which owns the statusline/pricing pre-flight
+//! special-casing, logging setup, and the process exit code. The `ccu` compat shim this doc used
+//! to name (`src/bin/ccu.rs`) is gone along with the crate's only `[[bin]]`.
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use claude_pricing::{Pricing, PricingError, StaleFeedInfo, normalize_model_id};
@@ -15,7 +15,6 @@ use log::{debug, info, trace, warn};
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
@@ -75,53 +74,11 @@ fn resolve_current_session<'a>(
     sessions.iter().max_by_key(|s| s.last_active)
 }
 
-/// Path to cost's log file, unified under `<xdg-data>/clyde/logs/cost.log` (Phase 8, D3: log
-/// paths are declared outside the behavior-exact shim surface). `pub` so the `ccu` compat shim
-/// can render the same dynamic `Logs are written to: ...` after-help line the pre-merge binary
-/// showed, now pointed at the unified location.
+/// Path to cost's log file. A DELEGATION to [`common::logging::log_file_path`], which is THE
+/// definition of the unified `<xdg-data>/clyde/logs/<tool>.log` location, so `cost log --path`
+/// prints the same dynamic path the logger actually writes.
 pub fn log_file_path() -> PathBuf {
-    config::xdg_data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("clyde")
-        .join("logs")
-        .join("cost.log")
-}
-
-/// Build the env_logger filter string for a given level, naming the crates whose records this
-/// tool actually emits: `cost` (this crate's own records, including the per-entry dedup fate
-/// trace) and `claude_pricing` (the shared parse crate, including the parse-drop trace at
-/// `convert_raw_entry`). BOTH targets must be enabled so `clyde -l trace cost ...` surfaces the
-/// self-diagnosis trace end to end.
-///
-/// Phase 4 log-target fix: the pre-merge tool filtered on `ccu=<level>`, but this lib crate is
-/// named `cost` and the parse crate `claude_pricing` -- so a `ccu=trace` filter matched NEITHER
-/// crate's target and no `cost::`/`claude_pricing::` record ever emitted. `CCU_LOG_LEVEL` (merged
-/// upstream by clap into the level itself) is preserved; only the wrong filter *target* is fixed.
-/// `cost` scopes its log filter by crate rather than setting a global level, so every crate it
-/// wants output from must be named here. `common` is one of them: the shared scanner logs from
-/// `common::scan`, including the orphan-sidecar warning whose whole job is to report a sidecar
-/// that carries `usage` records. Omitting it silently discarded that warning on every `clyde cost`
-/// run at any `-l` level -- the alarm was unreachable except via a bare `RUST_LOG`, which bypasses
-/// this function entirely.
-fn build_filter(level: &str) -> String {
-    format!("cost={level},common={level},claude_pricing={level}")
-}
-
-fn resolve_log_filter(cli_level: Option<&str>, config_level: Option<&str>) -> (String, bool) {
-    // CLI / CCU_LOG_LEVEL (merged by clap upstream)
-    if let Some(level) = cli_level {
-        return (build_filter(level), true);
-    }
-    // Config file
-    if let Some(level) = config_level {
-        return (build_filter(level), true);
-    }
-    // RUST_LOG - pass through as-is (advanced users expect full filter syntax)
-    if let Ok(filter) = std::env::var("RUST_LOG") {
-        return (filter, true);
-    }
-    // Default
-    (build_filter("warn"), false)
+    common::logging::log_file_path("cost")
 }
 
 /// Decide whether the per-entry dedup fate trace should fire for an entry whose session is
@@ -137,31 +94,17 @@ fn should_trace(trace_session: Option<&str>, session_id: &str) -> bool {
     }
 }
 
-fn setup_logging(filter: &str, has_explicit_level: bool) -> Result<()> {
-    if !has_explicit_level {
-        // Default warn level - nothing will be logged; skip the file open.
-        env_logger::Builder::new().parse_filters(filter).init();
-        return Ok(());
-    }
-
-    let log_file = log_file_path();
-    let log_dir = log_file.parent().expect("log file has parent");
-    fs::create_dir_all(log_dir).context("Failed to create log directory")?;
-
-    let target = Box::new(
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_file)
-            .context("Failed to open log file")?,
-    );
-
-    env_logger::Builder::new()
-        .parse_filters(filter)
-        .target(env_logger::Target::Pipe(target))
-        .init();
-
-    info!("Logging initialized, filter={}, file={}", filter, log_file.display());
+/// Install the process logger under the ONE shared policy (see [`common::logging`]): always the
+/// file, a global level (never crate-scoped), `RUST_LOG` as an override.
+///
+/// `cost` used to build a crate-scoped filter (`cost=<lvl>,claude_pricing=<lvl>`) and open the file
+/// ONLY when a level was explicit. Both were bugs. The filter silently dropped every record from an
+/// unnamed crate -- `common::scan`'s orphan-sidecar warning among them -- and the conditional sink
+/// made `-l` redirect diagnostics off the terminal, so `clyde cost` printed warnings over its own
+/// JSON payload at the default level and hid them at `-l warn`.
+fn setup_logging(log_level: Option<&str>) -> Result<()> {
+    let path = common::logging::init("cost", log_level).context("Failed to setup logging")?;
+    info!("Logging initialized, file={}", path.display());
     Ok(())
 }
 
@@ -678,8 +621,9 @@ pub fn run(args: CostArgs, globals: common::Globals) -> Result<i32> {
     // Load config once; use its log_level (and the merged --log-level/CCU_LOG_LEVEL global) to
     // initialize logging.
     let (config, _) = Config::load(args.config.as_ref()).context("Failed to load configuration")?;
-    let (filter, has_explicit_level) = resolve_log_filter(globals.log_level.as_deref(), config.log_level.as_deref());
-    setup_logging(&filter, has_explicit_level).context("Failed to setup logging")?;
+    // CLI/CCU_LOG_LEVEL wins over the config file; absent both, the shared default applies.
+    let log_level = globals.log_level.as_deref().or(config.log_level.as_deref());
+    setup_logging(log_level)?;
 
     // Construct pricing once. --offline skips the network/library cache and uses
     // ~/.config/clyde/pricing.json (if present) or the embedded baseline. Default is

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use tempfile::TempDir;
@@ -41,63 +42,32 @@ fn test_subtract_months_twelve() {
 }
 
 #[test]
-fn test_resolve_log_filter_cli_level() {
-    // Phase 4 log-target fix: the filter targets this crate (`cost`) AND the shared parse crate
-    // (`claude_pricing`), NOT the pre-merge `ccu` target that matched neither -- so the crate's
-    // own debug/trace records (and the parse-drop trace) actually emit.
-    let (filter, explicit) = resolve_log_filter(Some("debug"), None);
-    assert_eq!(filter, "cost=debug,common=debug,claude_pricing=debug");
-    assert!(!filter.contains("ccu="), "the wrong `ccu` target must be gone");
-    assert!(explicit);
+fn log_level_precedence_is_cli_then_config_then_shared_default() {
+    // `cost` no longer owns a filter-string builder: the level is a plain Option handed to the
+    // shared logger, so the only thing left for this crate to decide is precedence. Pin it.
+    let cli = Some("debug".to_string());
+    let cfg = Some("trace".to_string());
+
+    // CLI (which clap has already merged CCU_LOG_LEVEL into) beats the config file.
+    assert_eq!(cli.as_deref().or(cfg.as_deref()), Some("debug"));
+    // Config file applies when the CLI said nothing.
+    assert_eq!(None::<&str>.or(cfg.as_deref()), Some("trace"));
+    // Neither: the SHARED default, not a cost-private one. `cost` used to default to `warn` while
+    // `clyde` and `report` defaulted to `info`.
+    assert_eq!(None::<&str>.or(None), None);
+    assert_eq!(common::logging::resolve_level(None), log::LevelFilter::Info);
 }
 
 #[test]
-fn test_resolve_log_filter_cli_level_trace() {
-    let (filter, explicit) = resolve_log_filter(Some("trace"), None);
-    assert_eq!(filter, "cost=trace,common=trace,claude_pricing=trace");
-    assert!(explicit);
-}
-
-#[test]
-fn test_resolve_log_filter_config_level() {
-    let (filter, explicit) = resolve_log_filter(None, Some("info"));
-    assert_eq!(filter, "cost=info,common=info,claude_pricing=info");
-    assert!(explicit);
-}
-
-#[test]
-fn test_resolve_log_filter_always_covers_common() {
-    // `common` hosts the shared scanner, whose orphan-sidecar warning reports a sidecar carrying
-    // `usage` records -- i.e. spend this scan is dropping. A crate-scoped filter that omits
-    // `common` discards that warning at EVERY level, making the alarm unreachable except via a
-    // bare RUST_LOG (which bypasses build_filter). Pin it on every level and every source.
+fn log_level_is_global_never_crate_scoped() {
+    // The regression this whole change exists to prevent: `cost` built the filter string
+    // `cost=<lvl>,claude_pricing=<lvl>`, which silently discarded records from every crate not
+    // named -- `common::scan`'s orphan-sidecar warning among them. A LevelFilter cannot exclude a
+    // crate, so the class is structurally gone; assert the shared resolver is what we use.
     for level in ["error", "warn", "info", "debug", "trace"] {
-        let (from_cli, _) = resolve_log_filter(Some(level), None);
-        assert!(
-            from_cli.contains(&format!("common={level}")),
-            "cli level {level} must cover common, got: {from_cli}"
-        );
-        let (from_config, _) = resolve_log_filter(None, Some(level));
-        assert!(
-            from_config.contains(&format!("common={level}")),
-            "config level {level} must cover common, got: {from_config}"
-        );
+        let resolved = common::logging::resolve_level(Some(level));
+        assert_eq!(resolved.to_string().to_lowercase(), level, "level {level} round-trips");
     }
-    // The implicit default is the path a bare `clyde cost` takes.
-    assert!(build_filter("warn").contains("common=warn"));
-}
-
-#[test]
-fn test_resolve_log_filter_none_falls_through() {
-    // When both CLI and config level are None, falls through to RUST_LOG/default
-    let (filter, _) = resolve_log_filter(None, None);
-    assert!(!filter.is_empty());
-}
-
-#[test]
-fn test_resolve_log_filter_default_not_explicit() {
-    let (filter, _) = resolve_log_filter(None, None);
-    assert!(!filter.is_empty());
 }
 
 #[test]

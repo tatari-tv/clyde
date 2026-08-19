@@ -218,6 +218,42 @@ fn non_uuid_stem_that_is_not_a_sidecar_still_fails_loud() {
 }
 
 #[test]
+fn orphan_sidecar_severity_is_split_by_actionability() {
+    // A sidecar is a persistent file: a `warn!` for the routine case fires on EVERY run forever
+    // with nothing to act on, which is how a real warning gets tuned out. The severity split is
+    // driven entirely by `orphan_sidecar_shape`'s usage flag, so pin that contract here -- the
+    // `log` crate has no capture hook available to this crate, and the flag IS the decision.
+    let tmp = TempDir::new().unwrap();
+
+    let routine = tmp.path().join("routine.jsonl");
+    write_jsonl(&routine, r#"{"type":"ai-title","aiTitle":"t"}"#);
+    let (_, has_usage) = orphan_sidecar_shape(&routine);
+    assert!(!has_usage, "metadata-only sidecar logs at debug");
+
+    let actionable = tmp.path().join("actionable.jsonl");
+    write_jsonl(&actionable, r#"{"type":"assistant","usage":{"input_tokens":7}}"#);
+    let (_, has_usage) = orphan_sidecar_shape(&actionable);
+    assert!(has_usage, "a sidecar carrying spend logs at warn");
+
+    // Both still skip -- severity changes the log level, never the scan result.
+    let project = tmp.path().join("-home-saidler-foo");
+    write_jsonl(
+        &project.join(format!("{PARENT_UUID_A}.jsonl")),
+        r#"{"type":"assistant"}"#,
+    );
+    write_jsonl(
+        &project.join(format!("{PARENT_UUID_A}.orphaned-1786204682562-a5d5862b.jsonl")),
+        r#"{"type":"assistant","usage":{"input_tokens":7}}"#,
+    );
+    let files = find_session_files(tmp.path()).unwrap();
+    assert_eq!(
+        files.len(),
+        1,
+        "a usage-carrying sidecar is still skipped, just noisily"
+    );
+}
+
+#[test]
 fn orphan_sidecar_shape_reports_lines_and_usage() {
     // The warning's whole job is to surface the day a sidecar carries real spend.
     let tmp = TempDir::new().unwrap();

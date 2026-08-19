@@ -76,7 +76,7 @@ pub fn is_orphan_sidecar(stem: &str) -> bool {
     orphan_sidecar_regex().is_match(stem)
 }
 
-/// Log a skipped orphan sidecar loudly enough to notice if its shape ever changes.
+/// Log a skipped orphan sidecar at a severity that matches what the operator must DO about it.
 ///
 /// Sidecars are skipped, not harvested. The one observed in the wild held only `ai-title` /
 /// `agent-name` lines already present in the live parent -- no `usage`, nothing to attribute, and
@@ -85,15 +85,27 @@ pub fn is_orphan_sidecar(stem: &str) -> bool {
 /// could double-count.
 ///
 /// But the mechanism tombstones *messages*, so a future sidecar could carry `assistant` records
-/// with `usage` -- real spend this scanner would then drop in silence. The warning therefore
-/// reports the line count and whether any line carries a `usage` block, so that day surfaces
-/// instead of quietly under-reporting cost.
-pub fn warn_orphan_sidecar(path: &Path) {
+/// with `usage` -- real spend this scanner would then drop in silence. Hence the split:
+///
+/// - **No `usage` records**: routine and non-actionable. A sidecar is a persistent file, so a
+///   `warn!` here fires on EVERY invocation forever, for a condition with nothing to act on. That
+///   is noise, and noise is how a real warning gets ignored. `debug!`.
+/// - **Carries `usage` records**: spend is being dropped. Actionable, and the entire reason this
+///   function exists. `warn!`.
+pub fn log_orphan_sidecar(path: &Path) {
     let (lines, has_usage) = orphan_sidecar_shape(path);
-    warn!(
-        "scan: skipping Claude Code orphan sidecar {} ({lines} line(s), carries usage records: {has_usage})",
-        path.display()
-    );
+    if has_usage {
+        warn!(
+            "scan: skipping Claude Code orphan sidecar {} that CARRIES usage records ({lines} line(s)) -- \
+             its spend is NOT counted; see common::scan::log_orphan_sidecar",
+            path.display()
+        );
+    } else {
+        debug!(
+            "scan: skipping Claude Code orphan sidecar {} ({lines} line(s), no usage records)",
+            path.display()
+        );
+    }
 }
 
 /// The `"usage"` JSON key, as bytes: this scan is deliberately byte-oriented (see below).
@@ -167,7 +179,7 @@ pub fn find_session_files(projects_dir: &Path) -> Result<Vec<SessionFile>> {
             if entry_path.is_file() && entry_path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
                 let stem = entry_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
                 if is_orphan_sidecar(stem) {
-                    warn_orphan_sidecar(&entry_path);
+                    log_orphan_sidecar(&entry_path);
                     continue;
                 }
                 if !uuid_v4_regex().is_match(stem) {

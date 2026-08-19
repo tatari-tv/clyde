@@ -7,7 +7,7 @@
 //! the reindex" so one malformed directory can't abort a whole scan.
 //!
 //! Claude Code's own `<uuid>.orphaned-<epoch-ms>-<hash>.jsonl` sidecars are recognised via
-//! [`common::scan::is_orphan_sidecar`] and skipped with a shape-reporting warning, so they are not
+//! [`common::scan::is_orphan_sidecar`] and skipped with a shape-reporting log record (warn only when one carries `usage`), so they are not
 //! logged as generic "non-UUID" noise. That predicate lives in `common` so this scanner and
 //! `common`'s cannot drift on what an orphan sidecar is.
 
@@ -61,7 +61,7 @@ fn scan_project(project_path: &Path, files: &mut Vec<SessionFile>) {
         if entry_path.is_file() && entry_path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
             let stem = entry_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
             if common::scan::is_orphan_sidecar(stem) {
-                common::scan::warn_orphan_sidecar(&entry_path);
+                common::scan::log_orphan_sidecar(&entry_path);
                 continue;
             }
             if !uuid_v4_regex().is_match(stem) {

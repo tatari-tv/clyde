@@ -11,11 +11,10 @@ pub mod pager;
 pub mod risk;
 pub mod settings;
 
-use std::fs;
 use std::path::PathBuf;
 
 use eyre::{Context, Result};
-use log::{LevelFilter, info};
+use log::info;
 
 pub use cli::{Command, PermitArgs};
 
@@ -34,38 +33,22 @@ use crate::db::EventStore;
 use crate::risk::Rules;
 use crate::settings::discover_settings_local;
 
-/// Path to permit's log file, unified under `<xdg-data>/clyde/logs/permit.log` (Phase 8, D3: log
-/// paths are declared outside the behavior-exact shim surface). `pub` so the caller renders the
-/// same dynamic path the logger actually writes.
+/// Path to permit's log file, unified under `<xdg-data>/clyde/logs/permit.log`.
+///
+/// A DELEGATION to [`common::logging::log_file_path`], which is THE definition of the unified
+/// location. `pub` so the caller renders the same dynamic path the logger actually writes.
 pub fn log_file_path() -> PathBuf {
-    crate::config::xdg_data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("clyde")
-        .join("logs")
-        .join("permit.log")
+    common::logging::log_file_path("permit")
 }
 
-/// File-target logger to the unified `clyde/logs/permit.log` path (Phase 8). Honors
-/// `globals.log_level` when clyde passes one (`clyde --log-level <lvl> permit ...`); when unset
-/// (the standalone shim path) it falls back to `env_logger`'s default (`RUST_LOG`), which is
-/// behavior-exact with the old tool.
+/// Install the process logger under the ONE shared policy (see [`common::logging`]).
+///
+/// `permit` used to take its default level from `env_logger`'s own env default rather than the
+/// fleet default, so a bare `clyde permit ...` logged at a different level than a bare
+/// `clyde report ...`. `RUST_LOG` still overrides -- now for every tool, not just this one.
 fn setup_logging(log_level: Option<&str>) -> Result<()> {
-    let log_file = log_file_path();
-    let log_dir = log_file.parent().expect("log file has parent");
-    fs::create_dir_all(log_dir).context("Failed to create log directory")?;
-    let target = Box::new(
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_file)
-            .context("Failed to open log file")?,
-    );
-    let mut builder = env_logger::Builder::from_default_env();
-    if let Some(level) = log_level {
-        builder.filter_level(level.parse().unwrap_or(LevelFilter::Info));
-    }
-    builder.target(env_logger::Target::Pipe(target)).init();
-    info!("Logging initialized, writing to: {}", log_file.display());
+    let path = common::logging::init("permit", log_level).context("Failed to setup logging")?;
+    info!("Logging initialized, writing to: {}", path.display());
     Ok(())
 }
 
