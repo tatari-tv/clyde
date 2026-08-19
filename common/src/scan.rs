@@ -20,6 +20,7 @@ use log::{debug, info, warn};
 use regex::Regex;
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::SystemTime;
@@ -52,6 +53,62 @@ fn uuid_v4_regex() -> &'static Regex {
     RE.get_or_init(|| Regex::new(UUID_V4_PATTERN).expect("UUID-v4 pattern is a valid regex"))
 }
 
+/// A Claude Code *orphan sidecar*: `<session-uuid>.orphaned-<epoch-ms>-<hash>.jsonl`.
+///
+/// Claude Code tombstones records whose parent chain is broken out of a live transcript into this
+/// sidecar (`orphanedMessageCount` / `tengu_orphaned_messages_tombstoned` in the 2.1.x binary). The
+/// stem is a real session UUID plus a suffix, so it is NOT a UUID-v4 and would otherwise trip the
+/// fail-loud guard below and take down every command that walks the projects tree.
+const ORPHAN_SIDECAR_PATTERN: &str =
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.orphaned-[0-9]+-[0-9a-f]+$";
+
+fn orphan_sidecar_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(ORPHAN_SIDECAR_PATTERN).expect("orphan-sidecar pattern is a valid regex"))
+}
+
+/// Whether `stem` names an orphan sidecar (see [`ORPHAN_SIDECAR_PATTERN`]).
+///
+/// Shared with `session`'s scanner so the two cannot disagree about what an orphan sidecar is: this
+/// module already drifted from that one once (see the module doc), and a second definition of the
+/// same filename shape is exactly how that recurs.
+pub fn is_orphan_sidecar(stem: &str) -> bool {
+    orphan_sidecar_regex().is_match(stem)
+}
+
+/// Log a skipped orphan sidecar loudly enough to notice if its shape ever changes.
+///
+/// Sidecars are skipped, not harvested. The one observed in the wild held only `ai-title` /
+/// `agent-name` lines already present in the live parent -- no `usage`, nothing to attribute, and
+/// folding a duplicate title in could beat out the parent's newer one. It is also undetermined
+/// whether Claude Code *copies* records into the sidecar or *moves* them, so counting sidecar spend
+/// could double-count.
+///
+/// But the mechanism tombstones *messages*, so a future sidecar could carry `assistant` records
+/// with `usage` -- real spend this scanner would then drop in silence. The warning therefore
+/// reports the line count and whether any line carries a `usage` block, so that day surfaces
+/// instead of quietly under-reporting cost.
+pub fn warn_orphan_sidecar(path: &Path) {
+    let (lines, has_usage) = orphan_sidecar_shape(path);
+    warn!(
+        "scan: skipping Claude Code orphan sidecar {} ({lines} line(s), carries usage records: {has_usage})",
+        path.display()
+    );
+}
+
+fn orphan_sidecar_shape(path: &Path) -> (usize, bool) {
+    let Ok(file) = fs::File::open(path) else {
+        return (0, false);
+    };
+    let mut lines = 0usize;
+    let mut has_usage = false;
+    for line in BufReader::new(file).lines().map_while(|l| l.ok()) {
+        lines += 1;
+        has_usage |= line.contains("\"usage\"");
+    }
+    (lines, has_usage)
+}
+
 /// Discover every session JSONL under the Claude projects directory: each top-level `*.jsonl` in
 /// every project dir (a parent session) plus every `<session-uuid>/subagents/*.jsonl` (subagents
 /// carrying the parent's session id).
@@ -60,6 +117,10 @@ fn uuid_v4_regex() -> &'static Regex {
 /// directory (one containing `subagents/`) whose name is not a UUID-v4, triggers [`bail!`] rather
 /// than being misclassified. Real Claude Code session files are always UUID-v4 named, so a
 /// non-UUID name is a corrupt/foreign layout that must surface loudly, never silently.
+///
+/// The one sanctioned exception is a [`is_orphan_sidecar`] file, which Claude Code itself writes
+/// next to a live transcript: it is warned-and-skipped rather than fatal, because it is a known
+/// artifact rather than corruption.
 ///
 /// The returned list is sorted by path so the insertion order into any downstream parse/dedup
 /// pipeline is stable across runs (`read_dir` yields entries in filesystem-dependent order, which
@@ -84,6 +145,10 @@ pub fn find_session_files(projects_dir: &Path) -> Result<Vec<SessionFile>> {
 
             if entry_path.is_file() && entry_path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
                 let stem = entry_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+                if is_orphan_sidecar(stem) {
+                    warn_orphan_sidecar(&entry_path);
+                    continue;
+                }
                 if !uuid_v4_regex().is_match(stem) {
                     bail!(
                         "scan: parent JSONL stem is not a UUID-v4: {} (refusing to misclassify as a parent session)",

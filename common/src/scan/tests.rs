@@ -156,6 +156,86 @@ fn non_uuid_subagent_dir_fails_loud() {
     assert!(msg.contains("not a UUID-v4"), "expected loud failure, got: {}", msg);
 }
 
+// --- Claude Code orphan sidecars (the sanctioned exception to the fail-loud guard) ---
+
+#[test]
+fn orphan_sidecar_is_skipped_not_fatal() {
+    // The real filename that took down `clyde cost`: a live session UUID plus Claude Code's
+    // `.orphaned-<epoch-ms>-<hash>` suffix. It must not bail, and must not be discovered either.
+    let tmp = TempDir::new().unwrap();
+    let project = tmp.path().join("-home-saidler-foo");
+    write_jsonl(
+        &project.join(format!("{PARENT_UUID_A}.jsonl")),
+        r#"{"type":"assistant"}"#,
+    );
+    write_jsonl(
+        &project.join(format!("{PARENT_UUID_A}.orphaned-1786204682562-a5d5862b.jsonl")),
+        r#"{"type":"ai-title","aiTitle":"t"}"#,
+    );
+
+    let files = find_session_files(tmp.path()).unwrap();
+    assert_eq!(files.len(), 1, "only the live parent is discovered, got: {:?}", files);
+    assert!(files[0].path.ends_with(format!("{PARENT_UUID_A}.jsonl")));
+}
+
+#[test]
+fn orphan_sidecar_without_a_live_parent_is_still_skipped() {
+    // The sidecar can outlive its parent transcript; on its own it is still not a session.
+    let tmp = TempDir::new().unwrap();
+    let project = tmp.path().join("-home-saidler-foo");
+    write_jsonl(
+        &project.join(format!("{PARENT_UUID_A}.orphaned-1786204682562-a5d5862b.jsonl")),
+        r#"{"type":"agent-name","agentName":"n"}"#,
+    );
+
+    assert!(find_session_files(tmp.path()).unwrap().is_empty());
+}
+
+#[test]
+fn orphan_sidecar_predicate_is_tight() {
+    let uuid = PARENT_UUID_A;
+    assert!(is_orphan_sidecar(&format!("{uuid}.orphaned-1786204682562-a5d5862b")));
+    // A non-UUID prefix is not a sidecar -- it stays fatal, so corruption still surfaces.
+    assert!(!is_orphan_sidecar("not-a-uuid.orphaned-1786204682562-a5d5862b"));
+    // Near-misses must not open the escape hatch wider than the real artifact.
+    assert!(!is_orphan_sidecar(uuid));
+    assert!(!is_orphan_sidecar(&format!("{uuid}.orphaned")));
+    assert!(!is_orphan_sidecar(&format!("{uuid}.orphaned-a5d5862b")));
+    assert!(!is_orphan_sidecar(&format!(
+        "{uuid}.orphaned-1786204682562-a5d5862b.extra"
+    )));
+}
+
+#[test]
+fn non_uuid_stem_that_is_not_a_sidecar_still_fails_loud() {
+    // The escape hatch must not soften the guard: garbage is still fatal.
+    let tmp = TempDir::new().unwrap();
+    let project = tmp.path().join("-home-saidler-foo");
+    write_jsonl(&project.join("3a57f1ba.orphaned-1-ab.jsonl"), r#"{"type":"system"}"#);
+
+    let err = find_session_files(tmp.path()).unwrap_err();
+    assert!(format!("{:#}", err).contains("not a UUID-v4"));
+}
+
+#[test]
+fn orphan_sidecar_shape_reports_lines_and_usage() {
+    // The warning's whole job is to surface the day a sidecar carries real spend.
+    let tmp = TempDir::new().unwrap();
+    let metadata_only = tmp.path().join("meta.jsonl");
+    write_jsonl(&metadata_only, r#"{"type":"ai-title","aiTitle":"t"}"#);
+    assert_eq!(orphan_sidecar_shape(&metadata_only), (1, false));
+
+    let with_usage = tmp.path().join("spend.jsonl");
+    write_jsonl(
+        &with_usage,
+        "{\"type\":\"assistant\"}\n{\"usage\":{\"input_tokens\":7}}",
+    );
+    assert_eq!(orphan_sidecar_shape(&with_usage), (2, true));
+
+    // An unreadable/absent path degrades to a benign shape rather than panicking mid-scan.
+    assert_eq!(orphan_sidecar_shape(&tmp.path().join("absent.jsonl")), (0, false));
+}
+
 // --- Deterministic path sorting (harvested from cost/src/scanner/tests.rs) ---
 
 #[test]
