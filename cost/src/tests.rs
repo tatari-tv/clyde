@@ -46,7 +46,7 @@ fn test_resolve_log_filter_cli_level() {
     // (`claude_pricing`), NOT the pre-merge `ccu` target that matched neither -- so the crate's
     // own debug/trace records (and the parse-drop trace) actually emit.
     let (filter, explicit) = resolve_log_filter(Some("debug"), None);
-    assert_eq!(filter, "cost=debug,claude_pricing=debug");
+    assert_eq!(filter, "cost=debug,common=debug,claude_pricing=debug");
     assert!(!filter.contains("ccu="), "the wrong `ccu` target must be gone");
     assert!(explicit);
 }
@@ -54,15 +54,37 @@ fn test_resolve_log_filter_cli_level() {
 #[test]
 fn test_resolve_log_filter_cli_level_trace() {
     let (filter, explicit) = resolve_log_filter(Some("trace"), None);
-    assert_eq!(filter, "cost=trace,claude_pricing=trace");
+    assert_eq!(filter, "cost=trace,common=trace,claude_pricing=trace");
     assert!(explicit);
 }
 
 #[test]
 fn test_resolve_log_filter_config_level() {
     let (filter, explicit) = resolve_log_filter(None, Some("info"));
-    assert_eq!(filter, "cost=info,claude_pricing=info");
+    assert_eq!(filter, "cost=info,common=info,claude_pricing=info");
     assert!(explicit);
+}
+
+#[test]
+fn test_resolve_log_filter_always_covers_common() {
+    // `common` hosts the shared scanner, whose orphan-sidecar warning reports a sidecar carrying
+    // `usage` records -- i.e. spend this scan is dropping. A crate-scoped filter that omits
+    // `common` discards that warning at EVERY level, making the alarm unreachable except via a
+    // bare RUST_LOG (which bypasses build_filter). Pin it on every level and every source.
+    for level in ["error", "warn", "info", "debug", "trace"] {
+        let (from_cli, _) = resolve_log_filter(Some(level), None);
+        assert!(
+            from_cli.contains(&format!("common={level}")),
+            "cli level {level} must cover common, got: {from_cli}"
+        );
+        let (from_config, _) = resolve_log_filter(None, Some(level));
+        assert!(
+            from_config.contains(&format!("common={level}")),
+            "config level {level} must cover common, got: {from_config}"
+        );
+    }
+    // The implicit default is the path a bare `clyde cost` takes.
+    assert!(build_filter("warn").contains("common=warn"));
 }
 
 #[test]

@@ -97,8 +97,14 @@ pub fn log_file_path() -> PathBuf {
 /// named `cost` and the parse crate `claude_pricing` -- so a `ccu=trace` filter matched NEITHER
 /// crate's target and no `cost::`/`claude_pricing::` record ever emitted. `CCU_LOG_LEVEL` (merged
 /// upstream by clap into the level itself) is preserved; only the wrong filter *target* is fixed.
+/// `cost` scopes its log filter by crate rather than setting a global level, so every crate it
+/// wants output from must be named here. `common` is one of them: the shared scanner logs from
+/// `common::scan`, including the orphan-sidecar warning whose whole job is to report a sidecar
+/// that carries `usage` records. Omitting it silently discarded that warning on every `clyde cost`
+/// run at any `-l` level -- the alarm was unreachable except via a bare `RUST_LOG`, which bypasses
+/// this function entirely.
 fn build_filter(level: &str) -> String {
-    format!("cost={level},claude_pricing={level}")
+    format!("cost={level},common={level},claude_pricing={level}")
 }
 
 fn resolve_log_filter(cli_level: Option<&str>, config_level: Option<&str>) -> (String, bool) {
