@@ -96,15 +96,36 @@ pub fn warn_orphan_sidecar(path: &Path) {
     );
 }
 
+/// The `"usage"` JSON key, as bytes: this scan is deliberately byte-oriented (see below).
+const USAGE_KEY: &[u8] = b"\"usage\"";
+
+/// Count the sidecar's records and report whether any carries a `usage` block.
+///
+/// Scanned as RAW BYTES, not UTF-8 lines. `BufRead::lines()` yields `Err(InvalidData)` on a line
+/// that is not valid UTF-8, and any `ok()`-based adapter stops the iteration there -- so a single
+/// corrupt byte early in the file would hide every `usage` record after it and report the file as
+/// spend-free. That is precisely the signal this function exists to raise, so it must not be
+/// suppressible by one bad byte. `read_until` never fails on content, only on IO.
 fn orphan_sidecar_shape(path: &Path) -> (usize, bool) {
     let Ok(file) = fs::File::open(path) else {
         return (0, false);
     };
+    let mut reader = BufReader::new(file);
     let mut lines = 0usize;
     let mut has_usage = false;
-    for line in BufReader::new(file).lines().map_while(|l| l.ok()) {
-        lines += 1;
-        has_usage |= line.contains("\"usage\"");
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                lines += 1;
+                has_usage |= buf.windows(USAGE_KEY.len()).any(|w| w == USAGE_KEY);
+            }
+            // A mid-file IO error truncates the count; report what was seen rather than panicking
+            // or claiming zero, since the caller is only logging.
+            Err(_) => break,
+        }
     }
     (lines, has_usage)
 }

@@ -236,6 +236,46 @@ fn orphan_sidecar_shape_reports_lines_and_usage() {
     assert_eq!(orphan_sidecar_shape(&tmp.path().join("absent.jsonl")), (0, false));
 }
 
+#[test]
+fn orphan_sidecar_shape_survives_invalid_utf8() {
+    // A UTF-8 line iterator errors on a bad byte and stops, which would report every record after
+    // it as absent -- hiding exactly the usage records this warning exists to surface. The scan is
+    // byte-oriented so one corrupt line cannot suppress the signal.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("corrupt.jsonl");
+    let mut body = Vec::new();
+    body.extend_from_slice(br#"{"type":"ai-title","aiTitle":"t"}"#);
+    body.push(b'\n');
+    body.extend_from_slice(&[0xff, 0xfe]); // not valid UTF-8
+    body.push(b'\n');
+    body.extend_from_slice(br#"{"type":"assistant","usage":{"input_tokens":7}}"#);
+    body.push(b'\n');
+    fs::write(&path, &body).unwrap();
+
+    assert_eq!(
+        orphan_sidecar_shape(&path),
+        (3, true),
+        "the usage record AFTER the invalid bytes must still be seen"
+    );
+}
+
+#[test]
+fn orphan_sidecar_shape_counts_a_final_line_without_a_newline() {
+    // read_until must not invent a trailing empty record, nor drop an unterminated last one.
+    let tmp = TempDir::new().unwrap();
+    let unterminated = tmp.path().join("unterminated.jsonl");
+    fs::write(&unterminated, "{\"a\":1}\n{\"usage\":2}").unwrap();
+    assert_eq!(orphan_sidecar_shape(&unterminated), (2, true));
+
+    let terminated = tmp.path().join("terminated.jsonl");
+    fs::write(&terminated, "{\"a\":1}\n{\"b\":2}\n").unwrap();
+    assert_eq!(orphan_sidecar_shape(&terminated), (2, false));
+
+    let empty = tmp.path().join("empty.jsonl");
+    fs::write(&empty, "").unwrap();
+    assert_eq!(orphan_sidecar_shape(&empty), (0, false));
+}
+
 // --- Deterministic path sorting (harvested from cost/src/scanner/tests.rs) ---
 
 #[test]
