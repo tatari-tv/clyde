@@ -534,13 +534,12 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
 /// per-tool log dirs still present. Informational only -- legacy logs are disposable diagnostics,
 /// not migration state, so callers must NOT fold `legacy_log_dirs` into [`Report::healthy`].
 fn log_state(paths: &Paths) -> (Vec<(&'static str, PathBuf)>, Vec<PathBuf>) {
-    let unified_dir = paths.xdg_data.join("clyde").join("logs");
-    let log_locations = vec![
-        ("clyde", unified_dir.join("clyde.log")),
-        ("cost", unified_dir.join("cost.log")),
-        ("permit", unified_dir.join("permit.log")),
-        ("report", unified_dir.join("report.log")),
-    ];
+    // Built through `common::logging`, never by hand: doctor's whole job here is to report where
+    // the logs ARE, so it must derive that from the same definition the loggers write through.
+    let log_locations = common::logging::TOOLS
+        .iter()
+        .map(|tool| (*tool, common::logging::log_file_path_in(&paths.xdg_data, tool)))
+        .collect();
 
     let legacy_log_dirs = [
         paths.xdg_data.join("ccu").join("logs"),

@@ -146,7 +146,13 @@ pub enum Command {
         name: Option<String>,
 
         /// List available statuslines
-        #[arg(short, long)]
+        ///
+        /// No short form: `-l` is the fleet-wide `--log-level` (`clyde/src/cli.rs`, `global = true`),
+        /// and declaring it twice made clap's debug assertion fire on ANY `clyde cost statusline`
+        /// invocation -- every debug build panicked before parsing. Release builds compiled the
+        /// assertion out and silently resolved `-l` to this flag instead of the global one, so the
+        /// two build profiles disagreed about what `-l` meant.
+        #[arg(long)]
         list: bool,
     },
     /// Manage model pricing configuration

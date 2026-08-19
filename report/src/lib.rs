@@ -25,7 +25,7 @@ use common::repo::RepoSource;
 use common::scan::pricing_files;
 use efficiency::{Outcomes, SessionEfficiency};
 use eyre::{Context, Result};
-use log::{LevelFilter, debug};
+use log::debug;
 use sessions::{CatalogEntry, Db, Filters};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -88,7 +88,9 @@ impl std::fmt::Display for OutputDest {
 /// success print, and the process exit code. Returns the intended exit code; the caller maps it
 /// to `process::exit`.
 pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
-    let log_level = globals.log_level.unwrap_or_else(|| "info".to_string());
+    let log_level = globals
+        .log_level
+        .unwrap_or_else(|| common::logging::DEFAULT_LOG_LEVEL.to_string());
     setup_logging(&log_level).context("Failed to setup logging")?;
 
     let config = Config {
@@ -129,35 +131,18 @@ pub fn run(args: ReportArgs, globals: common::Globals) -> Result<i32> {
     Ok(0)
 }
 
-/// Path to report's log file, unified under `<xdg-data>/clyde/logs/report.log` (Phase 8, D3: log
-/// paths are declared outside the behavior-exact shim surface). `pub` so the caller renders the
+/// Path to report's log file. A DELEGATION to [`common::logging::log_file_path`], which is THE
+/// definition of the unified `<xdg-data>/clyde/logs/<tool>.log` location, so the caller renders the
 /// same dynamic path the logger actually writes.
 pub fn log_file_path() -> PathBuf {
-    crate::config::xdg_data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("clyde")
-        .join("logs")
-        .join("report.log")
+    common::logging::log_file_path("report")
 }
 
-/// File-target logger to the unified `clyde/logs/report.log` path (Phase 8).
+/// Install the process logger under the ONE shared policy (see [`common::logging`]).
 fn setup_logging(level: &str) -> Result<()> {
-    let log_file = log_file_path();
-    let log_dir = log_file.parent().expect("log file has parent");
-    std::fs::create_dir_all(log_dir).context("Failed to create log directory")?;
-    let target = Box::new(
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_file)
-            .context("Failed to open log file")?,
-    );
-    let filter = LevelFilter::from_str(level).unwrap_or(LevelFilter::Info);
-    env_logger::Builder::new()
-        .filter_level(filter)
-        .target(env_logger::Target::Pipe(target))
-        .init();
-    Ok(())
+    common::logging::init("report", Some(level))
+        .map(|_| ())
+        .context("Failed to setup logging")
 }
 
 pub fn run_with_config(config: &Config) -> Result<RunResult> {

@@ -23,6 +23,7 @@ testkit = []
 chrono.workspace = true
 claude-pricing = { version = "2.0.0", path = "../pricing" }
 dirs.workspace = true
+env_logger = { workspace = true }
 eyre.workspace = true
 log.workspace = true
 regex = "1.12.4"

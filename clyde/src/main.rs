@@ -30,10 +30,13 @@ use cli::{
     TagArgs,
 };
 
-/// Default log level for the clyde-native `sessions` subtree when `--log-level` is unset. The
-/// absorbed tools keep their own defaults (via `Globals::log_level == None`), so this applies
-/// only to the sessions arm.
-const DEFAULT_LOG_LEVEL: &str = "info";
+/// The default log level when `--log-level` is unset, for EVERY arm.
+///
+/// Re-exported from [`common::logging`] rather than defined here: the absorbed tools used to keep
+/// their own separate defaults (`cost` at `warn`, `permit` at `env_logger`'s env default), so a
+/// bare `clyde cost` and a bare `clyde report` logged at different levels. They now all resolve
+/// through `common::logging`, and this constant is the same one they see.
+const DEFAULT_LOG_LEVEL: &str = common::logging::DEFAULT_LOG_LEVEL;
 use sessions::{
     ClaudeCli, Db, EnrichOptions, EnrichStats, EnrichSummary, ExportContext, ExportEnvelope, ExportFilters, Fallback,
     Filters, MatchSource, ReindexStats, SearchResults, SessionRecord, StageStats,
@@ -1383,19 +1386,7 @@ fn print_json<T: serde::Serialize + ?Sized>(value: &T) {
 #[cfg(test)]
 mod tests;
 
+/// Install the process logger under the ONE shared policy (see [`common::logging`]).
 fn setup_logging(level: &str, log_path: &Path) -> Result<()> {
-    let level: LevelFilter = level.parse().unwrap_or(LevelFilter::Info);
-    if let Some(dir) = log_path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("failed to create log dir {}", dir.display()))?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .with_context(|| format!("failed to open log file {}", log_path.display()))?;
-    env_logger::Builder::new()
-        .filter_level(level)
-        .target(env_logger::Target::Pipe(Box::new(file)))
-        .init();
-    Ok(())
+    common::logging::init_at(log_path, Some(level))
 }

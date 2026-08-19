@@ -27,10 +27,11 @@ fn main() -> Result<()> {
     // `Builder::new()`, not `from_default_env()`: the level here is FIXED at info, and the previous
     // form said otherwise while doing the same thing. `from_default_env()` reads `RUST_LOG` into the
     // builder and the `filter_level` that followed overwrote it, so the env var was already dead --
-    // a name that promised configurability the code then took away. clyde takes its verbosity from
-    // `--log-level`, never `RUST_LOG` (see `report::setup_logging`, the same `Builder::new()` shape),
-    // and this fixture generator has no flag surface: its real output is the `println!` progress
-    // below, and the logger only reaches library internals.
+    // a name that promised configurability the code then took away. This fixture generator has no
+    // flag surface at all: its real output is the `println!` progress below, and the logger only
+    // reaches library internals. It deliberately does NOT go through `common::logging` -- that
+    // policy always opens a tool log file under `clyde/logs/`, and a dev fixture generator is not
+    // a tool and should not create one.
     env_logger::Builder::new().filter_level(log::LevelFilter::Info).init();
     let root: PathBuf = std::env::args()
         .nth(1)

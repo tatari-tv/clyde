@@ -14,6 +14,7 @@ pub mod atomic;
 pub mod checkout;
 pub mod config;
 pub mod llm;
+pub mod logging;
 pub mod metrics;
 pub mod paths;
 pub mod proc;
@@ -44,11 +45,14 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Common globals shared across every clyde subcommand.
 ///
-/// `log_level == None` means "no explicit level was given": the receiving tool falls back to
-/// its prior default (for example `claude-permit`'s `RUST_LOG`/`env_logger` default, or `cost`'s
-/// config/`RUST_LOG`/`cost=warn,claude_pricing=warn` chain). This preserves behavior-exact semantics for a shim
-/// invoked without `--log-level`, while letting `clyde --log-level <lvl> <tool>` drive the
-/// level uniformly.
+/// `log_level == None` means "no explicit level was given": every tool then falls back to the ONE
+/// shared default, [`crate::logging::DEFAULT_LOG_LEVEL`].
+///
+/// This used to promise something else -- that each tool fell back to its own pre-merge default, to
+/// stay behavior-exact for the standalone `ccu`/`cr`/`claude-permit` compat shims. Those shims are
+/// gone (`README.md`: "their compat shims have been removed: everything is reached through `clyde`
+/// subcommands"; the workspace ships a single `clyde` binary), so the promise protected a caller
+/// that no longer exists while licensing four tools to disagree about what a bare invocation logs.
 #[derive(Debug, Clone, Default)]
 pub struct Globals {
     /// The explicit log level requested on the command line, if any.
