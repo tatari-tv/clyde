@@ -608,8 +608,14 @@ fn resolve_stale_feed(pricing: &Pricing, offline: bool) -> Option<StaleFeedInfo>
 /// pricing pre-flight special-casing (handled before normal dispatch in the pre-merge tool),
 /// config load, logging setup, pricing construction, and the process exit code.
 pub fn run(args: CostArgs, globals: common::Globals) -> Result<i32> {
-    // Statusline is a fast, no-config path - handle before config load.
+    // Statusline is a fast, no-config path - handle before config load. It still installs the
+    // logger first: the shared sink policy is UNCONDITIONAL, and `statusline::install` emits the
+    // `info!` records for the install target and for backing up a pre-existing statusline -- a
+    // file it MOVED, which is precisely the kind of thing that must land on disk. Those went
+    // nowhere while this branch returned before any logger existed. `globals.log_level` and not
+    // the config's, because this path deliberately runs before the config is loaded.
     if let Some(Command::Statusline { name, list }) = &args.command {
+        setup_logging(globals.log_level.as_deref())?;
         if *list {
             statusline::list();
         } else {

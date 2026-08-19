@@ -353,3 +353,23 @@ fn format_error_under_debug_keeps_the_location_escape_hatch() {
         "debug and default renderings are identical"
     );
 }
+
+#[test]
+fn cost_statusline_parses_without_a_short_flag_collision() {
+    // `cost statusline --list` used to declare `short`, colliding with this crate's fleet-wide
+    // global `-l/--log-level`. The result was profile-dependent: every DEBUG build panicked before
+    // parsing on any `clyde cost statusline` invocation, while RELEASE builds compiled the
+    // assertion out and silently resolved `-l` to `--list` instead of the global.
+    //
+    // This must PARSE rather than call `Command::debug_assert`: clap propagates a `global = true`
+    // arg into subcommands during parse, not during build, so the duplicate does not exist yet at
+    // build time and `debug_assert` walks right past it (verified -- that version of this test did
+    // not fail when the short flag was reintroduced).
+    use clap::Parser;
+    let cli = Cli::try_parse_from(["clyde", "cost", "statusline", "--list"]).expect("parses");
+    assert!(matches!(cli.command, Command::Cost(_)));
+
+    // `-l` reaches the global log level here, exactly as it does for every other subcommand.
+    let cli = Cli::try_parse_from(["clyde", "-l", "debug", "cost", "statusline", "--list"]).expect("parses");
+    assert_eq!(cli.log_level.as_deref(), Some("debug"));
+}
