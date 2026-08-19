@@ -57,3 +57,24 @@ fn empty_parent_file_is_skipped() {
     touch(&projects.join("proj").join(format!("{UUID_A}.jsonl")), "");
     assert!(find_session_files(projects).unwrap().is_empty());
 }
+
+#[test]
+fn orphan_sidecar_is_skipped_and_not_counted_as_a_parent() {
+    // Claude Code writes `<uuid>.orphaned-<epoch-ms>-<hash>.jsonl` beside a live transcript. This
+    // scanner already warned-and-skipped every non-UUID stem, so it never crashed -- but it must
+    // recognise the sidecar specifically, and agree with common's scanner that it is not a session.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path();
+    let proj = projects.join("-home-saidler-repos-foo");
+
+    touch(&proj.join(format!("{UUID_A}.jsonl")), "{}\n");
+    touch(
+        &proj.join(format!("{UUID_A}.orphaned-1786204682562-a5d5862b.jsonl")),
+        "{\"type\":\"ai-title\",\"aiTitle\":\"t\"}\n",
+    );
+
+    let files = find_session_files(projects).unwrap();
+    assert_eq!(files.len(), 1, "only the live parent, got: {files:?}");
+    assert_eq!(files[0].kind, SessionFileKind::Parent);
+    assert!(files[0].path.ends_with(format!("{UUID_A}.jsonl")));
+}
