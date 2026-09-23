@@ -50,7 +50,7 @@ CACHE_READ_MULTIPLIER = 0.1
 # substrings so we never confuse the model-pricing or long-context
 # tables with unrelated pipe-tables on the page (e.g. tool-use overhead
 # tables).
-MODEL_HEADER_RE = re.compile(r"^\| Model.*Input.*[Cc]ache")
+MODEL_HEADER_RE = re.compile(r"^\| Model.*[Ii]nput.*[Cc]ache")
 LONG_HEADER_RE = re.compile(r"^\| Model.*200K")
 
 # Pipe-table separator rows ("|---|---|---|") need to be skipped so

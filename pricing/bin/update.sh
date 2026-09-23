@@ -151,7 +151,7 @@ BEGIN {
 # "Model" plus both "Input" and a Cache column word; this is far less
 # fragile than matching the exact full header string and still
 # discriminates against unrelated tables on the page.
-/^\| Model/ && /Input/ && /[Cc]ache/ {
+/^\| Model/ && /[Ii]nput/ && /[Cc]ache/ {
     in_model_table = 1
     in_long_table  = 0
     next
