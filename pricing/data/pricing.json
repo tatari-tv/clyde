@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "data_version": "2026-07-25T01:56:53Z",
+  "data_version": "2026-09-23T00:06:31Z",
   "min_library_version": "2.0.0",
   "aliases": {
     "opus": "claude-opus-5",
@@ -26,6 +26,20 @@
     }
   ],
   "pricing": {
+    "claude-fable-5-1": {
+      "input_per_mtok": 10,
+      "output_per_mtok": 50,
+      "cache_5m_write_per_mtok": 12.5,
+      "cache_1h_write_per_mtok": 20,
+      "cache_read_per_mtok": 0.25
+    },
+    "claude-mythos-5-1": {
+      "input_per_mtok": 10,
+      "output_per_mtok": 50,
+      "cache_5m_write_per_mtok": 12.5,
+      "cache_1h_write_per_mtok": 20,
+      "cache_read_per_mtok": 0.25
+    },
     "claude-fable-5": {
       "input_per_mtok": 10,
       "output_per_mtok": 50,
@@ -39,6 +53,13 @@
       "cache_5m_write_per_mtok": 12.5,
       "cache_1h_write_per_mtok": 20,
       "cache_read_per_mtok": 1
+    },
+    "claude-opus-5-5": {
+      "input_per_mtok": 4,
+      "output_per_mtok": 20,
+      "cache_5m_write_per_mtok": 5,
+      "cache_1h_write_per_mtok": 8,
+      "cache_read_per_mtok": 0.2
     },
     "claude-opus-5": {
       "input_per_mtok": 5,
