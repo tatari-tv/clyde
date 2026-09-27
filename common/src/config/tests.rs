@@ -698,6 +698,103 @@ fn min_enrichment_rejects_the_typo_form() {
     );
 }
 
+// ---- reposlugs-ptns -------------------------------------------------------------------------
+
+fn ptn_strings(ptns: &[crate::repo::ptn::ReposlugPtn]) -> Vec<String> {
+    ptns.iter().map(ToString::to_string).collect()
+}
+
+/// A missing key and a missing file must both resolve to the built-in `["tatari-tv/*"]`, never to
+/// an empty policy: an absent config must reproduce today's `WORK_ORGS` behavior exactly.
+#[test]
+fn reposlugs_ptns_defaults_to_tatari_tv_when_absent() {
+    assert_eq!(ptn_strings(Config::default().reposlugs_ptns()), vec!["tatari-tv/*"]);
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    let loaded = load_from(&path).unwrap();
+    assert_eq!(loaded, Config::default(), "a missing file must equal Config::default()");
+    assert_eq!(ptn_strings(loaded.reposlugs_ptns()), vec!["tatari-tv/*"]);
+
+    // A file that exists but omits the key must resolve the same as no file at all.
+    std::fs::write(&path, "date-tz: utc\n").unwrap();
+    let loaded = load_from(&path).unwrap();
+    assert_eq!(ptn_strings(loaded.reposlugs_ptns()), vec!["tatari-tv/*"]);
+}
+
+/// A present key REPLACES the default outright: mixed-case owners/repos load lowercased, and a
+/// `!`-prefixed entry loads as an exclude. `[]` is accepted and means zero repos are Work.
+#[test]
+fn reposlugs_ptns_loads_mixed_case_includes_and_excludes() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "reposlugs-ptns: [\"Otto-RS/Otto\", \"!Tatari-TV/X\"]\n").unwrap();
+    let cfg = load_from(&path).unwrap();
+    assert_eq!(ptn_strings(cfg.reposlugs_ptns()), vec!["otto-rs/otto", "!tatari-tv/x"]);
+}
+
+#[test]
+fn reposlugs_ptns_empty_list_loads_as_zero_repos() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "reposlugs-ptns: []\n").unwrap();
+    let cfg = load_from(&path).unwrap();
+    assert!(cfg.reposlugs_ptns().is_empty());
+}
+
+/// Every one of the Data Model's rejected shapes must fail `load_from` naming `reposlugs-ptns`,
+/// not just some generic parse error.
+///
+/// BITES: drop `deserialize_with` from the field and every one of these loads clean as an opaque
+/// string, silently matching nothing at classify time.
+#[test]
+fn reposlugs_ptns_rejects_every_invalid_shape_by_name() {
+    let cases = [
+        " tatari-tv/*",
+        "tatari-tv",
+        "a/b/c",
+        "/b",
+        "*/x",
+        "tatari-tv/philo-*",
+        "!",
+    ];
+    for entry in cases {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("clyde.yml");
+        std::fs::write(&path, format!("reposlugs-ptns: [{entry:?}]\n")).unwrap();
+        let err = format!("{:#}", load_from(&path).unwrap_err());
+        assert!(
+            err.contains("reposlugs-ptns"),
+            "entry {entry:?} must name the key: {err}"
+        );
+    }
+}
+
+/// An unquoted `- !tatari-tv/x` is a YAML tag, not the text the operator meant, and serde_yaml
+/// hands the deserializer an empty string for it. The error must name the key AND explain the
+/// quoting footgun, not just say "entry is empty".
+#[test]
+fn reposlugs_ptns_unquoted_exclude_fails_with_the_quote_it_hint() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "reposlugs-ptns:\n  - tatari-tv/*\n  - !tatari-tv/x\n").unwrap();
+    let err = format!("{:#}", load_from(&path).unwrap_err());
+    assert!(err.contains("reposlugs-ptns"), "must name the key: {err}");
+    assert!(err.contains("quote it"), "must hint at quoting: {err}");
+}
+
+#[test]
+fn reposlugs_ptns_rejects_unknown_field_still() {
+    // Sanity: the new field must not have loosened `deny_unknown_fields` on the top-level struct.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "reposlugs-ptns: [tatari-tv/*]\nbogus: 1\n").unwrap();
+    assert!(
+        load_from(&path).is_err(),
+        "deny_unknown_fields should still reject `bogus`"
+    );
+}
+
 #[test]
 fn xdg_config_dir_honors_env_and_falls_back() {
     let guard = ENV_LOCK.lock().unwrap();

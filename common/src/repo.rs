@@ -1167,11 +1167,10 @@ pub fn parse_slug(url: &str) -> Option<RemoteSlug> {
         rest.split_once('/')?
     } else if let Some(rest) = url.strip_prefix("git://") {
         rest.split_once('/')?
-    } else if let Some(rest) = url.strip_prefix("ssh://") {
+    } else {
+        let rest = url.strip_prefix("ssh://")?;
         let after_user = rest.split_once('@').map(|(_, r)| r).unwrap_or(rest);
         after_user.split_once('/')?
-    } else {
-        return None;
     };
 
     let host = normalize_host(host)?;
@@ -1209,6 +1208,7 @@ fn normalize_host(authority: &str) -> Option<String> {
 }
 
 pub mod host;
+pub mod ptn;
 
 #[cfg(test)]
 mod tests;
