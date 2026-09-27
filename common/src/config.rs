@@ -388,9 +388,8 @@ pub struct Config {
     /// prefix marking an exclude. Absent, or no `clyde.yml` at all -> [`DEFAULT_REPOSLUGS_PTNS`].
     ///
     /// A PRESENT key REPLACES the default outright, no merge: `[]` means zero repos are Work. This
-    /// is the config half of the design that retires the compiled-in `WORK_ORGS` const
-    /// (`session::scope`); NOT yet read by the classifier (`docs/design/2026-09-27-reposlugs-ptns-from-config.md`
-    /// Phase 1).
+    /// is the ONE source of work repos: the classifier reads it through `session::ScopePolicy`,
+    /// built once beside [`Self::repo_roots`] (`docs/design/2026-09-27-reposlugs-ptns-from-config.md`).
     #[serde(default = "default_reposlugs_ptns", deserialize_with = "de_reposlugs_ptns")]
     reposlugs_ptns: Vec<ReposlugPtn>,
 }

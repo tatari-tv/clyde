@@ -40,7 +40,10 @@ fn serve_stdout_carries_only_jsonrpc_frames() {
     // scanning a real catalog.
     write_clyde_yml(
         config_home.path(),
-        &format!("projects-dir: {}\nreindex-on-start: false\n", projects.path().display()),
+        &format!(
+            "projects-dir: {}\nreposlugs-ptns: [\"tatari-tv/*\"]\nreindex-on-start: false\n",
+            projects.path().display()
+        ),
     );
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_clyde"))

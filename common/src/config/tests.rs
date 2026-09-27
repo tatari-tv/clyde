@@ -705,7 +705,7 @@ fn ptn_strings(ptns: &[crate::repo::ptn::ReposlugPtn]) -> Vec<String> {
 }
 
 /// A missing key and a missing file must both resolve to the built-in `["tatari-tv/*"]`, never to
-/// an empty policy: an absent config must reproduce today's `WORK_ORGS` behavior exactly.
+/// an empty policy: an absent config must reproduce the retired compiled-in `tatari-tv` org list exactly.
 #[test]
 fn reposlugs_ptns_defaults_to_tatari_tv_when_absent() {
     assert_eq!(ptn_strings(Config::default().reposlugs_ptns()), vec!["tatari-tv/*"]);

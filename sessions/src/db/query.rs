@@ -15,7 +15,7 @@ use common::repo::host::{HostPolicy, HostResolver};
 use eyre::{Context, Result, ensure};
 use log::{debug, trace, warn};
 use rusqlite::{OptionalExtension, params};
-use session::Anchors;
+use session::ScopePolicy;
 
 use super::{Db, append_repo_filter, escape_like, parse_dt};
 use crate::export::{
@@ -111,7 +111,7 @@ impl Db {
         let mut hosts = HostPolicy::new(&ctx.work_remote_hosts);
         let sessions: Vec<ExportRecord> = raws
             .into_iter()
-            .map(|raw| build_export_record(raw, ctx.now, ctx.dormant_after, &ctx.anchors, &mut hosts))
+            .map(|raw| build_export_record(raw, ctx.now, ctx.dormant_after, &ctx.scope_policy, &mut hosts))
             .collect::<Result<_>>()?;
         // Max revision in the page, or the request cursor when the page is empty.
         let cursor = sessions
@@ -162,7 +162,7 @@ impl Db {
             raw.staged_path.as_deref().map(Path::new),
         );
         let mut hosts = HostPolicy::new(&ctx.work_remote_hosts);
-        let mut record = build_export_record(raw, ctx.now, ctx.dormant_after, &ctx.anchors, &mut hosts)?;
+        let mut record = build_export_record(raw, ctx.now, ctx.dormant_after, &ctx.scope_policy, &mut hosts)?;
         if with_body {
             record.body = Some(resolve_body(session_id, layout, max_body_bytes));
         }
@@ -315,7 +315,7 @@ fn build_export_record<R: HostResolver>(
     mut raw: ExportRaw,
     now: DateTime<Utc>,
     dormant_after: chrono::Duration,
-    anchors: &Anchors,
+    scope_policy: &ScopePolicy,
     hosts: &mut HostPolicy<R>,
 ) -> Result<ExportRecord> {
     // **The scope that was actually DECIDED, in the classifier's own precedence, first match wins:**
@@ -402,7 +402,7 @@ fn build_export_record<R: HostResolver>(
                 raw.repo.as_deref(),
                 raw.repo_source.as_deref(),
                 &evidence,
-                anchors,
+                scope_policy,
                 hosts,
             )
             .decision

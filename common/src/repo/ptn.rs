@@ -4,8 +4,8 @@
 //! EXCLUDE. This module owns exactly one thing: parsing and validating one raw string into a
 //! [`ReposlugPtn`]. It knows nothing about `clyde.yml` (that is `common::config`) and nothing
 //! about matching a slug against the whole policy or about owner-wide-vs-named classifier
-//! behavior (that is `session::scope::ScopePolicy`, a later phase). Design:
-//! `docs/design/2026-09-27-reposlugs-ptns-from-config.md` (Phase 1: this module).
+//! behavior (that is `session::scope::ScopePolicy`). Design:
+//! `docs/design/2026-09-27-reposlugs-ptns-from-config.md`.
 //!
 //! Only two shapes are accepted, deliberately: `<owner>/*` and `<owner>/<repo>`. No mid-segment
 //! globs (`tatari-tv/philo-*`), no fuzzy matching, no owner wildcard (`*/x`). See the design doc's

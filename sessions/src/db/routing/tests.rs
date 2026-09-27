@@ -8,8 +8,14 @@ use std::path::PathBuf;
 /// The root every cwd in this file is written against. `~/repos` is the layout the v3 anchor
 /// hardcoded, so keeping it here means these tests still exercise the same shapes -- now through the
 /// configured-root path instead of a literal component match.
-fn test_anchors() -> session::Anchors {
-    session::Anchors::new(&[PathBuf::from("/home/saidler/repos")])
+fn test_policy() -> session::ScopePolicy {
+    session::ScopePolicy::new(&[PathBuf::from("/home/saidler/repos")], &tatari_wide_ptns())
+}
+
+/// `reposlugs-ptns: ["tatari-tv/*"]`, named explicitly: the work fixtures in this file are all
+/// `tatari-tv` rows, and no classifier test leans on an implicit default.
+fn tatari_wide_ptns() -> Vec<common::repo::ptn::ReposlugPtn> {
+    vec![common::repo::ptn::ReposlugPtn::parse("tatari-tv/*").unwrap()]
 }
 
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
@@ -593,7 +599,7 @@ fn github_only() -> Vec<String> {
 /// The single row's basis. Asserts the catalog holds exactly one row, so a stray fixture cannot make
 /// a wrong answer look right.
 fn sole_basis<R: HostResolver>(db: &Db, hosts: &mut HostPolicy<R>) -> Basis {
-    let summary = db.routing_summary_with(&test_anchors(), hosts).unwrap();
+    let summary = db.routing_summary_with(&test_policy(), hosts).unwrap();
     assert_eq!(summary.decisions_total(), 1, "expected exactly one row in the catalog");
     let found: Vec<Basis> = BASIS_ORDER
         .iter()
@@ -691,7 +697,7 @@ fn the_basis_tally_sums_to_the_catalog_row_count() {
     }
 
     let mut hosts = HostPolicy::with_resolver(&github_only(), NullResolver);
-    let summary = db.routing_summary_with(&test_anchors(), &mut hosts).unwrap();
+    let summary = db.routing_summary_with(&test_policy(), &mut hosts).unwrap();
 
     let rows: usize = db
         .conn
@@ -737,7 +743,7 @@ fn a_probe_stamp_under_a_work_anchored_cwd_counts_as_cwd_anchor() {
     // The CONDITION is still reported, under its own honest name, because `--clear-probe` is the
     // remedy for a stale stamp and an operator has no other way to find these rows.
     assert_eq!(
-        db.routing_summary_with(&test_anchors(), &mut hosts)
+        db.routing_summary_with(&test_policy(), &mut hosts)
             .unwrap()
             .probe_recorded,
         1
@@ -854,7 +860,7 @@ fn the_override_basis_count_equals_the_override_sql_count() {
     );
 
     let mut hosts = HostPolicy::with_resolver(&github_only(), NullResolver);
-    let summary = db.routing_summary_with(&test_anchors(), &mut hosts).unwrap();
+    let summary = db.routing_summary_with(&test_policy(), &mut hosts).unwrap();
     let sql: usize = db
         .conn
         .query_row(
@@ -941,7 +947,7 @@ fn the_disagreement_count_follows_the_configured_roots_not_a_literal_repos() {
             ..Default::default()
         },
     );
-    let off_layout = session::Anchors::new(&[PathBuf::from("/home/stephen/code")]);
+    let off_layout = session::ScopePolicy::new(&[PathBuf::from("/home/stephen/code")], &tatari_wide_ptns());
     let mut hosts = HostPolicy::new(&github_only());
     assert_eq!(
         db.routing_summary_with(&off_layout, &mut hosts)
@@ -953,7 +959,7 @@ fn the_disagreement_count_follows_the_configured_roots_not_a_literal_repos() {
 
     // The SAME row under a config that does NOT declare that root: the cwd is unanchored, so it
     // expresses no opinion and there is nothing to conflict WITH.
-    let elsewhere = session::Anchors::new(&[PathBuf::from("/home/saidler/repos")]);
+    let elsewhere = session::ScopePolicy::new(&[PathBuf::from("/home/saidler/repos")], &tatari_wide_ptns());
     assert_eq!(
         db.routing_summary_with(&elsewhere, &mut hosts)
             .unwrap()
@@ -983,7 +989,7 @@ fn a_repos_component_outside_every_configured_root_is_not_a_disagreement() {
     );
     let mut hosts = HostPolicy::new(&github_only());
     assert_eq!(
-        db.routing_summary_with(&test_anchors(), &mut hosts)
+        db.routing_summary_with(&test_policy(), &mut hosts)
             .unwrap()
             .anchor_remote_disagreement,
         0,
@@ -1010,7 +1016,7 @@ fn only_a_remote_derived_row_can_disagree_with_the_anchor() {
     );
     let mut hosts = HostPolicy::new(&github_only());
     assert_eq!(
-        db.routing_summary_with(&test_anchors(), &mut hosts)
+        db.routing_summary_with(&test_policy(), &mut hosts)
             .unwrap()
             .anchor_remote_disagreement,
         0,

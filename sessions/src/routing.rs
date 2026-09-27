@@ -15,7 +15,7 @@
 use common::repo::host::{HostPolicy, HostResolver};
 use common::repo::{ProbeOutcome, RepoSource};
 use log::warn;
-use session::{Anchors, Decision, RecordedProbe, RoutingFacts};
+use session::{Decision, RecordedProbe, RoutingFacts, ScopePolicy};
 
 use crate::db::ScopeEvidence;
 
@@ -95,7 +95,7 @@ pub struct RowDecision {
 /// `host_confers_work` is `None` when no host was recorded, and it must STAY `None` rather than
 /// becoming `Some(false)`: see [`RoutingFacts::host_confers_work`] for why a NULL host may never
 /// strip authority on its own. Every pre-v13 row is in that state.
-/// `anchors` is built ONCE per run, immediately after `Config::load()`, and passed by reference from
+/// `scope_policy` is built ONCE per run, immediately after `Config::load()`, and passed by reference from
 /// there. It is a parameter rather than something this function derives because deriving it stats the
 /// disk (`common::config` canonicalizes each root at load), and this function runs per ROW.
 pub fn classify_row<R: HostResolver>(
@@ -104,7 +104,7 @@ pub fn classify_row<R: HostResolver>(
     repo: Option<&str>,
     repo_source_raw: Option<&str>,
     evidence: &ScopeEvidence,
-    anchors: &Anchors,
+    scope_policy: &ScopePolicy,
     hosts: &mut HostPolicy<R>,
 ) -> RowDecision {
     let repo_source = parse_repo_source(session_id, repo_source_raw);
@@ -122,7 +122,7 @@ pub fn classify_row<R: HostResolver>(
         repo_source,
         &evidence.repos_touched,
         evidence.files_edited,
-        anchors,
+        scope_policy,
         &RoutingFacts {
             repo_probe: recorded_probe,
             scope_override: evidence.scope_override.as_deref(),

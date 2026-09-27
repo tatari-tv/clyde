@@ -17,9 +17,16 @@ use std::str::FromStr;
 use chrono::{DateTime, Utc};
 use eyre::{Result, bail};
 use session::ParsedSession;
+
 use sessions::{
     Completer, Db, EnrichOptions, EnrichStatus, ExportContext, ExportEnvelope, ExportFilters, LlmEnrichment, enrich,
 };
+
+/// `reposlugs-ptns: ["tatari-tv/*"]`, named explicitly: the work fixtures in this file are all
+/// `tatari-tv` rows, and no classifier test leans on an implicit default.
+fn tatari_wide_ptns() -> Vec<common::repo::ptn::ReposlugPtn> {
+    vec![common::repo::ptn::ReposlugPtn::parse("tatari-tv/*").unwrap()]
+}
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/export")
@@ -236,7 +243,7 @@ fn enrich_one(db: &Db, id: &str, completer: &Fake) {
         // test declares that root -- exactly as `clyde.yml` declares it in production.
         // `EnrichOptions::default()` carries an empty list on purpose (a forgetful caller loses
         // coverage rather than gaining scope), which would classify every work fixture personal.
-        anchors: session::Anchors::new(&[PathBuf::from("/home/alice/repos")]),
+        scope_policy: session::ScopePolicy::new(&[PathBuf::from("/home/alice/repos")], &tatari_wide_ptns()),
         ..Default::default()
     };
     enrich(db, Some(completer), &opts).unwrap();
@@ -301,7 +308,7 @@ fn export_emits_only_the_frozen_enrich_status_vocabulary() {
         now: dt("2026-07-01T00:00:00Z"),
         dormant_after: chrono::Duration::days(7),
         host: "host-01".to_string(),
-        anchors: session::Anchors::new(&[PathBuf::from("/home/alice/repos")]),
+        scope_policy: session::ScopePolicy::new(&[PathBuf::from("/home/alice/repos")], &tatari_wide_ptns()),
         work_remote_hosts: vec!["github.com".to_string()],
     };
     let env = db.export(&ExportFilters::default(), &ctx).unwrap();

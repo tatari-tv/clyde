@@ -934,7 +934,7 @@ pub fn from_path_guess(cwd: &Path, roots: &[PathBuf]) -> Option<Resolved> {
 ///
 /// **The ONE definition of "which configured root does this path sit under".** Rule 4
 /// ([`slug_under_roots`], which wants `<org>/<repo>`) and the cwd anchor
-/// (`session::scope::Anchors::org_slot`, which wants the org slot plus whether anything follows it)
+/// (`session::scope::ScopePolicy::org_slot`, which wants the org slot plus the component after it)
 /// read different shapes off the same walk, so the walk is the part that is shared and the shape is
 /// the part each caller passes in. They are supposed to agree by construction: the config
 /// validator's nesting rejection and its symlink both-spellings expansion exist to serve exactly one

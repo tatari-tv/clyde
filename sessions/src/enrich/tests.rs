@@ -12,6 +12,12 @@ use crate::db::Db;
 use crate::export::{ExportContext, ExportFilters};
 use crate::llm::{Completer, LlmEnrichment};
 
+/// `reposlugs-ptns: ["tatari-tv/*"]`, named explicitly: the work fixtures in this file are all
+/// `tatari-tv` rows, and no classifier test leans on an implicit default.
+fn tatari_wide_ptns() -> Vec<common::repo::ptn::ReposlugPtn> {
+    vec![common::repo::ptn::ReposlugPtn::parse("tatari-tv/*").unwrap()]
+}
+
 const WORK_CWD: &str = "/home/saidler/repos/tatari-tv/marquee";
 const PERSONAL_CWD: &str = "/home/saidler/repos/scottidler/loopr";
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
@@ -23,15 +29,18 @@ fn dt(s: &str) -> DateTime<Utc> {
 
 /// The sweep options every test in this file runs with.
 ///
-/// It exists because the cwd anchor is ROOT-RELATIVE as of v4: it reads the operator's configured
-/// `repo-roots`, not the literal component `repos` wherever it appears. So a test that wants
-/// [`WORK_CWD`] to anchor Work has to declare the root that cwd sits under, exactly as production
-/// declares it in `clyde.yml`. `EnrichOptions::default()` carries an EMPTY root list on purpose --
-/// a caller that forgets loses coverage rather than gaining scope -- so `..Default::default()` here
-/// would silently reclassify every work fixture as personal.
+/// It exists because the cwd anchor is ROOT-RELATIVE as of v4 and POLICY-DRIVEN as of v5: it reads
+/// the operator's configured `repo-roots` and `reposlugs-ptns`. So a test that wants [`WORK_CWD`] to
+/// anchor Work has to declare the root that cwd sits under and the pattern that names its org,
+/// exactly as production declares them in `clyde.yml`. `EnrichOptions::default()` carries an EMPTY
+/// policy on purpose -- a caller that forgets loses coverage rather than gaining scope -- so
+/// `..Default::default()` here would silently reclassify every work fixture as personal.
 fn test_opts() -> EnrichOptions {
     EnrichOptions {
-        anchors: session::Anchors::new(&[PathBuf::from("/home/saidler/repos"), PathBuf::from("/home/alice/repos")]),
+        scope_policy: session::ScopePolicy::new(
+            &[PathBuf::from("/home/saidler/repos"), PathBuf::from("/home/alice/repos")],
+            &tatari_wide_ptns(),
+        ),
         ..Default::default()
     }
 }
@@ -760,7 +769,7 @@ fn a_no_change_skip_leaves_the_export_revision_untouched() {
         now: dt("2026-07-01T00:00:00Z"),
         host: "desk".into(),
         dormant_after: chrono::Duration::days(7),
-        anchors: session::Anchors::new(&[std::path::PathBuf::from("/home/alice/repos")]),
+        scope_policy: session::ScopePolicy::new(&[std::path::PathBuf::from("/home/alice/repos")], &tatari_wide_ptns()),
         work_remote_hosts: vec!["github.com".to_string()],
     };
     let after_first = db.export(&ExportFilters::default(), &ctx).unwrap().cursor;
@@ -1475,3 +1484,5 @@ fn an_archived_session_with_no_staged_copy_counts_as_an_empty_skip() {
         "the no-staged-copy branch must COUNT its skip: {stats:?}"
     );
 }
+
+mod defaults;

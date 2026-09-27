@@ -141,7 +141,10 @@ fn attribution(db_path: &Path) -> Result<Option<Attribution>> {
         config_path: common::config::config_file_path().filter(|p| p.exists()),
         repo_roots,
         work_remote_hosts: cfg.work_remote_hosts().to_vec(),
-        routing: db.routing_summary(&session::Anchors::new(cfg.repo_roots()), cfg.work_remote_hosts())?,
+        routing: db.routing_summary(
+            &session::ScopePolicy::new(cfg.repo_roots(), cfg.reposlugs_ptns()),
+            cfg.work_remote_hosts(),
+        )?,
     }))
 }
 
