@@ -346,13 +346,10 @@ impl Db {
         // Row EXISTENCE, not a parsed timestamp: a row whose stored `modified` is unparseable still
         // exists, so it must take the UPDATE arm or the INSERT below trips the UNIQUE constraint.
         let row_exists = skip_key.is_some();
-        if let Some(SkipKey {
-            modified: Some(stored_modified),
-            parse_version,
-        }) = skip_key
-            && stored_modified == parsed.modified
+        if let Some(key) = skip_key
+            && key.modified == Some(parsed.modified)
         {
-            return Ok(if parse_version == Some(session::PARSE_VERSION) {
+            return Ok(if key.is_unchanged(parsed.modified) {
                 Upsert::SkippedUnchanged
             } else {
                 Upsert::Backfilled
@@ -1385,7 +1382,7 @@ pub use routing::{BASIS_COUNT, OVERRIDE_PERSONAL, OVERRIDE_WORK, RoutingSummary,
 /// the narrow trigger-suppressed backfill write (`Db::set_parse_derived_many`). Split out for file-size
 /// discipline, mirroring `catalog`/`query`/`repo`.
 mod activity;
-pub use activity::{ParseDerivedWrite, SkipKey};
+pub use activity::{IndexedRow, ParseDerivedWrite, SkipKey};
 
 /// Schema v10 repo attribution: `Db::upsert_repo`, `Db::record_repo_path`, `Db::clear_repo`, and the
 /// catalog-backed `common::repo::PathMap` impl. Split out for file-size discipline, mirroring

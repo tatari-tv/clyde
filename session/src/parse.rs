@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use log::{debug, trace, warn};
+use rayon::prelude::*;
 use serde_json::Value;
 
 use crate::model::{Message, ParsedSession, Role, SessionFile, SessionFileKind};
@@ -67,16 +68,40 @@ const NOISE_PREFIXES: &[&str] = &[
 /// Group discovered files by parent session id and parse each group into one record.
 /// Subagent transcripts roll up into their parent (the `cr` contract).
 pub fn parse_sessions(files: &[SessionFile]) -> Vec<ParsedSession> {
-    debug!("parse::parse_sessions: files={}", files.len());
-    let mut groups: BTreeMap<String, Vec<&SessionFile>> = BTreeMap::new();
+    parse_groups(group_files(files))
+}
+
+/// Discovered transcript files keyed by parent session id, as [`group_files`] builds them.
+pub type SessionGroups<'a> = BTreeMap<String, Vec<&'a SessionFile>>;
+
+/// Bucket discovered files by parent session id: a session's subagent transcripts land in the same
+/// group as its parent. Keyed by the id [`parse_groups`] gives the resulting [`ParsedSession`].
+pub fn group_files(files: &[SessionFile]) -> SessionGroups<'_> {
+    debug!("parse::group_files: files={}", files.len());
+    let mut groups = SessionGroups::new();
     for f in files {
         groups.entry(f.group_id.clone()).or_default().push(f);
     }
+    groups
+}
+
+/// A group's skip-key mtime from a stat of its files, without reading them: the MAX mtime across
+/// the group, the same value parsing records as [`ParsedSession::modified`]. `None` when no file
+/// stats, which parsing also drops.
+pub fn group_modified(files: &[&SessionFile]) -> Option<DateTime<Utc>> {
+    files.iter().filter_map(|f| file_mtime(&f.path)).max()
+}
+
+/// Parse already-grouped sessions, one record per group.
+pub fn parse_groups(groups: SessionGroups<'_>) -> Vec<ParsedSession> {
+    debug!("parse::parse_groups: groups={}", groups.len());
+    // Groups are independent, so parse them across cores. `collect` into a `Vec` keeps the
+    // BTreeMap's session-id order, so callers see the same sequence as the serial loop did.
     let sessions: Vec<ParsedSession> = groups
-        .into_iter()
+        .into_par_iter()
         .filter_map(|(gid, group)| parse_group(&gid, &group))
         .collect();
-    debug!("parse::parse_sessions: parsed {} sessions", sessions.len());
+    debug!("parse::parse_groups: parsed {} sessions", sessions.len());
     sessions
 }
 

@@ -3,6 +3,7 @@
 use super::*;
 use crate::Db;
 use common::repo::PathMap;
+use session::SessionFile;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -353,4 +354,136 @@ fn resolve_repos_skips_sessions_already_resolved_at_a_better_rank() {
         db.repo_of(UUID_LIVE).unwrap().unwrap().repo.as_deref(),
         Some("tatari-tv/clyde")
     );
+}
+
+/// An unchanged transcript is not re-parsed, but the repo chain still runs for it on the STORED cwd:
+/// an origin added after the first pass is picked up on the second even though the transcript's
+/// mtime never moved. Skipping the chain for unchanged sessions would leave the repo unresolved.
+#[test]
+fn reindex_runs_the_repo_chain_for_unchanged_sessions_from_the_stored_cwd() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo_dir = tmp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("repos")
+        .join("tatari-tv")
+        .join("clyde");
+    git_init(&repo_dir);
+
+    let projects = tmp.path().join("projects");
+    write(
+        &projects.join("proj").join(format!("{UUID_LIVE}.jsonl")),
+        &[&user_message(&repo_dir, UUID_LIVE, "2026-06-21T10:00:00Z")],
+    );
+
+    let db = Db::open_memory().unwrap();
+    let repo_roots: Vec<PathBuf> = vec![];
+    reindex(&db, &projects, &repo_roots).unwrap();
+    assert_eq!(db.repo_of(UUID_LIVE).unwrap().unwrap().repo, None, "no origin yet");
+
+    add_origin(&repo_dir, "git@github.com:tatari-tv/clyde.git");
+    let stats = reindex(&db, &projects, &repo_roots).unwrap();
+    assert_eq!(stats.skipped_unchanged, 1, "the transcript did not change");
+    assert_eq!(stats.upserted, 0);
+
+    let row = db.repo_of(UUID_LIVE).unwrap().unwrap();
+    assert_eq!(row.repo.as_deref(), Some("tatari-tv/clyde"));
+    assert_eq!(row.source.as_deref(), Some("git-origin"));
+}
+
+fn session_file(path: &Path, group_id: &str) -> SessionFile {
+    SessionFile {
+        path: path.to_path_buf(),
+        group_id: group_id.to_string(),
+        kind: session::SessionFileKind::Parent,
+    }
+}
+
+fn indexed_row(modified: chrono::DateTime<Utc>, parse_version: Option<i64>, cwd: &str) -> IndexedRow {
+    IndexedRow {
+        skip_key: crate::db::SkipKey {
+            modified: Some(modified),
+            parse_version,
+        },
+        cwd: Some(cwd.to_string()),
+    }
+}
+
+#[test]
+fn partition_unchanged_skips_only_rows_with_the_same_mtime_and_current_parse_version() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let ids = ["unchanged", "stale-version", "grown", "new"];
+    let files: Vec<SessionFile> = ids
+        .iter()
+        .map(|id| {
+            let path = tmp.path().join(format!("{id}.jsonl"));
+            write(&path, &["{}"]);
+            session_file(&path, id)
+        })
+        .collect();
+    // Each row's stored mtime is its OWN file's, so only the field under test differs.
+    let mtime = |i: usize| session::parse::group_modified(&[&files[i]]).unwrap();
+    let current = Some(session::PARSE_VERSION);
+
+    let mut indexed = HashMap::new();
+    indexed.insert(
+        "unchanged".to_string(),
+        indexed_row(mtime(0), current, "/cwd/unchanged"),
+    );
+    indexed.insert(
+        "stale-version".to_string(),
+        indexed_row(mtime(1), Some(session::PARSE_VERSION - 1), "/cwd/stale"),
+    );
+    indexed.insert(
+        "grown".to_string(),
+        indexed_row(mtime(2) - chrono::Duration::seconds(60), current, "/cwd/grown"),
+    );
+
+    let (fresh, unchanged) = partition_unchanged(parse::group_files(&files), &indexed);
+
+    assert_eq!(
+        unchanged,
+        vec![("unchanged".to_string(), Some("/cwd/unchanged".to_string()))]
+    );
+    let fresh_ids: Vec<&str> = fresh.keys().map(String::as_str).collect();
+    assert_eq!(fresh_ids, vec!["grown", "new", "stale-version"]);
+}
+
+/// A subagent transcript that grew moves the group's mtime, so the session is re-parsed even though
+/// its parent file is untouched: the skip key is the MAX mtime across the group, as parsing records.
+#[test]
+fn partition_unchanged_reparses_a_session_whose_subagent_grew() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = tmp.path().join("parent.jsonl");
+    let subagent = tmp.path().join("subagent.jsonl");
+    write(&parent, &["{}"]);
+    write(&subagent, &["{}"]);
+    let parent_mtime = session::parse::group_modified(&[&session_file(&parent, "s")]).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&subagent)
+        .unwrap()
+        .set_modified(std::time::SystemTime::from(
+            parent_mtime + chrono::Duration::seconds(60),
+        ))
+        .unwrap();
+
+    let files = vec![
+        session_file(&parent, "s"),
+        SessionFile {
+            path: subagent,
+            group_id: "s".to_string(),
+            kind: session::SessionFileKind::Subagent,
+        },
+    ];
+    let mut indexed = HashMap::new();
+    indexed.insert(
+        "s".to_string(),
+        indexed_row(parent_mtime, Some(session::PARSE_VERSION), "/cwd"),
+    );
+
+    let (fresh, unchanged) = partition_unchanged(parse::group_files(&files), &indexed);
+    assert!(unchanged.is_empty());
+    assert_eq!(fresh.keys().collect::<Vec<_>>(), vec!["s"]);
 }

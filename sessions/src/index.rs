@@ -22,15 +22,17 @@
 //! I/O: [`reindex`] already parses every session before the upsert loop, so the value is in hand and
 //! only the DB write was being skipped.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use common::repo::{RepoSource, Resolver};
 use eyre::Result;
 use log::{debug, info};
+use session::parse::SessionGroups;
 use session::{parse, scan};
 
-use crate::db::{Db, Upsert};
+use crate::db::{Db, IndexedRow, Upsert};
 use crate::model::ReindexStats;
 
 /// Rule 3's rank. A session already resolved at this rank or better cannot be improved by the
@@ -47,19 +49,38 @@ pub fn reindex(db: &Db, projects_dir: &Path, roots: &[PathBuf]) -> Result<Reinde
         roots.len()
     );
     let files = scan::find_session_files(projects_dir)?;
-    let sessions = parse::parse_sessions(&files);
+    let indexed = db.indexed_rows()?;
+    let (fresh, unchanged) = partition_unchanged(parse::group_files(&files), &indexed);
+    let sessions = parse::parse_groups(fresh);
     let host = gethostname::gethostname().to_string_lossy().into_owned();
 
     let mut stats = ReindexStats {
-        scanned: sessions.len(),
+        scanned: sessions.len() + unchanged.len(),
+        skipped_unchanged: unchanged.len(),
         ..Default::default()
     };
+
+    // The chain still runs for EVERY session, unchanged ones included, on the same inputs as when
+    // every transcript was parsed: the routing records (`record_probe`, `record_repo_host`) are
+    // refreshed each pass by design. Unchanged sessions take their cwd from the catalog instead of a
+    // re-parse. Visiting in session-id order keeps rule 2's learned-path writes in the order the
+    // single parsed loop produced them.
+    let mut work: BTreeMap<&str, Option<&Path>> = BTreeMap::new();
+    for parsed in &sessions {
+        work.insert(&parsed.session_id, parsed.cwd.as_deref());
+    }
+    for (session_id, cwd) in &unchanged {
+        work.insert(session_id, cwd.as_deref().map(Path::new));
+    }
     let mut resolver = Resolver::new();
+    resolver.prewarm(work.values().flatten().copied());
+
     // Rows whose transcript is byte-identical but whose parse-derived columns are stale. Collected
     // here and written in ONE trigger-suppressed batch after the loop (`Db::set_parse_derived_many`), never
     // per row: a per-row trigger sandwich would do one DROP/CREATE pair per session and, on a crash
     // between the two, leave the revision trigger permanently dropped. See that method's doc.
     let mut pending_parse_derived: Vec<crate::db::ParseDerivedWrite> = Vec::new();
+    let batch = db.begin_batch()?;
     for parsed in &sessions {
         match db.upsert_session(parsed, &host)? {
             Upsert::Inserted | Upsert::Updated => stats.upserted += 1,
@@ -70,13 +91,16 @@ pub fn reindex(db: &Db, projects_dir: &Path, roots: &[PathBuf]) -> Result<Reinde
                 title: parsed.title(),
             }),
         }
-        if let Some(cwd) = &parsed.cwd {
+    }
+    for (session_id, cwd) in &work {
+        if let Some(cwd) = cwd {
             // Rule 3's input comes from the PERSISTED `outcome_json` (empty for a session the
             // efficiency pass has not reached yet); `resolve_repos` closes that gap after it has.
-            let repos_touched = db.repos_touched(&parsed.session_id)?;
-            apply_chain(db, &mut resolver, &parsed.session_id, cwd, &repos_touched, roots)?;
+            let repos_touched = db.repos_touched(session_id)?;
+            apply_chain(db, &mut resolver, session_id, cwd, &repos_touched, roots)?;
         }
     }
+    batch.commit()?;
     stats.backfilled = db.set_parse_derived_many(&pending_parse_derived)?;
     stats.archived = db.reconcile_archived()?;
     info!(
@@ -84,6 +108,40 @@ pub fn reindex(db: &Db, projects_dir: &Path, roots: &[PathBuf]) -> Result<Reinde
         stats.scanned, stats.upserted, stats.skipped_unchanged, stats.backfilled, stats.archived
     );
     Ok(stats)
+}
+
+/// Split discovered session groups into those that must be parsed and those whose catalog row is
+/// already current (same mtime, current `PARSE_VERSION`: [`crate::db::SkipKey::is_unchanged`]). The
+/// unchanged ones come back as `(session_id, stored cwd)`, which is all the repo chain needs, so
+/// their transcripts are never read.
+fn partition_unchanged<'a>(
+    groups: SessionGroups<'a>,
+    indexed: &HashMap<String, IndexedRow>,
+) -> (SessionGroups<'a>, Vec<(String, Option<String>)>) {
+    debug!(
+        "index::partition_unchanged: groups={} indexed={}",
+        groups.len(),
+        indexed.len()
+    );
+    let mut fresh = SessionGroups::new();
+    let mut unchanged = Vec::new();
+    for (session_id, group) in groups {
+        let row = indexed.get(&session_id);
+        match (row, parse::group_modified(&group)) {
+            (Some(row), Some(modified)) if row.skip_key.is_unchanged(modified) => {
+                unchanged.push((session_id, row.cwd.clone()));
+            }
+            _ => {
+                fresh.insert(session_id, group);
+            }
+        }
+    }
+    debug!(
+        "index::partition_unchanged: fresh={} unchanged={}",
+        fresh.len(),
+        unchanged.len()
+    );
+    (fresh, unchanged)
 }
 
 /// Re-run the repo chain over the catalog for every session it could still improve, reading rule 3's
