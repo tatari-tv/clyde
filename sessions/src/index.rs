@@ -144,9 +144,10 @@ fn apply_chain(
     db.record_probe(session_id, &outcome, Utc::now())?;
     // Persist the HOST alongside, when the probe resolved one. Without it a later host-policy change
     // could only be applied by a live reprobe, which is the retro-observation defect the probe record
-    // exists to close. Rows indexed before v13 keep a NULL host and are handled strip-only.
-    if let Some(host) = outcome.resolved_host() {
-        db.record_repo_host(session_id, host)?;
+    // exists to close. Rows indexed before v13 keep a NULL host and are handled strip-only. The slug
+    // rides with it (schema v14): the pair is what a re-pointed checkout is checked against.
+    if let (Some(host), Some(slug)) = (outcome.resolved_host(), outcome.resolved_slug()) {
+        db.record_repo_host(session_id, host, slug)?;
     }
 
     let Some(resolved) = resolver.resolve(cwd, db, repos_touched, roots) else {

@@ -614,8 +614,8 @@ impl ScopePolicy {
     /// miss: the path slug `<owner>/<dir>` (the one place a directory name counts, and only in the
     /// fail-closed direction), the stored `repo` (a fork of `tatari-tv/*` whose remote is excluded),
     /// and, for bare `<root>/<owner>`, an owner-wide `!<owner>/*`. A rank-0 stored slug is never
-    /// replaced, so the current remote may differ from `repo`; checking that pairing lands with the
-    /// `repo_host_slug` column.
+    /// replaced, so the current remote may differ from `repo`: `facts.repo_host_slug`, the slug the
+    /// latest probe observed, is checked as a fourth, when one is recorded.
     ///
     /// **`<root>/<work-org>` with nothing under it has four possible occupants and the path
     /// separates none of them.** Measured against git 2.53.0: the org DIRECTORY (21 sessions on the
@@ -630,7 +630,7 @@ impl ScopePolicy {
         };
         let rule = self.owner_rule(owner);
         let anchor = match rule {
-            OwnerRule::Wide => self.wide_anchor(owner, dir, repo, facts.repo_probe),
+            OwnerRule::Wide => self.wide_anchor(owner, dir, [repo, facts.repo_host_slug], facts.repo_probe),
             OwnerRule::Named => Anchor::Deferred { owner },
             OwnerRule::Unlisted if dir.is_some() => Anchor::Settled(Scope::Personal),
             // A single unlisted component under a root. `<root>/clyde` is a flat clone whose org the
@@ -647,12 +647,13 @@ impl ScopePolicy {
         anchor
     }
 
-    /// The `Wide` rows of [`Self::scope_of`]'s table.
+    /// The `Wide` rows of [`Self::scope_of`]'s table. `slugs` is the stored `repo` and the
+    /// `repo_host_slug` the latest probe observed; an exclude on either takes Work away.
     fn wide_anchor<'p>(
         &self,
         owner: &'p str,
         dir: Option<&OsStr>,
-        repo: Option<&str>,
+        slugs: [Option<&str>; 2],
         probe: Option<RecordedProbe<'_>>,
     ) -> Anchor<'p> {
         let path_excluded = match dir {
@@ -662,7 +663,11 @@ impl ScopePolicy {
                 .iter()
                 .any(|p| p.is_exclude() && p.owner().eq_ignore_ascii_case(owner) && *p.repo() == RepoPart::Any),
         };
-        let repo_excluded = repo.and_then(slug_parts).is_some_and(|(o, r)| self.excludes(o, r));
+        let repo_excluded = slugs
+            .into_iter()
+            .flatten()
+            .filter_map(slug_parts)
+            .any(|(o, r)| self.excludes(o, r));
         if path_excluded || repo_excluded {
             return Anchor::Excluded;
         }
@@ -825,6 +830,14 @@ pub struct RoutingFacts<'a> {
     /// function the routing gate can reason about; a classifier that shells out is one that cannot be
     /// unit-tested against a fixed input.
     pub host_confers_work: Option<bool>,
+    /// Schema v14. The rule-1 slug the latest probe observed alongside `repo_host`, or `None` on a
+    /// row not indexed since v14.
+    ///
+    /// Read by ONE question here: an exclude on a wide owner. The stored `repo` is rank-0 and never
+    /// replaced, so a checkout re-pointed at an excluded remote keeps its OLD slug there; this is the
+    /// current one. The other use of the pairing, refusing Work when this differs from `repo`, is the
+    /// caller's, folded into [`Self::host_confers_work`]. Both only ever REMOVE authority.
+    pub repo_host_slug: Option<&'a str>,
     /// Whether `outcome_json` existed and parsed, i.e. whether the efficiency pass has reached this
     /// row. Decides whether a TOUCH-SET decision is settled, and nothing else.
     pub evidence_present: bool,

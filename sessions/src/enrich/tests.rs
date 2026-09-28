@@ -8,7 +8,7 @@ use eyre::{Result, bail};
 use session::ParsedSession;
 
 use super::*;
-use crate::db::Db;
+use crate::db::{Db, no_policy};
 use crate::export::{ExportContext, ExportFilters};
 use crate::llm::{Completer, LlmEnrichment};
 
@@ -227,11 +227,13 @@ fn failure_is_recorded_and_bumps_attempts() {
 
     // Still a candidate (attempts 1 < max), so it retries on a later sweep -- but not forever.
     let again = db
-        .enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false)
+        .enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false, &no_policy())
         .unwrap();
     assert_eq!(again.len(), 1);
     // Below the attempt cap it drops out.
-    let capped = db.enrich_candidates(None, ENRICH_PROMPT_VERSION, 1, false).unwrap();
+    let capped = db
+        .enrich_candidates(None, ENRICH_PROMPT_VERSION, 1, false, &no_policy())
+        .unwrap();
     assert!(capped.is_empty(), "a row at the attempt cap is no longer a candidate");
 }
 
@@ -540,20 +542,26 @@ fn raising_max_attempts_recovers_rows_sitting_at_the_cap() {
     assert_eq!(attempts_sum(&s.path), 3 * DEFAULT_MAX_ATTEMPTS);
 
     let at_cap =
-        s.db.enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false)
+        s.db.enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false, &no_policy())
             .unwrap();
     assert!(at_cap.is_empty(), "at the cap, every row is outside the sweep");
 
     let freed =
-        s.db.enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS + 1, false)
-            .unwrap();
+        s.db.enrich_candidates(
+            None,
+            ENRICH_PROMPT_VERSION,
+            DEFAULT_MAX_ATTEMPTS + 1,
+            false,
+            &no_policy(),
+        )
+        .unwrap();
     assert_eq!(freed.len(), 3, "one higher and they are candidates again");
 }
 
 /// Charge one attempt through the same public method the sweep uses, so the fixture cannot drift from
 /// how attempts are really spent.
 fn db_record_failure(db: &Db, id: &str) {
-    db.record_enrich_failure(id, "work", "simulated").unwrap();
+    db.record_enrich_failure(id, "work", &no_policy(), "simulated").unwrap();
 }
 
 /// A `cwd`-hostile session -- no `repos/<org>` anchor at all -- is the whole cohort item A is about.
@@ -1486,3 +1494,4 @@ fn an_archived_session_with_no_staged_copy_counts_as_an_empty_skip() {
 }
 
 mod defaults;
+mod policy;

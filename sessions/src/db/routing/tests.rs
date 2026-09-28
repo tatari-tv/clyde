@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::db::no_policy;
 use chrono::DateTime;
 use session::ParsedSession;
 use std::path::PathBuf;
@@ -276,22 +277,22 @@ fn record_enrich_skip_reports_whether_it_actually_changed_anything() {
     seed(&db, UUID_A);
 
     assert!(
-        db.record_enrich_skip(UUID_A, "personal", Some(3), EnrichStatus::SkippedPersonal)
+        db.record_enrich_skip(UUID_A, "personal", Some(3), &no_policy(), EnrichStatus::SkippedPersonal)
             .unwrap(),
         "the first write changes the row"
     );
     assert!(
-        !db.record_enrich_skip(UUID_A, "personal", Some(3), EnrichStatus::SkippedPersonal)
+        !db.record_enrich_skip(UUID_A, "personal", Some(3), &no_policy(), EnrichStatus::SkippedPersonal)
             .unwrap(),
         "an identical second write must report NO change, or the export cursor churns forever"
     );
     assert!(
-        db.record_enrich_skip(UUID_A, "personal", None, EnrichStatus::SkippedPersonal)
+        db.record_enrich_skip(UUID_A, "personal", None, &no_policy(), EnrichStatus::SkippedPersonal)
             .unwrap(),
         "a different scope_version IS a change, and `IS NOT` is what makes NULL compare correctly"
     );
     assert!(
-        !db.record_enrich_skip(UUID_B, "personal", None, EnrichStatus::SkippedPersonal)
+        !db.record_enrich_skip(UUID_B, "personal", None, &no_policy(), EnrichStatus::SkippedPersonal)
             .unwrap(),
         "an absent session changes nothing"
     );
@@ -306,9 +307,9 @@ fn record_enrich_skip_reports_whether_it_actually_changed_anything() {
 fn record_enrich_failure_reports_whether_the_session_exists() {
     let db = Db::open_memory().unwrap();
     seed(&db, UUID_A);
-    assert!(db.record_enrich_failure(UUID_A, "work", "boom").unwrap());
+    assert!(db.record_enrich_failure(UUID_A, "work", &no_policy(), "boom").unwrap());
     assert!(
-        !db.record_enrich_failure(UUID_B, "work", "boom").unwrap(),
+        !db.record_enrich_failure(UUID_B, "work", &no_policy(), "boom").unwrap(),
         "an absent session cannot be charged an attempt"
     );
 }
@@ -335,6 +336,7 @@ fn seed_skipped_personal(db: &Db, session_id: &str) {
         session_id,
         OVERRIDE_PERSONAL,
         Some(session::SCOPE_VERSION),
+        &no_policy(),
         crate::EnrichStatus::SkippedPersonal,
     )
     .unwrap();
@@ -356,6 +358,7 @@ fn seed_enriched(db: &Db, session_id: &str) {
             redaction_count: 0,
             tokens_in: 0,
             tokens_out: 0,
+            scope_policy: &no_policy(),
         },
         now(),
     )
@@ -363,7 +366,7 @@ fn seed_enriched(db: &Db, session_id: &str) {
 }
 
 fn is_candidate(db: &Db, session_id: &str) -> bool {
-    db.enrich_candidates(None, PROMPT_VERSION, MAX_ATTEMPTS, false)
+    db.enrich_candidates(None, PROMPT_VERSION, MAX_ATTEMPTS, false, &no_policy())
         .unwrap()
         .iter()
         .any(|r| r.session_id == session_id)
@@ -421,6 +424,7 @@ fn clearing_an_existing_override_re_offers_the_row() {
         UUID_A,
         OVERRIDE_PERSONAL,
         Some(session::SCOPE_VERSION),
+        &no_policy(),
         crate::EnrichStatus::SkippedPersonal,
     )
     .unwrap();

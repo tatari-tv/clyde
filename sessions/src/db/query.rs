@@ -33,7 +33,8 @@ const EXPORT_COLS: &str = "s.session_id, s.host, s.cwd, s.project_dir, s.git_bra
      s.modified, s.updated_at, s.title, s.first_prompt, s.n_msgs, s.model, s.summary, s.tags, \
      s.tags_source, s.enriched_at, s.enrich_status, s.enrich_model, s.prompt_version, \
      s.redaction_count, s.transcript_path, s.staged_path, s.archived, s.efficiency_json, s.repo, \
-     s.scope, s.scope_override, s.repo_source, s.repo_probe, s.repo_host, s.outcome_json";
+     s.scope, s.scope_override, s.repo_source, s.repo_probe, s.repo_host, s.outcome_json, \
+     s.repo_host_slug";
 
 impl Db {
     /// Bulk metadata export: the versioned envelope of [`ExportRecord`] for every row matching
@@ -261,6 +262,8 @@ struct ExportRaw {
     repo_host: Option<String>,
     /// The per-session outcome blob. Fallback input, and parsed LAZILY: see [`build_export_record`].
     outcome_json: Option<String>,
+    /// The slug the host was observed with (schema v14). Fallback input; never emitted.
+    repo_host_slug: Option<String>,
 }
 
 /// Map one row to [`ExportRaw`]. Index order mirrors [`EXPORT_COLS`] exactly.
@@ -297,6 +300,7 @@ fn map_export_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportRaw> {
         repo_probe: row.get(28)?,
         repo_host: row.get(29)?,
         outcome_json: row.get(30)?,
+        repo_host_slug: row.get(31)?,
     })
 }
 
@@ -390,6 +394,7 @@ fn build_export_record<R: HostResolver>(
                     outcome_json: raw.outcome_json.take(),
                     repo_probe: raw.repo_probe.take(),
                     repo_host: raw.repo_host.take(),
+                    repo_host_slug: raw.repo_host_slug.take(),
                     // Provably `None`, not merely absent-in-practice: this arm is reached only when
                     // `scope_override.or(scope)` was `None`, so the override column is NULL. Passing
                     // the field would suggest the override step below it can fire here; it cannot.

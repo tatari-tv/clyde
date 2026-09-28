@@ -617,6 +617,7 @@ fn search_reports_unenriched_gap_counts() {
             redaction_count: 0,
             tokens_in: 100,
             tokens_out: 50,
+            scope_policy: &no_policy(),
         },
         dt("2026-06-22T10:00:00Z"),
     )
@@ -1145,6 +1146,7 @@ fn v5_enrich_skip_write_advances_cursor_once() {
             UUID_A,
             "personal",
             Some(session::SCOPE_VERSION),
+            &no_policy(),
             crate::export::EnrichStatus::SkippedPersonal
         )
         .unwrap()
@@ -1165,7 +1167,7 @@ fn v5_enrich_failure_write_advances_cursor_once() {
 
     let before = revision_counter(&db);
     assert!(
-        db.record_enrich_failure(UUID_A, "work", "the model call blew up")
+        db.record_enrich_failure(UUID_A, "work", &no_policy(), "the model call blew up")
             .unwrap()
     );
     assert_eq!(
@@ -1199,6 +1201,7 @@ fn v5_set_enrichment_advances_cursor_once() {
                 redaction_count: 0,
                 tokens_in: 100,
                 tokens_out: 50,
+                scope_policy: &no_policy(),
             },
             dt("2026-06-22T10:00:00Z"),
         )
@@ -1374,6 +1377,7 @@ fn v5_migration_from_v4_backfills_in_rowid_order_and_seeds_counter() {
             UUID_A,
             "work",
             Some(session::SCOPE_VERSION),
+            &no_policy(),
             crate::export::EnrichStatus::SkippedEmpty
         )
         .unwrap()
@@ -1470,7 +1474,7 @@ fn v5_migration_is_idempotent_on_reopen() {
     let db = Db::open_at(&path).unwrap();
     assert_eq!(revision_counter(&db), rev_after_reopen);
     let before = revision_counter(&db);
-    assert!(db.record_enrich_failure(UUID_A, "work", "boom").unwrap());
+    assert!(db.record_enrich_failure(UUID_A, "work", &no_policy(), "boom").unwrap());
     assert_eq!(
         revision_counter(&db),
         before + 1,
@@ -1491,3 +1495,6 @@ mod activity;
 // Schema v12 (`scope_version`) tests: the widened `enrich_candidates` predicate, the provisional-NULL
 // rule, and the `scope_evidence` read. Own submodule, same line-count reason as the two above.
 mod scope;
+
+// Schema v14 (`scope_policy`, `repo_host_slug`) tests. Own submodule, same line-count reason.
+mod policy;

@@ -71,7 +71,13 @@ use crate::model::{
 ///    them: a backfill would have to probe LIVE, which is the retro-observation defect they exist to
 ///    close. See [`migrate::migrate_v13_routing`] and
 ///    `docs/design/2026-07-31-attribution-and-routing.md`.
-const SCHEMA_VERSION: i64 = 13;
+/// v14 added `scope_policy` (the `session::ScopePolicy::fingerprint` a row's stored `scope` was
+///    decided under, so a `reposlugs-ptns` or `repo-roots` change re-offers the `skipped-personal`
+///    rows it could reach with no `SCOPE_VERSION` bump) and `repo_host_slug` (the rule-1 slug the
+///    stored `repo_host` was observed with, so a checkout re-pointed at another repo on the same host
+///    stops inheriting the old slug's authority). Column-add only, no backfill. See
+///    [`migrate::migrate_v14_scope_policy`] and `docs/design/2026-09-27-reposlugs-ptns-from-config.md`.
+const SCHEMA_VERSION: i64 = 14;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -165,7 +171,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     scope_override        TEXT,
     scope_override_reason TEXT,
     scope_override_by     TEXT,
-    scope_override_at     TEXT
+    scope_override_at     TEXT,
+    scope_policy          TEXT,
+    repo_host_slug        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_modified ON sessions(modified);
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(title, tags, summary);
@@ -245,6 +253,8 @@ pub struct EnrichSuccess<'a> {
     pub redaction_count: usize,
     pub tokens_in: u64,
     pub tokens_out: u64,
+    /// The [`session::ScopePolicy::fingerprint`] the `scope` was decided under (schema v14).
+    pub scope_policy: &'a str,
 }
 
 /// One session's computed efficiency + outcomes, ready to persist (schema v6 efficiency, v8
@@ -306,6 +316,7 @@ impl Db {
             migrate::snapshot_before_v11(&conn, path).context("failed to snapshot the DB before the v11 migration")?;
             migrate::snapshot_before_v12(&conn, path).context("failed to snapshot the DB before the v12 migration")?;
             migrate::snapshot_before_v13(&conn, path).context("failed to snapshot the DB before the v13 migration")?;
+            migrate::snapshot_before_v14(&conn, path).context("failed to snapshot the DB before the v14 migration")?;
         }
         migrate::migrate(&conn).context("failed to migrate schema")?;
         Ok(Self { conn })
@@ -1380,6 +1391,13 @@ pub use activity::{ParseDerivedWrite, SkipKey};
 /// catalog-backed `common::repo::PathMap` impl. Split out for file-size discipline, mirroring
 /// `catalog`/`query`'s own-concern-per-file shape.
 mod repo;
+
+/// The EMPTY policy's fingerprint (schema v14): what a test with no policy of its own records a
+/// decision under and selects candidates with, so the two agree and `scope_policy` stays inert.
+#[cfg(test)]
+pub(crate) fn no_policy() -> String {
+    session::ScopePolicy::default().fingerprint()
+}
 
 #[cfg(test)]
 mod tests;

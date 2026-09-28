@@ -89,11 +89,18 @@ impl Db {
     /// Unlike [`Self::record_probe`] this DOES overwrite an existing value, because the host is a
     /// property of the current remote (a repo genuinely re-pointed at a new host must read as the new
     /// host), whereas the probe record is a historical observation that must not be erased.
-    pub fn record_repo_host(&self, session_id: &str, host: &str) -> Result<bool> {
-        debug!("Db::record_repo_host: session_id={session_id} host={host}");
+    ///
+    /// `slug` is the rule-1 slug the SAME probe resolved, written to `repo_host_slug` (schema v14).
+    /// `upsert_repo` keeps a rank-0 slug forever, so without it a checkout re-pointed at another repo
+    /// ends up with the OLD slug and the NEW host, and the git-origin arm would grant Work on that
+    /// mismatched pair. The no-change guard covers both columns: a re-point between two `github.com`
+    /// repos changes only the slug, and a host-only guard would never write it.
+    pub fn record_repo_host(&self, session_id: &str, host: &str, slug: &str) -> Result<bool> {
+        debug!("Db::record_repo_host: session_id={session_id} host={host} slug={slug}");
         let n = self.conn.execute(
-            "UPDATE sessions SET repo_host = ?2 WHERE session_id = ?1 AND repo_host IS NOT ?2",
-            params![session_id, host],
+            "UPDATE sessions SET repo_host = ?2, repo_host_slug = ?3 \
+             WHERE session_id = ?1 AND (repo_host IS NOT ?2 OR repo_host_slug IS NOT ?3)",
+            params![session_id, host, slug],
         )?;
         Ok(n > 0)
     }

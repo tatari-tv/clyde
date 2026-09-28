@@ -90,7 +90,7 @@ fn v6_set_efficiency_stores_columns_without_advancing_updated_at() {
 
     // The suppression is scoped to the batch: a subsequent CONTENT write still advances normally
     // (the trigger was restored).
-    assert!(db.record_enrich_failure(UUID_A, "work", "boom").unwrap());
+    assert!(db.record_enrich_failure(UUID_A, "work", &no_policy(), "boom").unwrap());
     assert_eq!(
         revision_counter(&db),
         counter_before + 1,
@@ -325,7 +325,7 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 13,
+        SCHEMA_VERSION, 14,
         "this test pins the v5->current hop; bump me deliberately"
     );
 
@@ -370,6 +370,7 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
             UUID_B,
             "work",
             Some(session::SCOPE_VERSION),
+            &no_policy(),
             crate::export::EnrichStatus::SkippedEmpty
         )
         .unwrap()
@@ -415,7 +416,7 @@ fn v6_migration_is_idempotent_on_reopen() {
     // Re-open a third time: still stable, schema still works (a content write advances to 2).
     let db = Db::open_at(&path).unwrap();
     let before = revision_counter(&db);
-    assert!(db.record_enrich_failure(UUID_A, "work", "boom").unwrap());
+    assert!(db.record_enrich_failure(UUID_A, "work", &no_policy(), "boom").unwrap());
     assert_eq!(revision_counter(&db), before + 1);
 }
 
@@ -502,6 +503,7 @@ fn v7_migration_from_v6_invalidates_efficiency_without_advancing_cursor() {
             UUID_B,
             "work",
             Some(session::SCOPE_VERSION),
+            &no_policy(),
             crate::export::EnrichStatus::SkippedEmpty
         )
         .unwrap()
@@ -585,7 +587,7 @@ fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_a
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 13,
+        SCHEMA_VERSION, 14,
         "this test pins the v7->current hop; bump me deliberately"
     );
 
@@ -618,6 +620,7 @@ fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_a
             UUID_B,
             "work",
             Some(session::SCOPE_VERSION),
+            &no_policy(),
             crate::export::EnrichStatus::SkippedEmpty
         )
         .unwrap()
@@ -707,7 +710,7 @@ fn v10_migration_from_v9_invalidates_both_blobs_without_advancing_cursor() {
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 13,
+        SCHEMA_VERSION, 14,
         "this test pins the v9->current hop; raise me deliberately"
     );
 

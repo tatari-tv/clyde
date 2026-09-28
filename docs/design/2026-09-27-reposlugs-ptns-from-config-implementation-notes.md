@@ -83,3 +83,37 @@ None.
 
 ### Open questions
 None.
+
+## Phase 3: Schema v14 and re-offer
+
+### Design decisions
+- `migrate_v14_scope_policy` is its own ladder step with `snapshot_before_v14` registered in `Db::init` after v13 (`sessions/src/db/migrate.rs`, `sessions/src/db.rs:Db::init`); both columns also go into `SCHEMA_SQL`, the v13 precedent. Column-add only, no backfill: NULL `scope_policy` is what re-offers every enrich-eligible `skipped-personal` row once.
+- The fingerprint is rendered ONCE per sweep (`sessions/src/enrich.rs:enrich`, `opts.scope_policy.fingerprint()`) and passed to `enrich_candidates` and all three writers, so the predicate and the writes cannot compare against two different strings.
+- `record_enrich_skip` writes the fingerprint on provisional decisions too, not only settled ones. It records the policy the decision was made under either way; provisional rows stay eligible through NULL `scope_version`, and the `IS NOT` guard keeps a repeat provisional pass at 0 writes.
+- The pairing refusal lives in a private `host_confers_work` beside `classify_row` (`sessions/src/routing.rs`), so the enrich gate, `doctor`, and export's fallback all get it through the one seam. The slug check runs before the host lookup and fires even when `repo_host` is NULL: it only removes authority.
+- The slug comparison is ASCII case-insensitive, matching the policy's per-segment case rule. Both sides come from the same rule-1 parse today, so case never differs in practice; a case-sensitive compare would only ever refuse the same GitHub repo.
+- `RoutingFacts` gained `repo_host_slug: Option<&str>`, and `ScopePolicy::wide_anchor` checks excludes against `[repo, repo_host_slug]`. This closes the Wide-exclude check Phase 2 deferred.
+- `ScopePolicy::fingerprint()` was checked against the doc: `serde_json::json!` renders `{"ptns":[...],"roots":[...]}` compactly with keys in sorted order, and Phase 2's `the_fingerprint_is_the_normalized_policy` pins the exact string. No change needed.
+- Test call sites pass `crate::db::no_policy()` (a `#[cfg(test)]` helper in `sessions/src/db.rs`, the empty policy's fingerprint) to both the writers and `enrich_candidates`. The pre-v14 tests then behave exactly as before, with `scope_policy` inert.
+- New tests go in their own submodules (`sessions/src/db/tests/policy.rs`, `sessions/src/enrich/tests/policy.rs`), because `db/tests.rs` and `enrich/tests.rs` sit at the 1500-line `otto bloat` limit (1500 and 1498 after this phase).
+
+### Deviations
+- `record_repo_host` is written only when the probe resolved both a host and a slug (`if let (Some(host), Some(slug))`, `sessions/src/index.rs:apply_chain`). The doc names `outcome.resolved_slug()` as the source; for `ProbeOutcome::Resolved` both are always `Some`, so the effect is the same.
+- The fingerprint reaches `set_enrichment` as a new `EnrichSuccess::scope_policy` field, not a new parameter. `EnrichSuccess` is already the payload struct for that writer. Same effect, correct seam.
+- `enrich_candidates` takes the fingerprint as a new trailing `scope_policy: &str` parameter. The doc gives only the SQL (`?4`), not the signature.
+- The "export projection" criterion is met by appending `s.repo_host_slug` to `EXPORT_COLS` (index 31) and carrying it into `evidence_from_row` in the export fallback. Stored scopes are emitted as before; only an undecided row's fallback classification reads the column.
+
+### Tradeoffs
+- End-to-end re-point test uses a real `git init` checkout plus `index::reindex` (`enrich/tests/policy.rs:a_re_pointed_checkout_loses_the_old_slugs_authority`), not hand-written columns. It is the only test that proves `apply_chain` writes the slug a second pass observes, and that the rank-0 `repo` survives the re-point.
+- Rows written by an "old binary" are simulated with raw SQL on a second connection (`UPDATE ... scope_version = 4`, `scope_policy = NULL`), not by building a v13 binary. A v13 writer's only effects on these columns are exactly those two statements, since it does not know `scope_policy` exists.
+- The interrupted sweep is driven by the typed transport failure that aborts `enrich` mid-sweep (`Flaky` fatal), not a simulated crash. It is the production abort path, and it leaves a known set of rows unvisited.
+- Break-it checks were run and reverted, each restored file byte-compared to its backup:
+  - dropping `OR s.scope_policy IS NOT ?4`: 8 tests failed
+  - dropping the pairing refusal in `routing::host_confers_work`: 2 failed
+  - dropping `repo_host_slug` from `wide_anchor`: 1 failed
+  - reverting the `record_repo_host` guard to host-only: 2 failed
+  - restoring the pre-v14 two-`AND` predicate: 3 failed
+- `/tmp` (tmpfs) filled to 100% mid-phase, from `/tmp/marquee-bite` (13G, not this work). Test runs during development used a `TMPDIR` on disk. The final `otto ci` ran with the default `TMPDIR` once space freed. Two `common` tests need a temp root outside any git repo, and `~` has a stray `~/.git`, so those two fail under any `TMPDIR` inside `$HOME`.
+
+### Open questions
+None.

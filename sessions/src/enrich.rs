@@ -95,6 +95,9 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         bail!("enrich: a Completer is required for a live (non-dry-run) pass");
     }
     let now = Utc::now();
+    // The policy every decision in this sweep is made under, rendered ONCE: the candidate predicate
+    // compares against it and every writer records it (schema v14).
+    let scope_policy = opts.scope_policy.fingerprint();
 
     let records = match &opts.only {
         Some(id) => match db.get(id)? {
@@ -104,7 +107,13 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 Vec::new()
             }
         },
-        None => db.enrich_candidates(opts.dormant_before, ENRICH_PROMPT_VERSION, opts.max_attempts, opts.all)?,
+        None => db.enrich_candidates(
+            opts.dormant_before,
+            ENRICH_PROMPT_VERSION,
+            opts.max_attempts,
+            opts.all,
+            &scope_policy,
+        )?,
     };
     let force = opts.all || opts.only.is_some();
 
@@ -182,6 +191,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 &rec.session_id,
                 scope.as_str(),
                 scope_version,
+                &scope_policy,
                 EnrichStatus::SkippedPersonal,
             )?;
             stats.skipped_personal += 1;
@@ -206,6 +216,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 &rec.session_id,
                 scope.as_str(),
                 scope_version,
+                &scope_policy,
                 EnrichStatus::SkippedEmpty,
             )?;
             stats.skipped_empty += 1;
@@ -227,6 +238,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                     &rec.session_id,
                     scope.as_str(),
                     scope_version,
+                    &scope_policy,
                     EnrichStatus::SkippedEmpty,
                 )?;
                 stats.skipped_empty += 1;
@@ -302,6 +314,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                     redaction_count: redactions,
                     tokens_in: out.tokens_in,
                     tokens_out: out.tokens_out,
+                    scope_policy: &scope_policy,
                 };
                 db.set_enrichment(&rec.session_id, &success, now)?;
                 stats.enriched += 1;
@@ -345,7 +358,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                         )
                     });
                 }
-                db.record_enrich_failure(&rec.session_id, scope.as_str(), &e.to_string())?;
+                db.record_enrich_failure(&rec.session_id, scope.as_str(), &scope_policy, &e.to_string())?;
                 stats.failed += 1;
                 consecutive_failures += 1;
                 stats.details.push(detail(

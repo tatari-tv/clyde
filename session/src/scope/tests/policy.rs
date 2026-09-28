@@ -467,3 +467,36 @@ fn the_fingerprint_is_the_normalized_policy() {
     assert_ne!(one.fingerprint(), narrower.fingerprint());
     assert_eq!(ScopePolicy::default().fingerprint(), r#"{"ptns":[],"roots":[]}"#);
 }
+
+/// Schema v14: an exclude on a WIDE owner also checks `repo_host_slug`, the slug the latest probe
+/// observed. The stored rank-0 `repo` is never replaced, so a `tatari-tv/x` checkout re-pointed at the
+/// excluded `tatari-tv/secret` still stores `tatari-tv/x`; only the pairing column sees the change.
+///
+/// BITES: drop `facts.repo_host_slug` from `wide_anchor`'s slugs and the re-pointed row reads Work.
+#[test]
+fn a_wide_exclude_also_checks_the_slug_the_host_was_observed_with() {
+    let p = policy(&["tatari-tv/*", "!tatari-tv/secret"]);
+    let cwd = "/home/saidler/repos/tatari-tv/x";
+    let re_pointed = RoutingFacts {
+        repo_host_slug: Some("tatari-tv/secret"),
+        ..present()
+    };
+    assert_eq!(
+        decide(&p, cwd, Some("tatari-tv/x"), &[], 0, &re_pointed),
+        personal(Basis::CwdAnchor, false),
+        "an excluded current remote takes Work away from the wide anchor, provisionally"
+    );
+    let unchanged = RoutingFacts {
+        repo_host_slug: Some("tatari-tv/x"),
+        ..present()
+    };
+    assert_eq!(
+        decide(&p, cwd, Some("tatari-tv/x"), &[], 0, &unchanged),
+        work_by(Basis::CwdAnchor)
+    );
+    assert_eq!(
+        decide_plain(&p, cwd, Some("tatari-tv/x")),
+        work_by(Basis::CwdAnchor),
+        "a pre-v14 row (NULL repo_host_slug) keeps today's answer"
+    );
+}

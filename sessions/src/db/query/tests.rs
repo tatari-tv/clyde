@@ -9,7 +9,7 @@ use tempfile::TempDir;
 
 use common::repo::{RepoSource, Resolved};
 
-use crate::db::{Db, EnrichSuccess};
+use crate::db::{Db, EnrichSuccess, no_policy};
 use crate::export::{ExportContext, ExportFilters};
 
 /// `reposlugs-ptns: ["tatari-tv/*"]`, named explicitly: the work fixtures in this file are all
@@ -157,6 +157,7 @@ fn export_work_session_derives_work_scope_and_reports_the_persisted_repo_and_enr
             redaction_count: 4,
             tokens_in: 100,
             tokens_out: 50,
+            scope_policy: &no_policy(),
         },
         dt("2026-06-22T10:00:00Z"),
     )
@@ -721,6 +722,7 @@ fn export_tag_filter_treats_like_wildcards_as_literals() {
                 redaction_count: 0,
                 tokens_in: 1,
                 tokens_out: 1,
+                scope_policy: &no_policy(),
             },
             dt("2026-06-22T10:00:00Z"),
         )

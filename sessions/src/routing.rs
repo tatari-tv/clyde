@@ -94,7 +94,8 @@ pub struct RowDecision {
 ///
 /// `host_confers_work` is `None` when no host was recorded, and it must STAY `None` rather than
 /// becoming `Some(false)`: see [`RoutingFacts::host_confers_work`] for why a NULL host may never
-/// strip authority on its own. Every pre-v13 row is in that state.
+/// strip authority on its own. Every pre-v13 row is in that state. See [`host_confers_work`] for
+/// the one case a recorded host is refused before it is even resolved.
 /// `scope_policy` is built ONCE per run, immediately after `Config::load()`, and passed by reference from
 /// there. It is a parameter rather than something this function derives because deriving it stats the
 /// disk (`common::config` canonicalizes each root at load), and this function runs per ROW.
@@ -127,8 +128,29 @@ pub fn classify_row<R: HostResolver>(
             repo_probe: recorded_probe,
             scope_override: evidence.scope_override.as_deref(),
             evidence_present: evidence.present,
-            host_confers_work: evidence.repo_host.as_deref().map(|h| hosts.confers_work(h)),
+            host_confers_work: host_confers_work(evidence, repo, hosts),
+            repo_host_slug: evidence.repo_host_slug.as_deref(),
         },
     );
     RowDecision { decision, repo_source }
+}
+
+/// Whether this row's recorded host may confer Work on its stored `repo`.
+///
+/// `Some(false)` when the slug the host was observed with (`repo_host_slug`, schema v14) is present
+/// and is not `repo`: the rank-0 `repo` is never replaced, so a checkout re-pointed at another repo
+/// keeps the old slug while the host moves on, and the host's trust belongs to the NEW slug. Compared
+/// case-insensitively, as GitHub names are. A NULL `repo_host_slug` (not indexed since v14) keeps
+/// today's answer, so the pairing only ever REMOVES authority, per the strip-only rule.
+fn host_confers_work<R: HostResolver>(
+    evidence: &ScopeEvidence,
+    repo: Option<&str>,
+    hosts: &mut HostPolicy<R>,
+) -> Option<bool> {
+    if let Some(observed) = evidence.repo_host_slug.as_deref()
+        && !repo.is_some_and(|r| r.eq_ignore_ascii_case(observed))
+    {
+        return Some(false);
+    }
+    evidence.repo_host.as_deref().map(|h| hosts.confers_work(h))
 }

@@ -2,8 +2,9 @@
 //! predicate, and the `clyde session doctor` roll-up.
 //!
 //! Split out of `db.rs` for file-size discipline, mirroring `catalog`/`query`/`repo`/`activity`'s
-//! own-concern-per-file shape. This is also where schema v12's `scope_version` is written and read,
-//! so the const's three write sites and the predicate that consumes it sit in one file.
+//! own-concern-per-file shape. This is also where schema v12's `scope_version` and v14's
+//! `scope_policy` are written and read, so their three write sites and the predicate that consumes
+//! them sit in one file.
 
 use std::collections::BTreeMap;
 
@@ -58,23 +59,27 @@ pub struct ScopeEvidence {
     /// Schema v13. The host the origin URL came from, or `None` on every pre-v13 row. Read by the
     /// host gate; NULL means "indexed before clyde recorded hosts", which is handled strip-only.
     pub repo_host: Option<String>,
+    /// Schema v14. The rule-1 slug `repo_host` was observed with, or `None` on a row not indexed
+    /// since v14. A value differing from the stored `repo` refuses a git-origin work slug.
+    pub repo_host_slug: Option<String>,
     /// Schema v13. An operator override (`work` or `personal`) that beats every rule.
     pub scope_override: Option<String>,
 }
 
-/// The four nullable columns [`Db::scope_evidence`] reads, as a named row rather than a tuple.
+/// The five nullable columns [`Db::scope_evidence`] reads, as a named row rather than a tuple.
 ///
-/// A struct because the tuple form is four `Option<String>`s in a row: any two could be swapped at
+/// A struct because the tuple form is five `Option<String>`s in a row: any two could be swapped at
 /// the destructuring site and the code would still compile, while silently feeding the probe stamp
 /// to the host check. Naming them makes that impossible.
 pub(crate) struct EvidenceRow {
     pub(crate) outcome_json: Option<String>,
     pub(crate) repo_probe: Option<String>,
     pub(crate) repo_host: Option<String>,
+    pub(crate) repo_host_slug: Option<String>,
     pub(crate) scope_override: Option<String>,
 }
 
-/// One catalog row's complete classifier input: the session's own metadata plus the four evidence
+/// One catalog row's complete classifier input: the session's own metadata plus the five evidence
 /// columns. What [`Db::routing_rows`] yields, one per session.
 pub struct RoutingRow {
     pub session_id: String,
@@ -94,7 +99,7 @@ impl RoutingRow {
     }
 }
 
-/// Turn the four raw evidence columns into a [`ScopeEvidence`].
+/// Turn the five raw evidence columns into a [`ScopeEvidence`].
 ///
 /// The ONE parse, shared by [`Db::scope_evidence`] (one session) and [`Db::routing_rows`] (the whole
 /// catalog), so the enrich gate and `doctor` cannot read the same blob two different ways.
@@ -115,6 +120,7 @@ pub(crate) fn evidence_from_row(session_id: &str, row: &EvidenceRow) -> ScopeEvi
     let routing = ScopeEvidence {
         repo_probe: row.repo_probe.clone(),
         repo_host: row.repo_host.clone(),
+        repo_host_slug: row.repo_host_slug.clone(),
         scope_override: row.scope_override.clone(),
         ..Default::default()
     };
@@ -167,21 +173,23 @@ impl Db {
     /// genuinely has no usable evidence, and treating it as settled would freeze a wrong answer behind
     /// a recorded `scope_version`. A reindex rewrites the blob and the row self-heals.
     pub fn scope_evidence(&self, session_id: &str) -> Result<ScopeEvidence> {
-        // ONE query for all four columns. The touch set and the routing state are read together for
+        // ONE query for all five columns. The touch set and the routing state are read together for
         // the same reason `repos_touched` and `files_edited` are: the classifier compares them
         // against each other, and reading them in separate queries would be comparing values that are
         // only incidentally from the same row.
         let row: Option<EvidenceRow> = self
             .conn
             .query_row(
-                "SELECT outcome_json, repo_probe, repo_host, scope_override FROM sessions WHERE session_id = ?1",
+                "SELECT outcome_json, repo_probe, repo_host, repo_host_slug, scope_override FROM sessions \
+                 WHERE session_id = ?1",
                 params![session_id],
                 |r| {
                     Ok(EvidenceRow {
                         outcome_json: r.get(0)?,
                         repo_probe: r.get(1)?,
                         repo_host: r.get(2)?,
-                        scope_override: r.get(3)?,
+                        repo_host_slug: r.get(3)?,
+                        scope_override: r.get(4)?,
                     })
                 },
             )
@@ -207,8 +215,8 @@ impl Db {
     pub fn routing_rows(&self) -> Result<Vec<RoutingRow>> {
         debug!("Db::routing_rows");
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, cwd, repo, repo_source, outcome_json, repo_probe, repo_host, scope_override \
-             FROM sessions",
+            "SELECT session_id, cwd, repo, repo_source, outcome_json, repo_probe, repo_host, repo_host_slug, \
+             scope_override FROM sessions",
         )?;
         let rows: Vec<RoutingRow> = stmt
             .query_map([], |r| {
@@ -221,7 +229,8 @@ impl Db {
                         outcome_json: r.get(4)?,
                         repo_probe: r.get(5)?,
                         repo_host: r.get(6)?,
-                        scope_override: r.get(7)?,
+                        repo_host_slug: r.get(7)?,
+                        scope_override: r.get(8)?,
                     },
                 })
             })?
@@ -273,7 +282,7 @@ impl Db {
         tx.execute(
             "UPDATE sessions SET summary=?2, tags=?3, scope=?4, enriched_at=?5, enriched_modified=?6, \
              enrich_model=?7, prompt_version=?8, enrich_status=?13, last_error=NULL, attempts=0, \
-             redaction_count=?9, tokens_in=?10, tokens_out=?11, scope_version=?14, \
+             redaction_count=?9, tokens_in=?10, tokens_out=?11, scope_version=?14, scope_policy=?15, \
              tags_source=COALESCE(?12, tags_source) WHERE id=?1",
             params![
                 id,
@@ -294,6 +303,8 @@ impl Db {
                 // enrichment is never provisional: it required `scope == work`, which needed either a
                 // work-anchored cwd or a unanimous, total touch set.
                 session::SCOPE_VERSION,
+                // And the policy it was decided under, for the same reason (schema v14).
+                e.scope_policy,
             ],
         )?;
         rebuild_high_signal_fts_on(&tx, id, title.as_deref(), &new_tags, Some(e.summary))?;
@@ -318,15 +329,20 @@ impl Db {
     /// personal, and recording the current version on that evidence-free decision would exclude the row
     /// until the next const bump. Re-consideration costs nothing: the routing gate records a skip and
     /// never reaches the transport, so no tokens are spent.
+    ///
+    /// `scope_policy` is the [`session::ScopePolicy::fingerprint`] the decision was made under, and it
+    /// is written settled or not: it is what lets a later policy change re-offer a SETTLED row.
     pub fn record_enrich_skip(
         &self,
         session_id: &str,
         scope: &str,
         scope_version: Option<i64>,
+        scope_policy: &str,
         status: EnrichStatus,
     ) -> Result<bool> {
         debug!(
-            "Db::record_enrich_skip: session_id={session_id} scope={scope} scope_version={scope_version:?} status={}",
+            "Db::record_enrich_skip: session_id={session_id} scope={scope} scope_version={scope_version:?} \
+             scope_policy={scope_policy} status={}",
             status.as_str()
         );
         // **Guarded against a NO-CHANGE write.** This was a bare UPDATE, so it touched the row on
@@ -341,12 +357,14 @@ impl Db {
         //
         // `IS NOT` rather than `!=`, because `scope_version` is nullable and `NULL != NULL` is NULL,
         // not true, so a `!=` form would rewrite every provisional row on every pass and change
-        // nothing about the churn.
+        // nothing about the churn. `scope_policy` is in the guard too (schema v14), and it is NULL on
+        // every pre-v14 row, which is why this is `IS NOT` as well.
         let n = self.conn.execute(
-            "UPDATE sessions SET scope=?2, enrich_status=?3, scope_version=?4 \
+            "UPDATE sessions SET scope=?2, enrich_status=?3, scope_version=?4, scope_policy=?5 \
              WHERE session_id=?1 \
-               AND (scope IS NOT ?2 OR enrich_status IS NOT ?3 OR scope_version IS NOT ?4)",
-            params![session_id, scope, status.as_str(), scope_version],
+               AND (scope IS NOT ?2 OR enrich_status IS NOT ?3 OR scope_version IS NOT ?4 \
+                    OR scope_policy IS NOT ?5)",
+            params![session_id, scope, status.as_str(), scope_version, scope_policy],
         )?;
         Ok(n > 0)
     }
@@ -357,30 +375,39 @@ impl Db {
     ///
     /// Writes `scope_version` for the same reason the other two sites do: every site that writes
     /// `scope` records the classifier version that decided it. A failure only happens on a row that
-    /// already cleared the routing gate as work, so the decision was never provisional.
-    pub fn record_enrich_failure(&self, session_id: &str, scope: &str, last_error: &str) -> Result<bool> {
+    /// already cleared the routing gate as work, so the decision was never provisional. The
+    /// `scope_policy` fingerprint is written beside it, as at the other two sites.
+    pub fn record_enrich_failure(
+        &self,
+        session_id: &str,
+        scope: &str,
+        scope_policy: &str,
+        last_error: &str,
+    ) -> Result<bool> {
         warn!("Db::record_enrich_failure: session_id={session_id} scope={scope} last_error={last_error}");
         let n = self.conn.execute(
             "UPDATE sessions SET scope=?2, enrich_status=?4, last_error=?3, attempts=attempts+1, \
-             scope_version=?5 WHERE session_id=?1",
+             scope_version=?5, scope_policy=?6 WHERE session_id=?1",
             // ?4 comes from the enum, not a scattered 'failed' literal.
             params![
                 session_id,
                 scope,
                 last_error,
                 EnrichStatus::Failed.as_str(),
-                session::SCOPE_VERSION
+                session::SCOPE_VERSION,
+                scope_policy
             ],
         )?;
         Ok(n > 0)
     }
 
     /// Sessions eligible for an enrichment pass. Excludes archived sessions with no staged copy
-    /// (nothing to read), and rows that have exhausted `max_attempts`. Unless `all`, also requires
-    /// the session be un-enriched, grown since last enrichment, or below the current
-    /// `prompt_version`, and re-offers a row recorded `skipped-personal` when the CLASSIFIER has moved
-    /// on (`scope_version` NULL or below `session::SCOPE_VERSION`). Dormancy is applied in Rust
-    /// (mirrors [`Self::staging_candidates`]). Scope is NOT filtered here -- the routing gate is the
+    /// (nothing to read), and rows that have exhausted `max_attempts`. Unless `all`, a row recorded
+    /// `skipped-personal` is re-offered when the CLASSIFIER has moved on (`scope_version` NULL or
+    /// below `session::SCOPE_VERSION`) or the POLICY has (`scope_policy` differs from the current
+    /// `scope_policy` fingerprint), and every other row when it is un-enriched, grown since last
+    /// enrichment, or below the current `prompt_version`. Dormancy is applied in Rust (mirrors
+    /// [`Self::staging_candidates`]). Scope is NOT filtered here -- the routing gate is the
     /// orchestrator's job, so personal sessions still surface to be recorded skipped.
     pub fn enrich_candidates(
         &self,
@@ -388,33 +415,39 @@ impl Db {
         prompt_version: i64,
         max_attempts: i64,
         all: bool,
+        scope_policy: &str,
     ) -> Result<Vec<SessionRecord>> {
         debug!(
-            "Db::enrich_candidates: dormant_before={dormant_before:?} prompt_version={prompt_version} max_attempts={max_attempts} all={all}"
+            "Db::enrich_candidates: dormant_before={dormant_before:?} prompt_version={prompt_version} \
+             max_attempts={max_attempts} all={all} scope_policy={scope_policy}"
         );
         let mut sql = format!(
             "SELECT {COLS} FROM sessions s WHERE NOT (s.archived = 1 AND s.staged_path IS NULL) AND s.attempts < ?1"
         );
         let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(max_attempts)];
         if !all {
-            // The `scope_version` terms go INSIDE the `skipped-personal` clause, mirroring how
-            // `prompt_version` sits inside the sibling clause below. Appended as a separate `AND (...)`
-            // they would be a no-op: the `!= 'skipped-personal'` conjunct would still exclude every row
-            // the widening exists to reach, and the fix would be invisible.
+            // Two disjoint arms, split on `skipped-personal`. That row was never sent, so the
+            // classifier and the policy are what decide whether to look again; every other row was
+            // sent (or is about to be), so freshness decides, and a policy change never re-sends it.
             //
-            // The sibling clause does NOT re-exclude these rows, which was checked because it is the
-            // other obvious way for this to be a silent no-op: `record_enrich_skip` deliberately never
-            // touches `enriched_at`, so `enriched_at IS NULL` holds for every `skipped-personal` row and
-            // that clause stays true.
+            // The freshness terms must NOT also gate the `skipped-personal` arm. `record_enrich_skip`
+            // never clears `enriched_at`, so a row enriched `ok`, re-run under a narrower policy and
+            // recorded `skipped-personal`, KEEPS its `enriched_at`; with freshness ANDed on, a later
+            // widening would never re-offer it. `enriched_at IS NULL` holds for most `skipped-personal`
+            // rows, not all of them.
+            //
+            // `IS NOT`, not `!=`, on `scope_policy`: it is NULL on every pre-v14 row, and `NULL != ?4`
+            // is NULL, which would leave exactly the rows the upgrade must re-offer excluded.
             sql.push_str(
-                " AND (s.enrich_status IS NULL OR s.enrich_status != 'skipped-personal' \
-                 OR s.scope_version IS NULL OR s.scope_version < ?3)",
-            );
-            sql.push_str(
-                " AND (s.enriched_at IS NULL OR s.modified > s.enriched_modified OR s.prompt_version IS NULL OR s.prompt_version < ?2)",
+                " AND ( (s.enrich_status = 'skipped-personal' \
+                         AND (s.scope_version IS NULL OR s.scope_version < ?3 OR s.scope_policy IS NOT ?4)) \
+                     OR ((s.enrich_status IS NULL OR s.enrich_status != 'skipped-personal') \
+                         AND (s.enriched_at IS NULL OR s.modified > s.enriched_modified \
+                              OR s.prompt_version IS NULL OR s.prompt_version < ?2)) )",
             );
             binds.push(Box::new(prompt_version));
             binds.push(Box::new(session::SCOPE_VERSION));
+            binds.push(Box::new(scope_policy.to_string()));
         }
         sql.push_str(" ORDER BY s.modified DESC");
 

@@ -7,7 +7,7 @@ use serde_json::json;
 use session::ParsedSession;
 
 use super::*;
-use crate::db::{Db, EfficiencyWrite, EnrichSuccess};
+use crate::db::{Db, EfficiencyWrite, EnrichSuccess, no_policy};
 
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
@@ -207,6 +207,7 @@ async fn sessions_search_reports_unenriched_gap_counts() {
             redaction_count: 0,
             tokens_in: 100,
             tokens_out: 50,
+            scope_policy: &no_policy(),
         },
         Utc::now(),
     )
