@@ -128,6 +128,19 @@ fn rejects_a_wildcard_owner() {
     assert!(err.contains("owner"), "must say what is wrong: {err}");
 }
 
+/// A glob anywhere in the owner half is rejected, not only a bare `*`. On a send gate a mistyped
+/// exclude like `!tatari-*/secret` that loads and matches nothing fails OPEN.
+///
+/// BITES: check only `owner == "*"` and every entry below loads.
+#[test]
+fn rejects_a_glob_anywhere_in_the_owner_half() {
+    for raw in ["!tatari-*/secret", "tatari-?/x", "[ab]/y", "tatari-*/*"] {
+        let err = ReposlugPtn::parse(raw).unwrap_err();
+        assert!(err.contains("reposlugs-ptns"), "{raw}: must name the key: {err}");
+        assert!(err.contains("owner"), "{raw}: must say what is wrong: {err}");
+    }
+}
+
 /// Mid-segment globs are a Non-Goal (design doc): the repo half must be exactly `*` or a plain
 /// literal, never a partial pattern like `philo-*`.
 #[test]

@@ -207,7 +207,7 @@ fn the_personal_dir_fixture_with_a_work_remote_stays_personal_under_a_named_owne
     assert_eq!(d.scope, Scope::Personal);
     assert!(!d.settled);
     assert_eq!(
-        anchor_disagrees_with_remote(&m.work_remote_in_personal_dir, "tatari-tv/philo", &p),
+        anchor_disagrees_with_remote(&m.work_remote_in_personal_dir, "tatari-tv/philo", None, &p),
         Some(Disagreement {
             anchor: Scope::Personal,
             remote: Scope::Work
@@ -218,10 +218,31 @@ fn the_personal_dir_fixture_with_a_work_remote_stays_personal_under_a_named_owne
         anchor_disagrees_with_remote(
             &m.repo_root().join("scottidler").join("claude-feature"),
             "scottidler/claude",
+            None,
             &p
         ),
         None
     );
+}
+
+/// A wide owner's exclude hit on the CURRENT remote (`repo_host_slug`) makes the gate answer
+/// Personal, so the disclosure must answer Personal too, and report the conflict with the stored
+/// work slug rather than silence.
+///
+/// BITES: pass `RoutingFacts::default()` inside `anchor_disagrees_with_remote` and the first
+/// assertion reads `None`.
+#[test]
+fn disagreement_sees_an_exclude_on_the_current_remote() {
+    let p = policy(&["tatari-tv/*", "!tatari-tv/secret"]);
+    let cwd = PathBuf::from(ROOT).join("tatari-tv").join("x");
+    assert_eq!(
+        anchor_disagrees_with_remote(&cwd, "tatari-tv/x", Some("tatari-tv/secret"), &p),
+        Some(Disagreement {
+            anchor: Scope::Personal,
+            remote: Scope::Work
+        })
+    );
+    assert_eq!(anchor_disagrees_with_remote(&cwd, "tatari-tv/x", None, &p), None);
 }
 
 /// A resolver that resolves nothing: an ssh alias with no `Host` entry.

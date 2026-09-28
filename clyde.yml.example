@@ -41,8 +41,9 @@
 # `clyde mcp serve` takes no flags (an MCP host spawns it with fixed args), so these two are only
 # reachable through this file.
 #
-# Where the Claude Code session transcripts live. Default: ~/.claude/projects.
-# projects-dir: ~/.claude/projects
+# Where the Claude Code session transcripts live. Default: ~/.claude/projects. Give an absolute
+# path: `~` is not expanded here.
+# projects-dir: /home/<you>/.claude/projects
 #
 # Whether `clyde mcp serve` runs a one-shot incremental reindex at startup. Default: true. Set false
 # to serve a possibly-stale catalog and skip the startup scan (e.g. a very large catalog whose

@@ -162,7 +162,12 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         // rather than resolved. `clyde doctor` counts these; this names the one that just happened.
         if let (Some(cwd), Some(slug)) = (rec.cwd.as_deref(), rec.repo.as_deref())
             && repo_source == Some(common::repo::RepoSource::GitOrigin)
-            && let Some(d) = session::anchor_disagrees_with_remote(std::path::Path::new(cwd), slug, &opts.scope_policy)
+            && let Some(d) = session::anchor_disagrees_with_remote(
+                std::path::Path::new(cwd),
+                slug,
+                evidence.repo_host_slug.as_deref(),
+                &opts.scope_policy,
+            )
         {
             warn!(
                 "enrich::enrich: {} cwd anchor and remote DISAGREE: cwd {cwd} reads {} but origin slug \

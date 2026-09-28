@@ -823,6 +823,7 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/home/saidler/repos/tatari-tv/clyde-fork"),
             "scottidler/clyde-fork",
+            None,
             &tatari_wide()
         ),
         Some(Disagreement {
@@ -835,6 +836,7 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/home/saidler/repos/scottidler/philo"),
             "tatari-tv/philo",
+            None,
             &tatari_wide()
         ),
         Some(Disagreement {
@@ -847,6 +849,7 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/home/saidler/repos/tatari-tv/clyde"),
             "tatari-tv/clyde",
+            None,
             &tatari_wide()
         ),
         None
@@ -855,6 +858,7 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/home/saidler/repos/scottidler/loopr"),
             "scottidler/loopr",
+            None,
             &tatari_wide()
         ),
         None
@@ -864,6 +868,7 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/Users/stephen/code/work/philo"),
             "tatari-tv/philo",
+            None,
             &tatari_wide()
         ),
         None
@@ -872,6 +877,7 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/Users/stephen/code/work/philo"),
             "scottidler/x",
+            None,
             &tatari_wide()
         ),
         None,

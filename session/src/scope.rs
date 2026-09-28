@@ -852,12 +852,22 @@ pub struct RoutingFacts<'a> {
 ///
 /// `None` when there is nothing to compare: no anchor to read, or no slug. Only an ANCHORED cwd can
 /// disagree, because an unanchored one expresses no opinion.
-pub fn anchor_disagrees_with_remote(cwd: &Path, slug: &str, policy: &ScopePolicy) -> Option<Disagreement> {
+pub fn anchor_disagrees_with_remote(
+    cwd: &Path,
+    slug: &str,
+    repo_host_slug: Option<&str>,
+    policy: &ScopePolicy,
+) -> Option<Disagreement> {
     let remote_work = is_work_slug(policy, slug);
     // The BARE-work-org shape is deliberately excluded, by passing no probe: it is the one anchor
     // that is not a path fact, so calling it a disagreement would report a conflict between the
-    // remote and a verdict the remote itself helped decide.
-    let anchor = match policy.scope_of(cwd, Some(slug), &RoutingFacts::default()) {
+    // remote and a verdict the remote itself helped decide. `repo_host_slug` IS passed, so a wide
+    // owner's exclude hit on the current remote answers `Excluded` here exactly as it does at the gate.
+    let facts = RoutingFacts {
+        repo_host_slug,
+        ..RoutingFacts::default()
+    };
+    let anchor = match policy.scope_of(cwd, Some(slug), &facts) {
         Anchor::Settled(scope) => scope,
         Anchor::Excluded => Scope::Personal,
         // What the deferred arm WOULD answer from this slug, so a listed sibling worktree reports

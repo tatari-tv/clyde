@@ -71,7 +71,7 @@ impl ReposlugPtn {
     /// - an optional leading `!` marks the entry an exclude; what remains must be non-empty
     /// - the remainder must contain no whitespace anywhere
     /// - the remainder must split on exactly one `/`, both halves non-empty
-    /// - the owner half must never be `*` (only the repo half may wildcard)
+    /// - the owner half must be a literal: none of `*`, `?`, `[` (only the repo half may wildcard)
     /// - the repo half must be exactly `*`, or a literal containing none of `*`, `?`, `[`
     ///   (reserved for a future mid-segment glob syntax; see the module's Non-Goals)
     ///
@@ -118,9 +118,10 @@ impl ReposlugPtn {
                 "reposlugs-ptns entry {raw:?} must have a non-empty owner and a non-empty repo"
             ));
         }
-        if owner == "*" {
+        if owner.contains(['*', '?', '[']) {
             return Err(format!(
-                "reposlugs-ptns entry {raw:?}: the owner half must never be `*`; only the repo half may"
+                "reposlugs-ptns entry {raw:?}: the owner half must be a literal owner name, never a \
+                 glob (`*`, `?`, `[`); only the repo half may be `*`"
             ));
         }
 

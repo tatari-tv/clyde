@@ -188,3 +188,21 @@ None.
 
 ### Open questions
 None.
+
+## Implementation audit r1 fixes
+
+Panel synthesis: `/tmp/review-panel/rvelGqQp/synthesis.md`. Supersedes the Phase 1 owner-half rule and the Phase 2 disclosure wiring.
+
+### Design decisions
+- Owner-half glob rejection (`common/src/repo/ptn.rs:ReposlugPtn::parse`): the owner half now rejects any of `*`, `?`, `[`, not only an owner of exactly `*`. Phase 1 let `!tatari-*/secret`, `tatari-?/x` and `[ab]/y` load, against the doc's Non-Goal (reject globs beyond the two forms at load); a mistyped exclude that loads and matches nothing fails open on the send gate. Tests: `rejects_a_glob_anywhere_in_the_owner_half`, plus three rows in `reposlugs_ptns_rejects_every_invalid_shape_by_name`.
+- Disclosure sees the current remote (`session/src/scope.rs:anchor_disagrees_with_remote`): takes `repo_host_slug: Option<&str>` and passes it in `RoutingFacts`, so a wide owner's exclude hit on the current remote answers `Excluded` (Personal) in the disclosure as it does at the gate. Callers: `sessions/src/enrich.rs` warn, `sessions/src/db/routing.rs` doctor count. Test: `disagreement_sees_an_exclude_on_the_current_remote`.
+- `clyde.yml.example` `projects-dir`: the commented example is now an absolute path with a note that `~` is not expanded. Pre-existing behavior (v0.25.6 also does not expand it); the example shipped in Phase 4 should not suggest a value that scans 0 sessions.
+
+### Deviations
+None.
+
+### Tradeoffs
+- Fix commit on top vs. rewriting the Phase 1/2 commits: a separate commit keeps the phase history as audited.
+
+### Open questions
+None.

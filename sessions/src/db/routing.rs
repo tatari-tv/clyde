@@ -519,12 +519,13 @@ impl Db {
         // defect the whole design removes.
         let mut anchor_remote_disagreement = 0usize;
         for row in self.routing_rows()? {
+            let evidence = row.evidence();
             let evaluated = crate::routing::classify_row(
                 &row.session_id,
                 row.cwd.as_deref(),
                 row.repo.as_deref(),
                 row.repo_source.as_deref(),
-                &row.evidence(),
+                &evidence,
                 scope_policy,
                 hosts,
             );
@@ -533,7 +534,13 @@ impl Db {
             // sources carry no remote to conflict with.
             if evaluated.repo_source == Some(RepoSource::GitOrigin)
                 && let (Some(cwd), Some(repo)) = (row.cwd.as_deref(), row.repo.as_deref())
-                && session::anchor_disagrees_with_remote(Path::new(cwd), repo, scope_policy).is_some()
+                && session::anchor_disagrees_with_remote(
+                    Path::new(cwd),
+                    repo,
+                    evidence.repo_host_slug.as_deref(),
+                    scope_policy,
+                )
+                .is_some()
             {
                 anchor_remote_disagreement += 1;
             }

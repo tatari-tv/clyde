@@ -755,6 +755,9 @@ fn reposlugs_ptns_rejects_every_invalid_shape_by_name() {
         "a/b/c",
         "/b",
         "*/x",
+        "!tatari-*/secret",
+        "tatari-?/x",
+        "[ab]/y",
         "tatari-tv/philo-*",
         "!",
     ];
