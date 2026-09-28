@@ -22,7 +22,7 @@ pub mod stage;
 pub use model::{Message, ParsedSession, Role, SessionFile, SessionFileKind};
 pub use parse::PARSE_VERSION;
 pub use scope::{
-    Anchors, Basis, Decision, Disagreement, RecordedProbe, RoutingFacts, SCOPE_VERSION, Scope,
+    Anchor, Basis, Decision, Disagreement, OwnerRule, RecordedProbe, RoutingFacts, SCOPE_VERSION, Scope, ScopePolicy,
     anchor_disagrees_with_remote, classify_with_evidence,
 };
 

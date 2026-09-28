@@ -131,6 +131,8 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
     migrate_v12_scope(&tx)?;
     // v13: the routing gate's six columns. Its OWN step, for the same reason v12 is.
     migrate_v13_routing(&tx)?;
+    // v14: the policy fingerprint and the host/slug pairing. Its OWN step, for the same reason.
+    migrate_v14_scope_policy(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -457,6 +459,34 @@ fn migrate_v13_routing(conn: &Connection) -> Result<()> {
     ensure_column(conn, "sessions", "scope_override_reason", "TEXT")?;
     ensure_column(conn, "sessions", "scope_override_by", "TEXT")?;
     ensure_column(conn, "sessions", "scope_override_at", "TEXT")?;
+    Ok(())
+}
+
+/// Snapshot the on-disk DB to `<path>.pre-v14.bak` before the v14 migration's first run. Same
+/// contract and same one-shot guarantee as [`snapshot_before_v10`], gated on a PRE-migration
+/// `user_version` in `1..14`.
+pub(super) fn snapshot_before_v14(conn: &Connection, path: &Path) -> Result<()> {
+    snapshot_before(conn, path, 14)
+}
+
+/// Apply the schema v14 extension inside the caller's migration transaction.
+///
+/// | column | why |
+/// |---|---|
+/// | `scope_policy` | the `ScopePolicy::fingerprint` a stored `scope` was decided under |
+/// | `repo_host_slug` | the rule-1 slug `repo_host` was observed with (host/slug pairing) |
+///
+/// **No backfill, for either.** NULL `scope_policy` is the correct reading for every existing row:
+/// no recorded policy, so `Db::enrich_candidates` re-offers each enrich-eligible `skipped-personal`
+/// row ONCE, and it re-settles with the fingerprint. NULL `repo_host_slug` means "not indexed since
+/// v14", which keeps today's host trust until the next index pass writes it; filling it would need a
+/// live probe, the retro-observation defect `migrate_v13_routing` spells out.
+///
+/// Column-add only, and its own step for the reason on [`migrate_v12_scope`].
+fn migrate_v14_scope_policy(conn: &Connection) -> Result<()> {
+    debug!("migrate_v14_scope_policy: add scope_policy + repo_host_slug (column-add only, no backfill)");
+    ensure_column(conn, "sessions", "scope_policy", "TEXT")?;
+    ensure_column(conn, "sessions", "repo_host_slug", "TEXT")?;
     Ok(())
 }
 

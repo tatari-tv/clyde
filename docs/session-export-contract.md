@@ -101,7 +101,7 @@ Every field is present on every record except the three body fields, which appea
 |---|---|---|
 | `session-id` | string | The session's unique id (a UUID). Usable, including as a unique prefix, with `--id`. |
 | `host` | string | The hostname that recorded this session. |
-| `scope` | string: `"work"` \| `"personal"` | Always one of these two values (never null). **The scope that was actually DECIDED**, resolved at export time in the classifier's own precedence, first match wins: (1) an operator override (`clyde session scope --set`), (2) the scope clyde's routing gate recorded, (3) the working-directory rule. Step 3 is what keeps the field populated for a session the gate has never processed. Changed in `schema-version` 2 - see "What changed in v2" below. |
+| `scope` | string: `"work"` \| `"personal"` | Always one of these two values (never null). **The scope that was actually DECIDED**, resolved at export time in the classifier's own precedence, first match wins: (1) an operator override (`clyde session scope --set`), (2) the scope clyde's routing gate recorded, (3) the working-directory rule, which classifies the cwd against the operator's configured reposlug patterns (`reposlugs-ptns` in `clyde.yml`; `tatari-tv/*` when unset). Step 3 is what keeps the field populated for a session the gate has never processed. Changed in `schema-version` 2 - see "What changed in v2" below. |
 
 ### Location
 
@@ -275,15 +275,22 @@ independent: clyde's on-disk DB schema is well past v6 while this WIRE contract 
 **One breaking change: how `scope` is derived.**
 
 Through v1, `scope` was computed from the session's working directory alone - work if the cwd sat
-under a recognized work org by the `repos/<org>/<repo>` convention, personal otherwise. That rule
-ignores everything clyde later learned to read: an operator's explicit override, the git remote the
-session's own checkout points at, and the set of repos the session actually edited. So a session
-clyde's routing gate had decided was work could still export as `personal`, and an operator who ran
-`clyde session scope --set work` got the opposite of what they asked for on the wire.
+under a recognized work org (then a single compiled-in org, `tatari-tv`) by the `repos/<org>/<repo>`
+convention, personal otherwise. That rule ignores everything clyde later learned to read: an
+operator's explicit override, the git remote the session's own checkout points at, and the set of
+repos the session actually edited. So a session clyde's routing gate had decided was work could
+still export as `personal`, and an operator who ran `clyde session scope --set work` got the
+opposite of what they asked for on the wire.
 
 In v2, `scope` is the decision that was actually made: `override -> recorded scope -> cwd rule`,
 first match wins. The field's TYPE and VOCABULARY are unchanged (`"work" | "personal"`, never null);
 only its MEANING changed, and only for rows where the cwd rule disagreed with the real decision.
+
+The cwd rule's own org list stopped being compiled-in after v2 shipped: it now reads the operator's
+configured reposlug patterns (`reposlugs-ptns` in `clyde.yml`, default `["tatari-tv/*"]`;
+`docs/design/2026-09-27-reposlugs-ptns-from-config.md`). That is a change to WHERE the rule's input
+comes from, not to the record: `scope`'s type, vocabulary, and precedence are exactly as v2 defined
+them, so it did not need another major bump.
 
 **What a consumer must do.** If you pin `schema-version`, update the pin to `2`. If you store or key
 off `scope`, be aware the value may now differ from what the same session exported under v1 - it did

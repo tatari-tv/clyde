@@ -9,8 +9,14 @@ use tempfile::TempDir;
 
 use common::repo::{RepoSource, Resolved};
 
-use crate::db::{Db, EnrichSuccess};
+use crate::db::{Db, EnrichSuccess, no_policy};
 use crate::export::{ExportContext, ExportFilters};
+
+/// `reposlugs-ptns: ["tatari-tv/*"]`, named explicitly: the work fixtures in this file are all
+/// `tatari-tv` rows, and no classifier test leans on an implicit default.
+fn tatari_wide_ptns() -> Vec<common::repo::ptn::ReposlugPtn> {
+    vec![common::repo::ptn::ReposlugPtn::parse("tatari-tv/*").unwrap()]
+}
 
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
 const UUID_B: &str = "8b21c34d-1e22-4f5a-b91c-1234567890ab";
@@ -31,7 +37,7 @@ fn export_ctx(now: &str) -> ExportContext {
         now: dt(now),
         dormant_after: chrono::Duration::days(7),
         host: "desk".to_string(),
-        anchors: session::Anchors::new(&[test_root()]),
+        scope_policy: session::ScopePolicy::new(&[test_root()], &tatari_wide_ptns()),
         work_remote_hosts: vec!["github.com".to_string()],
     }
 }
@@ -56,7 +62,7 @@ fn gate_scope(db: &Db, id: &str) -> String {
         repo.as_deref(),
         repo_source.as_deref(),
         &evidence,
-        &session::Anchors::new(&[test_root()]),
+        &session::ScopePolicy::new(&[test_root()], &tatari_wide_ptns()),
         &mut common::repo::host::HostPolicy::new(&["github.com".to_string()]),
     )
     .decision
@@ -151,6 +157,7 @@ fn export_work_session_derives_work_scope_and_reports_the_persisted_repo_and_enr
             redaction_count: 4,
             tokens_in: 100,
             tokens_out: 50,
+            scope_policy: &no_policy(),
         },
         dt("2026-06-22T10:00:00Z"),
     )
@@ -715,6 +722,7 @@ fn export_tag_filter_treats_like_wildcards_as_literals() {
                 redaction_count: 0,
                 tokens_in: 1,
                 tokens_out: 1,
+                scope_policy: &no_policy(),
             },
             dt("2026-06-22T10:00:00Z"),
         )

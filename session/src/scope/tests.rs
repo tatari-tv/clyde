@@ -5,18 +5,44 @@ use common::checkout::Matrix;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// The default single root, `~/repos`, as `Anchors`. Every path assertion below is written against
-/// it because it is the layout the original rule hardcoded; the multi-root and off-layout cases have
-/// their own tests and name their own roots.
-fn anchors() -> Anchors {
-    Anchors::new(&[PathBuf::from("/home/saidler/repos")])
+/// Parse `reposlugs-ptns` entries exactly as `clyde.yml` would. Every policy in this file names its
+/// patterns through this, so no test leans on an implicit `tatari-tv`.
+fn ptns(raw: &[&str]) -> Vec<ReposlugPtn> {
+    raw.iter().map(|r| ReposlugPtn::parse(r).unwrap()).collect()
+}
+
+/// `reposlugs-ptns: ["tatari-tv/*"]`, the built-in default, spelled out.
+fn tatari_wide_ptns() -> Vec<ReposlugPtn> {
+    ptns(&["tatari-tv/*"])
+}
+
+/// The default single root, `~/repos`, with ptns `["tatari-tv/*"]`. Every legacy path assertion below
+/// is written against it because it is the layout and org the original rule hardcoded; the
+/// multi-root, off-layout and pattern cases have their own tests and name their own policy.
+fn tatari_wide() -> ScopePolicy {
+    ScopePolicy::new(&[PathBuf::from("/home/saidler/repos")], &tatari_wide_ptns())
+}
+
+/// A settled-or-unanchored anchor as `Option<Scope>`, the shape every pre-v5 anchor assertion was
+/// written in. PANICS on `Excluded` or `Deferred`: a legacy `tatari-tv/*` policy can produce
+/// neither, and a test that reaches one belongs with the pattern tests, which assert `Anchor`.
+fn anchored(policy: &ScopePolicy, cwd: &Path, probe: Option<RecordedProbe<'_>>) -> Option<Scope> {
+    let facts = RoutingFacts {
+        repo_probe: probe,
+        ..Default::default()
+    };
+    match policy.scope_of(cwd, None, &facts) {
+        Anchor::Settled(scope) => Some(scope),
+        Anchor::Unanchored => None,
+        other => panic!("a tatari-tv/* policy produced {other:?} for {}", cwd.display()),
+    }
 }
 
 /// The anchor's verdict for a path with NO probe recorded, which is every shape except the bare
 /// `<root>/<work-org>` one. `None` means unanchored: the cwd expresses no opinion and the repo
 /// evidence gets a say.
 fn anchor_of(s: &str) -> Option<Scope> {
-    anchors().scope_of(&PathBuf::from(s), None)
+    anchored(&tatari_wide(), &PathBuf::from(s), None)
 }
 
 /// The scope a cwd alone produces through the REAL classifier, with no repo evidence at all. The
@@ -29,7 +55,7 @@ fn cwd_only(s: &str) -> Scope {
         None,
         &BTreeMap::new(),
         0,
-        &anchors(),
+        &tatari_wide(),
         &RoutingFacts {
             evidence_present: true,
             ..Default::default()
@@ -55,7 +81,8 @@ fn work_paths_classify_work() {
 #[test]
 fn the_work_org_directory_itself_is_work_when_the_probe_saw_a_plain_directory() {
     assert_eq!(
-        anchors().scope_of(
+        anchored(
+            &tatari_wide(),
             &PathBuf::from("/home/saidler/repos/tatari-tv"),
             Some(RecordedProbe::Negative(&ProbeOutcome::NotARepo))
         ),
@@ -79,7 +106,7 @@ fn unknown_and_missing_cwd_fail_safe_to_personal() {
             None,
             &BTreeMap::new(),
             0,
-            &anchors(),
+            &tatari_wide(),
             &RoutingFacts {
                 evidence_present: true,
                 ..Default::default()
@@ -169,20 +196,20 @@ fn a_repos_work_org_adjacency_outside_every_root_no_longer_anchors_work() {
 /// operator named. The operator declaring a root IS the authorization.
 #[test]
 fn an_off_layout_root_anchors_its_work_org_slot() {
-    let off = Anchors::new(&[PathBuf::from("/home/stephen/code")]);
+    let off = ScopePolicy::new(&[PathBuf::from("/home/stephen/code")], &tatari_wide_ptns());
     assert_eq!(
-        off.scope_of(&PathBuf::from("/home/stephen/code/tatari-tv/clyde"), None),
+        anchored(&off, &PathBuf::from("/home/stephen/code/tatari-tv/clyde"), None),
         Some(Scope::Work)
     );
     assert_eq!(
-        off.scope_of(&PathBuf::from("/home/stephen/code/scottidler/x"), None),
+        anchored(&off, &PathBuf::from("/home/stephen/code/scottidler/x"), None),
         Some(Scope::Personal)
     );
     // A flat repo under the same root still defers: the path names no org.
-    assert_eq!(off.scope_of(&PathBuf::from("/home/stephen/code/clyde"), None), None);
+    assert_eq!(anchored(&off, &PathBuf::from("/home/stephen/code/clyde"), None), None);
     // And `~/repos/...` is NOT a root here, so it anchors nothing.
     assert_eq!(
-        off.scope_of(&PathBuf::from("/home/saidler/repos/tatari-tv/clyde"), None),
+        anchored(&off, &PathBuf::from("/home/saidler/repos/tatari-tv/clyde"), None),
         None
     );
 }
@@ -190,20 +217,23 @@ fn an_off_layout_root_anchors_its_work_org_slot() {
 /// The anchor reads EVERY configured root, which is the whole point of P1 reaching the gate.
 #[test]
 fn the_anchor_matches_every_configured_root() {
-    let both = Anchors::new(&[
-        PathBuf::from("/home/stephen/code/work"),
-        PathBuf::from("/home/stephen/wt"),
-    ]);
+    let both = ScopePolicy::new(
+        &[
+            PathBuf::from("/home/stephen/code/work"),
+            PathBuf::from("/home/stephen/wt"),
+        ],
+        &tatari_wide_ptns(),
+    );
     assert_eq!(
-        both.scope_of(&PathBuf::from("/home/stephen/code/work/tatari-tv/philo"), None),
+        anchored(&both, &PathBuf::from("/home/stephen/code/work/tatari-tv/philo"), None),
         Some(Scope::Work)
     );
     assert_eq!(
-        both.scope_of(&PathBuf::from("/home/stephen/wt/tatari-tv/clyde"), None),
+        anchored(&both, &PathBuf::from("/home/stephen/wt/tatari-tv/clyde"), None),
         Some(Scope::Work)
     );
     assert_eq!(
-        both.scope_of(&PathBuf::from("/home/stephen/other/tatari-tv/x"), None),
+        anchored(&both, &PathBuf::from("/home/stephen/other/tatari-tv/x"), None),
         None
     );
 }
@@ -213,13 +243,14 @@ fn the_anchor_matches_every_configured_root() {
 /// forgets to set the roots LOSES coverage rather than gaining scope.
 #[test]
 fn no_roots_at_all_anchors_nothing() {
-    let none = Anchors::default();
+    let none = ScopePolicy::default();
     assert_eq!(
-        none.scope_of(&PathBuf::from("/home/saidler/repos/tatari-tv/clyde"), None),
+        anchored(&none, &PathBuf::from("/home/saidler/repos/tatari-tv/clyde"), None),
         None
     );
     assert_eq!(
-        none.scope_of(
+        anchored(
+            &none,
             &PathBuf::from("/home/saidler/repos/tatari-tv"),
             Some(RecordedProbe::Negative(&ProbeOutcome::NotARepo))
         ),
@@ -241,7 +272,7 @@ fn no_roots_at_all_anchors_nothing() {
 #[test]
 fn bare_work_org_anchors_only_on_a_positively_observed_non_repository() {
     let bare = PathBuf::from("/home/saidler/repos/tatari-tv");
-    let at = |probe: Option<RecordedProbe<'_>>| anchors().scope_of(&bare, probe);
+    let at = |probe: Option<RecordedProbe<'_>>| anchored(&tatari_wide(), &bare, probe);
 
     // The org DIRECTORY: git answered, and there is no repository here.
     assert_eq!(
@@ -300,7 +331,7 @@ fn with_evidence(cwd: Option<&str>, pairs: &[(&str, u64)], files_edited: u64) ->
         None,
         &touched(pairs),
         files_edited,
-        &anchors(),
+        &tatari_wide(),
         &facts,
     )
     .scope
@@ -357,7 +388,7 @@ fn classify_at_with_facts(
         // sit under no configured root and are therefore unanchored, which is what makes
         // `git_origin_classifies_every_real_world_layout` a test of the remote rather than of a path
         // convention that happens to agree.
-        &Anchors::new(&[m.repo_root()]),
+        &ScopePolicy::new(&[m.repo_root()], &tatari_wide_ptns()),
         facts,
     )
 }
@@ -382,7 +413,7 @@ fn classify_stored(cwd: &str, repo: &str, source: &str, pairs: &[(&str, u64)], f
         Some(parsed),
         &touched(pairs),
         files_edited,
-        &anchors(),
+        &tatari_wide(),
         &RoutingFacts {
             evidence_present: true,
             ..Default::default()
@@ -470,20 +501,20 @@ fn an_unaccounted_for_edit_refuses_the_widening() {
 ///
 /// A `repos_touched` key is an `<org>/<repo>` slug, so the org is the segment before the first `/`. The
 /// cwd test walks path COMPONENTS for the slot after `repos`, which is what makes
-/// `~/repos/scottidler/tatari-tv` personal. Both read the same `WORK_ORGS`.
+/// `~/repos/scottidler/tatari-tv` personal. Both read the same `ScopePolicy`.
 #[test]
 fn a_touched_slugs_org_is_the_segment_before_the_first_slash() {
-    assert!(is_work_slug("tatari-tv/philo"));
-    assert!(is_work_slug("tatari-tv/clyde"));
+    assert!(is_work_slug(&tatari_wide(), "tatari-tv/philo"));
+    assert!(is_work_slug(&tatari_wide(), "tatari-tv/clyde"));
     // The org slot is the FIRST segment: a personal org owning a repo NAMED `tatari-tv` is personal,
     // the mirror of the cwd rule's `~/repos/scottidler/tatari-tv` case.
-    assert!(!is_work_slug("scottidler/tatari-tv"));
-    assert!(!is_work_slug("danielmiessler/fabric"));
+    assert!(!is_work_slug(&tatari_wide(), "scottidler/tatari-tv"));
+    assert!(!is_work_slug(&tatari_wide(), "danielmiessler/fabric"));
     // Substring is not a match.
-    assert!(!is_work_slug("tatari-tv-notes/x"));
+    assert!(!is_work_slug(&tatari_wide(), "tatari-tv-notes/x"));
     // A key that is not an `<org>/<repo>` slug at all fails CLOSED.
-    assert!(!is_work_slug("tatari-tv"));
-    assert!(!is_work_slug(""));
+    assert!(!is_work_slug(&tatari_wide(), "tatari-tv"));
+    assert!(!is_work_slug(&tatari_wide(), ""));
 }
 
 /// Malformed slugs that still contain a slash fail CLOSED. Found by the implementation-audit panel:
@@ -494,18 +525,25 @@ fn a_touched_slugs_org_is_the_segment_before_the_first_slash() {
 /// components, so it can never emit an empty segment or a second slash), but this reads a STORED blob
 /// and it is the gate that decides whether a session body leaves the machine.
 ///
-/// BITES: restore `Some((org, _)) => WORK_ORGS.contains(&org)` and the first two assertions flip.
+/// BITES: drop the `!repo.is_empty() && !repo.contains('/')` guards from `slug_parts` (so
+/// `ScopePolicy::matches` sees only the owner) and the first two assertions flip.
 #[test]
 fn a_malformed_slug_with_a_slash_fails_closed() {
-    assert!(!is_work_slug("tatari-tv/"), "an empty repo segment is not a repo");
     assert!(
-        !is_work_slug("tatari-tv/a/b"),
+        !is_work_slug(&tatari_wide(), "tatari-tv/"),
+        "an empty repo segment is not a repo"
+    );
+    assert!(
+        !is_work_slug(&tatari_wide(), "tatari-tv/a/b"),
         "two slashes is not the documented shape"
     );
-    assert!(!is_work_slug("/philo"), "an empty org segment is not a work org");
-    assert!(!is_work_slug("/"));
+    assert!(
+        !is_work_slug(&tatari_wide(), "/philo"),
+        "an empty org segment is not a work org"
+    );
+    assert!(!is_work_slug(&tatari_wide(), "/"));
     // The well-formed case is unaffected, so this is a narrowing and not a break.
-    assert!(is_work_slug("tatari-tv/philo"));
+    assert!(is_work_slug(&tatari_wide(), "tatari-tv/philo"));
 }
 
 /// A ZERO count is not a touch. The design's condition is "the session touched at least one repo", which
@@ -746,7 +784,7 @@ fn classify_with_evidence_reports_the_deciding_basis() {
         evidence_present: true,
         ..Default::default()
     };
-    let d = classify_with_evidence(path.as_deref(), None, None, &touched(&[]), 0, &anchors(), &facts);
+    let d = classify_with_evidence(path.as_deref(), None, None, &touched(&[]), 0, &tatari_wide(), &facts);
     assert_eq!(d.basis, Basis::TouchSet);
     assert_eq!(d.scope, Scope::Personal, "no signal at all must stay fail-safe");
 
@@ -785,7 +823,8 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/home/saidler/repos/tatari-tv/clyde-fork"),
             "scottidler/clyde-fork",
-            &anchors()
+            None,
+            &tatari_wide()
         ),
         Some(Disagreement {
             anchor: Scope::Work,
@@ -797,7 +836,8 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/home/saidler/repos/scottidler/philo"),
             "tatari-tv/philo",
-            &anchors()
+            None,
+            &tatari_wide()
         ),
         Some(Disagreement {
             anchor: Scope::Personal,
@@ -809,7 +849,8 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/home/saidler/repos/tatari-tv/clyde"),
             "tatari-tv/clyde",
-            &anchors()
+            None,
+            &tatari_wide()
         ),
         None
     );
@@ -817,7 +858,8 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/home/saidler/repos/scottidler/loopr"),
             "scottidler/loopr",
-            &anchors()
+            None,
+            &tatari_wide()
         ),
         None
     );
@@ -826,7 +868,8 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/Users/stephen/code/work/philo"),
             "tatari-tv/philo",
-            &anchors()
+            None,
+            &tatari_wide()
         ),
         None
     );
@@ -834,7 +877,8 @@ fn anchor_disagreement_is_reported_only_when_an_anchored_cwd_conflicts() {
         anchor_disagrees_with_remote(
             &PathBuf::from("/Users/stephen/code/work/philo"),
             "scottidler/x",
-            &anchors()
+            None,
+            &tatari_wide()
         ),
         None,
         "no anchor means nothing to conflict WITH, so this is silence rather than a conflict"
@@ -904,6 +948,11 @@ fn an_operator_override_decides_in_both_directions() {
 /// Separate from [`classify_at_with_facts`] because these rows are ABOUT which roots are configured:
 /// folding the roots into the fixture helper would make the parameter under test invisible.
 fn classify_under(m: &Matrix, cwd: &Path, roots: &[PathBuf], facts: &RoutingFacts<'_>) -> Decision {
+    classify_real(m, cwd, &ScopePolicy::new(roots, &tatari_wide_ptns()), facts)
+}
+
+/// [`classify_under`] over an explicit [`ScopePolicy`], for the rows that are ABOUT the patterns.
+fn classify_real(m: &Matrix, cwd: &Path, policy: &ScopePolicy, facts: &RoutingFacts<'_>) -> Decision {
     let outcome = common::repo::detect_with_blocked_roots(cwd, &m.blocked());
     let source = outcome.resolved_slug().map(|_| RepoSource::GitOrigin);
     classify_with_evidence(
@@ -912,7 +961,7 @@ fn classify_under(m: &Matrix, cwd: &Path, roots: &[PathBuf], facts: &RoutingFact
         source,
         &BTreeMap::new(),
         0,
-        &Anchors::new(roots),
+        policy,
         facts,
     )
 }
@@ -1084,8 +1133,8 @@ fn the_git_origin_guards_still_refuse_at_the_newly_reachable_flat_shape() {
 /// BITES: restore the literal-`repos` match and rows 1 and 2 flip.
 #[test]
 fn the_anchor_table_holds_at_every_shape_the_path_can_answer() {
-    let a = Anchors::new(&[PathBuf::from("/home/saidler/repos")]);
-    let at = |p: &str| a.scope_of(&PathBuf::from(p), None);
+    let a = ScopePolicy::new(&[PathBuf::from("/home/saidler/repos")], &tatari_wide_ptns());
+    let at = |p: &str| anchored(&a, &PathBuf::from(p), None);
 
     // The inner-`repos` bug, one level down from the org slot. Reads Work today.
     assert_eq!(
@@ -1144,9 +1193,10 @@ fn an_unreadable_probe_stamp_still_refuses_a_work_slug() {
 /// BITES: treat `Unreadable` as `NotARepo` (or drop the `outcome()` guard) and this returns Work.
 #[test]
 fn an_unreadable_probe_stamp_does_not_anchor_the_bare_work_org() {
-    let a = Anchors::new(&[PathBuf::from("/home/saidler/repos")]);
+    let a = ScopePolicy::new(&[PathBuf::from("/home/saidler/repos")], &tatari_wide_ptns());
     assert_eq!(
-        a.scope_of(
+        anchored(
+            &a,
             &PathBuf::from("/home/saidler/repos/tatari-tv"),
             Some(RecordedProbe::Unreadable)
         ),
@@ -1199,9 +1249,9 @@ fn recorded_probe_of_takes_presence_from_the_column_and_content_from_the_parse()
 /// BITES: restore the literal-`repos` match and this reads Work.
 #[test]
 fn a_repos_component_inside_an_off_layout_root_is_an_ordinary_org_slot() {
-    let off = Anchors::new(&[PathBuf::from("/home/stephen/code")]);
+    let off = ScopePolicy::new(&[PathBuf::from("/home/stephen/code")], &tatari_wide_ptns());
     assert_eq!(
-        off.scope_of(&PathBuf::from("/home/stephen/code/repos/tatari-tv/x"), None),
+        anchored(&off, &PathBuf::from("/home/stephen/code/repos/tatari-tv/x"), None),
         Some(Scope::Personal),
         "the org slot is the literal directory `repos`, and `repos` is not a work org"
     );
@@ -1270,9 +1320,9 @@ fn every_state_of_the_repo_probe_column_pins_its_direction() {
     // And the same totality at the bare `<root>/<work-org>` anchor, where the question is narrower:
     // only a READABLE NotARepo may grant Work, because only it means "a plain directory".
     let bare = m.repo_root().join("tatari-tv");
-    let anchors = Anchors::new(&[m.repo_root()]);
+    let policy = ScopePolicy::new(&[m.repo_root()], &tatari_wide_ptns());
     assert_eq!(
-        anchors.scope_of(&bare, Some(RecordedProbe::Negative(&not_a_repo))),
+        anchored(&policy, &bare, Some(RecordedProbe::Negative(&not_a_repo))),
         Some(Scope::Work)
     );
     for (name, probe) in [
@@ -1284,9 +1334,9 @@ fn every_state_of_the_repo_probe_column_pins_its_direction() {
         ("NULL", None),
     ] {
         assert_eq!(
-            anchors.scope_of(&bare, probe),
+            anchored(&policy, &bare, probe),
             None,
-            "only a readable not-a-repo anchors the bare work org; {name} must defer"
+            "only a readable not-a-repo policy the bare work org; {name} must defer"
         );
     }
 }
@@ -1345,16 +1395,18 @@ fn recorded_probe_token_names_what_was_recorded() {
 /// work checkout.
 #[test]
 fn the_anchor_takes_the_deepest_matching_root() {
-    let nested = Anchors::new(&[PathBuf::from("/a"), PathBuf::from("/a/link")]);
+    let nested = ScopePolicy::new(&[PathBuf::from("/a"), PathBuf::from("/a/link")], &tatari_wide_ptns());
     assert_eq!(
-        nested.scope_of(&PathBuf::from("/a/link/tatari-tv/clyde"), None),
+        anchored(&nested, &PathBuf::from("/a/link/tatari-tv/clyde"), None),
         Some(Scope::Work),
         "under `/a` the org slot would read `link`; under `/a/link` it reads `tatari-tv`"
     );
     // Order in the list must not matter, only depth.
-    let reversed = Anchors::new(&[PathBuf::from("/a/link"), PathBuf::from("/a")]);
+    let reversed = ScopePolicy::new(&[PathBuf::from("/a/link"), PathBuf::from("/a")], &tatari_wide_ptns());
     assert_eq!(
-        reversed.scope_of(&PathBuf::from("/a/link/tatari-tv/clyde"), None),
+        anchored(&reversed, &PathBuf::from("/a/link/tatari-tv/clyde"), None),
         Some(Scope::Work)
     );
 }
+
+mod policy;

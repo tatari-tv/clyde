@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Context, Result};
 use serde::Deserialize;
 
+use crate::repo::ptn::ReposlugPtn;
 use crate::since::DateTz;
 
 /// Project name, used to resolve `~/.config/<project>/<project>.yml`.
@@ -383,6 +384,46 @@ pub struct Config {
     /// [`crate::repo::host`].
     #[serde(default = "default_work_remote_hosts", deserialize_with = "de_work_remote_hosts")]
     work_remote_hosts: Vec<String>,
+    /// Reposlug patterns naming which repos count as WORK: `<owner>/*` or `<owner>/<repo>`, a `!`
+    /// prefix marking an exclude. Absent, or no `clyde.yml` at all -> [`DEFAULT_REPOSLUGS_PTNS`].
+    ///
+    /// A PRESENT key REPLACES the default outright, no merge: `[]` means zero repos are Work. This
+    /// is the ONE source of work repos: the classifier reads it through `session::ScopePolicy`,
+    /// built once beside [`Self::repo_roots`] (`docs/design/2026-09-27-reposlugs-ptns-from-config.md`).
+    #[serde(default = "default_reposlugs_ptns", deserialize_with = "de_reposlugs_ptns")]
+    reposlugs_ptns: Vec<ReposlugPtn>,
+}
+
+/// The one place `["tatari-tv/*"]` is spelled as a literal. Used by both [`default_reposlugs_ptns`]
+/// (the serde default) and [`Config::default`] (missing-file case), so an absent key and an absent
+/// file resolve to the exact same policy.
+pub const DEFAULT_REPOSLUGS_PTNS: &[&str] = &["tatari-tv/*"];
+
+/// The serde default for `reposlugs-ptns`: the built-in `tatari-tv/*` policy.
+///
+/// `expect` rather than propagating a `Result`: every entry in [`DEFAULT_REPOSLUGS_PTNS`] is a
+/// compile-time literal already known to satisfy [`ReposlugPtn::parse`], so a failure here can only
+/// mean the literal itself was edited into an invalid shape -- a programmer error to catch at
+/// `cargo test` time, not a runtime condition any caller could recover from.
+fn default_reposlugs_ptns() -> Vec<ReposlugPtn> {
+    DEFAULT_REPOSLUGS_PTNS
+        .iter()
+        .map(|p| ReposlugPtn::parse(p).expect("DEFAULT_REPOSLUGS_PTNS entries must all parse"))
+        .collect()
+}
+
+/// Deserialize `reposlugs-ptns`: each entry through [`ReposlugPtn::parse`], which already names
+/// `reposlugs-ptns` and the offending entry in every rejection. `[]` is accepted (zero repos are
+/// Work); see the field doc comment for why that is not the same as the key being absent.
+fn de_reposlugs_ptns<'de, D>(deserializer: D) -> std::result::Result<Vec<ReposlugPtn>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let entries = Vec::<String>::deserialize(deserializer)?;
+    entries
+        .iter()
+        .map(|raw| ReposlugPtn::parse(raw).map_err(serde::de::Error::custom))
+        .collect()
 }
 
 /// The serde default for `work-remote-hosts`, from the one definition in [`crate::repo::host`].
@@ -464,6 +505,7 @@ impl Default for Config {
             repo_roots: default_repo_roots(),
             min_enrichment: default_min_enrichment(),
             work_remote_hosts: default_work_remote_hosts(),
+            reposlugs_ptns: default_reposlugs_ptns(),
         }
     }
 }
@@ -695,6 +737,12 @@ impl Config {
     /// The hosts a git remote may confer WORK scope from (`["github.com"]` when unset).
     pub fn work_remote_hosts(&self) -> &[String] {
         &self.work_remote_hosts
+    }
+
+    /// The reposlug patterns naming which repos count as Work (`["tatari-tv/*"]` when unset). Not
+    /// yet read by the classifier; see [`DEFAULT_REPOSLUGS_PTNS`].
+    pub fn reposlugs_ptns(&self) -> &[ReposlugPtn] {
+        &self.reposlugs_ptns
     }
 }
 

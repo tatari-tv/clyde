@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Duration, Utc};
 use session::ParsedSession;
 
-use crate::db::Db;
+use crate::db::{Db, no_policy};
 use crate::model::Filters;
 
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
@@ -75,7 +75,7 @@ fn a_wholesale_mtime_reset_does_not_hide_a_dormant_session() {
     );
 
     let enrich: Vec<String> = db
-        .enrich_candidates(Some(cutoff()), 1, 3, false)
+        .enrich_candidates(Some(cutoff()), 1, 3, false, &no_policy())
         .unwrap()
         .into_iter()
         .map(|r| r.session_id)

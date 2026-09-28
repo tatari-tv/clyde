@@ -29,7 +29,7 @@ pub fn run(db_path: &Path) -> Result<i32> {
     debug!("doctor::run: db={}", db_path.display());
     let paths = Paths::from_env()?;
     let report = diagnose(&paths)?;
-    print_report(&paths, &report);
+    print_report(&paths, &report, &reposlugs_ptns_line());
     // Config and catalog are both best-effort here. `doctor` exists to tell an operator what is
     // wrong, so it must still print everything it CAN when one source is unreadable, and say which
     // one failed rather than dying on it.
@@ -39,6 +39,33 @@ pub fn run(db_path: &Path) -> Result<i32> {
         Err(e) => println!("\n  {} could not read the catalog: {e}", "attribution:".red()),
     }
     Ok(if report.healthy() { 0 } else { 1 })
+}
+
+/// The `reposlugs-ptns:` line for the paths block: the configured patterns, normalized (lowercased,
+/// `!`-prefixed for an exclude), sorted, and comma-joined; `none` for `[]`.
+///
+/// Loaded independently of [`attribution`], which returns early when no catalog exists
+/// (`db_path` absent) -- this line must print regardless, since it answers "what would `doctor` (or
+/// `enrich`) treat as work" even before a catalog is ever built. Best-effort like the rest of this
+/// command: a malformed `clyde.yml` is reported inline rather than aborting the whole report.
+fn reposlugs_ptns_line() -> String {
+    match common::config::load() {
+        Ok(cfg) => format_reposlugs_ptns(cfg.reposlugs_ptns()),
+        Err(e) => format!("(could not load config: {e})"),
+    }
+}
+
+/// Render a `reposlugs-ptns` list the way [`reposlugs_ptns_line`] prints it: each entry's normalized
+/// `Display` form (already lowercased by `ReposlugPtn::parse`), sorted and deduped, comma-joined.
+/// `none` for an empty list, so `[]` (zero work repos) reads as a deliberate state, not a blank line.
+fn format_reposlugs_ptns(ptns: &[common::repo::ptn::ReposlugPtn]) -> String {
+    if ptns.is_empty() {
+        return "none".to_string();
+    }
+    let mut rendered: Vec<String> = ptns.iter().map(ToString::to_string).collect();
+    rendered.sort();
+    rendered.dedup();
+    rendered.join(", ")
 }
 
 /// What `clyde doctor` reports about attribution and routing.
@@ -141,7 +168,10 @@ fn attribution(db_path: &Path) -> Result<Option<Attribution>> {
         config_path: common::config::config_file_path().filter(|p| p.exists()),
         repo_roots,
         work_remote_hosts: cfg.work_remote_hosts().to_vec(),
-        routing: db.routing_summary(&session::Anchors::new(cfg.repo_roots()), cfg.work_remote_hosts())?,
+        routing: db.routing_summary(
+            &session::ScopePolicy::new(cfg.repo_roots(), cfg.reposlugs_ptns()),
+            cfg.work_remote_hosts(),
+        )?,
     }))
 }
 
@@ -364,7 +394,7 @@ fn reprobe(cwds: &[String]) -> (usize, usize, usize) {
         match resolver.probe(Path::new(cwd)) {
             ProbeOutcome::Blocked => blocked += 1,
             ProbeOutcome::OutsideRoot => outside += 1,
-            ProbeOutcome::Indeterminate => indeterminate += 1,
+            ProbeOutcome::Indeterminate | ProbeOutcome::UnparseableOrigin => indeterminate += 1,
             // Resolved or conclusive: the catalog is simply behind a reindex, which is not a fault.
             _ => {}
         }
@@ -705,7 +735,7 @@ fn count_events(db: &Path) -> Result<i64> {
     Ok(n)
 }
 
-fn print_report(paths: &Paths, report: &Report) {
+fn print_report(paths: &Paths, report: &Report, reposlugs_ptns: &str) {
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "(unknown)".to_string());
@@ -713,6 +743,7 @@ fn print_report(paths: &Paths, report: &Report) {
     println!("  binary:        {exe}");
     println!("  data:          {}", paths.xdg_data.join("clyde").display());
     println!("  config:        {}", paths.xdg_config.join("clyde").display());
+    println!("  reposlugs-ptns: {reposlugs_ptns}");
     println!("  cache:         {}", paths.xdg_cache.join("clyde").display());
     println!("  statusline:    {}", report.statusline.label());
     println!("  hook (global): {}", report.hook_global.label());

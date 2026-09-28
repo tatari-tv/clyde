@@ -452,10 +452,20 @@ pub enum ProbeOutcome {
     /// this fires for every symlink-reached cwd (a confirmed pre-existing bug Phase 6 fixes), so
     /// stamping it would lock out sessions for a defect of clyde's own.
     OutsideRoot,
-    /// git did not answer the question asked: the cwd is gone, git is absent, `safe.directory`
-    /// refused, or the origin is present but unparseable. Records NOTHING, and warns.
+    /// git did not answer the question asked: the cwd is gone, git is absent, or `safe.directory`
+    /// refused. Records NOTHING, and warns.
     Indeterminate,
+    /// git ANSWERED with an origin that does not parse to `<org>/<repo>` (a local path, a subgroup
+    /// URL). Not a probe negative, so `repo_probe` records nothing; but it is a fact about the
+    /// CURRENT remote, so the indexer records [`UNPARSEABLE_ORIGIN_SLUG`] as `repo_host_slug` and a
+    /// checkout re-pointed here stops inheriting its old slug's host trust. Kept apart from
+    /// [`Self::Indeterminate`] because a transient failure must never strip that trust.
+    UnparseableOrigin,
 }
+
+/// The `repo_host_slug` recorded for [`ProbeOutcome::UnparseableOrigin`]. Never a valid
+/// `<org>/<repo>`, so it can never equal a stored `repo`, and the host/slug pairing refuses Work.
+pub const UNPARSEABLE_ORIGIN_SLUG: &str = "<unparseable-origin>";
 
 impl ProbeOutcome {
     /// The slug when the probe resolved one, for the callers that only ever wanted the attribution.
@@ -490,6 +500,7 @@ impl ProbeOutcome {
             Self::Blocked => "blocked",
             Self::OutsideRoot => "outside-root",
             Self::Indeterminate => "indeterminate",
+            Self::UnparseableOrigin => "unparseable-origin",
         }
     }
 
@@ -811,10 +822,11 @@ fn read_origin(cwd: &Path) -> ProbeOutcome {
             Some(RemoteSlug { host, slug }) => ProbeOutcome::Resolved { slug, host },
             None => {
                 warn!(
-                    "repo::detect: {} has an origin that does not parse to <org>/<repo>; recording nothing",
+                    "repo::detect: {} has an origin that does not parse to <org>/<repo>; its old \
+                     slug no longer confers host trust",
                     cwd.display()
                 );
-                ProbeOutcome::Indeterminate
+                ProbeOutcome::UnparseableOrigin
             }
         },
         GitRun::Refused(1) => {
@@ -934,7 +946,7 @@ pub fn from_path_guess(cwd: &Path, roots: &[PathBuf]) -> Option<Resolved> {
 ///
 /// **The ONE definition of "which configured root does this path sit under".** Rule 4
 /// ([`slug_under_roots`], which wants `<org>/<repo>`) and the cwd anchor
-/// (`session::scope::Anchors::org_slot`, which wants the org slot plus whether anything follows it)
+/// (`session::scope::ScopePolicy::org_slot`, which wants the org slot plus the component after it)
 /// read different shapes off the same walk, so the walk is the part that is shared and the shape is
 /// the part each caller passes in. They are supposed to agree by construction: the config
 /// validator's nesting rejection and its symlink both-spellings expansion exist to serve exactly one
@@ -1167,11 +1179,10 @@ pub fn parse_slug(url: &str) -> Option<RemoteSlug> {
         rest.split_once('/')?
     } else if let Some(rest) = url.strip_prefix("git://") {
         rest.split_once('/')?
-    } else if let Some(rest) = url.strip_prefix("ssh://") {
+    } else {
+        let rest = url.strip_prefix("ssh://")?;
         let after_user = rest.split_once('@').map(|(_, r)| r).unwrap_or(rest);
         after_user.split_once('/')?
-    } else {
-        return None;
     };
 
     let host = normalize_host(host)?;
@@ -1209,6 +1220,7 @@ fn normalize_host(authority: &str) -> Option<String> {
 }
 
 pub mod host;
+pub mod ptn;
 
 #[cfg(test)]
 mod tests;

@@ -29,8 +29,9 @@ use log::debug;
 use tempfile::TempDir;
 
 /// The work org every work-scoped fixture row is checked out under. The one place the fixture's
-/// notion of "work" is spelled; `session::scope::WORK_ORGS` is the production one and the two are
-/// deliberately separate, so a test cannot pass by sharing a constant with the code under test.
+/// notion of "work" is spelled; the production one is the operator's `reposlugs-ptns` policy, and each
+/// classifier test names its own patterns, so a test cannot pass by sharing a constant with the code
+/// under test.
 const WORK_ORG: &str = "tatari-tv";
 /// The personal org the fork's mirror row is checked out under.
 const PERSONAL_ORG: &str = "scottidler";

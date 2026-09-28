@@ -433,7 +433,7 @@ fn cmd_export(db: &Db, args: ExportArgs, tz: common::DateTz) -> Result<()> {
         host,
         // Built ONCE here and passed by reference into every row: constructing it per row would stat
         // the disk per row.
-        anchors: session::Anchors::new(cfg.repo_roots()),
+        scope_policy: session::ScopePolicy::new(cfg.repo_roots(), cfg.reposlugs_ptns()),
         work_remote_hosts: cfg.work_remote_hosts().to_vec(),
     };
 
@@ -944,10 +944,10 @@ fn cmd_enrich(db: &Db, args: EnrichArgs, tz: common::DateTz) -> Result<()> {
         max_attempts: args.max_attempts,
         token_budget: args.budget_tokens,
         // The host allowlist reaches the gate through config, never a flag: it decides which remotes
-        // may confer WORK scope, which is policy, not a per-invocation choice. Same for the roots the
-        // cwd anchor reads, built once here and shared across every row of the sweep.
+        // may confer WORK scope, which is policy, not a per-invocation choice. Same for the roots and
+        // `reposlugs-ptns` the classifier reads, built once here and shared across every row.
         work_remote_hosts: cfg.work_remote_hosts().to_vec(),
-        anchors: session::Anchors::new(cfg.repo_roots()),
+        scope_policy: session::ScopePolicy::new(cfg.repo_roots(), cfg.reposlugs_ptns()),
     };
     let stats = if args.dry_run {
         // No off-machine calls, no `claude` needed: the gate is previewed, not opened.

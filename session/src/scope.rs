@@ -9,11 +9,12 @@
 //! Three signals, in [`classify_with_evidence`]'s documented precedence: the session's `cwd`, the
 //! GIT REMOTE its repo was attributed from, and the set of repos whose files it edited.
 //!
-//! The repo-identity convention (`~/repos/<org>/<repo>`, per `~/repos/CLAUDE.md`): the **org**
-//! is the component immediately under `repos/`. A cwd is `work` iff its org slot is a work
-//! org (`tatari-tv`); everything else -- a personal org, a path with no `repos/` anchor, an
-//! unclassifiable path, or a missing `cwd` -- is `personal` on this signal alone. The default is
-//! **fail-safe**: an unknown session is never assumed shippable to the work account.
+//! The repo-identity convention (`<root>/<org>/<repo>` under a configured `repo-roots` entry): the
+//! **org** is the component immediately under the root. Which orgs and repos are work is the
+//! operator's `reposlugs-ptns` policy ([`ScopePolicy`]), never a compiled-in list; everything the
+//! policy does not name -- a personal org, a path under no root, an unclassifiable path, or a
+//! missing `cwd` -- is `personal` on this signal alone. The default is **fail-safe**: an unknown
+//! session is never assumed shippable to the work account.
 //!
 //! Classification keys off the org *slot*, not any matching component anywhere in the path. That
 //! is deliberately stricter than a "contains `tatari-tv`" test: a personal repo merely *named*
@@ -44,8 +45,10 @@
 //! still the acceptable one.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
+use common::repo::ptn::{RepoPart, ReposlugPtn};
 use common::repo::{ProbeOutcome, RepoSource};
 use log::trace;
 
@@ -63,15 +66,17 @@ use log::trace;
 /// v3 NARROWS: a git-origin work slug is refused when a conclusive negative probe precedes it
 /// (Problem 1), a git-origin PERSONAL decision stops settling so it can be recovered (Problem 3),
 /// and an operator [`RoutingFacts::scope_override`] beats every rule.
-/// v4 makes the cwd anchor read the CONFIGURED roots ([`Anchors`]) instead of the literal path
-/// component `repos`. It widens in one direction (a flat `<root>/<repo>` stops being settled-personal
-/// and reaches the remote; an off-layout `<root>/<work-org>/<repo>` gains Work) and narrows in
-/// another (a `repos/<work-org>` adjacency OUTSIDE every configured root stops anchoring Work). Both
-/// are answers the classifier used to get wrong, which is exactly what a version bump re-offers.
-pub const SCOPE_VERSION: i64 = 4;
-
-/// The org names that mark a session as work-scoped, matched only in the org slot.
-const WORK_ORGS: &[&str] = &["tatari-tv"];
+/// v4 makes the cwd anchor read the CONFIGURED roots instead of the literal path component `repos`.
+/// It widens in one direction (a flat `<root>/<repo>` stops being settled-personal and reaches the
+/// remote; an off-layout `<root>/<work-org>/<repo>` gains Work) and narrows in another (a
+/// `repos/<work-org>` adjacency OUTSIDE every configured root stops anchoring Work). Both are answers
+/// the classifier used to get wrong, which is exactly what a version bump re-offers.
+/// v5 reads work repos from the operator's `reposlugs-ptns` ([`ScopePolicy`]) instead of a
+/// compiled-in org list, and changes the LOGIC with it: an owner named only by `<owner>/<repo>`
+/// entries DEFERS to the remote instead of settling Personal ([`Anchor::Deferred`]), and an exclude
+/// can take Work away from an owner-wide include ([`Anchor::Excluded`]). Later changes to the policy
+/// itself ride [`ScopePolicy::fingerprint`], not this constant.
+pub const SCOPE_VERSION: i64 = 5;
 
 /// Which signal decided a classification.
 ///
@@ -169,12 +174,14 @@ impl Scope {
 /// place. Decided in four steps, first match wins:
 ///
 /// 1. An operator [`RoutingFacts::scope_override`] said so. Beats every rule below, both directions.
-/// 2. The cwd anchor ([`Anchors::scope_of`]) reads the org slot under a CONFIGURED root: a work org
-///    there is Work, any other org is Personal. One branch, not v3's two -- see that method's table.
+/// 2. The cwd anchor ([`ScopePolicy::scope_of`]) reads the org slot under a CONFIGURED root and asks
+///    the policy's [`OwnerRule`] for that owner: an owner-wide include is Work (unless an exclude
+///    hits, which is terminal Personal), an owner named only by `<owner>/<repo>` entries defers to
+///    the git-origin arm ALONE, and an unlisted owner is Personal. See that method's table.
 /// 3. The session's repo was attributed from the GIT REMOTE ([`RepoSource::GitOrigin`]) -> Work or
-///    Personal from that slug's org. Authoritative and layout-independent; see the branch's comment.
+///    Personal from [`ScopePolicy::matches`] on that slug. Layout-independent; see the branch's comment.
 /// 4. Otherwise the touch set decides, and only when all of: the session touched at least one repo,
-///    EVERY repo it touched is under a work org, and the counts account for EVERY file the session
+///    EVERY repo it touched matches the policy, and the counts account for EVERY file the session
 ///    edited (`repos_touched.values().sum() == files_edited`).
 ///
 /// That fourth condition is what makes the unanimity real rather than nominal. `repos_touched`
@@ -198,7 +205,7 @@ pub fn classify_with_evidence(
     repo_source: Option<RepoSource>,
     repos_touched: &BTreeMap<String, u64>,
     files_edited: u64,
-    anchors: &Anchors,
+    policy: &ScopePolicy,
     facts: &RoutingFacts<'_>,
 ) -> Decision {
     // Step 0: an operator said so. Beats every rule below, in BOTH directions, and it is what makes
@@ -223,24 +230,36 @@ pub fn classify_with_evidence(
             settled: true,
         };
     }
-    // The cwd anchor, now read against the CONFIGURED roots rather than the literal component
-    // `repos`. One branch instead of v3's two, because the work and personal verdicts are two answers
-    // from one org-slot read and splitting them is what let `<root>/<repo>` fall into the personal
-    // arm on a path shape that says nothing. A cwd anchored to ANY org has already been judged by
-    // that anchor; only an unanchored cwd (or no cwd at all) is "unclassifiable", and only there does
-    // the evidence below get a say. See [`Anchors::scope_of`] for the full table.
-    if let Some(path) = cwd
-        && let Some(scope) = anchors.scope_of(path, facts.repo_probe)
-    {
-        trace!(
-            "scope::classify_with_evidence: cwd={cwd:?} {} by cwd anchor",
-            scope.as_str()
-        );
-        return Decision {
-            scope,
-            basis: Basis::CwdAnchor,
-            settled: true,
-        };
+    // The cwd anchor, read against the CONFIGURED roots and the operator's policy. A cwd anchored to
+    // an owner the policy has an opinion about has already been judged by that anchor; only an
+    // unanchored cwd (or no cwd at all) is "unclassifiable", and only there does the evidence below
+    // get a say. See [`ScopePolicy::scope_of`] for the full table.
+    let anchor = cwd.map_or(Anchor::Unanchored, |path| policy.scope_of(path, repo, facts));
+    match anchor {
+        Anchor::Settled(scope) => {
+            trace!(
+                "scope::classify_with_evidence: cwd={cwd:?} {} by cwd anchor",
+                scope.as_str()
+            );
+            return Decision {
+                scope,
+                basis: Basis::CwdAnchor,
+                settled: true,
+            };
+        }
+        // TERMINAL: an exclude is the operator saying "not this one", so neither the remote nor the
+        // touch set below may turn it back into Work. Provisional, so a later policy that drops the
+        // exclude reaches the row without a version bump.
+        Anchor::Excluded => {
+            trace!("scope::classify_with_evidence: cwd={cwd:?} personal, an exclude hit a wide owner");
+            return Decision {
+                scope: Scope::Personal,
+                basis: Basis::CwdAnchor,
+                settled: false,
+            };
+        }
+        Anchor::Deferred { owner } => return deferred_decision(owner, repo, repo_source, policy, facts),
+        Anchor::Unanchored => {}
     }
     // The git remote, which places sessions the cwd anchor above CANNOT.
     //
@@ -288,51 +307,7 @@ pub fn classify_with_evidence(
     if repo_source == Some(RepoSource::GitOrigin)
         && let Some(slug) = repo
     {
-        if is_work_slug(slug) {
-            // Problem 2. The `<org>/<repo>` shape guards were always sound; the HOST was the gap, and
-            // `git@evil.example.com:tatari-tv/x.git` reads as a work org today. A recorded,
-            // non-allowlisted host refuses before the probe record is even consulted, because the
-            // slug is not trustworthy in the first place.
-            //
-            // `None` (no host recorded) deliberately does NOT refuse: see `host_confers_work`.
-            if facts.host_confers_work == Some(false) {
-                trace!("scope::classify_with_evidence: repo={slug} REFUSED, its host is not allowlisted");
-                return Decision {
-                    scope: Scope::Personal,
-                    basis: Basis::HostRefused,
-                    settled: false,
-                };
-            }
-            // PRESENCE, not content. The column is written only for a conclusive negative, so ANY
-            // value means one was recorded; an UNREADABLE one is still a recorded negative and must
-            // still refuse. Keying this on the parsed outcome let a hand-edited or forward-dated
-            // stamp read as "nothing recorded" and grant Work, which is the one direction this
-            // branch exists to prevent.
-            if let Some(probe) = facts.repo_probe {
-                trace!(
-                    "scope::classify_with_evidence: repo={slug} via git-origin REFUSED, conclusive \
-                     negative {} recorded",
-                    probe.token()
-                );
-                return Decision {
-                    scope: Scope::Personal,
-                    basis: Basis::ProbeRefused,
-                    settled: false,
-                };
-            }
-            trace!("scope::classify_with_evidence: repo={slug} via git-origin -> work");
-            return Decision {
-                scope: Scope::Work,
-                basis: Basis::GitOrigin,
-                settled: true,
-            };
-        }
-        trace!("scope::classify_with_evidence: repo={slug} via git-origin -> personal (revisable)");
-        return Decision {
-            scope: Scope::Personal,
-            basis: Basis::GitOrigin,
-            settled: false,
-        };
+        return git_origin_decision(slug, is_work_slug(policy, slug), facts);
     }
     // A CHECKED sum that fails closed on overflow. `repos_touched` is a STORED blob, so a corrupt or
     // hand-edited one can carry counts whose sum wraps `u64` in a release build, and a wrapped total
@@ -346,7 +321,7 @@ pub fn classify_with_evidence(
     let unanimous_work = !repos_touched.is_empty()
         && repos_touched
             .iter()
-            .all(|(slug, count)| *count > 0 && is_work_slug(slug));
+            .all(|(slug, count)| *count > 0 && is_work_slug(policy, slug));
     let total = accounted == Some(files_edited);
     let scope = if unanimous_work && total { Scope::Work } else { Scope::Personal };
     trace!(
@@ -366,6 +341,96 @@ pub fn classify_with_evidence(
         // export revision. Zero-edit sessions are common; that is permanent cursor churn.
         settled: facts.evidence_present,
     }
+}
+
+/// The git-origin arm's verdict on one rule-1 slug, given whether the policy would call it Work.
+///
+/// Shared by the unanchored path and [`Anchor::Deferred`], so a named repo reaches Work only through
+/// the SAME host and probe refusals every other git-origin slug does.
+fn git_origin_decision(slug: &str, is_work: bool, facts: &RoutingFacts<'_>) -> Decision {
+    if !is_work {
+        trace!("scope::git_origin_decision: repo={slug} via git-origin -> personal (revisable)");
+        return Decision {
+            scope: Scope::Personal,
+            basis: Basis::GitOrigin,
+            settled: false,
+        };
+    }
+    // Problem 2. The `<org>/<repo>` shape guards were always sound; the HOST was the gap, and
+    // `git@evil.example.com:tatari-tv/x.git` reads as a work org today. A recorded, non-allowlisted
+    // host refuses before the probe record is even consulted, because the slug is not trustworthy in
+    // the first place.
+    //
+    // `None` (no host recorded) deliberately does NOT refuse: see `host_confers_work`.
+    if facts.host_confers_work == Some(false) {
+        trace!("scope::git_origin_decision: repo={slug} REFUSED, its host is not allowlisted");
+        return Decision {
+            scope: Scope::Personal,
+            basis: Basis::HostRefused,
+            settled: false,
+        };
+    }
+    // PRESENCE, not content. The column is written only for a conclusive negative, so ANY value
+    // means one was recorded; an UNREADABLE one is still a recorded negative and must still refuse.
+    // Keying this on the parsed outcome let a hand-edited or forward-dated stamp read as "nothing
+    // recorded" and grant Work, which is the one direction this branch exists to prevent.
+    if let Some(probe) = facts.repo_probe {
+        trace!(
+            "scope::git_origin_decision: repo={slug} via git-origin REFUSED, conclusive negative {} \
+             recorded",
+            probe.token()
+        );
+        return Decision {
+            scope: Scope::Personal,
+            basis: Basis::ProbeRefused,
+            settled: false,
+        };
+    }
+    trace!("scope::git_origin_decision: repo={slug} via git-origin -> work");
+    Decision {
+        scope: Scope::Work,
+        basis: Basis::GitOrigin,
+        settled: true,
+    }
+}
+
+/// The verdict for a cwd under an owner the policy names only by `<owner>/<repo>` entries.
+///
+/// **The git-origin arm, and nothing else.** A named repo is identified by its reposlug, and the
+/// directory name is not that identity, so a sibling worktree, a `.git` or renamed container and the
+/// canonical checkout all classify by the remote. Two refusals beyond the arm's own:
+///
+/// - the slug's OWNER must equal the cwd's owner. Otherwise `<root>/scottidler/philo` with remote
+///   `tatari-tv/philo` matches `tatari-tv/*` and goes Work off a directory that says personal.
+/// - the touch set is NEVER consulted. A `second-brain` session that edited one `scottidler/claude`
+///   file is not a `scottidler/claude` session.
+///
+/// Everything that is not a matched git-origin slug is Personal, provisional: the next pass, or a
+/// policy change, may place it.
+fn deferred_decision(
+    owner: &str,
+    repo: Option<&str>,
+    repo_source: Option<RepoSource>,
+    policy: &ScopePolicy,
+    facts: &RoutingFacts<'_>,
+) -> Decision {
+    if repo_source == Some(RepoSource::GitOrigin)
+        && let Some(slug) = repo
+    {
+        return git_origin_decision(slug, deferred_slug_is_work(policy, owner, slug), facts);
+    }
+    trace!("scope::deferred_decision: owner={owner} has no git-origin slug -> personal (revisable)");
+    Decision {
+        scope: Scope::Personal,
+        basis: Basis::CwdAnchor,
+        settled: false,
+    }
+}
+
+/// Whether a deferred cwd's remote slug is Work: the policy matches it AND it belongs to the same
+/// owner as the cwd, compared per segment and case-insensitively.
+fn deferred_slug_is_work(policy: &ScopePolicy, owner: &str, slug: &str) -> bool {
+    is_work_slug(policy, slug) && slug_parts(slug).is_some_and(|(o, _)| o.eq_ignore_ascii_case(owner))
 }
 
 /// One session's `sessions.repo_probe` column: a conclusive negative was recorded, and either this
@@ -424,49 +489,133 @@ impl<'a> RecordedProbe<'a> {
     }
 }
 
-/// The configured clone roots, in the form the cwd anchor matches a path against.
+/// The operator's scope policy: the configured clone roots plus the `reposlugs-ptns` patterns, the
+/// ONLY thing the classifier reads work repos from.
 ///
 /// **Built EXACTLY ONCE, immediately after `Config::load()`, and passed by reference from there.**
 /// Never constructed inside a row loop: `common::config` canonicalizes each root at load, which stats
 /// the disk, and building this inside `Db::routing_summary`'s iteration would put that cost on every
 /// row of every pass. [`classify_with_evidence`] stays pure and takes no config; this is how the
-/// operator's roots reach it.
+/// operator's policy reaches it.
 ///
-/// A newtype rather than a bare `&[PathBuf]` parameter, because the list has a meaning the slice type
-/// does not carry: these are the roots the OPERATOR declared, and declaring one is what authorizes
-/// the work-org slot under it to confer Work scope.
+/// The [`Default`] is the EMPTY policy: no roots, no patterns, so nothing is ever Work. A caller that
+/// forgets to set it loses coverage; it never gains scope.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Anchors {
+pub struct ScopePolicy {
     roots: Vec<PathBuf>,
+    ptns: Vec<ReposlugPtn>,
 }
 
-impl Anchors {
-    /// Build from `Config::repo_roots()`. The roots arrive already validated, canonicalized and
-    /// expanded to both spellings; nothing here re-derives any of that.
-    pub fn new(roots: &[PathBuf]) -> Self {
-        Self { roots: roots.to_vec() }
+/// What the policy says about one OWNER, which is what the cwd anchor keys on.
+///
+/// Excludes never make an owner `Wide` or `Named`: `!scottidler/private` alone says nothing about
+/// `scottidler`'s other repos, so that owner stays `Unlisted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerRule {
+    /// An `<owner>/*` include. The path anchor confers Work, as a work org always has.
+    Wide,
+    /// Only `<owner>/<repo>` includes. The path is not the repo's identity; the remote decides.
+    Named,
+    /// No include names the owner.
+    Unlisted,
+}
+
+/// The cwd anchor's verdict, from [`ScopePolicy::scope_of`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor<'p> {
+    /// The anchor decides, settled. A wide owner's `<root>/<owner>/<dir>`, or an unlisted owner's.
+    Settled(Scope),
+    /// An exclude hit a WIDE owner. Personal, provisional, and TERMINAL: neither the remote nor the
+    /// touch set may turn it back into Work.
+    Excluded,
+    /// A NAMED owner. Only the git-origin arm may answer, and only with a slug of this same owner;
+    /// never the touch set. Carries the cwd's owner segment so that comparison can be made.
+    Deferred { owner: &'p str },
+    /// The path says nothing. The remote, then the touch set, decide as before.
+    Unanchored,
+}
+
+impl ScopePolicy {
+    /// Build from `Config::repo_roots()` and `Config::reposlugs_ptns()`.
+    ///
+    /// NORMALIZES, so a directly-constructed policy (tests, `EnrichOptions::default()`) fingerprints
+    /// the same as one built from config: roots and patterns are sorted and deduped. Patterns arrive
+    /// already lowercased ([`ReposlugPtn::parse`] is the only way to build one). Every distinct
+    /// exclude is KEPT, including one no include names: `!scottidler/private` is exactly what vetoes
+    /// a `tatari-tv/*` fork whose remote is `scottidler/private`.
+    pub fn new(roots: &[PathBuf], ptns: &[ReposlugPtn]) -> Self {
+        let mut roots = roots.to_vec();
+        roots.sort();
+        roots.dedup();
+        let mut ptns = ptns.to_vec();
+        ptns.sort_by_cached_key(ToString::to_string);
+        ptns.dedup();
+        Self { roots, ptns }
     }
 
-    /// The anchor's verdict for `cwd`, or `None` when the cwd is UNANCHORED and the repo evidence
-    /// gets a say. `probe` is the recorded probe outcome, consulted for exactly one shape.
+    /// Whether `slug` is a work repo: ANY include matches AND NO exclude matches. Order does not
+    /// matter; exclude wins. Compared per segment, case-insensitively, and any departure from the
+    /// exact `<owner>/<repo>` shape fails CLOSED (see [`slug_parts`]).
+    pub fn matches(&self, slug: &str) -> bool {
+        let Some((owner, repo)) = slug_parts(slug) else {
+            return false;
+        };
+        self.ptns.iter().any(|p| !p.is_exclude() && ptn_matches(p, owner, repo)) && !self.excludes(owner, repo)
+    }
+
+    /// What the policy says about `owner`, compared case-insensitively. `Wide` wins over `Named`:
+    /// `["tatari-tv/*", "tatari-tv/x"]` is owner-wide.
+    pub fn owner_rule(&self, owner: &str) -> OwnerRule {
+        let mut rule = OwnerRule::Unlisted;
+        for p in self
+            .ptns
+            .iter()
+            .filter(|p| !p.is_exclude() && p.owner().eq_ignore_ascii_case(owner))
+        {
+            match p.repo() {
+                RepoPart::Any => return OwnerRule::Wide,
+                RepoPart::Exact(_) => rule = OwnerRule::Named,
+            }
+        }
+        rule
+    }
+
+    /// The canonical text of this policy: `{"ptns":[...],"roots":[...]}`, each array sorted and
+    /// deduped, patterns in normalized form (`!` kept, lowercased).
     ///
-    /// The rule reads off the first component under the longest matching root (the ORG SLOT) and
-    /// whether a component follows it:
+    /// JSON rather than a join, because escaping is what guarantees two distinct policies never
+    /// produce one string. Plain text rather than a hash, so it stays readable in `sqlite3` and
+    /// stable across Rust versions.
+    pub fn fingerprint(&self) -> String {
+        let ptns: Vec<String> = self.ptns.iter().map(ToString::to_string).collect();
+        let mut roots: Vec<String> = self.roots.iter().map(|r| r.to_string_lossy().into_owned()).collect();
+        roots.sort();
+        roots.dedup();
+        serde_json::json!({ "ptns": ptns, "roots": roots }).to_string()
+    }
+
+    /// The anchor's verdict for `cwd`. `repo` is the stored slug and `facts.repo_probe` the recorded
+    /// probe; each is consulted for exactly one question.
     ///
-    /// | org slot | follower | verdict |
+    /// The rule reads the first component under the longest matching root (the ORG SLOT, the owner),
+    /// the component after it (the DIR), and the owner's [`OwnerRule`]:
+    ///
+    /// | owner rule | dir | verdict |
     /// |---|---|---|
-    /// | a work org | yes | **Work.** `<root>/tatari-tv/clyde` |
-    /// | a work org | no | Work iff the probe positively observed a NON-repository; see below |
-    /// | not a work org | yes | **Personal.** `<root>/scottidler/x`, and `<root>/repos/tatari-tv/x` |
-    /// | not a work org | no | unanchored. A flat `<root>/clyde`: the path says nothing |
+    /// | `Wide` | yes | **Work.** `<root>/tatari-tv/clyde`, forks in work dirs included |
+    /// | `Wide` | no | Work iff the probe positively observed a NON-repository; see below |
+    /// | `Wide`, an exclude hits | -- | **`Excluded`.** Terminal Personal |
+    /// | `Named` | -- | **`Deferred`.** The remote decides; the path never does |
+    /// | `Unlisted` | yes | **Personal.** `<root>/scottidler/x`, and `<root>/repos/tatari-tv/x` |
+    /// | `Unlisted` | no | unanchored. A flat `<root>/clyde`: the path says nothing |
     /// | no matched root | -- | unanchored |
     ///
-    /// **The last two rows are the defect this closes.** v3 matched the literal component `repos`
-    /// anywhere in the path, so `~/repos/clyde` (a flat clone with no org level) read
-    /// `Personal, settled` and was excluded from `enrich_candidates` until the next version bump,
-    /// with the remote never consulted. `~/repos/scottidler/repos/tatari-tv/x` read WORK off the
-    /// INNER `repos`, which is the "contains a work org somewhere" bug the org-slot rule was written
-    /// to avoid and missed one level down.
+    /// **An exclude on a wide owner is checked three ways**, because each catches a case the others
+    /// miss: the path slug `<owner>/<dir>` (the one place a directory name counts, and only in the
+    /// fail-closed direction), the stored `repo` (a fork of `tatari-tv/*` whose remote is excluded),
+    /// and, for bare `<root>/<owner>`, an owner-wide `!<owner>/*`. A rank-0 stored slug is never
+    /// replaced, so the current remote may differ from `repo`: `facts.repo_host_slug`, the slug the
+    /// latest probe observed, is checked as a fourth, when one is recorded.
     ///
     /// **`<root>/<work-org>` with nothing under it has four possible occupants and the path
     /// separates none of them.** Measured against git 2.53.0: the org DIRECTORY (21 sessions on the
@@ -475,29 +624,67 @@ impl Anchors {
     /// outright preserves the org dir and simultaneously ships the other three to the work account on
     /// a directory-name coincidence. Only [`ProbeOutcome::NotARepo`] means "this is a plain
     /// directory", so only it anchors; see [`bare_work_org_is_an_org_dir`] for the exhaustive table.
-    pub fn scope_of(&self, cwd: &Path, probe: Option<RecordedProbe<'_>>) -> Option<Scope> {
-        let (org, has_following) = self.org_slot(cwd)?;
-        let work_org = WORK_ORGS.contains(&org);
-        let scope = match (work_org, has_following) {
-            (true, true) => Some(Scope::Work),
-            (true, false) => bare_work_org_is_an_org_dir(probe).then_some(Scope::Work),
-            (false, true) => Some(Scope::Personal),
-            // A single non-work-org component under a root. `<root>/clyde` is a flat clone whose org
-            // the path cannot name, and `<root>/scottidler` is an org dir with no repo. Neither is a
+    pub fn scope_of<'p>(&self, cwd: &'p Path, repo: Option<&str>, facts: &RoutingFacts<'_>) -> Anchor<'p> {
+        let Some((owner, dir)) = self.org_slot(cwd) else {
+            return Anchor::Unanchored;
+        };
+        let rule = self.owner_rule(owner);
+        let anchor = match rule {
+            OwnerRule::Wide => self.wide_anchor(owner, dir, [repo, facts.repo_host_slug], facts.repo_probe),
+            OwnerRule::Named => Anchor::Deferred { owner },
+            OwnerRule::Unlisted if dir.is_some() => Anchor::Settled(Scope::Personal),
+            // A single unlisted component under a root. `<root>/clyde` is a flat clone whose org the
+            // path cannot name, and `<root>/scottidler` is an org dir with no repo. Neither is a
             // statement about scope, so both defer.
-            (false, false) => None,
+            OwnerRule::Unlisted => Anchor::Unanchored,
         };
         trace!(
-            "scope::Anchors::scope_of: cwd={} org={org} following={has_following} probe={:?} -> {:?}",
+            "scope::ScopePolicy::scope_of: cwd={} owner={owner} rule={rule:?} dir={dir:?} repo={repo:?} \
+             probe={:?} -> {anchor:?}",
             cwd.display(),
-            probe.map(RecordedProbe::token),
-            scope.map(Scope::as_str)
+            facts.repo_probe.map(RecordedProbe::token),
         );
-        scope
+        anchor
     }
 
-    /// The org slot for `cwd`: the first NORMAL component under the longest matching root, plus
-    /// whether another normal component follows it. `None` when `cwd` is under no configured root, or
+    /// The `Wide` rows of [`Self::scope_of`]'s table. `slugs` is the stored `repo` and the
+    /// `repo_host_slug` the latest probe observed; an exclude on either takes Work away.
+    fn wide_anchor<'p>(
+        &self,
+        owner: &'p str,
+        dir: Option<&OsStr>,
+        slugs: [Option<&str>; 2],
+        probe: Option<RecordedProbe<'_>>,
+    ) -> Anchor<'p> {
+        let path_excluded = match dir {
+            Some(dir) => self.excludes(owner, &dir.to_string_lossy()),
+            None => self
+                .ptns
+                .iter()
+                .any(|p| p.is_exclude() && p.owner().eq_ignore_ascii_case(owner) && *p.repo() == RepoPart::Any),
+        };
+        let repo_excluded = slugs
+            .into_iter()
+            .flatten()
+            .filter_map(slug_parts)
+            .any(|(o, r)| self.excludes(o, r));
+        if path_excluded || repo_excluded {
+            return Anchor::Excluded;
+        }
+        match dir {
+            Some(_) => Anchor::Settled(Scope::Work),
+            None if bare_work_org_is_an_org_dir(probe) => Anchor::Settled(Scope::Work),
+            None => Anchor::Unanchored,
+        }
+    }
+
+    /// Whether any EXCLUDE matches `<owner>/<repo>`.
+    fn excludes(&self, owner: &str, repo: &str) -> bool {
+        self.ptns.iter().any(|p| p.is_exclude() && ptn_matches(p, owner, repo))
+    }
+
+    /// The org slot for `cwd`: the first NORMAL component under the longest matching root, plus the
+    /// NORMAL component after it when there is one. `None` when `cwd` is under no configured root, or
     /// is a root itself.
     ///
     /// The WALK is [`common::repo::under_deepest_root`], shared with rule 4's
@@ -507,16 +694,39 @@ impl Anchors {
     /// matching rule -- and a second hand-written copy of the walk here is how that guarantee would
     /// quietly lapse. Longest match wins: two roots can only both match through that symlink
     /// expansion, and there the deeper one names the org.
-    fn org_slot<'p>(&self, cwd: &'p Path) -> Option<(&'p str, bool)> {
+    fn org_slot<'p>(&self, cwd: &'p Path) -> Option<(&'p str, Option<&'p OsStr>)> {
         common::repo::under_deepest_root(cwd, &self.roots, |rest| {
             let mut comps = rest.components();
             // NORMAL only, via the shared reader. A `..` or a bare separator is not an org name, and
             // treating one as a component would let `<root>/../tatari-tv/x` read as anchored.
-            let org = common::repo::next_normal(&mut comps)?;
-            let has_following = matches!(comps.next(), Some(Component::Normal(_)));
-            Some((org, has_following))
+            let owner = common::repo::next_normal(&mut comps)?;
+            let dir = match comps.next() {
+                Some(Component::Normal(dir)) => Some(dir),
+                _ => None,
+            };
+            Some((owner, dir))
         })
     }
+}
+
+/// Whether one pattern matches `<owner>/<repo>`, ignoring the pattern's include/exclude sign.
+/// Patterns are stored lowercased, so an ASCII case-insensitive compare per segment is exact.
+fn ptn_matches(p: &ReposlugPtn, owner: &str, repo: &str) -> bool {
+    p.owner().eq_ignore_ascii_case(owner)
+        && match p.repo() {
+            RepoPart::Any => true,
+            RepoPart::Exact(r) => r.eq_ignore_ascii_case(repo),
+        }
+}
+
+/// Split an `<owner>/<repo>` slug, or `None` for any departure from that exact shape.
+///
+/// Every departure fails CLOSED, because the result feeds the gate that decides whether a session
+/// body leaves the machine. `"tatari-tv/"` would otherwise match an owner-wide include on an empty
+/// repo name, and `"tatari-tv/a/b"` is not the documented shape at all.
+fn slug_parts(slug: &str) -> Option<(&str, &str)> {
+    let (owner, repo) = slug.split_once('/')?;
+    (!owner.is_empty() && !repo.is_empty() && !repo.contains('/')).then_some((owner, repo))
 }
 
 /// Whether a bare `<root>/<work-org>` cwd is the ORG DIRECTORY, which is the only occupant of that
@@ -552,6 +762,8 @@ fn bare_work_org_is_an_org_dir(probe: Option<RecordedProbe<'_>>) -> bool {
         ProbeOutcome::NoOrigin => false,
         // The cwd is gone, or git could not answer. Absence of evidence. Fail closed.
         ProbeOutcome::Indeterminate => false,
+        // A checkout whose origin git reported but nobody can parse. Fail closed.
+        ProbeOutcome::UnparseableOrigin => false,
         // The repo boundary is not at or above the cwd. Says nothing about a remote. Fail closed.
         ProbeOutcome::OutsideRoot => false,
         // The nearest boundary is a blocked root (`$HOME`). It probably implies the cwd is not its
@@ -620,6 +832,14 @@ pub struct RoutingFacts<'a> {
     /// function the routing gate can reason about; a classifier that shells out is one that cannot be
     /// unit-tested against a fixed input.
     pub host_confers_work: Option<bool>,
+    /// Schema v14. The rule-1 slug the latest probe observed alongside `repo_host`, or `None` on a
+    /// row not indexed since v14.
+    ///
+    /// Read by ONE question here: an exclude on a wide owner. The stored `repo` is rank-0 and never
+    /// replaced, so a checkout re-pointed at an excluded remote keeps its OLD slug there; this is the
+    /// current one. The other use of the pairing, refusing Work when this differs from `repo`, is the
+    /// caller's, folded into [`Self::host_confers_work`]. Both only ever REMOVE authority.
+    pub repo_host_slug: Option<&'a str>,
     /// Whether `outcome_json` existed and parsed, i.e. whether the efficiency pass has reached this
     /// row. Decides whether a TOUCH-SET decision is settled, and nothing else.
     pub evidence_present: bool,
@@ -634,12 +854,37 @@ pub struct RoutingFacts<'a> {
 ///
 /// `None` when there is nothing to compare: no anchor to read, or no slug. Only an ANCHORED cwd can
 /// disagree, because an unanchored one expresses no opinion.
-pub fn anchor_disagrees_with_remote(cwd: &Path, slug: &str, anchors: &Anchors) -> Option<Disagreement> {
+pub fn anchor_disagrees_with_remote(
+    cwd: &Path,
+    slug: &str,
+    repo_host_slug: Option<&str>,
+    policy: &ScopePolicy,
+) -> Option<Disagreement> {
+    let remote_work = is_work_slug(policy, slug);
     // The BARE-work-org shape is deliberately excluded, by passing no probe: it is the one anchor
     // that is not a path fact, so calling it a disagreement would report a conflict between the
-    // remote and a verdict the remote itself helped decide.
-    let anchor = anchors.scope_of(cwd, None)?;
-    let remote = if is_work_slug(slug) { Scope::Work } else { Scope::Personal };
+    // remote and a verdict the remote itself helped decide. `repo_host_slug` IS passed, so a wide
+    // owner's exclude hit on the current remote answers `Excluded` here exactly as it does at the gate.
+    let facts = RoutingFacts {
+        repo_host_slug,
+        ..RoutingFacts::default()
+    };
+    let anchor = match policy.scope_of(cwd, Some(slug), &facts) {
+        Anchor::Settled(scope) => scope,
+        Anchor::Excluded => Scope::Personal,
+        // What the deferred arm WOULD answer from this slug, so a listed sibling worktree reports
+        // no disagreement and `<root>/scottidler/philo` with a `tatari-tv/philo` remote reports
+        // personal-vs-work exactly as before.
+        Anchor::Deferred { owner } => {
+            if deferred_slug_is_work(policy, owner, slug) {
+                Scope::Work
+            } else {
+                Scope::Personal
+            }
+        }
+        Anchor::Unanchored => return None,
+    };
+    let remote = if remote_work { Scope::Work } else { Scope::Personal };
     (anchor != remote).then_some(Disagreement { anchor, remote })
 }
 
@@ -655,29 +900,23 @@ pub struct Disagreement {
     pub remote: Scope,
 }
 
-/// True iff a `repos_touched` KEY names a work org. Its keys are `<org>/<repo>` attribution slugs
-/// (measured: `tatari-tv/thoughts`, `scottidler/claude`), so the org is the segment before the first
-/// `/`.
+/// True iff a slug -- a `repos_touched` KEY or a rule-1 git-origin slug -- is a work repo under the
+/// policy. Touch-set keys are `<org>/<repo>` attribution slugs (measured: `tatari-tv/thoughts`,
+/// `scottidler/claude`), so the owner is the segment before the first `/`.
 ///
-/// This is a DIFFERENT matching form from [`Anchors::scope_of`] and the two must not be "unified".
+/// This is a DIFFERENT matching form from [`ScopePolicy::scope_of`] and the two must not be "unified".
 /// The anchor walks path COMPONENTS looking for the slot under a configured ROOT, which is exactly
-/// what makes `~/repos/scottidler/tatari-tv` personal. Both consult the same [`WORK_ORGS`]; only the
+/// what makes `~/repos/scottidler/tatari-tv` personal. Both consult the same [`ScopePolicy`]; only the
 /// extraction differs, and each has its own test.
-/// Every departure from the exact `<org>/<repo>` shape fails CLOSED, because this function is consulted
-/// by the gate that decides whether a session body leaves the machine. `efficiency::outcome::union`
-/// (the only writer) takes its keys from the shared rule-1 resolver, which emits a git-observed
-/// `<org>/<repo>` slug, so it can never produce an empty segment or a second slash -- these guards
-/// exist for a corrupt or hand-edited `outcome_json`, which is a STORED blob this function reads
-/// rather than something it computes.
-fn is_work_slug(slug: &str) -> bool {
-    match slug.split_once('/') {
-        // The repo segment must be present and must itself be a single component. `"tatari-tv/"` would
-        // otherwise pass the org test on an empty repo name, and `"tatari-tv/a/b"` is not the documented
-        // shape at all.
-        Some((org, repo)) => !repo.is_empty() && !repo.contains('/') && WORK_ORGS.contains(&org),
-        // A key with no `/` is not an `<org>/<repo>` slug at all.
-        None => false,
-    }
+///
+/// Every departure from the exact `<org>/<repo>` shape fails CLOSED inside [`ScopePolicy::matches`],
+/// because this function is consulted by the gate that decides whether a session body leaves the
+/// machine. `efficiency::outcome::union` (the only writer) takes its keys from the shared rule-1
+/// resolver, which emits a git-observed `<org>/<repo>` slug, so it can never produce an empty segment
+/// or a second slash -- the guards exist for a corrupt or hand-edited `outcome_json`, which is a
+/// STORED blob this function reads rather than something it computes.
+fn is_work_slug(policy: &ScopePolicy, slug: &str) -> bool {
+    policy.matches(slug)
 }
 
 #[cfg(test)]

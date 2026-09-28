@@ -59,13 +59,13 @@ pub struct EnrichOptions {
     /// like `max_attempts` and `token_budget`, and because a `Default` that resolves to
     /// `["github.com"]` is what keeps every existing caller correct rather than merely compiling.
     pub work_remote_hosts: Vec<String>,
-    /// The configured clone roots the cwd anchor matches against (`clyde.yml`'s `repo-roots`).
+    /// The scope policy the classifier reads (`clyde.yml`'s `repo-roots` and `reposlugs-ptns`).
     ///
     /// Carried here for the same reason `work_remote_hosts` is: it is sweep configuration, and
-    /// `sessions` does not load config. The `Default` is `Anchors::default()`, an EMPTY root list,
-    /// which anchors nothing and defers every cwd to the remote and the touch set. That is the
-    /// fail-safe direction: a caller that forgets to set it loses coverage, it does not gain scope.
-    pub anchors: session::Anchors,
+    /// `sessions` does not load config. The `Default` is `ScopePolicy::default()`, EMPTY: no roots
+    /// and no patterns, so nothing is ever Work. That is the fail-closed direction: a caller that
+    /// forgets to set it loses coverage, it never gains scope.
+    pub scope_policy: session::ScopePolicy,
 }
 
 impl Default for EnrichOptions {
@@ -79,7 +79,7 @@ impl Default for EnrichOptions {
             max_attempts: DEFAULT_MAX_ATTEMPTS,
             token_budget: None,
             work_remote_hosts: DEFAULT_WORK_REMOTE_HOSTS.iter().map(|h| (*h).to_string()).collect(),
-            anchors: session::Anchors::default(),
+            scope_policy: session::ScopePolicy::default(),
         }
     }
 }
@@ -95,6 +95,9 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         bail!("enrich: a Completer is required for a live (non-dry-run) pass");
     }
     let now = Utc::now();
+    // The policy every decision in this sweep is made under, rendered ONCE: the candidate predicate
+    // compares against it and every writer records it (schema v14).
+    let scope_policy = opts.scope_policy.fingerprint();
 
     let records = match &opts.only {
         Some(id) => match db.get(id)? {
@@ -104,7 +107,13 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 Vec::new()
             }
         },
-        None => db.enrich_candidates(opts.dormant_before, ENRICH_PROMPT_VERSION, opts.max_attempts, opts.all)?,
+        None => db.enrich_candidates(
+            opts.dormant_before,
+            ENRICH_PROMPT_VERSION,
+            opts.max_attempts,
+            opts.all,
+            &scope_policy,
+        )?,
     };
     let force = opts.all || opts.only.is_some();
 
@@ -143,7 +152,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
             rec.repo.as_deref(),
             rec.repo_source.as_deref(),
             &evidence,
-            &opts.anchors,
+            &opts.scope_policy,
             &mut hosts,
         );
         let scope = decision.scope;
@@ -153,7 +162,12 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
         // rather than resolved. `clyde doctor` counts these; this names the one that just happened.
         if let (Some(cwd), Some(slug)) = (rec.cwd.as_deref(), rec.repo.as_deref())
             && repo_source == Some(common::repo::RepoSource::GitOrigin)
-            && let Some(d) = session::anchor_disagrees_with_remote(std::path::Path::new(cwd), slug, &opts.anchors)
+            && let Some(d) = session::anchor_disagrees_with_remote(
+                std::path::Path::new(cwd),
+                slug,
+                evidence.repo_host_slug.as_deref(),
+                &opts.scope_policy,
+            )
         {
             warn!(
                 "enrich::enrich: {} cwd anchor and remote DISAGREE: cwd {cwd} reads {} but origin slug \
@@ -182,6 +196,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 &rec.session_id,
                 scope.as_str(),
                 scope_version,
+                &scope_policy,
                 EnrichStatus::SkippedPersonal,
             )?;
             stats.skipped_personal += 1;
@@ -206,6 +221,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                 &rec.session_id,
                 scope.as_str(),
                 scope_version,
+                &scope_policy,
                 EnrichStatus::SkippedEmpty,
             )?;
             stats.skipped_empty += 1;
@@ -227,6 +243,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                     &rec.session_id,
                     scope.as_str(),
                     scope_version,
+                    &scope_policy,
                     EnrichStatus::SkippedEmpty,
                 )?;
                 stats.skipped_empty += 1;
@@ -302,6 +319,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                     redaction_count: redactions,
                     tokens_in: out.tokens_in,
                     tokens_out: out.tokens_out,
+                    scope_policy: &scope_policy,
                 };
                 db.set_enrichment(&rec.session_id, &success, now)?;
                 stats.enriched += 1;
@@ -345,7 +363,7 @@ pub fn enrich<C: Completer>(db: &Db, completer: Option<&C>, opts: &EnrichOptions
                         )
                     });
                 }
-                db.record_enrich_failure(&rec.session_id, scope.as_str(), &e.to_string())?;
+                db.record_enrich_failure(&rec.session_id, scope.as_str(), &scope_policy, &e.to_string())?;
                 stats.failed += 1;
                 consecutive_failures += 1;
                 stats.details.push(detail(

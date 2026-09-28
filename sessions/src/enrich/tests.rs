@@ -8,9 +8,15 @@ use eyre::{Result, bail};
 use session::ParsedSession;
 
 use super::*;
-use crate::db::Db;
+use crate::db::{Db, no_policy};
 use crate::export::{ExportContext, ExportFilters};
 use crate::llm::{Completer, LlmEnrichment};
+
+/// `reposlugs-ptns: ["tatari-tv/*"]`, named explicitly: the work fixtures in this file are all
+/// `tatari-tv` rows, and no classifier test leans on an implicit default.
+fn tatari_wide_ptns() -> Vec<common::repo::ptn::ReposlugPtn> {
+    vec![common::repo::ptn::ReposlugPtn::parse("tatari-tv/*").unwrap()]
+}
 
 const WORK_CWD: &str = "/home/saidler/repos/tatari-tv/marquee";
 const PERSONAL_CWD: &str = "/home/saidler/repos/scottidler/loopr";
@@ -23,15 +29,18 @@ fn dt(s: &str) -> DateTime<Utc> {
 
 /// The sweep options every test in this file runs with.
 ///
-/// It exists because the cwd anchor is ROOT-RELATIVE as of v4: it reads the operator's configured
-/// `repo-roots`, not the literal component `repos` wherever it appears. So a test that wants
-/// [`WORK_CWD`] to anchor Work has to declare the root that cwd sits under, exactly as production
-/// declares it in `clyde.yml`. `EnrichOptions::default()` carries an EMPTY root list on purpose --
-/// a caller that forgets loses coverage rather than gaining scope -- so `..Default::default()` here
-/// would silently reclassify every work fixture as personal.
+/// It exists because the cwd anchor is ROOT-RELATIVE as of v4 and POLICY-DRIVEN as of v5: it reads
+/// the operator's configured `repo-roots` and `reposlugs-ptns`. So a test that wants [`WORK_CWD`] to
+/// anchor Work has to declare the root that cwd sits under and the pattern that names its org,
+/// exactly as production declares them in `clyde.yml`. `EnrichOptions::default()` carries an EMPTY
+/// policy on purpose -- a caller that forgets loses coverage rather than gaining scope -- so
+/// `..Default::default()` here would silently reclassify every work fixture as personal.
 fn test_opts() -> EnrichOptions {
     EnrichOptions {
-        anchors: session::Anchors::new(&[PathBuf::from("/home/saidler/repos"), PathBuf::from("/home/alice/repos")]),
+        scope_policy: session::ScopePolicy::new(
+            &[PathBuf::from("/home/saidler/repos"), PathBuf::from("/home/alice/repos")],
+            &tatari_wide_ptns(),
+        ),
         ..Default::default()
     }
 }
@@ -218,11 +227,13 @@ fn failure_is_recorded_and_bumps_attempts() {
 
     // Still a candidate (attempts 1 < max), so it retries on a later sweep -- but not forever.
     let again = db
-        .enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false)
+        .enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false, &no_policy())
         .unwrap();
     assert_eq!(again.len(), 1);
     // Below the attempt cap it drops out.
-    let capped = db.enrich_candidates(None, ENRICH_PROMPT_VERSION, 1, false).unwrap();
+    let capped = db
+        .enrich_candidates(None, ENRICH_PROMPT_VERSION, 1, false, &no_policy())
+        .unwrap();
     assert!(capped.is_empty(), "a row at the attempt cap is no longer a candidate");
 }
 
@@ -531,20 +542,26 @@ fn raising_max_attempts_recovers_rows_sitting_at_the_cap() {
     assert_eq!(attempts_sum(&s.path), 3 * DEFAULT_MAX_ATTEMPTS);
 
     let at_cap =
-        s.db.enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false)
+        s.db.enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS, false, &no_policy())
             .unwrap();
     assert!(at_cap.is_empty(), "at the cap, every row is outside the sweep");
 
     let freed =
-        s.db.enrich_candidates(None, ENRICH_PROMPT_VERSION, DEFAULT_MAX_ATTEMPTS + 1, false)
-            .unwrap();
+        s.db.enrich_candidates(
+            None,
+            ENRICH_PROMPT_VERSION,
+            DEFAULT_MAX_ATTEMPTS + 1,
+            false,
+            &no_policy(),
+        )
+        .unwrap();
     assert_eq!(freed.len(), 3, "one higher and they are candidates again");
 }
 
 /// Charge one attempt through the same public method the sweep uses, so the fixture cannot drift from
 /// how attempts are really spent.
 fn db_record_failure(db: &Db, id: &str) {
-    db.record_enrich_failure(id, "work", "simulated").unwrap();
+    db.record_enrich_failure(id, "work", &no_policy(), "simulated").unwrap();
 }
 
 /// A `cwd`-hostile session -- no `repos/<org>` anchor at all -- is the whole cohort item A is about.
@@ -760,7 +777,7 @@ fn a_no_change_skip_leaves_the_export_revision_untouched() {
         now: dt("2026-07-01T00:00:00Z"),
         host: "desk".into(),
         dormant_after: chrono::Duration::days(7),
-        anchors: session::Anchors::new(&[std::path::PathBuf::from("/home/alice/repos")]),
+        scope_policy: session::ScopePolicy::new(&[std::path::PathBuf::from("/home/alice/repos")], &tatari_wide_ptns()),
         work_remote_hosts: vec!["github.com".to_string()],
     };
     let after_first = db.export(&ExportFilters::default(), &ctx).unwrap().cursor;
@@ -1475,3 +1492,6 @@ fn an_archived_session_with_no_staged_copy_counts_as_an_empty_skip() {
         "the no-staged-copy branch must COUNT its skip: {stats:?}"
     );
 }
+
+mod defaults;
+mod policy;

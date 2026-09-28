@@ -287,13 +287,14 @@ pub struct ExportContext {
     pub dormant_after: chrono::Duration,
     /// The generating machine's hostname, stamped on the envelope.
     pub host: String,
-    /// The configured clone roots (`clyde.yml`'s `repo-roots`), for the scope fallback.
+    /// The scope policy (`clyde.yml`'s `repo-roots` and `reposlugs-ptns`), for the scope fallback.
+    /// No `Default`: every caller names it, and an empty [`session::ScopePolicy`] confers nothing.
     ///
     /// Export used to run its OWN cwd-only classifier for a row the gate had never decided, which is
     /// two answers to one question. It now calls `crate::routing::classify_row`, the same seam the
     /// gate uses, so it needs the same config the gate has. `sessions` does not load config, so both
     /// arrive here.
-    pub anchors: session::Anchors,
+    pub scope_policy: session::ScopePolicy,
     /// Hosts a git remote may confer WORK scope from (`clyde.yml`'s `work-remote-hosts`), for the
     /// same fallback.
     pub work_remote_hosts: Vec<String>,

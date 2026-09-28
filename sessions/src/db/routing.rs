@@ -16,7 +16,7 @@ use common::repo::{ProbeOutcome, RepoSource};
 use eyre::{Result, bail};
 use log::{debug, warn};
 use rusqlite::{OptionalExtension, params};
-use session::{Anchors, Basis};
+use session::{Basis, ScopePolicy};
 
 use super::Db;
 
@@ -89,11 +89,31 @@ impl Db {
     /// Unlike [`Self::record_probe`] this DOES overwrite an existing value, because the host is a
     /// property of the current remote (a repo genuinely re-pointed at a new host must read as the new
     /// host), whereas the probe record is a historical observation that must not be erased.
-    pub fn record_repo_host(&self, session_id: &str, host: &str) -> Result<bool> {
-        debug!("Db::record_repo_host: session_id={session_id} host={host}");
+    ///
+    /// `slug` is the rule-1 slug the SAME probe resolved, written to `repo_host_slug` (schema v14).
+    /// `upsert_repo` keeps a rank-0 slug forever, so without it a checkout re-pointed at another repo
+    /// ends up with the OLD slug and the NEW host, and the git-origin arm would grant Work on that
+    /// mismatched pair. The no-change guard covers both columns: a re-point between two `github.com`
+    /// repos changes only the slug, and a host-only guard would never write it.
+    pub fn record_repo_host(&self, session_id: &str, host: &str, slug: &str) -> Result<bool> {
+        debug!("Db::record_repo_host: session_id={session_id} host={host} slug={slug}");
         let n = self.conn.execute(
-            "UPDATE sessions SET repo_host = ?2 WHERE session_id = ?1 AND repo_host IS NOT ?2",
-            params![session_id, host],
+            "UPDATE sessions SET repo_host = ?2, repo_host_slug = ?3 \
+             WHERE session_id = ?1 AND (repo_host IS NOT ?2 OR repo_host_slug IS NOT ?3)",
+            params![session_id, host, slug],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Record that the current origin is unparseable: `repo_host_slug` becomes
+    /// [`common::repo::UNPARSEABLE_ORIGIN_SLUG`], which never equals a stored `repo`, so the host/slug
+    /// pairing refuses Work. `repo_host` is left as is; the pairing refuses before the host is read,
+    /// including on a pre-v13 row whose host is NULL. Guarded against a no-change write.
+    pub fn record_unparseable_origin(&self, session_id: &str) -> Result<bool> {
+        debug!("Db::record_unparseable_origin: session_id={session_id}");
+        let n = self.conn.execute(
+            "UPDATE sessions SET repo_host_slug = ?2 WHERE session_id = ?1 AND repo_host_slug IS NOT ?2",
+            params![session_id, common::repo::UNPARSEABLE_ORIGIN_SLUG],
         )?;
         Ok(n > 0)
     }
@@ -454,8 +474,8 @@ impl Db {
     ///
     /// `work_remote_hosts` is passed in rather than read here, because the ALLOWLIST is config and
     /// `sessions` does not load config.
-    pub fn routing_summary(&self, anchors: &Anchors, work_remote_hosts: &[String]) -> Result<RoutingSummary> {
-        self.routing_summary_with(anchors, &mut HostPolicy::new(work_remote_hosts))
+    pub fn routing_summary(&self, scope_policy: &ScopePolicy, work_remote_hosts: &[String]) -> Result<RoutingSummary> {
+        self.routing_summary_with(scope_policy, &mut HostPolicy::new(work_remote_hosts))
     }
 
     /// The routing picture, over an explicit [`HostPolicy`] so a test can inject a
@@ -485,7 +505,7 @@ impl Db {
     /// when something is already broken; it is the last place that may die on one bad row.
     pub fn routing_summary_with<R: HostResolver>(
         &self,
-        anchors: &Anchors,
+        scope_policy: &ScopePolicy,
         hosts: &mut HostPolicy<R>,
     ) -> Result<RoutingSummary> {
         debug!("Db::routing_summary_with");
@@ -512,13 +532,14 @@ impl Db {
         // defect the whole design removes.
         let mut anchor_remote_disagreement = 0usize;
         for row in self.routing_rows()? {
+            let evidence = row.evidence();
             let evaluated = crate::routing::classify_row(
                 &row.session_id,
                 row.cwd.as_deref(),
                 row.repo.as_deref(),
                 row.repo_source.as_deref(),
-                &row.evidence(),
-                anchors,
+                &evidence,
+                scope_policy,
                 hosts,
             );
             by_basis[basis_index(evaluated.decision.basis)] += 1;
@@ -526,7 +547,13 @@ impl Db {
             // sources carry no remote to conflict with.
             if evaluated.repo_source == Some(RepoSource::GitOrigin)
                 && let (Some(cwd), Some(repo)) = (row.cwd.as_deref(), row.repo.as_deref())
-                && session::anchor_disagrees_with_remote(Path::new(cwd), repo, anchors).is_some()
+                && session::anchor_disagrees_with_remote(
+                    Path::new(cwd),
+                    repo,
+                    evidence.repo_host_slug.as_deref(),
+                    scope_policy,
+                )
+                .is_some()
             {
                 anchor_remote_disagreement += 1;
             }

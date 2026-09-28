@@ -1,0 +1,86 @@
+# clyde.yml.example - annotated example config for the `clyde` CLI.
+#
+# Copy to ~/.config/clyde/clyde.yml (or $XDG_CONFIG_HOME/clyde/clyde.yml) and uncomment the keys you
+# want to override. Every key is optional; anything omitted falls back to the compiled default. Keys
+# are kebab-case; an UNKNOWN key is a hard error (deny_unknown_fields), so a typo surfaces immediately
+# instead of being ignored. A missing file (or no clyde.yml at all) is NOT an error: everything below
+# resolves to its default.
+
+# --- dates / reports ------------------------------------------------------------
+
+# How a bare YYYY-MM-DD date's midnight is interpreted by `report collect --since` (utc | local).
+# date-tz: utc
+
+# Enrichment-coverage floor `report collect` warns below, as a FRACTION (0.5 means 50%, not "50").
+# Below this floor, collect warns on stderr and still writes the artifact. Override per run with
+# `report collect --min-enrichment <fraction>`; raise coverage with `clyde session enrich`.
+# min-enrichment: 0.5
+
+# --- render (report render defaults) --------------------------------------------
+
+# Defaults for `report render`. Every field defaults; a missing section is all-defaults.
+# render:
+#   format: markdown                   # default --format when the flag is omitted (markdown | pdf | marquee-markdown)
+#   model: claude-opus-4-8              # model pin for the prose slots AND the eval judge
+#   slot-max-output-tokens: 1500        # output ceiling for ONE prose slot; 0 is rejected at load
+#   judge-max-output-tokens: 32000      # output ceiling for the eval judge; 0 is rejected at load
+
+# --- efficiency (clyde efficiency thresholds) -----------------------------------
+
+# Thresholds `clyde efficiency` scores a session's aggregate signals against. Every field defaults;
+# a missing section is all-defaults.
+# efficiency:
+#   cache-read-share-floor: 0.6        # cache-read share below this flags cache waste (eligible sessions only)
+#   tool-error-rate-ceiling: 0.05      # tool-error rate above this flags the session error-prone
+#   auto-compaction-flag: true         # any auto-compaction raises a flag (ran the context to the wall)
+#   minimum-total-tokens: 20000        # eligibility gate: below this, no cache-waste flag (too small to reuse cache)
+#   minimum-turns: 3                   # eligibility gate: fewer turns can't structurally reuse cache
+
+# --- mcp serve -------------------------------------------------------------------
+
+# `clyde mcp serve` takes no flags (an MCP host spawns it with fixed args), so these two are only
+# reachable through this file.
+#
+# Where the Claude Code session transcripts live. Default: ~/.claude/projects. Give an absolute
+# path: `~` is not expanded here.
+# projects-dir: /home/<you>/.claude/projects
+#
+# Whether `clyde mcp serve` runs a one-shot incremental reindex at startup. Default: true. Set false
+# to serve a possibly-stale catalog and skip the startup scan (e.g. a very large catalog whose
+# reindex would delay the MCP handshake).
+# reindex-on-start: true
+
+# --- repo attribution / work-scope classification ---------------------------------
+
+# Where <org>/<repo> clones live, plural. A teammate running more than one clone tree (e.g.
+# ~/code/work and ~/wt) lists both; a single entry costs the second tree all attribution. Read by
+# repo attribution's last-resort path-guess rule and by the cwd anchor that helps decide work vs.
+# personal scope (below). Each entry must be an absolute path and an existing directory, or the
+# config fails to load. Default: [<home>/repos].
+# repo-roots:
+#   - /home/you/repos
+
+# Hosts a git remote may confer WORK scope from. An SSH `Host` alias is resolved against this list
+# rather than compared literally, so `git@github-work:org/repo` still confers work when the alias
+# points at an allowed host. Must name at least one host: an empty list is rejected at load rather
+# than silently conferring work from nothing. Default: [github.com].
+# work-remote-hosts:
+#   - github.com
+
+# Reposlug patterns naming which repos count as WORK: `<owner>/*` (every repo under that owner) or
+# `<owner>/<repo>` (exactly one), with a leading `!` marking an EXCLUDE. Exclude always wins over
+# include, regardless of list order; matching is case-insensitive per segment. This is the ONE
+# source of work repos: only a session under (or whose git remote / touched repos match) one of
+# these patterns is ever sent to the LLM for enrichment.
+#
+# Absent key, or no clyde.yml at all, resolves to the built-in default below. A PRESENT key REPLACES
+# the default outright (no merge): `reposlugs-ptns: []` means ZERO repos are work.
+#
+# A bare `!owner/repo` entry MUST be quoted. Unquoted, YAML reads a leading `!` as a tag and the
+# entry silently parses as an empty string; this is rejected at load with a hint to quote it.
+#
+# `clyde doctor` prints the normalized, sorted list under `reposlugs-ptns:` (`none` for `[]`).
+# See docs/design/2026-09-27-reposlugs-ptns-from-config.md for the full policy.
+# reposlugs-ptns:
+#   - tatari-tv/*
+#   - "!tatari-tv/some-personal-repo"   # exclude: quote it, a bare leading `!` is a YAML tag

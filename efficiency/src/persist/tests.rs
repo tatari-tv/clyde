@@ -12,6 +12,12 @@ use crate::extract::extract;
 use crate::fold::fold;
 use crate::score::scored;
 
+/// `reposlugs-ptns: ["tatari-tv/*"]`, named explicitly: the work fixtures in this file are all
+/// `tatari-tv` rows, and no classifier test leans on an implicit default.
+fn tatari_wide_ptns() -> Vec<common::repo::ptn::ReposlugPtn> {
+    vec![common::repo::ptn::ReposlugPtn::parse("tatari-tv/*").unwrap()]
+}
+
 const MULTI_SUBAGENT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../fixtures/efficiency/multi-subagent.jsonl"
@@ -128,7 +134,7 @@ fn reindex_populates_null_sessions_without_bumping_updated_at() {
         now: dt("2026-07-01T00:00:00Z"),
         dormant_after: chrono::Duration::days(7),
         host: "host-01".to_string(),
-        anchors: session::Anchors::new(&[std::path::PathBuf::from("/home/alice/repos")]),
+        scope_policy: session::ScopePolicy::new(&[std::path::PathBuf::from("/home/alice/repos")], &tatari_wide_ptns()),
         work_remote_hosts: vec!["github.com".to_string()],
     };
     let before = db.export(&ExportFilters::default(), &ctx).unwrap();

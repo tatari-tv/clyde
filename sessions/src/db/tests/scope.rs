@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Duration, Utc};
 use session::ParsedSession;
 
-use crate::db::{Db, EfficiencyWrite};
+use crate::db::{Db, EfficiencyWrite, no_policy};
 use crate::export::EnrichStatus;
 
 const UUID_A: &str = "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042";
@@ -44,7 +44,7 @@ fn cutoff() -> DateTime<Utc> {
 }
 
 fn candidate_ids(db: &Db) -> Vec<String> {
-    db.enrich_candidates(Some(cutoff()), 1, 5, false)
+    db.enrich_candidates(Some(cutoff()), 1, 5, false, &no_policy())
         .unwrap()
         .into_iter()
         .map(|r| r.session_id)
@@ -84,7 +84,7 @@ fn a_skipped_personal_row_is_re_offered_when_the_classifier_moves_on() {
         .unwrap();
 
     // A pre-v12 skip: recorded personal, no classifier version (the state every existing row is in).
-    db.record_enrich_skip(UUID_A, "personal", None, EnrichStatus::SkippedPersonal)
+    db.record_enrich_skip(UUID_A, "personal", None, &no_policy(), EnrichStatus::SkippedPersonal)
         .unwrap();
     assert_eq!(
         candidate_ids(&db),
@@ -97,6 +97,7 @@ fn a_skipped_personal_row_is_re_offered_when_the_classifier_moves_on() {
         UUID_A,
         "personal",
         Some(session::SCOPE_VERSION),
+        &no_policy(),
         EnrichStatus::SkippedPersonal,
     )
     .unwrap();
@@ -110,6 +111,7 @@ fn a_skipped_personal_row_is_re_offered_when_the_classifier_moves_on() {
         UUID_A,
         "personal",
         Some(session::SCOPE_VERSION - 1),
+        &no_policy(),
         EnrichStatus::SkippedPersonal,
     )
     .unwrap();
@@ -121,15 +123,16 @@ fn a_skipped_personal_row_is_re_offered_when_the_classifier_moves_on() {
 }
 
 /// The sibling clause does not undo the fix. `record_enrich_skip` deliberately never touches
-/// `enriched_at`, so `enriched_at IS NULL` holds for every `skipped-personal` row and the
-/// `prompt_version` clause stays true. Checked explicitly, because it is the OTHER obvious way for the
+/// `enriched_at`, and since schema v14 the freshness clause does not gate a `skipped-personal` row
+/// at all: a row enriched `ok` and later skipped KEEPS its `enriched_at`, which is the case
+/// `db/tests/policy.rs` covers. Checked explicitly, because it is the OTHER obvious way for the
 /// widening to be a silent no-op.
 #[test]
 fn the_prompt_version_clause_does_not_re_exclude_a_skipped_personal_row() {
     let db = Db::open_memory().unwrap();
     db.upsert_session(&parsed(UUID_A, "/home/saidler/notes"), "host-01")
         .unwrap();
-    db.record_enrich_skip(UUID_A, "personal", None, EnrichStatus::SkippedPersonal)
+    db.record_enrich_skip(UUID_A, "personal", None, &no_policy(), EnrichStatus::SkippedPersonal)
         .unwrap();
 
     let enriched_at: Option<String> = db
@@ -167,13 +170,14 @@ fn an_evidence_free_skip_leaves_scope_version_null_and_stays_a_candidate() {
         .unwrap();
 
     // A: no evidence -> provisional, NULL version.
-    db.record_enrich_skip(UUID_A, "personal", None, EnrichStatus::SkippedPersonal)
+    db.record_enrich_skip(UUID_A, "personal", None, &no_policy(), EnrichStatus::SkippedPersonal)
         .unwrap();
     // B: evidence in hand -> settled at the current version.
     db.record_enrich_skip(
         UUID_B,
         "personal",
         Some(session::SCOPE_VERSION),
+        &no_policy(),
         EnrichStatus::SkippedPersonal,
     )
     .unwrap();
@@ -280,6 +284,7 @@ fn a_v11_db_gains_scope_version_because_v12_is_its_own_step() {
         UUID_A,
         "personal",
         Some(session::SCOPE_VERSION),
+        &no_policy(),
         EnrichStatus::SkippedPersonal,
     )
     .unwrap();
@@ -354,6 +359,7 @@ fn a_settled_skip_does_not_churn_the_export_cursor() {
         UUID_A,
         "personal",
         Some(session::SCOPE_VERSION),
+        &no_policy(),
         EnrichStatus::SkippedPersonal,
     )
     .unwrap();
