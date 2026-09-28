@@ -452,10 +452,20 @@ pub enum ProbeOutcome {
     /// this fires for every symlink-reached cwd (a confirmed pre-existing bug Phase 6 fixes), so
     /// stamping it would lock out sessions for a defect of clyde's own.
     OutsideRoot,
-    /// git did not answer the question asked: the cwd is gone, git is absent, `safe.directory`
-    /// refused, or the origin is present but unparseable. Records NOTHING, and warns.
+    /// git did not answer the question asked: the cwd is gone, git is absent, or `safe.directory`
+    /// refused. Records NOTHING, and warns.
     Indeterminate,
+    /// git ANSWERED with an origin that does not parse to `<org>/<repo>` (a local path, a subgroup
+    /// URL). Not a probe negative, so `repo_probe` records nothing; but it is a fact about the
+    /// CURRENT remote, so the indexer records [`UNPARSEABLE_ORIGIN_SLUG`] as `repo_host_slug` and a
+    /// checkout re-pointed here stops inheriting its old slug's host trust. Kept apart from
+    /// [`Self::Indeterminate`] because a transient failure must never strip that trust.
+    UnparseableOrigin,
 }
+
+/// The `repo_host_slug` recorded for [`ProbeOutcome::UnparseableOrigin`]. Never a valid
+/// `<org>/<repo>`, so it can never equal a stored `repo`, and the host/slug pairing refuses Work.
+pub const UNPARSEABLE_ORIGIN_SLUG: &str = "<unparseable-origin>";
 
 impl ProbeOutcome {
     /// The slug when the probe resolved one, for the callers that only ever wanted the attribution.
@@ -490,6 +500,7 @@ impl ProbeOutcome {
             Self::Blocked => "blocked",
             Self::OutsideRoot => "outside-root",
             Self::Indeterminate => "indeterminate",
+            Self::UnparseableOrigin => "unparseable-origin",
         }
     }
 
@@ -811,10 +822,11 @@ fn read_origin(cwd: &Path) -> ProbeOutcome {
             Some(RemoteSlug { host, slug }) => ProbeOutcome::Resolved { slug, host },
             None => {
                 warn!(
-                    "repo::detect: {} has an origin that does not parse to <org>/<repo>; recording nothing",
+                    "repo::detect: {} has an origin that does not parse to <org>/<repo>; its old \
+                     slug no longer confers host trust",
                     cwd.display()
                 );
-                ProbeOutcome::Indeterminate
+                ProbeOutcome::UnparseableOrigin
             }
         },
         GitRun::Refused(1) => {

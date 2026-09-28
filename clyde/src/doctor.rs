@@ -394,7 +394,7 @@ fn reprobe(cwds: &[String]) -> (usize, usize, usize) {
         match resolver.probe(Path::new(cwd)) {
             ProbeOutcome::Blocked => blocked += 1,
             ProbeOutcome::OutsideRoot => outside += 1,
-            ProbeOutcome::Indeterminate => indeterminate += 1,
+            ProbeOutcome::Indeterminate | ProbeOutcome::UnparseableOrigin => indeterminate += 1,
             // Resolved or conclusive: the catalog is simply behind a reindex, which is not a fault.
             _ => {}
         }

@@ -762,6 +762,8 @@ fn bare_work_org_is_an_org_dir(probe: Option<RecordedProbe<'_>>) -> bool {
         ProbeOutcome::NoOrigin => false,
         // The cwd is gone, or git could not answer. Absence of evidence. Fail closed.
         ProbeOutcome::Indeterminate => false,
+        // A checkout whose origin git reported but nobody can parse. Fail closed.
+        ProbeOutcome::UnparseableOrigin => false,
         // The repo boundary is not at or above the cwd. Says nothing about a remote. Fail closed.
         ProbeOutcome::OutsideRoot => false,
         // The nearest boundary is a blocked root (`$HOME`). It probably implies the cwd is not its

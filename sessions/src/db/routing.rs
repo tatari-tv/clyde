@@ -105,6 +105,19 @@ impl Db {
         Ok(n > 0)
     }
 
+    /// Record that the current origin is unparseable: `repo_host_slug` becomes
+    /// [`common::repo::UNPARSEABLE_ORIGIN_SLUG`], which never equals a stored `repo`, so the host/slug
+    /// pairing refuses Work. `repo_host` is left as is; the pairing refuses before the host is read,
+    /// including on a pre-v13 row whose host is NULL. Guarded against a no-change write.
+    pub fn record_unparseable_origin(&self, session_id: &str) -> Result<bool> {
+        debug!("Db::record_unparseable_origin: session_id={session_id}");
+        let n = self.conn.execute(
+            "UPDATE sessions SET repo_host_slug = ?2 WHERE session_id = ?1 AND repo_host_slug IS NOT ?2",
+            params![session_id, common::repo::UNPARSEABLE_ORIGIN_SLUG],
+        )?;
+        Ok(n > 0)
+    }
+
     /// The recorded conclusive-negative stamp for one session, or `None`.
     ///
     /// PRESENCE is the whole signal. Only a conclusive negative is ever written, so a non-`None`

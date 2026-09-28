@@ -206,3 +206,17 @@ None.
 
 ### Open questions
 None.
+
+## PR #96 review fix (CodeRabbit)
+
+### Design decisions
+- `ProbeOutcome::UnparseableOrigin` (`common/src/repo.rs:read_origin`): an origin git answered with but that does not parse to `<org>/<repo>` is no longer `Indeterminate`. `index::apply_chain` records `repo_host_slug = UNPARSEABLE_ORIGIN_SLUG` (`Db::record_unparseable_origin`), which never equals `repo`, so `routing::host_confers_work` refuses and a checkout re-pointed at such a remote stops inheriting its old slug's host trust. Transient failures stay `Indeterminate` and strip nothing. Test: `a_checkout_re_pointed_at_an_unparseable_origin_loses_the_old_slugs_authority`.
+
+### Deviations
+- CodeRabbit suggested clearing `repo_host` and `repo_host_slug`. Not done: a NULL host inherits trust (`session/src/scope.rs` strip-only rule), so the row would stay Work.
+
+### Tradeoffs
+- Sentinel slug vs. a new column: the sentinel reuses the v14 pairing check with no schema change.
+
+### Open questions
+None.

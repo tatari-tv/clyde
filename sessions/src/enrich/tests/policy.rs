@@ -422,3 +422,70 @@ fn a_re_pointed_checkout_loses_the_old_slugs_authority() {
     let stats = c.sweep(&fake, &opts);
     assert_eq!((stats.enriched, fake.calls()), (1, 1), "paired again, the row is Work");
 }
+
+/// A checkout re-pointed at an origin git reports but nobody can parse (a local path) loses the old
+/// slug's authority too. The column-clear a reviewer suggested would not: a NULL host inherits trust,
+/// so the row would stay Work. The sentinel slug never equals `repo`, so the pairing refuses.
+///
+/// BITES: record nothing for `ProbeOutcome::UnparseableOrigin` in `index::apply_chain` and the
+/// re-pointed row is sent.
+#[test]
+fn a_checkout_re_pointed_at_an_unparseable_origin_loses_the_old_slugs_authority() {
+    let c = Catalog::new();
+    let base = c.tmp.path().canonicalize().unwrap();
+    let roots = vec![base.join("repos")];
+    let checkout = base.join("repos").join("scottidler").join("claude");
+    std::fs::create_dir_all(&checkout).unwrap();
+    git(&checkout, &["init", "-q"]);
+    git(
+        &checkout,
+        &["remote", "add", "origin", "git@github.com:scottidler/claude.git"],
+    );
+    let projects = base.join("projects");
+    let transcript = projects.join("proj").join(format!("{UUID_A}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    let line = serde_json::json!({
+        "type": "user",
+        "cwd": checkout,
+        "timestamp": "2026-06-20T10:00:00Z",
+        "sessionId": UUID_A,
+        "message": { "content": "work on the claude repo" }
+    });
+    std::fs::write(&transcript, format!("{line}\n")).unwrap();
+    let opts = EnrichOptions {
+        scope_policy: ScopePolicy::new(&roots, &[ReposlugPtn::parse("scottidler/claude").unwrap()]),
+        ..Default::default()
+    };
+    crate::index::reindex(&c.db, &projects, &roots).unwrap();
+
+    git(&checkout, &["remote", "set-url", "origin", "/srv/git/claude.git"]);
+    crate::index::reindex(&c.db, &projects, &roots).unwrap();
+    let evidence = c.db.scope_evidence(UUID_A).unwrap();
+    assert_eq!(
+        evidence.repo_host_slug.as_deref(),
+        Some(common::repo::UNPARSEABLE_ORIGIN_SLUG)
+    );
+    let rec = c.db.get(UUID_A).unwrap().unwrap();
+    assert_eq!(
+        rec.repo.as_deref(),
+        Some("scottidler/claude"),
+        "rank 0 is never replaced"
+    );
+    let d = crate::routing::classify_row(
+        UUID_A,
+        rec.cwd.as_deref(),
+        rec.repo.as_deref(),
+        rec.repo_source.as_deref(),
+        &evidence,
+        &opts.scope_policy,
+        &mut HostPolicy::new(&opts.work_remote_hosts),
+    )
+    .decision;
+    assert_eq!(
+        (d.scope, d.basis),
+        (session::Scope::Personal, session::Basis::HostRefused)
+    );
+    let fake = Fake::ok(&["x"]);
+    let stats = c.sweep(&fake, &opts);
+    assert_eq!((stats.skipped_personal, fake.calls()), (1, 0), "0 bodies sent");
+}
