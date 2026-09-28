@@ -27,7 +27,8 @@
 //! port as a generic, so nothing here links SQLite and the tests need nothing but a `BTreeMap`.
 
 use log::{debug, trace, warn};
-use std::collections::{BTreeMap, HashMap};
+use rayon::prelude::*;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -185,6 +186,21 @@ impl Resolver {
         let outcome = detect_with_blocked_roots(cwd, &self.blocked);
         self.cache.insert(cwd.to_path_buf(), outcome.clone());
         outcome
+    }
+
+    /// Fill the rule-1 memo for every distinct `cwd` not already in it, probing them in parallel.
+    /// The answers are exactly what lazy [`Self::probe`] calls would produce (same probe, same
+    /// blocked roots); only the `git` spawns overlap instead of running one after another, which is
+    /// most of a startup reindex once the transcript parse is skipped.
+    pub fn prewarm<'a>(&mut self, cwds: impl IntoIterator<Item = &'a Path>) {
+        let pending: BTreeSet<&Path> = cwds.into_iter().filter(|c| !self.cache.contains_key(*c)).collect();
+        debug!("repo::Resolver::prewarm: pending={}", pending.len());
+        let blocked = &self.blocked;
+        let outcomes: Vec<(PathBuf, ProbeOutcome)> = pending
+            .into_par_iter()
+            .map(|cwd| (cwd.to_path_buf(), detect_with_blocked_roots(cwd, blocked)))
+            .collect();
+        self.cache.extend(outcomes);
     }
 
     /// Rule 1 only: the git-origin slug for `cwd`, memoized. `None` when the directory is gone, is

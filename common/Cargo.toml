@@ -26,6 +26,7 @@ dirs.workspace = true
 env_logger = { workspace = true }
 eyre.workspace = true
 log.workspace = true
+rayon.workspace = true
 regex = "1.12.4"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

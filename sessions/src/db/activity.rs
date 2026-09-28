@@ -6,6 +6,8 @@
 //! parent (it is part of every `SessionRecord`), and consulted through
 //! `SessionRecord::dormancy_at`; what lives here is the write side.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use eyre::Result;
 use log::{debug, trace};
@@ -26,7 +28,66 @@ pub struct SkipKey {
     pub parse_version: Option<i64>,
 }
 
+impl SkipKey {
+    /// True when a transcript whose files stat to `modified` needs no work at all: same mtime AND
+    /// parse-derived columns at the current `session::PARSE_VERSION`. The single predicate behind
+    /// both [`Db::upsert_session`]'s `SkippedUnchanged` arm and the reindex's pre-parse skip, so the
+    /// two can never disagree about which sessions are unchanged.
+    pub fn is_unchanged(&self, modified: DateTime<Utc>) -> bool {
+        self.modified == Some(modified) && self.parse_version == Some(session::PARSE_VERSION)
+    }
+}
+
+/// What the reindex needs about an already-cataloged session to decide, BEFORE parsing its
+/// transcript, whether it changed, and to run the repo chain for it when it did not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedRow {
+    pub skip_key: SkipKey,
+    /// The stored cwd, the repo chain's input for a session whose transcript is not re-parsed.
+    pub cwd: Option<String>,
+}
+
 impl Db {
+    /// Every cataloged session's skip key and cwd, keyed by session id, in one query. The reindex
+    /// reads this once instead of calling [`Self::skip_key_of`] per session, so it can skip the
+    /// transcript parse for every unchanged session.
+    pub fn indexed_rows(&self) -> Result<HashMap<String, IndexedRow>> {
+        debug!("Db::indexed_rows");
+        let mut stmt = self
+            .conn
+            .prepare("SELECT session_id, modified, parse_version, cwd FROM sessions")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let indexed: HashMap<String, IndexedRow> = rows
+            .into_iter()
+            .map(|(session_id, modified, parse_version, cwd)| {
+                let skip_key = SkipKey {
+                    modified: parse_dt(&modified),
+                    parse_version,
+                };
+                (session_id, IndexedRow { skip_key, cwd })
+            })
+            .collect();
+        debug!("Db::indexed_rows: rows={}", indexed.len());
+        Ok(indexed)
+    }
+
+    /// Open one transaction for a run of per-session writes. The reindex's repo-chain loop issues
+    /// several small statements per session across thousands of sessions; committing them once
+    /// instead of one autocommit each keeps the MCP startup reindex fast. Dropping the guard without
+    /// `commit` rolls everything back, and the reindex is idempotent, so a failed pass loses nothing.
+    pub fn begin_batch(&self) -> Result<rusqlite::Transaction<'_>> {
+        debug!("Db::begin_batch");
+        Ok(self.conn.unchecked_transaction()?)
+    }
     /// The stored incremental-skip key for a session, or `None` when the session is not in the catalog
     /// at all.
     ///
