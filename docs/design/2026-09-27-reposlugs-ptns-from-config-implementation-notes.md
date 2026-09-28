@@ -117,3 +117,74 @@ None.
 
 ### Open questions
 None.
+
+## Phase 4: Doctor line and docs
+
+### Design decisions
+- The `reposlugs-ptns:` line is computed independently of `attribution()` (`clyde/src/doctor.rs:
+  reposlugs_ptns_line`), loading `common::config::load()` a second time in `run()` rather than
+  threading the already-loaded `Config` out of `attribution()`. `attribution()` returns `Ok(None)`
+  before ever loading config when `db_path` does not exist (`doctor.rs:126-129`), and the doc
+  requires the line to print in exactly that case (the "no clyde.yml and no catalog" acceptance
+  criterion), so the line cannot depend on a value `attribution()` may never produce.
+- A second, small, best-effort `config::load()` mirrors the file's existing posture (attribution and
+  catalog reads are already each individually best-effort, per the module doc comment on `run`): a
+  malformed `clyde.yml` prints `reposlugs-ptns: (could not load config: <e>)` rather than aborting
+  the whole report, matching how `attribution`'s own load failure is reported inline instead of
+  propagated.
+- `format_reposlugs_ptns` is a free function taking `&[common::repo::ptn::ReposlugPtn]` rather than
+  going through `session::ScopePolicy` (which already normalizes/sorts/dedups internally): `Config`'s
+  own accessor already returns entries in the normalized (lowercased) `Display` form `ReposlugPtn::
+  parse` produces, so sorting and deduping the `Display` strings directly reproduces
+  `ScopePolicy::new`'s ordering without constructing a policy (which additionally wants `repo-roots`)
+  just to print one line.
+- The `reposlugs-ptns:` label is exactly 15 characters, the same fixed field width every other label
+  in `print_report`'s paths block uses (`binary:` + 8 spaces, `hook (global): `, etc., all 15 chars
+  before the value). Kept the literal one-space separator after the colon instead of matching that
+  width exactly (which would print zero spaces, `reposlugs-ptns:tatari-tv/*`), because the design
+  doc's own acceptance criteria quote the line WITH a space (`reposlugs-ptns: tatari-tv/*`,
+  `reposlugs-ptns: none`); readability and the literal expected text both win over one column of
+  visual alignment.
+- `clyde/tests/doctor.rs` is a new integration test file, spawning the real `clyde` binary against a
+  hermetic `$HOME`/`$XDG_*_HOME` with `--db` pointed at a path that does not exist, mirroring
+  `serve.rs`/`matrix.rs`'s pattern rather than unit-testing `print_report` directly: the acceptance
+  criteria are about the LINE THE BINARY PRINTS in the no-clyde.yml/no-catalog case, and
+  `common::config::load()` reads real XDG env vars process-wide, which a unit test in the same
+  process as other config tests cannot mutate safely without `common::ENV_LOCK` (not visible outside
+  the `common` crate).
+- `common/src/config/tests.rs` gained the two doc-accuracy tests (`clyde_yml_example_loads`,
+  `every_supported_key_is_documented_in_the_readme_and_the_example`) rather than a new test file,
+  because `load_from` is private to the `config` module and these tests need it directly (the
+  `clyde.yml.example` is deliberately all-commented, so proving it loads means proving it equals
+  `Config::default()`, not just that some subcommand exit code is zero).
+- `SUPPORTED_CONFIG_KEYS` lists nested keys (`format`, `model`, `cache-read-share-floor`, ...) bare,
+  without their parent section prefix, and checks each with a plain substring search rather than a
+  YAML-aware parse: the goal is "documented somewhere a reader would see it," not "documented at one
+  exact line," and README.md already documents `render:`/`efficiency:`/`projects-dir`/
+  `reindex-on-start` in sections outside the one this phase edited (lines ~191-230, ~272-278) written
+  by earlier work, not this phase.
+
+### Deviations
+- The design doc's per-key wording ("`clyde doctor` prints `reposlugs-ptns: otto-rs/otto,
+  scottidler/claude, ...` ... beside the always-printed `config:` line") is followed exactly for
+  placement, but the design's `ScopePolicy`-flavored phrasing ("normalized, sorted") is implemented
+  by sorting/deduping the `Display` strings directly in `doctor.rs` rather than by constructing a
+  `session::ScopePolicy` and asking it. Same effect (same normalization rules,
+  `ReposlugPtn::parse` already lowercases), correct seam: `doctor`'s paths block has no `repo-roots`
+  context at that call site and doesn't need one just to render this one line.
+
+### Tradeoffs
+- `reposlugs_ptns_line()` calls `common::config::load()` a second time (once here, once inside
+  `attribution()` when a catalog exists) rather than restructuring `run()`/`attribution()` to load
+  config once and share it: the doc scopes this phase to the doctor LINE and the docs, not to
+  `doctor.rs`'s existing best-effort-per-section architecture, and a second `load()` call is cheap
+  (a small YAML file, no catalog I/O) next to a rewrite that would touch `attribution()`'s signature
+  and every one of its call sites.
+- `clyde/tests/doctor.rs` spawns the real compiled binary (`env!("CARGO_BIN_EXE_clyde")`) per test
+  rather than calling `doctor::run` or `print_report` in-process: `print_report` is a private,
+  stdout-printing function with no return value, so the only way to observe its output without
+  changing its signature (out of scope for this phase) is to capture a child process's stdout, same
+  as `serve.rs` already does for the same reason.
+
+### Open questions
+None.

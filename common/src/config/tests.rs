@@ -813,3 +813,55 @@ fn xdg_config_dir_honors_env_and_falls_back() {
     }
     drop(guard);
 }
+
+/// Every kebab-case key `Config` actually deserializes, spelled the way an operator would write it
+/// (nested keys bare, without their parent section). Excludes the removed `repo-root` tombstone
+/// (`RemovedKey`/`de_repo_root_renamed`, above): that key's only valid appearance is in an error
+/// message, never in documentation meant to be copied into a real `clyde.yml`.
+const SUPPORTED_CONFIG_KEYS: &[&str] = &[
+    "date-tz",
+    "render",
+    "format",
+    "model",
+    "judge-max-output-tokens",
+    "slot-max-output-tokens",
+    "projects-dir",
+    "reindex-on-start",
+    "efficiency",
+    "cache-read-share-floor",
+    "tool-error-rate-ceiling",
+    "auto-compaction-flag",
+    "minimum-total-tokens",
+    "minimum-turns",
+    "repo-roots",
+    "min-enrichment",
+    "work-remote-hosts",
+    "reposlugs-ptns",
+];
+
+/// Design `docs/design/2026-09-27-reposlugs-ptns-from-config.md`, Phase 4: `clyde.yml.example`
+/// ships every supported key, and it must actually LOAD -- an annotated example that fails to
+/// parse is worse than none, since a copy-uncomment-go operator would hit it first.
+#[test]
+fn clyde_yml_example_loads() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../clyde.yml.example");
+    let cfg = load_from(&path).unwrap();
+    // Every key in the shipped example is commented out, so this must equal the all-defaults
+    // config -- proving the file is valid YAML under `deny_unknown_fields`, not merely present.
+    assert_eq!(cfg, Config::default());
+}
+
+/// Every supported key documented in BOTH `README.md`'s config section and `clyde.yml.example`,
+/// so a reader following either one never hits an unknown-field error the other already knew
+/// about, and neither doc silently falls behind `Config`'s actual field set.
+#[test]
+fn every_supported_key_is_documented_in_the_readme_and_the_example() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    let example = std::fs::read_to_string(root.join("clyde.yml.example")).unwrap();
+
+    for key in SUPPORTED_CONFIG_KEYS {
+        assert!(readme.contains(key), "README.md is missing `{key}`");
+        assert!(example.contains(key), "clyde.yml.example is missing `{key}`");
+    }
+}

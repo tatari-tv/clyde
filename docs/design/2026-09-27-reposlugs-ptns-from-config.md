@@ -2,7 +2,7 @@
 
 **Author:** Scott Idler
 **Date:** 2026-09-27
-**Status:** Approved
+**Status:** Implemented
 **Review Passes Completed:** 5/5 on the two-list draft (panel rounds 1-4); restructured 2026-09-27 to one `reposlugs-ptns` list per the owner, passes 2-5 re-run on the restructure; panel round 5 folded
 
 ## Summary

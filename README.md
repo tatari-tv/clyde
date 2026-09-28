@@ -110,25 +110,53 @@ $XDG_CONFIG_HOME/clyde/pricing.json  # merged pricing override (was ccu/ + cr/)
 
 `clyde.yml` is optional and strict (`deny_unknown_fields`): a missing file is all-defaults, but a
 typo'd key is a hard error. Today it carries `date-tz` (how `report collect --since <date>`
-interprets a bare date), `repo-root` (below), `min-enrichment` (below), a `render:` section (below),
-and an `efficiency:` section (below) with the thresholds `clyde efficiency` scores sessions against.
+interprets a bare date), `repo-roots` (below), `work-remote-hosts` (below), `reposlugs-ptns`
+(below), `min-enrichment` (below), a `render:` section (below), and an `efficiency:` section
+(below) with the thresholds `clyde efficiency` scores sessions against. An annotated
+[`clyde.yml.example`](clyde.yml.example) at the repo root documents every key; copy it to
+`~/.config/clyde/clyde.yml` and uncomment what you want to override.
 
 ```yaml
 # ~/.config/clyde/clyde.yml
-repo-root: /home/you/repos       # where <org>/<repo> clones live; default <home>/repos
-min-enrichment: 0.5              # enrich-coverage floor report collect warns below; default 0.5
+repo-roots: [/home/you/repos]     # where <org>/<repo> clones live; default [<home>/repos]
+work-remote-hosts: [github.com]   # hosts a git remote may confer WORK scope from; default [github.com]
+reposlugs-ptns:                   # reposlug patterns naming which repos count as WORK
+  - tatari-tv/*
+  - scottidler/dotfiles
+  # - "!tatari-tv/some-personal-repo"   # exclude: quote it, a bare leading `!` is a YAML tag
+min-enrichment: 0.5                # enrich-coverage floor report collect warns below; default 0.5
 ```
 
-`repo-root` is used twice by repo attribution. It is the last resort: when a session's working
-directory is gone and clyde has never seen it alive, a cwd matching `<repo-root>/<org>/<repo>[/...]`
-is *guessed* to be that repo, and the guess is labeled as one (`repo-source: path-guess`) rather
-than presented as fact. Before that guess, it is also how a session that ran outside any repo (a
-`$HOME` or temp-dir working directory) is attributed to the repo it actually edited files in
-(`repo-source: files-touched`), by matching each edited file's directory against the same shape.
-Matching is confined to this root, so an arbitrary path cannot manufacture an org. An explicitly set
-value must be an absolute path and an existing directory, or the config fails to load; the default
-is not existence-checked, and on a machine with no `~/repos` the only consequence is that neither
-rule fires.
+`repo-roots` is a LIST (a teammate can run more than one clone tree, e.g. `~/code/work` and
+`~/wt`) and is used twice by repo attribution. It is the last resort: when a session's working
+directory is gone and clyde has never seen it alive, a cwd matching `<root>/<org>/<repo>[/...]`
+under any configured root is *guessed* to be that repo, and the guess is labeled as one
+(`repo-source: path-guess`) rather than presented as fact. Before that guess, it is also how a
+session that ran outside any repo (a `$HOME` or temp-dir working directory) is attributed to the
+repo it actually edited files in (`repo-source: files-touched`), by matching each edited file's
+directory against the same shape. Matching is confined to these roots, so an arbitrary path cannot
+manufacture an org. Each explicitly set entry must be an absolute path and an existing directory, or
+the config fails to load; the default (`[<home>/repos]`) is not existence-checked, and on a machine
+with no `~/repos` the only consequence is that neither rule fires.
+
+`work-remote-hosts` names the hosts a git remote may confer WORK scope from (default
+`[github.com]`); a shop running GitHub Enterprise on another hostname adds it here. An SSH `Host`
+alias is resolved against this list rather than compared literally, so `git@github-work:org/repo`
+still confers work when the alias points at an allowed host. The list must name at least one host:
+`[]` is rejected at load rather than silently conferring work from nothing.
+
+`reposlugs-ptns` is the ONE source of which repos count as work: a list of reposlug patterns,
+`<owner>/*` (every repo under that owner) or `<owner>/<repo>` (exactly one), with a leading `!`
+marking an EXCLUDE (exclude always wins over include, regardless of list order). Matching is
+case-insensitive per segment. Absent key, or no `clyde.yml` at all, resolves to the built-in
+`["tatari-tv/*"]`; a PRESENT key REPLACES that default outright (no merge), so `reposlugs-ptns: []`
+means zero repos are work. A bare `!owner/repo` entry must be quoted (`"!owner/repo"`): unquoted,
+YAML reads a leading `!` as a tag and the entry silently parses as an empty string, which is
+rejected at load with a hint to quote it. `clyde doctor` prints the normalized, sorted list under
+`reposlugs-ptns:` (`none` for `[]`), so a typo'd or forgotten pattern is visible without reading the
+classifier's decisions one row at a time. See
+`docs/design/2026-09-27-reposlugs-ptns-from-config.md` for the full policy (owner-wide vs. named
+repos, how excludes interact with the cwd anchor and the git remote).
 
 `min-enrichment` is a FRACTION, not a percent: `0.5` means 50%, and `min-enrichment: 50` is rejected
 at load. When fewer than this share of a window's sessions carry an enrich summary, `report collect`
