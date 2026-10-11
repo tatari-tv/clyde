@@ -167,7 +167,8 @@ pub(super) struct AgentCents {
 ///
 /// A session with spend but no bucket (a hand-built or merged entry) puts its cents on
 /// [`MAIN_SESSION_BUCKET`]: they must land somewhere, and the residual is what "not delegated"
-/// means. A bucket's tokens ride along unchanged.
+/// means. When every bucket is weightless the cents land there too, not on the first bucket by
+/// name (the [`cents::apportion`] fallback contract). A bucket's tokens ride along unchanged.
 pub(super) fn session_agent_cents(entry: &SessionEntry) -> Vec<(String, u64, i64)> {
     let total = entry.spend_usd.map_or(0, cents::to_cents);
     if entry.agent_type_costs.is_empty() {
@@ -177,6 +178,21 @@ pub(super) fn session_agent_cents(entry: &SessionEntry) -> Vec<(String, u64, i64
         return vec![(MAIN_SESSION_BUCKET.to_string(), 0, total)];
     }
     let weights: Vec<f64> = entry.agent_type_costs.values().map(|w| w.cost_usd).collect();
+    if total != 0 && weights.iter().all(|w| *w <= 0.0) {
+        // Nothing priced any bucket, so there is no proportion to honor; `apportion` would dump the
+        // cents on the first bucket BY NAME. They belong to the residual instead: what no
+        // delegated bucket can claim is "not delegated".
+        let mut parts: Vec<(String, u64, i64)> = entry
+            .agent_type_costs
+            .iter()
+            .map(|(name, w)| (name.clone(), w.tokens, 0))
+            .collect();
+        match parts.iter_mut().find(|(name, _, _)| name == MAIN_SESSION_BUCKET) {
+            Some(main) => main.2 = total,
+            None => parts.push((MAIN_SESSION_BUCKET.to_string(), 0, total)),
+        }
+        return parts;
+    }
     entry
         .agent_type_costs
         .iter()

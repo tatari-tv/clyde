@@ -100,12 +100,20 @@ fn numeric_tokens(text: &str) -> Vec<String> {
     out
 }
 
-/// Chart GEOMETRY in the serialized block: a line chart's `viewbox` (`"0 0 1000 300"`) and `points`
+/// Chart GEOMETRY and hex identifiers in the serialized block: a line chart's `viewbox` (`"0 0 1000 300"`) and `points`
 /// (`"0,287 34,120 ..."`), and every bar scale (`*-percent-of-max`). Coordinates are not figures a
 /// reader reads, so they license nothing: left in, `1000`, `300` and every `x,y` pair would license
 /// a fabricated "$1000" or "300 sessions".
 fn is_geometry_key(key: &str) -> bool {
     matches!(key, "viewbox" | "points") || key.ends_with("-percent-of-max")
+}
+
+/// Hex identifiers in the serialized block: a session's commit SHAs (`outcomes.commits`, an array;
+/// the `commits` COUNT in the totals is a figure and stays) and its `short-id`. The digit runs
+/// inside one are accidents of hashing, not figures: left in, `aaaa12345678bbbb` licenses a
+/// fabricated "$12345678".
+fn is_hex_identifier(key: &str, value: &serde_json::Value) -> bool {
+    key == "short-id" || (key == "commits" && value.is_array())
 }
 
 fn collect_scalars(value: &serde_json::Value, out: &mut Vec<String>) {
@@ -115,7 +123,7 @@ fn collect_scalars(value: &serde_json::Value, out: &mut Vec<String>) {
         serde_json::Value::Array(items) => items.iter().for_each(|v| collect_scalars(v, out)),
         serde_json::Value::Object(map) => map
             .iter()
-            .filter(|(k, _)| !is_geometry_key(k))
+            .filter(|(k, v)| !is_geometry_key(k) && !is_hex_identifier(k, v))
             .for_each(|(_, v)| collect_scalars(v, out)),
         _ => {}
     }
@@ -153,13 +161,27 @@ fn licensed(block: &ContextBlock<'_>) -> std::collections::BTreeSet<String> {
     }
     // "Show all N repositories" under the opened-PR links.
     strings.push(format_int(sections::pr_lists(block).len() as u64));
-    strings.iter().flat_map(|s| numeric_tokens(s)).collect()
+    let mut tokens: std::collections::BTreeSet<String> = strings.iter().flat_map(|s| numeric_tokens(s)).collect();
+    // The page PRINTS each session's short id, so a ledger entry that IS one is an identifier, not a
+    // figure. Registered whole under `id:`, never as digit runs.
+    tokens.extend(
+        block
+            .sessions
+            .iter()
+            .map(|s| format!("{SESSION_ID_PREFIX}{}", s.short_id)),
+    );
+    tokens
 }
+
+const SESSION_ID_PREFIX: &str = "id:";
 
 /// Exact token equality: `123` is not licensed by `1234`, which the markdown check's substring
 /// match would allow.
 fn assert_ledger_is_licensed(ledger: &[String], licensed: &std::collections::BTreeSet<String>) {
     for entry in ledger {
+        if licensed.contains(&format!("{SESSION_ID_PREFIX}{entry}")) {
+            continue;
+        }
         for token in numeric_tokens(entry) {
             assert!(
                 licensed.contains(&token),
@@ -200,6 +222,36 @@ fn the_licensing_check_rejects_a_fabricated_figure_in_text() {
             let mut page = build(block, &SlotProse::new(), 10);
             page.raw("<p>").text("That is $123,456.78 of value.").raw("</p>");
             assert_ledger_is_licensed(&page.ledger, &licensed(block));
+        },
+    );
+}
+
+/// Break-it proof, hex identifiers: a figure whose digits exist ONLY inside a medium-fixture commit
+/// SHA is not licensed, so writing it as a figure fails. BITES: stop skipping `outcomes.commits`
+/// in `collect_scalars` and the digit run is licensed again.
+#[test]
+#[should_panic(expected = "unlicensed numeric token")]
+fn the_licensing_check_rejects_a_figure_that_only_a_commit_sha_contains() {
+    let case = medium();
+    with_case(
+        &case,
+        |_| {},
+        |block| {
+            let licensed = licensed(block);
+            let digits = case
+                .report
+                .sessions
+                .values()
+                .filter_map(|e| e.outcomes.as_ref())
+                .flat_map(|o| o.commits.iter())
+                .flat_map(|sha| numeric_tokens(sha))
+                .find(|run| run.len() >= 5 && !licensed.contains(run))
+                .expect("the medium fixture has a commit SHA with a digit run no figure licenses");
+            let mut page = build(block, &SlotProse::new(), 10);
+            page.raw("<p>")
+                .text(&format!("That is ${digits} of value."))
+                .raw("</p>");
+            assert_ledger_is_licensed(&page.ledger, &licensed);
         },
     );
 }
@@ -1086,6 +1138,35 @@ fn header_repo_org_and_agent_type_rows_all_sum_the_session_cents_on_every_fixtur
                     ),
                     "repo, repo shown, org, org shown, agent-type"
                 );
+            },
+        );
+    }
+}
+
+/// Header, attribution rows, and `covered + uncovered` are the same session-cents sum on every
+/// committed fixture, and no `(unattributed)` row appears that no repo-less session earned.
+/// BITES: reconcile to the f64 headline again and the medium fixture grows a phantom
+/// `$0.00` `(unattributed)` row.
+#[test]
+fn header_equals_the_attribution_rows_on_every_fixture() {
+    for case in cases().into_iter().take(3) {
+        let session_cents = crate::report::session_cents_total(case.report.sessions.values());
+        with_case(
+            &case,
+            |_| {},
+            |block| {
+                let attribution = &block.attribution;
+                let rows: i64 = attribution.rows.iter().map(|r| display_cents(&r.spend)).sum();
+                assert_eq!(display_cents(&block.totals.spend), session_cents, "header");
+                assert_eq!(rows, session_cents, "attribution rows");
+                assert!(attribution.rows.iter().all(|r| !r.spend.starts_with('-')));
+                let repoless = case.report.sessions.values().filter(|e| e.repo.is_none()).count();
+                let unattributed = attribution
+                    .rows
+                    .iter()
+                    .find(|r| r.source == crate::aggregate::UNATTRIBUTED_ORG);
+                assert_eq!(unattributed.map(|r| r.sessions).unwrap_or(0), repoless);
+                assert_eq!(unattributed.is_some(), repoless > 0, "no phantom row");
             },
         );
     }

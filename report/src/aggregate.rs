@@ -15,7 +15,7 @@ use crate::report::{Report, SessionEntry};
 use chrono::NaiveDate;
 use claude_pricing::{Pricing, TokenUsage};
 use common::repo::RepoSource;
-use log::{debug, trace, warn};
+use log::{debug, trace};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
@@ -850,81 +850,43 @@ fn confidence_of(source: RepoSource) -> &'static str {
 
 /// Partition `totals.spend-usd` across the rules that resolved each session's repo.
 ///
-/// The buckets are measured from the per-session spends, with ONE deliberate adjustment: the
-/// `(unattributed)` row absorbs the difference between `totals.spend-usd` and the sum of the
-/// per-session spends, so the rows sum to the headline figure exactly. That difference is a pricing
-/// artifact, not attribution: `totals.spend-usd` prices the UNIONED per-model token counts once,
-/// while each session is priced on its own, and the two disagree whenever a model's long-context
-/// (>200k) tier is crossed by the union but not by an individual session. Folding it anywhere else
-/// would attribute money to a repo that no session's own price supports; folding it into
-/// "unattributed" says exactly what it is. It is WARNed when it exceeds a cent, so it can never grow
-/// unnoticed into a number that matters.
+/// Every bucket is a sum of per-session integer cents ([`cents::to_cents`]), the same unit the
+/// headline sums ([`crate::report::session_cents_total`]), so the rows add up to the headline
+/// exactly and there is no residual row: a negative or phantom `(unattributed)` amount cannot
+/// exist by construction, and the row appears only when a session with no repo is in the window.
 pub fn compute_attribution(report: &Report) -> Attribution {
     debug!("aggregate::compute_attribution: sessions={}", report.sessions.len());
-    let mut buckets: BTreeMap<String, (usize, f64)> = BTreeMap::new();
-    let mut measured_total = 0.0_f64;
-    let mut covered = 0.0_f64;
+    let mut buckets: BTreeMap<String, (usize, i64)> = BTreeMap::new();
+    let mut total_cents = 0_i64;
+    let mut covered_cents = 0_i64;
 
     for entry in report.sessions.values() {
-        let spend = entry.spend_usd.unwrap_or(0.0);
-        measured_total += spend;
+        let session_cents = entry.spend_usd.map_or(0, cents::to_cents);
+        total_cents += session_cents;
         let key = match (&entry.repo, entry.repo_source.as_deref()) {
             (None, _) => UNATTRIBUTED_ORG.to_string(),
-            (Some(_), Some(src)) => match RepoSource::from_str(src) {
-                Ok(parsed) => {
-                    covered += spend;
-                    parsed.as_str().to_string()
+            (Some(_), Some(src)) => {
+                covered_cents += session_cents;
+                match RepoSource::from_str(src) {
+                    Ok(parsed) => parsed.as_str().to_string(),
+                    Err(_) => UNKNOWN_SOURCE.to_string(),
                 }
-                Err(_) => {
-                    covered += spend;
-                    UNKNOWN_SOURCE.to_string()
-                }
-            },
+            }
             (Some(_), None) => {
-                covered += spend;
+                covered_cents += session_cents;
                 UNKNOWN_SOURCE.to_string()
             }
         };
-        let bucket = buckets.entry(key).or_insert((0, 0.0));
+        let bucket = buckets.entry(key).or_insert((0, 0));
         bucket.0 += 1;
-        bucket.1 += spend;
+        bucket.1 += session_cents;
     }
-
-    // Reconcile to the headline figure. See the doc comment: this is a pricing-basis residual, and
-    // the unattributed bucket is where an unattributable dollar belongs.
-    let residual = report.totals.spend_usd - measured_total;
-    if residual.abs() > 0.01 {
-        warn!(
-            "aggregate::compute_attribution: per-session spends sum to {measured_total:.2} but \
-             totals.spend-usd is {:.2}; the {residual:.2} difference (long-context tiering across \
-             the unioned token counts) is carried in the ({UNATTRIBUTED_ORG}) bucket",
-            report.totals.spend_usd
-        );
-    }
-    // Only a POSITIVE residual is money the rows have not accounted for. A negative one says the
-    // per-session spends EXCEED the headline, which the doc comment's long-context story cannot
-    // produce -- it is a merged artifact, or `round_cents` on the headline against unrounded
-    // per-session spends. Folding it would create (or shrink) the `(unattributed)` bucket by a
-    // NEGATIVE amount, `format_usd` would render `-$X.XX` in the artifact, and the prose is licensed
-    // to quote it. The rows falling a hair short of the headline is the better failure: the residual
-    // is declared a pricing artifact, not attribution, so an impossible one is dropped and logged,
-    // never published.
-    if residual < 0.0 {
-        warn!(
-            "aggregate::compute_attribution: per-session spends EXCEED totals.spend-usd by {:.2}; \
-             refusing to fold a negative residual into ({UNATTRIBUTED_ORG}) -- the rows will fall \
-             short of the headline by that amount",
-            -residual
-        );
-    } else if residual != 0.0 {
-        let bucket = buckets.entry(UNATTRIBUTED_ORG.to_string()).or_insert((0, 0.0));
-        bucket.1 += residual;
-    }
-    let uncovered = report.totals.spend_usd - covered;
+    let uncovered_cents = total_cents - covered_cents;
 
     let mut rows: Vec<AttributionRow> = buckets
         .into_iter()
-        .map(|(source, (sessions, spend))| {
+        .map(|(source, (sessions, bucket_cents))| {
+            let spend = cents::to_dollars(bucket_cents);
             let confidence = match RepoSource::from_str(&source) {
                 Ok(parsed) => confidence_of(parsed).to_string(),
                 Err(_) if source == UNATTRIBUTED_ORG => "unattributed".to_string(),
@@ -946,19 +908,19 @@ pub fn compute_attribution(report: &Report) -> Attribution {
             .then_with(|| a.source.cmp(&b.source))
     });
 
-    let covered_share = if report.totals.spend_usd == 0.0 {
+    let covered_share = if total_cents == 0 {
         "0.0%".to_string()
     } else {
-        format!("{:.1}%", covered / report.totals.spend_usd * 100.0)
+        format!("{:.1}%", covered_cents as f64 / total_cents as f64 * 100.0)
     };
     debug!(
-        "aggregate::compute_attribution: rows={} covered={covered:.2} uncovered={uncovered:.2} share={covered_share}",
+        "aggregate::compute_attribution: rows={} covered_cents={covered_cents} uncovered_cents={uncovered_cents} share={covered_share}",
         rows.len()
     );
     Attribution {
         rows,
-        covered: format_usd(covered),
-        uncovered: format_usd(uncovered),
+        covered: format_usd(cents::to_dollars(covered_cents)),
+        uncovered: format_usd(cents::to_dollars(uncovered_cents)),
         covered_share,
     }
 }

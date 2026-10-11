@@ -99,6 +99,21 @@ fn buckets_that_disagree_with_the_session_still_split_exactly_its_cents() {
     assert_eq!(cents_of(&parts), vec![("implementer", 40), ("researcher", 20)]);
 }
 
+/// Inverted from the first-bucket-by-name fallback: when every bucket weighs zero there is no
+/// proportion to honor, so the session's cents land on `(main-session)` (appended when absent,
+/// reused when present), never on whichever bucket sorts first.
+#[test]
+fn zero_weight_buckets_put_the_session_cents_on_the_main_session_row() {
+    let parts = session_agent_cents(&session(Some(7.83), &[("alpha", 0.0), ("beta", 0.0)]));
+    assert_eq!(
+        cents_of(&parts),
+        vec![("alpha", 0), ("beta", 0), (crate::report::MAIN_SESSION_BUCKET, 783)]
+    );
+    let parts = session_agent_cents(&session(Some(7.83), &[("(main-session)", 0.0), ("alpha", 0.0)]));
+    assert_eq!(cents_of(&parts), vec![("(main-session)", 783), ("alpha", 0)]);
+    assert_eq!(parts.iter().map(|p| p.2).sum::<i64>(), 783);
+}
+
 /// A session with spend and no buckets puts its cents on `(main-session)`; an unpriced session
 /// with no buckets contributes no row.
 #[test]
