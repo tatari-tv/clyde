@@ -101,3 +101,20 @@
 
 ### Open questions
 - None.
+
+## Phase 5: Catalog v16
+### Design decisions
+- v16 follows the v15 precedent: no column, no rewritten row, a no-op ladder step that only stamps `user_version`. (`sessions/src/db.rs:SCHEMA_VERSION`, `sessions/src/db/migrate.rs:migrate`)
+- `snapshot_before_v16` is defined in migrate.rs and called from the explicit list in `Db::init`, gated on a pre-migration `user_version` in `1..16`. (`migrate.rs:snapshot_before_v16`, `db.rs:Db::init`)
+- The candidate predicate is `efficiency_json IS NULL OR (json_valid(..) AND (by-day IS NULL OR skill-calls IS NULL))`. The `OR` is parenthesised under `json_valid`, so a corrupt blob is still left for collect to reject. (`db.rs:Db::sessions_missing_efficiency`)
+- A row with no bytes keeps its stored blob through the Phase 1 `stored_has_skill_calls` / keep-blob guard; v16 only offers rows, it never nulls them.
+
+### Deviations
+- None.
+
+### Tradeoffs
+- Reading `skill-calls` from the blob vs. a version column: same reasoning as v15 (an older binary can rewrite a blob without the key while a column would still claim it).
+- Existing tests that used a `by-day`-only blob as "current" now carry `skill-calls` too (`V16_BLOB`); `V15_BLOB` is kept as the offered shape. The `SCHEMA_VERSION` pins in the v5/v7/v9 hop tests were raised to 16 deliberately, as their messages require.
+
+### Open questions
+- None.

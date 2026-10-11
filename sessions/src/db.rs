@@ -84,7 +84,12 @@ use crate::model::{
 ///    `by-day` is offered for recompute, and keeps its old blob when no recompute can succeed. The
 ///    version bump exists for `snapshot_before_v15`, the pre-change copy. See
 ///    `docs/design/2026-10-10-report-html-dashboard.md`.
-const SCHEMA_VERSION: i64 = 15;
+/// v16 is v15's shape again: NO columns, NO rewritten rows. The efficiency blob grew the per-call
+///    maps (`efficiency::RawCounters::skill_calls` / `mcp_calls`), and the backfill predicate widened
+///    once more: a row whose blob lacks `skill-calls` is offered for recompute, so every row with
+///    bytes is recomputed once and one with no bytes keeps its stored accounting. The version bump
+///    exists for `snapshot_before_v16`. See `docs/design/2026-10-11-report-workload-calls.md`.
+const SCHEMA_VERSION: i64 = 16;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -325,6 +330,7 @@ impl Db {
             migrate::snapshot_before_v13(&conn, path).context("failed to snapshot the DB before the v13 migration")?;
             migrate::snapshot_before_v14(&conn, path).context("failed to snapshot the DB before the v14 migration")?;
             migrate::snapshot_before_v15(&conn, path).context("failed to snapshot the DB before the v15 migration")?;
+            migrate::snapshot_before_v16(&conn, path).context("failed to snapshot the DB before the v16 migration")?;
         }
         migrate::migrate(&conn).context("failed to migrate schema")?;
         Ok(Self { conn })
@@ -451,7 +457,8 @@ impl Db {
 
     /// Rows the efficiency backfill should compute, archived or not, each with the path fields the
     /// pricing resolver needs: un-annotated rows (`efficiency_json IS NULL`), plus annotated rows whose
-    /// blob predates per-day buckets (no `$.aggregate.raw."by-day"` key, schema v15).
+    /// blob predates per-day buckets (no `$.aggregate.raw."by-day"` key, schema v15) or per-call counts
+    /// (no `$.aggregate.raw."skill-calls"` key, schema v16).
     ///
     /// This is the backfill/reindex predicate: `upsert_session` skips rows whose transcript mtime is
     /// unchanged, so a bare v6 migration leaves every EXISTING session's efficiency `NULL` forever --
@@ -486,7 +493,9 @@ impl Db {
              + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-1h-write-tokens\"'), 0) END, \
              json_extract(efficiency_json, '$.aggregate.raw.\"skill-calls\"') IS NOT NULL \
              FROM sessions WHERE efficiency_json IS NULL \
-             OR (json_valid(efficiency_json) AND json_extract(efficiency_json, '$.aggregate.raw.\"by-day\"') IS NULL)",
+             OR (json_valid(efficiency_json) AND \
+               (json_extract(efficiency_json, '$.aggregate.raw.\"by-day\"') IS NULL \
+                OR json_extract(efficiency_json, '$.aggregate.raw.\"skill-calls\"') IS NULL))",
         )?;
         let candidates: Vec<EfficiencyCandidate> = stmt
             .query_map([], |r| {
