@@ -249,7 +249,7 @@ fn attribution_effort_and_web_tool_use_populate_from_multi_subagent_fixture() {
     assert_eq!(a.agent_type.as_deref(), Some("phase-implementer"));
     assert_eq!(a.raw.effort_xhigh, 1);
     // createJiraIssue: tokens = 20+10+100+0+500 = 630.
-    assert_eq!(a.raw.by_mcp_tool["mcp__atlassian__createJiraIssue"].tokens, 630);
+    assert_eq!(a.raw.by_mcp_tool["atlassian__createJiraIssue"].tokens, 630);
 
     // Subagent B: web fetch, structured interrupt.
     let b = &f.subagents["asubagentbbb000000000002"];
@@ -431,4 +431,39 @@ fn signal_gates_dedupe_ids_and_always_count_id_less_records() {
     let p = ex(path.to_str().unwrap()).parent;
     assert_eq!((p.tool_calls, p.tool_errors), (3, 3), "t1 once + two id-less results");
     assert_eq!(p.turn_durations_ms, vec![10, 20, 20], "u2 once + two uuid-less records");
+}
+
+#[test]
+fn mcp_cost_keyed_by_server() {
+    assert_eq!(server_key("claude.ai Atlassian"), "claude_ai_Atlassian");
+    assert_eq!(server_key("hindsight-work"), "hindsight-work");
+    assert_eq!(server_key("claude.ai Foo (Bar)"), "claude_ai_Foo_Bar");
+    assert_eq!(mcp_cost_key(None, "getJiraIssue"), "_unknown__getJiraIssue");
+
+    let turn = |server: Option<&str>| MessageUsage {
+        scope: Scope::Parent,
+        timestamp: None,
+        model: "claude-opus-4-8".to_string(),
+        attribution_skill: None,
+        attribution_mcp_tool: Some("getJiraIssue".to_string()),
+        attribution_mcp_server: server.map(str::to_string),
+        effort: None,
+        usage: TokenUsage {
+            input_tokens: 10,
+            output_tokens: 0,
+            cache_5m_write_tokens: 0,
+            cache_1h_write_tokens: 0,
+            cache_read_tokens: 0,
+        },
+        web_search_requests: 0,
+        web_fetch_requests: 0,
+    };
+    let mut raw = RawCounters::default();
+    apply_usage(&turn(Some("claude.ai Atlassian")), &mut raw);
+    apply_usage(&turn(Some("atlassian")), &mut raw);
+    apply_usage(&turn(None), &mut raw);
+    assert_eq!(raw.by_mcp_tool.len(), 3);
+    assert_eq!(raw.by_mcp_tool["claude_ai_Atlassian__getJiraIssue"].tokens, 10);
+    assert_eq!(raw.by_mcp_tool["atlassian__getJiraIssue"].tokens, 10);
+    assert_eq!(raw.by_mcp_tool["_unknown__getJiraIssue"].tokens, 10);
 }

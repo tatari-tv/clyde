@@ -62,3 +62,15 @@
 
 ### Open questions
 - None.
+
+## Phase 3: MCP keyed by server and tool
+### Design decisions
+- `server_key` is a `pub fn` and `mcp_cost_key` a private helper: efficiency/src/extract.rs: `server_key` is the shared normalization later phases reuse; the key assembly stays private to the cost path.
+- The server rides `MessageUsage.attribution_mcp_server`, copied from the first record like the other attributes: efficiency/src/extract.rs:MessageUsage::from_record: keeps the group-wide dedupe path unchanged.
+- An empty-string server is treated as missing (`_unknown__<tool>`): efficiency/src/extract.rs:mcp_cost_key: an empty server segment would produce a key starting with `__`.
+### Deviations
+- None. No report fixtures or goldens changed; only `fixtures/efficiency/multi-subagent.jsonl` (to the live bare-tool plus server shape).
+### Tradeoffs
+- The success test calls `apply_usage` with hand-built `MessageUsage` values vs. a new JSONL fixture: it exercises the key path directly without another fixture file.
+### Open questions
+- None.

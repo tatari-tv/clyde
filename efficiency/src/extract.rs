@@ -66,6 +66,35 @@ pub enum Scope {
     Subagent(String),
 }
 
+/// Claude Code 2.1.296's own server-name normalization (`In()`): every character outside
+/// `[a-zA-Z0-9_-]` becomes `_`, and a `claude.ai ` server additionally collapses runs of `_` and
+/// trims a leading or trailing `_`. The result is the server segment of an `mcp__<server>__<tool>` name.
+pub fn server_key(name: &str) -> String {
+    let replaced: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    if !name.starts_with("claude.ai ") {
+        return replaced;
+    }
+    let mut collapsed = String::with_capacity(replaced.len());
+    for c in replaced.chars() {
+        if c == '_' && collapsed.ends_with('_') {
+            continue;
+        }
+        collapsed.push(c);
+    }
+    collapsed.trim_matches('_').to_string()
+}
+
+/// The `by_mcp_tool` key: `server_key(server) + "__" + tool`, or `_unknown__<tool>` with no server.
+fn mcp_cost_key(server: Option<&str>, tool: &str) -> String {
+    let server = server
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| "_unknown".to_string(), server_key);
+    format!("{server}__{tool}")
+}
+
 /// Per-subagent counters plus the subagent's TYPE (`attributionAgent`, e.g. `phase-implementer`),
 /// which is a property of the agent, not an additive counter. Merged by `agentId` in `fold`.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -151,6 +180,8 @@ struct Record {
     attribution_skill: Option<String>,
     #[serde(rename = "attributionMcpTool")]
     attribution_mcp_tool: Option<String>,
+    #[serde(rename = "attributionMcpServer")]
+    attribution_mcp_server: Option<String>,
     effort: Option<String>,
     message: Option<Message>,
     #[serde(rename = "toolUseResult")]
@@ -274,6 +305,7 @@ struct MessageUsage {
     model: String,
     attribution_skill: Option<String>,
     attribution_mcp_tool: Option<String>,
+    attribution_mcp_server: Option<String>,
     effort: Option<String>,
     usage: TokenUsage,
     web_search_requests: u64,
@@ -292,6 +324,7 @@ impl MessageUsage {
             model: message.model.clone().unwrap_or_default(),
             attribution_skill: record.attribution_skill.clone(),
             attribution_mcp_tool: record.attribution_mcp_tool.clone(),
+            attribution_mcp_server: record.attribution_mcp_server.clone(),
             effort: record.effort.clone(),
             usage: usage.token_usage(),
             web_search_requests,
@@ -697,7 +730,8 @@ fn apply_usage(turn: &MessageUsage, raw: &mut RawCounters) -> Option<(String, To
         wc.cost_usd += cost;
     }
     if let Some(tool) = turn.attribution_mcp_tool.as_deref().filter(|s| !s.is_empty()) {
-        let wc = raw.by_mcp_tool.entry(tool.to_string()).or_default();
+        let key = mcp_cost_key(turn.attribution_mcp_server.as_deref(), tool);
+        let wc = raw.by_mcp_tool.entry(key).or_default();
         wc.tokens += record_tokens;
         wc.cost_usd += cost;
     }
