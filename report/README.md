@@ -79,7 +79,7 @@ a self-contained HTML dashboard (`html`, `marquee-html`). Pandoc is only ever in
 | `--format`         | what it does                                                             | `-o`     | pandoc |
 |--------------------|---------------------------------------------------------------------------|----------|--------|
 | `markdown` (default) | writes Markdown to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.md` | yes | no |
-| `pdf`              | converts the Markdown to PDF via pandoc (`--pdf-engine`, default `wkhtmltopdf`) | yes | **yes** |
+| `pdf`              | converts the Markdown to PDF via pandoc (`--pdf-engine`, default `weasyprint`; `apt install weasyprint`) | yes | **yes** |
 | `html`             | writes one self-contained HTML page (inline CSS, JS and SVG; no external requests) to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.html` | yes | no |
 | `marquee-markdown` | publishes the Markdown as `index.md` to [marquee](https://github.com/tatari-tv/marquee); marquee applies its house style | rejected | no |
 | `marquee-html`     | publishes the same page as `index.html`; marquee serves it as written | rejected | no |

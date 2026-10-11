@@ -33,6 +33,17 @@ fn pdf_engine_help_names_pandoc_as_the_required_binary() {
     );
 }
 
+/// wkhtmltopdf is archived upstream and not packaged on Ubuntu 26.04, so the default engine is one
+/// that `apt install` can still provide.
+#[test]
+fn pdf_engine_defaults_to_weasyprint() {
+    let cli = TestCli::try_parse_from(["report", "render"]).expect("render with no flags parses");
+    match cli.args.command {
+        Command::Render(args) => assert_eq!(args.pdf_engine, "weasyprint"),
+        _ => panic!("expected Render"),
+    }
+}
+
 #[test]
 fn no_outcomes_flag_is_a_bare_boolean_defaulting_false() {
     let cli = TestCli::try_parse_from(["report", "collect"]).expect("collect with no flags parses");
