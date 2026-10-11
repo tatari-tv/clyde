@@ -168,3 +168,42 @@
 
 ### Open questions
 - None.
+
+## Phase 8: Docs
+### Design decisions
+- New "Skill and MCP call columns" subsection in `report/README.md`, placed before the upgrade section, covering the columns, `†`, the coverage line, what is not counted, and the fork dedupe (including the P1c efficiency signals). (`report/README.md`)
+- The contract gets an additive-fields note directly under the "owned by clyde" paragraph, with the `by-mcp-tool` key change. No contract version bump, per that paragraph. (`docs/session-export-contract.md`)
+- Plugin docs untouched: `rg` found no report columns or `by-skill` / `by-mcp` mentions under `plugin/`.
+
+### Deviations
+- None.
+
+### Tradeoffs
+- One README subsection vs. spreading notes across the render section: the columns, caveats and dedupe read together.
+
+### Open questions
+- None.
+
+## Implementation audit round 1 fixes
+Source: review-panel run `7doKs3f9` (round 1, Mode 2). Each fix is folded into the phase commit it belongs to.
+
+### Design decisions
+- Empty `tool_use` id: never inserted into the group's seen set, always counted, the efficiency pass's rule. Folded into Phase 1. (`efficiency/src/outcome.rs:extract`, test `empty_tool_use_ids_always_count`)
+- `CallCounts` gains `partial`, set from `Tally::partial`. Folded into Phase 7. (`report/src/render.rs:CallCounts`, `report/src/render/workload.rs:call_rows`)
+- The calls chart reads `partial` from `CallCounts`: a partial row's count label and tip read `15† calls`, and a partial row with 0 counted calls is filtered out before the bars are laid out. (`report/src/render/visuals.rs:call_pairs`, `marked_count`; tests `partial_call_rows_carry_the_dagger_and_na_rows_are_not_drawn`, `a_calls_chart_of_only_na_rows_is_not_drawn`)
+- `call_captions` now finds partial rows from `CallCounts::partial` too, not by reading the `†` / `n/a` cell text. Same output.
+- New caption "Under --no-rollup, a subagent that inherited its parent's skill tag shows that skill's tokens with 0 calls". Shown when the report holds a subagent row, some session counted calls, and the By skill table has rows. (`report/src/render/workload.rs:call_captions`, test `no_rollup_report_explains_inherited_skill_tags`)
+- README: the slash-command bullet gains the unconfirmed-candidate path (`/simplify` counts, `/model` does not), plus one bullet each for the chart `†` and the `--no-rollup` caption. Folded into Phase 8 with the design doc's two audit amendments. (`report/README.md`)
+- Goldens regenerated with `cargo run -p clyde -- report eval --write-goldens`. Only the chart rows of partial keys change: medium `schema-review: 15† calls (41%)` and `tracker / search: 22† calls (55%)`, pathological `tracker / search: 3† calls (16%)`.
+
+### Deviations
+- The `Report` JSON does not carry `--no-rollup`, so render detects it from the row keys: only `--no-rollup` emits `<sid>/<agent-id>` rows, and a session id never holds a `/`. A `--no-rollup` report whose sessions have no subagents gets no caption; it has no subagent row the caption could explain. Same effect, correct seam, no schema change.
+- A missing `tool_use` id (no `id` field) still skips the call: the pending map pairs a result to its call by id, so an id-less call has no result to confirm it. That matches v0.26.0. The "always counts" rule covers the empty-string id, the case the audit probe hit.
+
+### Tradeoffs
+- A dropped `n/a` row keeps its spend in the chart's spend total. Chart shares stay shares of the table's totals (Phase 7 decision), so a spend share reads the same in the chart and the table, at the cost of the drawn spend shares summing under 100% when a row is dropped.
+- `†` placed on the number (`15† calls`) vs. after the noun: it matches the table cell `15†`.
+- Detect `--no-rollup` from row keys vs. a new `Report` field: a field would change schema v4 and every `report.json` fixture for a caption.
+
+### Open questions
+- None.

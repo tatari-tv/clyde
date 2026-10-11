@@ -2,7 +2,7 @@
 
 **Author:** Scott Idler
 **Date:** 2026-10-11
-**Status:** In Review
+**Status:** Implemented
 **Review Passes Completed:** 5/5 (panel rounds 1-2 folded in, including round 2 items 11-13)
 
 ## Summary
@@ -172,6 +172,7 @@ render: join calls and cost on the same key -> columns, row coverage marker, pai
   - The outcome pass runs after the efficiency pass (`collect.rs:278-290`), so it cannot reuse the efficiency pass's consumed sets.
   - It gets its own group-wide `tool_use` id set and its own group-wide pending map, replacing the per-file one at `outcome.rs:270`. Files are read in the same order.
   - So `lines_written`, `slack_messages` and the MCP outcome counts drop copies. The sha and url sets stay as they are.
+  - An empty `tool_use` id is never inserted and always counts, the same rule as the efficiency pass. A call with no id field at all cannot pair with its result, so it adds no outcome, as on v0.26.0 (implementation audit round 1).
 - **Guard (`collect.rs:210-218`):**
   - `FileEfficiency` also reports `tokens_file_local`, the token sum under the old rule: the first record per `message.id`, deduped with a per-file seen set. It is never serialized.
   - For a blob without `skill-calls` (old rule), the guard compares `stored_tokens` against the sum of `tokens_file_local`. A staged copy taken mid-session still trips it; the dedupe alone never does.
@@ -232,6 +233,7 @@ render: join calls and cost on the same key -> columns, row coverage marker, pai
   - The caption explains `†` once: "† includes sessions recorded before call counting".
   - When N < M, the caption adds "Calls counted on N of M sessions".
   - When N == 0, the Calls, Sessions, Time, Avg and $/call columns are omitted.
+  - The calls chart follows the same rule (implementation audit round 1): a partial row's count label and tip carry `†`, and a partial row with 0 counted calls is left out of the calls chart, since an `n/a` share cannot be drawn. `CallCounts` carries the partial flag so the chart reads it from numbers, never from the cell.
 - **$/call** = spend from counted sessions / calls, or `n/a` when calls == 0.
 - **Avg** = `total-ms / timed`, or `n/a` when timed == 0.
 
