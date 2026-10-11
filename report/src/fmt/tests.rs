@@ -78,3 +78,13 @@ fn format_usd_edge_drops_cents_only_on_whole_dollars() {
     assert_eq!(format_usd_edge(-200), "-$2");
     assert_eq!(format_usd_edge(-250), "-$2.50");
 }
+
+#[test]
+fn format_duration_ms_scales_from_tenths_to_hours() {
+    assert_eq!(format_duration_ms(0), "0.0s");
+    assert_eq!(format_duration_ms(2_500), "2.5s");
+    assert_eq!(format_duration_ms(59_940), "59.9s");
+    assert_eq!(format_duration_ms(59_960), "1m 00s");
+    assert_eq!(format_duration_ms(2_530_000), "42m 10s");
+    assert_eq!(format_duration_ms(11_100_000), "3h 05m");
+}

@@ -145,7 +145,7 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {
-        "tracker-search": {
+        "tracker__search": {
           "tokens": 2712294,
           "cost-usd": 5.02
         }
@@ -233,7 +233,7 @@
             },
             "by-skill": {},
             "by-mcp-tool": {
-              "tracker-search": {
+              "tracker__search": {
                 "tokens": 2712294,
                 "cost-usd": 5.02
               }
@@ -1476,7 +1476,7 @@
         }
       },
       "by-mcp": {
-        "tracker-search": {
+        "tracker__search": {
           "tokens": 964752,
           "cost-usd": 1.78
         }
@@ -1485,7 +1485,7 @@
         "schema-review": 5
       },
       "mcp-calls": {
-        "tracker-search": {
+        "tracker__search": {
           "calls": 5,
           "timed": 4,
           "total-ms": 2800
@@ -1584,7 +1584,7 @@
               }
             },
             "by-mcp-tool": {
-              "tracker-search": {
+              "tracker__search": {
                 "tokens": 964752,
                 "cost-usd": 1.78
               }
@@ -1594,7 +1594,7 @@
               "schema-review": 5
             },
             "mcp-calls": {
-              "tracker-search": {
+              "tracker__search": {
                 "calls": 5,
                 "timed": 4,
                 "total-ms": 2800
@@ -3286,7 +3286,7 @@
         }
       },
       "by-mcp": {
-        "tracker-search": {
+        "tracker__search": {
           "tokens": 1080924,
           "cost-usd": 2.0
         }
@@ -3295,7 +3295,7 @@
         "schema-review": 1
       },
       "mcp-calls": {
-        "tracker-search": {
+        "tracker__search": {
           "calls": 1,
           "timed": 0,
           "total-ms": 0
@@ -3375,7 +3375,7 @@
               }
             },
             "by-mcp-tool": {
-              "tracker-search": {
+              "tracker__search": {
                 "tokens": 1080924,
                 "cost-usd": 2.0
               }
@@ -3385,7 +3385,7 @@
               "schema-review": 1
             },
             "mcp-calls": {
-              "tracker-search": {
+              "tracker__search": {
                 "calls": 1,
                 "timed": 0,
                 "total-ms": 0
@@ -3904,7 +3904,7 @@
         }
       },
       "by-mcp": {
-        "tracker-search": {
+        "tracker__search": {
           "tokens": 4864162,
           "cost-usd": 9.0
         }
@@ -3913,7 +3913,7 @@
         "schema-review": 2
       },
       "mcp-calls": {
-        "tracker-search": {
+        "tracker__search": {
           "calls": 2,
           "timed": 1,
           "total-ms": 400
@@ -4010,7 +4010,7 @@
               }
             },
             "by-mcp-tool": {
-              "tracker-search": {
+              "tracker__search": {
                 "tokens": 4864162,
                 "cost-usd": 9.0
               }
@@ -4020,7 +4020,7 @@
               "schema-review": 2
             },
             "mcp-calls": {
-              "tracker-search": {
+              "tracker__search": {
                 "calls": 2,
                 "timed": 1,
                 "total-ms": 400
@@ -7426,7 +7426,7 @@
       "compactions": 1,
       "by-skill": {},
       "by-mcp": {
-        "tracker-search": {
+        "tracker__search": {
           "tokens": 4359227,
           "cost-usd": 8.06
         }
@@ -7511,7 +7511,7 @@
             },
             "by-skill": {},
             "by-mcp-tool": {
-              "tracker-search": {
+              "tracker__search": {
                 "tokens": 4359227,
                 "cost-usd": 8.06
               }

@@ -560,16 +560,20 @@ struct EfficiencyView {
     agent_type_costs: Vec<WorkloadRow>,
     /// Tokens + `$` grouped by skill (`attributionSkill`), pre-sorted by spend descending. An
     /// attribution TAG set, not a partition -- see [`Self::by_skill_coverage`].
-    by_skill: Vec<WorkloadRow>,
+    by_skill: Vec<CallRow>,
     /// Tokens + `$` grouped by MCP tool (`attributionMcpTool`), pre-sorted by spend descending. An
     /// attribution TAG set, not a partition -- see [`Self::by_mcp_coverage`].
-    by_mcp: Vec<WorkloadRow>,
+    by_mcp: Vec<CallRow>,
     /// How much of `totals.spend` the `by-skill` rows cover, and on what pricing basis, e.g.
     /// `"$412.19 of $9,450.31 (4.4%), embedded-price basis"`. Binary-computed so the prose can state
     /// the coverage as a fact rather than reconciling a tag set that cannot sum to anything.
     by_skill_coverage: String,
     /// The same statement for the `by-mcp` rows.
     by_mcp_coverage: String,
+    /// Captions for the call columns, shown once under the tag tables: what `†` means (only when a
+    /// row is partial), how many sessions counted calls (only when some did not), and the inherited
+    /// skill tag note (only on a `--no-rollup` report with counted skill calls).
+    call_captions: Vec<String>,
 }
 
 /// One agent-type / skill / mcp-tool attribution row, string-only. `spend` is a display string. On
@@ -582,6 +586,61 @@ struct WorkloadRow {
     name: String,
     tokens_human: String,
     spend: String,
+}
+
+/// One `by-skill` / `by-mcp` row: the attribution spend joined to the call counts on the same key.
+/// Strings only on the wire; [`Self::counts`] is the numeric twin the charts read.
+///
+/// `calls`, `sessions`, `per-call`, `time` and `avg` are `None` when no session counted calls, so
+/// the table omits those columns instead of printing a column of `n/a`.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct CallRow {
+    /// The skill name, or the MCP tool without its server segment.
+    name: String,
+    /// MCP only: the key's normalized server segment, `_unknown` when the key has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    server: Option<String>,
+    /// `"1,204"`, `"1,204†"` (partial row), or `"n/a"` (partial row with no counted call).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    calls: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sessions: Option<String>,
+    tokens_human: String,
+    spend: String,
+    /// `"$0.14"`, or `"n/a"` with no counted call. Spend from counted sessions only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    per_call: Option<String>,
+    /// MCP only: summed call-to-result time, `"42m 10s"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time: Option<String>,
+    /// MCP only: `time / timed calls`, `"2.5s"`, or `"n/a"` with no timed call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avg: Option<String>,
+    #[serde(skip)]
+    counts: Option<CallCounts>,
+}
+
+/// The numbers behind a [`CallRow`]'s call cells.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CallCounts {
+    calls: u64,
+    spend: f64,
+    /// Spend from sessions that counted calls: the numerator of $/call.
+    counted_spend: f64,
+    /// A session that put spend on this row did not count calls: the cell's `†` (or `n/a` at 0
+    /// calls), carried as a flag so the chart marks the same rows without reading the cell.
+    partial: bool,
+}
+
+impl CallRow {
+    /// The chart label: `server / tool` for MCP, the skill name otherwise.
+    fn chart_label(&self) -> String {
+        match &self.server {
+            Some(server) => format!("{server} / {}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// `outcomes.totals` per the prompt's context-block schema: the persisted [`OutcomeTotals`]

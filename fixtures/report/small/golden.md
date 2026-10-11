@@ -107,18 +107,20 @@ Every dollar of the period's $64.86 spend lands in exactly one row below; `(main
 - Interrupts observed: 4.
 - Context compactions observed: 1.
 
-| Skill | Tokens | Spend |
-|---|-------:|------:|
-| `release-notes` | 1.1M | $2.09 |
-| `schema-review` | 1.1M | $1.97 |
+| Skill | Calls | Sessions | Tokens | Spend | $/call |
+|---|---:|---:|---:|---:|---:|
+| `release-notes` | 3 | 1 | 1.1M | $2.09 | $0.70 |
+| `schema-review` | 2 | 1 | 1.1M | $1.97 | $0.99 |
 
 Coverage: $4.06 of $64.86 (6.3%), embedded-price basis
 
-| MCP Tool | Tokens | Spend |
-|---|-------:|------:|
-| `wiki-write` | 3.9M | $7.24 |
+| Server | MCP Tool | Calls | Sessions | Time | Avg | Tokens | Spend | $/call |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `_unknown` | `wiki-write` | 10 | 3 | 7.6s | 0.8s | 3.9M | $7.24 | $0.72 |
 
 Coverage: $7.24 of $64.86 (11.2%), embedded-price basis
+
+Calls counted on 7 of 9 sessions
 
 ## Unobserved and Flagged Spend
 

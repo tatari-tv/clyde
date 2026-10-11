@@ -73,6 +73,22 @@ pub fn format_usd_signed(n: f64) -> String {
     }
 }
 
+/// A duration in milliseconds as `"2.5s"` under a minute (tenths), `"42m 10s"` under an hour, and
+/// `"3h 05m"` past it. Whole units round to the nearest second.
+pub fn format_duration_ms(ms: u64) -> String {
+    let tenths = (ms + 50) / 100;
+    if tenths < 600 {
+        return format!("{}.{}s", tenths / 10, tenths % 10);
+    }
+    let secs = (ms + 500) / 1_000;
+    let (hours, minutes, seconds) = (secs / 3_600, secs % 3_600 / 60, secs % 60);
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else {
+        format!("{minutes}m {seconds:02}s")
+    }
+}
+
 /// Human-scale token count: billions get two decimals (`"9.53B"`), millions get one
 /// (`"287.8M"`), and anything below a million is a plain comma-grouped integer (`"35,373"`) -
 /// there is no "K" tier. Computed once in code so the model never sums or scales token counts

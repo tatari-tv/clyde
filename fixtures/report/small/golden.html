@@ -1410,7 +1410,7 @@ ol.steps {
 <p class="lead">Each row compares a share of the period&#39;s sessions with its share of spend. A spend bar longer than its sessions bar is work that cost more than its share of the sessions.</p>
 <figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By repository</figcaption></div>
 <ol class="pairs">
-<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="northwind-media/beacon: 9 sessions (100%), $64.86 (100%), $7.21 per session"><div class="pair-head"><code class="pair-label">northwind-media/beacon</code><span class="pair-per">$7.21 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 9 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $64.86</span></div></div></li>
+<li class="pair" data-by-spend="0" data-by-count="0" data-by-per-unit="0" data-tip="northwind-media/beacon: 9 sessions (100%), $64.86 (100%), $7.21 per session"><div class="pair-head"><code class="pair-label">northwind-media/beacon</code><span class="pair-per">$7.21 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 9 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $64.86</span></div></div></li>
 </ol>
 <div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
 </section>
@@ -1471,22 +1471,34 @@ ol.steps {
 <div class="kpi"><div class="kpi-value">1</div><div class="kpi-label">Context compactions observed</div></div>
 </div>
 <h3>By skill</h3>
+<figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By skill: calls and spend</figcaption><div class="sort" role="group" hidden="" aria-label="Sort rows"><span class="sort-label">Sort by</span><button type="button" data-key="by-spend" aria-pressed="true">% spend</button><button type="button" data-key="by-count" aria-pressed="false">% calls</button><button type="button" data-key="by-per-unit" aria-pressed="false">Spend per call</button></div></div>
+<ol class="pairs">
+<li class="pair" data-by-spend="0" data-by-count="0" data-by-per-unit="1" data-tip="release-notes: 3 calls (60%), $2.09 (51%), $0.70 per call"><div class="pair-head"><code class="pair-label">release-notes</code><span class="pair-per">$0.70 per call</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>60%</b> 3 calls</span></div><div class="track"><span class="bar spend" style="--w:85.8"></span><span class="val"><b>51%</b> $2.09</span></div></div></li>
+<li class="pair" data-by-spend="1" data-by-count="1" data-by-per-unit="0" data-tip="schema-review: 2 calls (40%), $1.97 (49%), $0.99 per call"><div class="pair-head"><code class="pair-label">schema-review</code><span class="pair-per">$0.99 per call</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:66.7"></span><span class="val"><b>40%</b> 2 calls</span></div><div class="track"><span class="bar spend" style="--w:80.9"></span><span class="val"><b>49%</b> $1.97</span></div></div></li>
+</ol>
+<div class="legend"><span class="key"><i class="swatch sessions"></i>% of calls</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
 <div class="table-wrap"><table>
-<thead><tr><th>Skill</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+<thead><tr><th>Skill</th><th class="num">Calls</th><th class="num">Sessions</th><th class="num">Tokens</th><th class="num">Spend</th><th class="num">$/call</th></tr></thead>
 <tbody>
-<tr><td><code>release-notes</code></td><td class="num">1.1M</td><td class="num">$2.09</td></tr>
-<tr><td><code>schema-review</code></td><td class="num">1.1M</td><td class="num">$1.97</td></tr>
+<tr><td><code>release-notes</code></td><td class="num">3</td><td class="num">1</td><td class="num">1.1M</td><td class="num">$2.09</td><td class="num">$0.70</td></tr>
+<tr><td><code>schema-review</code></td><td class="num">2</td><td class="num">1</td><td class="num">1.1M</td><td class="num">$1.97</td><td class="num">$0.99</td></tr>
 </tbody>
 </table></div>
 <p class="caption">Coverage: $4.06 of $64.86 (6.3%), embedded-price basis</p>
 <h3>By MCP tool</h3>
+<figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By MCP tool: calls and spend</figcaption></div>
+<ol class="pairs">
+<li class="pair" data-by-spend="0" data-by-count="0" data-by-per-unit="0" data-tip="_unknown / wiki-write: 10 calls (100%), $7.24 (100%), $0.72 per call"><div class="pair-head"><code class="pair-label">_unknown / wiki-write</code><span class="pair-per">$0.72 per call</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 10 calls</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $7.24</span></div></div></li>
+</ol>
+<div class="legend"><span class="key"><i class="swatch sessions"></i>% of calls</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
 <div class="table-wrap"><table>
-<thead><tr><th>MCP Tool</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+<thead><tr><th>Server</th><th>MCP Tool</th><th class="num">Calls</th><th class="num">Sessions</th><th class="num">Time</th><th class="num">Avg</th><th class="num">Tokens</th><th class="num">Spend</th><th class="num">$/call</th></tr></thead>
 <tbody>
-<tr><td><code>wiki-write</code></td><td class="num">3.9M</td><td class="num">$7.24</td></tr>
+<tr><td><code>_unknown</code></td><td><code>wiki-write</code></td><td class="num">10</td><td class="num">3</td><td class="num">7.6s</td><td class="num">0.8s</td><td class="num">3.9M</td><td class="num">$7.24</td><td class="num">$0.72</td></tr>
 </tbody>
 </table></div>
 <p class="caption">Coverage: $7.24 of $64.86 (11.2%), embedded-price basis</p>
+<p class="caption">Calls counted on 7 of 9 sessions</p>
 </section>
 <section class="section">
 <h2>Unobserved and Flagged Spend</h2>

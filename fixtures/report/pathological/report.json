@@ -612,7 +612,7 @@
       "compactions": 1,
       "by-skill": {},
       "by-mcp": {
-        "tracker-search": {
+        "tracker__search": {
           "tokens": 810693,
           "cost-usd": 1.5
         }
@@ -678,7 +678,7 @@
             },
             "by-skill": {},
             "by-mcp-tool": {
-              "tracker-search": {
+              "tracker__search": {
                 "tokens": 810693,
                 "cost-usd": 1.5
               }
@@ -1040,14 +1040,14 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {
-        "tracker-search": {
+        "tracker__search": {
           "tokens": 1006079,
           "cost-usd": 1.86
         }
       },
       "skill-calls": {},
       "mcp-calls": {
-        "tracker-search": {
+        "tracker__search": {
           "calls": 1,
           "timed": 0,
           "total-ms": 0
@@ -1114,7 +1114,7 @@
             },
             "by-skill": {},
             "by-mcp-tool": {
-              "tracker-search": {
+              "tracker__search": {
                 "tokens": 1006079,
                 "cost-usd": 1.86
               }
@@ -1122,7 +1122,7 @@
             "unpriced-models": [],
             "skill-calls": {},
             "mcp-calls": {
-              "tracker-search": {
+              "tracker__search": {
                 "calls": 1,
                 "timed": 0,
                 "total-ms": 0
@@ -1635,7 +1635,7 @@
       "compactions": 1,
       "by-skill": {},
       "by-mcp": {
-        "tracker-search": {
+        "tracker__search": {
           "tokens": 841658,
           "cost-usd": 1.56
         }
@@ -1705,7 +1705,7 @@
             },
             "by-skill": {},
             "by-mcp-tool": {
-              "tracker-search": {
+              "tracker__search": {
                 "tokens": 841658,
                 "cost-usd": 1.56
               }
@@ -1767,7 +1767,7 @@
         }
       },
       "by-mcp": {
-        "tracker-search": {
+        "tracker__search": {
           "tokens": 706244,
           "cost-usd": 1.31
         }
@@ -1776,7 +1776,7 @@
         "schema-review": 2
       },
       "mcp-calls": {
-        "tracker-search": {
+        "tracker__search": {
           "calls": 2,
           "timed": 1,
           "total-ms": 850
@@ -1837,7 +1837,7 @@
               }
             },
             "by-mcp-tool": {
-              "tracker-search": {
+              "tracker__search": {
                 "tokens": 706244,
                 "cost-usd": 1.31
               }
@@ -1847,7 +1847,7 @@
               "schema-review": 2
             },
             "mcp-calls": {
-              "tracker-search": {
+              "tracker__search": {
                 "calls": 2,
                 "timed": 1,
                 "total-ms": 850

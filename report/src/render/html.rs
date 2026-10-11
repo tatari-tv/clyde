@@ -20,7 +20,7 @@ use super::ContextBlock;
 use super::document::{self, SlotProse};
 use super::facts::FactRegistry;
 use super::sections::{self, Section};
-use super::visuals::{self, Visuals};
+use super::visuals::{self, Pairs, Visuals};
 use crate::fmt::format_int;
 use page::Page;
 
@@ -125,8 +125,13 @@ fn page_order(block: &ContextBlock<'_>) -> Vec<Part> {
 
 /// Build the page body. Split from [`render`] so the tests can read the ledger.
 fn build(block: &ContextBlock<'_>, prose: &SlotProse, top_n: usize) -> Page {
+    build_with_view(block, prose, top_n, &visuals::build(block))
+}
+
+/// [`build`] over a given chart view, so a test can hand the page a view that disagrees with the
+/// block and watch the licensing check refuse it.
+fn build_with_view(block: &ContextBlock<'_>, prose: &SlotProse, top_n: usize, v: &Visuals) -> Page {
     let reg = document::registry(block);
-    let v = visuals::build(block);
     let mut p = Page::new();
     // The `<title>` is filled into the template, outside this page; recording its text here keeps
     // it inside the licensing test's reach without writing it twice.
@@ -136,15 +141,15 @@ fn build(block: &ContextBlock<'_>, prose: &SlotProse, top_n: usize) -> Page {
     for part in page_order(block) {
         let s = match part {
             Part::WhereItWent => {
-                where_it_went(&mut p, &v, top_n);
+                where_it_went(&mut p, v, top_n);
                 continue;
             }
             Part::SpendOverTime => {
-                spend_over_time(&mut p, block, &v);
+                spend_over_time(&mut p, block, v);
                 continue;
             }
             Part::SessionCost => {
-                session_cost(&mut p, block, &v);
+                session_cost(&mut p, block, v);
                 continue;
             }
             Part::Shared(s) => s,
@@ -156,13 +161,13 @@ fn build(block: &ContextBlock<'_>, prose: &SlotProse, top_n: usize) -> Page {
                 slot_body(&mut p, s, slot, &reg);
                 close_section(&mut p);
             }
-            Section::Bands => bands(&mut p, block, &v),
+            Section::Bands => bands(&mut p, block, v),
             Section::UnobservedSpend => unobserved_spend(&mut p, block, top_n),
             Section::QuantifiedOutput => quantified_output(&mut p, block, top_n),
-            Section::CostSummary => cost_summary(&mut p, block, &v, top_n),
+            Section::CostSummary => cost_summary(&mut p, block, v, top_n),
             Section::Reconciliation => reconciliation(&mut p, block),
             Section::AgentTypeCosts => agent_type_costs(&mut p, block, top_n),
-            Section::Efficiency => efficiency(&mut p, block, &v, top_n),
+            Section::Efficiency => efficiency(&mut p, block, v, top_n),
             Section::WhatThisFunded => what_this_funded(&mut p, block, slot, &reg),
             Section::MonthOverMonth => month_over_month(&mut p, block),
         }
@@ -730,22 +735,87 @@ fn efficiency(p: &mut Page, block: &ContextBlock<'_>, v: &Visuals, top_n: usize)
         para(p, "<p>", &sentence);
     }
     kpis(p, &sections::efficiency_signals(block));
-    workload_table(p, "By skill", "Skill", &eff.by_skill, &eff.by_skill_coverage, top_n);
-    workload_table(p, "By MCP tool", "MCP Tool", &eff.by_mcp, &eff.by_mcp_coverage, top_n);
+    call_table(
+        p,
+        "By skill",
+        &eff.by_skill,
+        &eff.by_skill_coverage,
+        v.skill_calls.as_ref(),
+        top_n,
+    );
+    call_table(
+        p,
+        "By MCP tool",
+        &eff.by_mcp,
+        &eff.by_mcp_coverage,
+        v.mcp_calls.as_ref(),
+        top_n,
+    );
+    if !(eff.by_skill.is_empty() && eff.by_mcp.is_empty()) {
+        for caption in &eff.call_captions {
+            para(p, "<p class=\"caption\">", caption);
+        }
+    }
     close_section(p);
 }
 
-fn workload_table(p: &mut Page, heading: &str, label: &str, rows: &[super::WorkloadRow], coverage: &str, top_n: usize) {
-    if rows.is_empty() {
+/// One tag table with its calls / spend figure and coverage line. The call columns are present
+/// only when some session counted calls (`calls` is `None` on every row otherwise).
+fn call_table(
+    p: &mut Page,
+    heading: &str,
+    rows: &[super::CallRow],
+    coverage: &str,
+    calls_chart: Option<&Pairs>,
+    top_n: usize,
+) {
+    let Some(first) = rows.first() else {
         return;
-    }
+    };
+    let mcp = first.server.is_some();
+    let counted = first.calls.is_some();
     subheading(p, heading);
-    let columns = [
-        col(label, Cell::Code),
-        col("Tokens", Cell::Num),
-        col("Spend", Cell::Num),
-    ];
-    table(p, &columns, &workload_rows(rows), None, Some(top_n));
+    if calls_chart.is_some() {
+        figures::pairs(p, &format!("{heading}: calls and spend"), calls_chart, true, top_n);
+    }
+    let mut columns = Vec::new();
+    if mcp {
+        columns.push(col("Server", Cell::Code));
+    }
+    columns.push(col(if mcp { "MCP Tool" } else { "Skill" }, Cell::Code));
+    if counted {
+        columns.extend([col("Calls", Cell::Num), col("Sessions", Cell::Num)]);
+        if mcp {
+            columns.extend([col("Time", Cell::Num), col("Avg", Cell::Num)]);
+        }
+    }
+    columns.extend([col("Tokens", Cell::Num), col("Spend", Cell::Num)]);
+    if counted {
+        columns.push(col("$/call", Cell::Num));
+    }
+    let cells: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| {
+            let mut cells = Vec::new();
+            cells.extend(r.server.clone());
+            cells.push(r.name.clone());
+            if counted {
+                cells.extend([
+                    r.calls.clone().unwrap_or_default(),
+                    r.sessions.clone().unwrap_or_default(),
+                ]);
+                if mcp {
+                    cells.extend([r.time.clone().unwrap_or_default(), r.avg.clone().unwrap_or_default()]);
+                }
+            }
+            cells.extend([r.tokens_human.clone(), r.spend.clone()]);
+            if counted {
+                cells.push(r.per_call.clone().unwrap_or_default());
+            }
+            cells
+        })
+        .collect();
+    table(p, &columns, &cells, None, Some(top_n));
     para(p, "<p class=\"caption\">", &sections::coverage_line(coverage));
 }
 

@@ -286,7 +286,9 @@ const AGENT_TYPES: &[&str] = &["phase-implementer", "code-reviewer", "doc-writer
 /// Skill / MCP attribution tags for the medium fixture. These are an attribution TAG SET, never a
 /// partition, which is exactly the shape the coverage strings exist to state.
 const SKILLS: &[&str] = &["release-notes", "schema-review"];
-const MCP_TOOLS: &[&str] = &["tracker-search", "wiki-write"];
+/// Live `server__tool` cost keys, plus one bare name (the shape a pre-server catalog blob keeps) so
+/// the render's `_unknown` server path is exercised.
+const MCP_TOOLS: &[&str] = &["tracker__search", "wiki-write"];
 
 /// A splitmix64 step. A fixed, self-contained PRNG so a fixture is reproducible from its seed with
 /// no dependency whose version could change the stream underneath a committed golden.

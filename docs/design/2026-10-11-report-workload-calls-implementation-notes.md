@@ -142,3 +142,29 @@
 
 ### Open questions
 - Synth's `MCP_TOOLS` are still bare names (`tracker-search`, `wiki-write`), so the seeded `mcp_calls` keys have no `server__` segment. Live call keys always have one (Phase 4's `split_mcp_name` requires both segments), and Phase 7's render reads a key with no `__` as server `_unknown`. Renaming the tools to `server__tool` would change the committed LLM goldens, which cite those names, so I left it. Should Phase 7 rename them and re-record the goldens?
+
+## Phase 7: Table columns, row coverage, charts
+### Design decisions
+- `CallRow` replaces `WorkloadRow` for `by-skill` / `by-mcp`; `WorkloadRow` stays for the agent-type partition. `calls`, `sessions`, `per-call`, `time` and `avg` are `Option` and skipped when serialized. They are all `None` when no session counted calls, so the tables omit those columns and the LLM context carries no wall of `n/a`. The numeric twin `counts` (`calls`, row spend, counted-session spend) is `#[serde(skip)]` and is what the charts read, so chart numbers never come from parsed cells. (`report/src/render.rs:CallRow`, `CallCounts`)
+- The join is `tally_calls`: per session, the key set is the union of the cost map and the calls map. Sessions is +1 per session holding the key in either. A row is partial when a session contributed spend to it without counting calls. $/call divides `counted_spend` only. A partial row with 0 counted calls shows Calls, Time and $/call as `n/a`, never `0`. A counted row with 0 calls keeps `0`. Skill counts ride through the same code as MCP by wrapping them in `McpCalls` with `timed = total_ms = 0`. (`render/workload.rs:tally_calls`, `call_rows`)
+- Captions live on the view as `call_captions` and print once under both tables, not per table: the dagger line only when some row carries `†` or `n/a`, "Calls counted on N of M sessions" when N < M. N counts sessions with `skill_calls` set (the two maps are set together). M is the report's session entries. (`render/workload.rs:call_captions`)
+- `visuals::pairs` takes `PairInput` rows (`label, count: u64, spend, spend_display, per_unit_numerator`) and a `PairsKind` (`SESSIONS`, `CALLS`). The kind rides on `Pairs`, so `figures::pairs` keeps its signature. The sort-button labels derive from the kind (`% {noun}s`, `Spend {per_label}`), which keeps the session figure's text byte-identical. `PairRow` and `Ranks` fields were renamed `sessions*` -> `count*`, `per_session` -> `per_unit`. A zero count renders the per-unit figure `n/a`. (`render/visuals.rs`, `render/html/figures.rs`)
+- `visuals::call_pairs` builds a skill and an MCP calls/spend figure from the rows' numeric twins. The shares are of the table's own totals. A table with no call columns gets no figure. The figure sits above its table, labeled "By skill: calls and spend" / "By MCP tool: calls and spend". MCP chart labels read `server / tool`. (`render/visuals.rs:call_pairs`)
+- `html::build_with_view` is `build` over a caller-supplied view, so a test can draw a page from a view that disagrees with the block. `calls_pairs_labels_and_numbers` uses it to prove a changed call share in the view fails licensing. (`render/html.rs`)
+- `fmt::format_duration_ms`: `2.5s` under a minute, `42m 10s` under an hour, `3h 05m` past it. There was no shared formatter (`efficiency::narrate::fmt_ms` is private and has different rules). (`report/src/fmt.rs`)
+- Synth's `MCP_TOOLS` went from `["tracker-search", "wiki-write"]` to `["tracker__search", "wiki-write"]`: one live-shape `server__tool` name and exactly one bare name, so the `_unknown` server path is in the goldens. Orchestrator decision, folded into this phase. (`report/src/eval/synth.rs:MCP_TOOLS`)
+
+### Deviations
+- The spec's `CallRow` has `calls`, `sessions` and `per_call` as `String`. They are `Option<String>` so the N == 0 case can omit the columns without printing `n/a` cells. Same effect, correct seam.
+- The caption sits once under both tables rather than under the table it describes. The spec says "once", and a table-level caption would repeat it when both tables have a partial row.
+- `workload_rows` and `sorted_workload` in `workload.rs` were removed, since nothing but `by-skill` / `by-mcp` used them. The agent-type table already used `partition_rows`.
+- `fixtures/report/*/report.json` and `medium/prior.json` were regenerated (`cargo run -p report --bin fixtures -- fixtures/report`) for the synth rename, then the goldens with `cargo run -p clyde -- report eval --write-goldens`. The MCP rename touches the goldens only in the By MCP tool table (HTML and Markdown) and in the report JSON keys.
+- Tests: `the_page_draws_every_chart_the_data_supports` now expects 4 pair figures (org, repo, skill calls, MCP calls). The expected sort-button `data-key` values in `figures/tests.rs` follow the rename.
+
+### Tradeoffs
+- Option fields on `CallRow` vs. a view-level `has_calls` flag: the flag would leave strings that mean nothing in the serialized context. The Option fields make a missing column unrepresentable as a row of `n/a`.
+- `PairsKind` on `Pairs` vs. a parameter to `figures::pairs`: the figure's wording and its numbers come from the same view object, so they cannot disagree.
+- Chart shares are of the table's own totals, not of the report's spend. Tag spend is not a partition, so a share of the report total would not sum to anything.
+
+### Open questions
+- None.
