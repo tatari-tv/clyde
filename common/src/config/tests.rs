@@ -892,3 +892,44 @@ fn every_supported_key_is_documented_in_the_readme_and_the_example() {
         assert!(example.contains(key), "clyde.yml.example is missing `{key}`");
     }
 }
+
+#[test]
+fn render_waste_defaults_and_reads_both_keys() {
+    let defaults = Config::default();
+    assert_eq!(defaults.render_waste_heavy_models(), ["opus", "fable"]);
+    assert_eq!(defaults.render_waste_short_session_turns(), DEFAULT_SHORT_SESSION_TURNS);
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(
+        &path,
+        "render:\n  waste:\n    heavy-models: [sonnet]\n    short-session-turns: 7\n",
+    )
+    .unwrap();
+    let cfg = load_from(&path).unwrap();
+    assert_eq!(cfg.render_waste_heavy_models(), ["sonnet"]);
+    assert_eq!(cfg.render_waste_short_session_turns(), 7);
+}
+
+#[test]
+fn render_waste_rejects_an_unknown_key_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  waste:\n    heavy-modles: [opus]\n").unwrap();
+    let err = load_from(&path).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("heavy-modles"),
+        "an unknown render.waste key must be named: {err:#}"
+    );
+}
+
+#[test]
+fn render_waste_rejects_a_blank_heavy_model_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  waste:\n    heavy-models: [\"\"]\n").unwrap();
+    let err = load_from(&path).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("render.waste.heavy-models"),
+        "a blank heavy model must name its key: {err:#}"
+    );
+}

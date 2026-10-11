@@ -21,7 +21,7 @@ fn empty(p: &mut Page, text: &str) {
     p.raw("<p class=\"chart-empty\">").text(text).raw("</p>");
 }
 
-fn tone_class(tone: usize) -> &'static str {
+pub(super) fn tone_class(tone: usize) -> &'static str {
     match tone {
         0 => " tone-1",
         1 => " tone-2",
@@ -209,17 +209,8 @@ pub(super) fn stack(p: &mut Page, caption: &str, stack: Option<&Stack>) {
         p.raw("</figure>\n");
         return;
     };
-    p.raw("<div class=\"stackbar\">");
-    for seg in &stack.segments {
-        p.raw("<span class=\"seg").raw(tone_class(seg.tone)).raw("\"");
-        p.vars(&[("--x", seg.segment.x), ("--w", seg.segment.w)]);
-        p.attr("data-tip", &seg.tip).raw(">");
-        if seg.segment.labeled() {
-            p.raw("<span>").text(&seg.share).raw("</span>");
-        }
-        p.raw("</span>");
-    }
-    p.raw("</div><ul class=\"legend stack-legend\">");
+    stack_bar(p, stack);
+    p.raw("<ul class=\"legend stack-legend\">");
     for seg in &stack.segments {
         p.raw("<li><i class=\"swatch")
             .raw(tone_class(seg.tone))
@@ -230,6 +221,32 @@ pub(super) fn stack(p: &mut Page, caption: &str, stack: Option<&Stack>) {
         p.text(" \u{b7} ").text(&seg.share).raw("</span></li>");
     }
     p.raw("</ul></figure>\n");
+}
+
+/// The outcome bar alone: the band table beneath it is the legend, so the figure draws none.
+pub(super) fn band_bar(p: &mut Page, caption: &str, stack: Option<&Stack>) {
+    p.raw("<figure class=\"chart stack-fig band-fig\"><figcaption>")
+        .text(caption)
+        .raw("</figcaption>");
+    match stack {
+        Some(stack) => stack_bar(p, stack),
+        None => empty(p, EMPTY),
+    }
+    p.raw("</figure>\n");
+}
+
+fn stack_bar(p: &mut Page, stack: &Stack) {
+    p.raw("<div class=\"stackbar\">");
+    for seg in &stack.segments {
+        p.raw("<span class=\"seg").raw(tone_class(seg.tone)).raw("\"");
+        p.vars(&[("--x", seg.segment.x), ("--w", seg.segment.w)]);
+        p.attr("data-tip", &seg.tip).raw(">");
+        if seg.segment.labeled() {
+            p.raw("<span>").text(&seg.share).raw("</span>");
+        }
+        p.raw("</span>");
+    }
+    p.raw("</div>");
 }
 
 /// List price -> cache savings -> spend.

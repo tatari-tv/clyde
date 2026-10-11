@@ -75,6 +75,10 @@ pub struct RenderConfig {
     /// Rows a long HTML table shows before the rest fold into a `<details>` expander, from
     /// `render.table-top-n` (default `common::config::DEFAULT_TABLE_TOP_N`).
     pub table_top_n: usize,
+    /// Model-name substrings that count as heavy, from `render.waste.heavy-models`.
+    pub heavy_models: Vec<String>,
+    /// A session with at most this many turns is short, from `render.waste.short-session-turns`.
+    pub short_session_turns: u64,
     /// Prior-period report JSON (`--prior`), lighting up the Month over Month section. `None`
     /// omits the section entirely from the render.
     pub prior: Option<PathBuf>,
@@ -193,6 +197,8 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 judge_max_output_tokens: file.render_judge_max_output_tokens(),
                 slot_max_output_tokens: file.render_slot_max_output_tokens(),
                 table_top_n: file.render_table_top_n(),
+                heavy_models: file.render_waste_heavy_models().to_vec(),
+                short_session_turns: file.render_waste_short_session_turns(),
                 prior: args.prior,
                 reconcile: args.reconcile,
                 reconcile_user: args.reconcile_user,

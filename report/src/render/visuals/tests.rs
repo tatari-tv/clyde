@@ -38,6 +38,7 @@ fn with_block<R>(report: &Report, adjust: impl FnOnce(&mut Aggregates), f: impl 
         prior: None,
         reconcile: None,
         reconcile_user: None,
+        ..ViewOpts::default()
     };
     let block = build_views(report, &aggregates, &persona, &pricing, opts).unwrap();
     f(&block)

@@ -4,6 +4,7 @@
 #![deny(unused_variables)]
 
 pub mod aggregate;
+pub(crate) mod bands;
 pub(crate) mod cents;
 pub mod chart;
 pub mod cli;

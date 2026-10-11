@@ -877,6 +877,28 @@ details.pairs-more {
   filter: brightness(1.08);
 }
 
+/* Outcome bands */
+
+.band-fig .stackbar {
+  height: 14px;
+}
+
+.band-fig .seg {
+  padding: 0;
+  font-size: 0;
+}
+
+table.bands .rule {
+  display: block;
+  margin: 2px 0 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+table.bands td:first-child {
+  white-space: normal;
+}
+
 /* Waterfall */
 
 ol.steps {
@@ -1129,6 +1151,39 @@ ol.steps {
 }
 
 @media (max-width: 600px) {
+  table.bands .rule {
+    display: none;
+  }
+
+  table.bands td,
+  table.bands th {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  table.bands {
+    table-layout: fixed;
+  }
+
+  table.bands th:nth-child(2) {
+    width: 21%;
+  }
+
+  table.bands th:nth-child(3) {
+    width: 22%;
+  }
+
+  table.bands th:nth-child(4) {
+    width: 16%;
+  }
+
+  table.bands code {
+    font-size: 11px;
+    padding: 1px 2px;
+    white-space: normal;
+  }
+
+
   .page {
     padding: 36px 16px 64px;
   }
@@ -1258,6 +1313,22 @@ ol.steps {
 <p class="empty">No narrative was generated for this render.</p>
 </section>
 <section class="section">
+<h2>What the Money Produced</h2>
+<p class="lead">Every session falls in exactly one band, and the first rule that matches wins. Names say what was observed in the transcript, not what the session achieved.</p>
+<figure class="chart stack-fig band-fig"><figcaption>Session spend by what it produced</figcaption><div class="stackbar"><span class="seg tone-1" style="--x:0;--w:0" data-tip="committed: $0.00 (0%, 0 sessions)"></span><span class="seg tone-5" style="--x:0;--w:0" data-tip="edited: $0.00 (0%, 0 sessions)"></span><span class="seg tone-2" style="--x:0;--w:0" data-tip="wrote-records: $0.00 (0%, 0 sessions)"></span><span class="seg tone-6" style="--x:0;--w:100" data-tip="no-observed-outcome: $49.47 (100%, 12 sessions)"><span>100%</span></span></div></figure>
+<div class="table-wrap"><table class="bands">
+<thead><tr><th>Band</th><th class="num">Sessions</th><th class="num">Spend</th><th class="num">Share</th></tr></thead>
+<tbody>
+<tr><td><i class="swatch tone-1"></i> <code>committed</code><span class="rule">at least one commit or opened pull request</span></td><td class="num">0</td><td class="num">$0.00</td><td class="num">0%</td></tr>
+<tr><td><i class="swatch tone-5"></i> <code>edited</code><span class="rule">files edited, no commit or pull request</span></td><td class="num">0</td><td class="num">$0.00</td><td class="num">0%</td></tr>
+<tr><td><i class="swatch tone-2"></i> <code>wrote-records</code><span class="rule">a Confluence, Jira or Slack write, no file edit</span></td><td class="num">0</td><td class="num">$0.00</td><td class="num">0%</td></tr>
+<tr><td><i class="swatch tone-6"></i> <code>no-observed-outcome</code><span class="rule">none of the above</span></td><td class="num">12</td><td class="num">$49.47</td><td class="num">100%</td></tr>
+</tbody>
+<tfoot><tr><td>Total</td><td class="num">12</td><td class="num">$49.47</td><td></td></tr></tfoot>
+</table></div>
+<p class="caption"><code>no-observed-outcome</code> is not &quot;no result&quot;: a sample shows it is mostly <code>claude -p</code> hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to <code>outcome::extract</code>.</p>
+</section>
+<section class="section">
 <h2>Where It Went</h2>
 <p class="lead">Each row compares a share of the period&#39;s sessions with its share of spend. A spend bar longer than its sessions bar is work that cost more than its share of the sessions.</p>
 <figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By repository</figcaption></div>
@@ -1272,7 +1343,7 @@ ol.steps {
 <div class="split"><figure class="chart tone-spend"><figcaption>Daily spend</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">$5.83</span><span class="y-mid">$2.92</span><span class="y-low">$0.00</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily spend"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polygon class="area" points="0,290 0,83 53,58 105,290 158,290 211,71 263,112 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,74 789,91 842,290 895,10 947,37 1000,290 1000,290"/><polyline class="line" points="0,83 53,58 105,290 158,290 211,71 263,112 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,74 789,91 842,290 895,10 947,37 1000,290"/><g class="hits"><rect x="0" y="0" width="26" height="100%" data-tip="2026-05-01: $4.30"><title>2026-05-01: $4.30</title></rect><rect x="26" y="0" width="53" height="100%" data-tip="2026-05-02: $4.83"><title>2026-05-02: $4.83</title></rect><rect x="79" y="0" width="52" height="100%" data-tip="2026-05-03: $0.00"><title>2026-05-03: $0.00</title></rect><rect x="131" y="0" width="53" height="100%" data-tip="2026-05-04: $0.00"><title>2026-05-04: $0.00</title></rect><rect x="184" y="0" width="53" height="100%" data-tip="2026-05-05: $4.56"><title>2026-05-05: $4.56</title></rect><rect x="237" y="0" width="52" height="100%" data-tip="2026-05-06: $3.70"><title>2026-05-06: $3.70</title></rect><rect x="289" y="0" width="53" height="100%" data-tip="2026-05-07: $0.00"><title>2026-05-07: $0.00</title></rect><rect x="342" y="0" width="52" height="100%" data-tip="2026-05-08: $0.00"><title>2026-05-08: $0.00</title></rect><rect x="394" y="0" width="53" height="100%" data-tip="2026-05-09: $0.00"><title>2026-05-09: $0.00</title></rect><rect x="447" y="0" width="53" height="100%" data-tip="2026-05-10: $0.00"><title>2026-05-10: $0.00</title></rect><rect x="500" y="0" width="52" height="100%" data-tip="2026-05-11: $0.00"><title>2026-05-11: $0.00</title></rect><rect x="552" y="0" width="53" height="100%" data-tip="2026-05-12: $0.00"><title>2026-05-12: $0.00</title></rect><rect x="605" y="0" width="53" height="100%" data-tip="2026-05-13: $0.00"><title>2026-05-13: $0.00</title></rect><rect x="658" y="0" width="52" height="100%" data-tip="2026-05-14: $0.00"><title>2026-05-14: $0.00</title></rect><rect x="710" y="0" width="53" height="100%" data-tip="2026-05-15: $4.49"><title>2026-05-15: $4.49</title></rect><rect x="763" y="0" width="52" height="100%" data-tip="2026-05-16: $4.15"><title>2026-05-16: $4.15</title></rect><rect x="815" y="0" width="53" height="100%" data-tip="2026-05-17: $0.00"><title>2026-05-17: $0.00</title></rect><rect x="868" y="0" width="53" height="100%" data-tip="2026-05-18: $5.83"><title>2026-05-18: $5.83</title></rect><rect x="921" y="0" width="52" height="100%" data-tip="2026-05-19: $5.27"><title>2026-05-19: $5.27</title></rect><rect x="973" y="0" width="27" height="100%" data-tip="2026-05-20: $0.00"><title>2026-05-20: $0.00</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-05-01</span><span>2026-05-05</span><span>2026-05-09</span><span>2026-05-12</span><span>2026-05-16</span><span>2026-05-20</span></div></div></figure>
 <figure class="chart cal-fig"><figcaption>Spend by day</figcaption><div class="cal"><div class="cal-days" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><svg viewBox="0 0 82 46" role="img" aria-label="Spend by day"><rect class="l3" x="48" y="0" width="10" height="10" rx="2" data-tip="2026-05-01: $4.30"><title>2026-05-01: $4.30</title></rect><rect class="l4" x="60" y="0" width="10" height="10" rx="2" data-tip="2026-05-02: $4.83"><title>2026-05-02: $4.83</title></rect><rect class="l0" x="72" y="0" width="10" height="10" rx="2" data-tip="2026-05-03: $0.00"><title>2026-05-03: $0.00</title></rect><rect class="l0" x="0" y="12" width="10" height="10" rx="2" data-tip="2026-05-04: $0.00"><title>2026-05-04: $0.00</title></rect><rect class="l4" x="12" y="12" width="10" height="10" rx="2" data-tip="2026-05-05: $4.56"><title>2026-05-05: $4.56</title></rect><rect class="l3" x="24" y="12" width="10" height="10" rx="2" data-tip="2026-05-06: $3.70"><title>2026-05-06: $3.70</title></rect><rect class="l0" x="36" y="12" width="10" height="10" rx="2" data-tip="2026-05-07: $0.00"><title>2026-05-07: $0.00</title></rect><rect class="l0" x="48" y="12" width="10" height="10" rx="2" data-tip="2026-05-08: $0.00"><title>2026-05-08: $0.00</title></rect><rect class="l0" x="60" y="12" width="10" height="10" rx="2" data-tip="2026-05-09: $0.00"><title>2026-05-09: $0.00</title></rect><rect class="l0" x="72" y="12" width="10" height="10" rx="2" data-tip="2026-05-10: $0.00"><title>2026-05-10: $0.00</title></rect><rect class="l0" x="0" y="24" width="10" height="10" rx="2" data-tip="2026-05-11: $0.00"><title>2026-05-11: $0.00</title></rect><rect class="l0" x="12" y="24" width="10" height="10" rx="2" data-tip="2026-05-12: $0.00"><title>2026-05-12: $0.00</title></rect><rect class="l0" x="24" y="24" width="10" height="10" rx="2" data-tip="2026-05-13: $0.00"><title>2026-05-13: $0.00</title></rect><rect class="l0" x="36" y="24" width="10" height="10" rx="2" data-tip="2026-05-14: $0.00"><title>2026-05-14: $0.00</title></rect><rect class="l4" x="48" y="24" width="10" height="10" rx="2" data-tip="2026-05-15: $4.49"><title>2026-05-15: $4.49</title></rect><rect class="l3" x="60" y="24" width="10" height="10" rx="2" data-tip="2026-05-16: $4.15"><title>2026-05-16: $4.15</title></rect><rect class="l0" x="72" y="24" width="10" height="10" rx="2" data-tip="2026-05-17: $0.00"><title>2026-05-17: $0.00</title></rect><rect class="l4" x="0" y="36" width="10" height="10" rx="2" data-tip="2026-05-18: $5.83"><title>2026-05-18: $5.83</title></rect><rect class="l4" x="12" y="36" width="10" height="10" rx="2" data-tip="2026-05-19: $5.27"><title>2026-05-19: $5.27</title></rect><rect class="l0" x="24" y="36" width="10" height="10" rx="2" data-tip="2026-05-20: $0.00"><title>2026-05-20: $0.00</title></rect></svg><div class="cal-legend" aria-hidden="true"><span>Less</span><i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i><span>More</span></div></div></figure>
 </div>
-<figure class="chart tone-sessions"><figcaption>Daily sessions</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">1</span><span class="y-mid">1</span><span class="y-low">0</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily sessions"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polygon class="area" points="0,290 0,10 53,10 105,10 158,290 211,10 263,10 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,10 789,10 842,290 895,10 947,10 1000,290 1000,290"/><polyline class="line" points="0,10 53,10 105,10 158,290 211,10 263,10 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,10 789,10 842,290 895,10 947,10 1000,290"/><g class="hits"><rect x="0" y="0" width="26" height="100%" data-tip="2026-05-01: 1 session"><title>2026-05-01: 1 session</title></rect><rect x="26" y="0" width="53" height="100%" data-tip="2026-05-02: 1 session"><title>2026-05-02: 1 session</title></rect><rect x="79" y="0" width="52" height="100%" data-tip="2026-05-03: 1 session"><title>2026-05-03: 1 session</title></rect><rect x="131" y="0" width="53" height="100%" data-tip="2026-05-04: 0 sessions"><title>2026-05-04: 0 sessions</title></rect><rect x="184" y="0" width="53" height="100%" data-tip="2026-05-05: 1 session"><title>2026-05-05: 1 session</title></rect><rect x="237" y="0" width="52" height="100%" data-tip="2026-05-06: 1 session"><title>2026-05-06: 1 session</title></rect><rect x="289" y="0" width="53" height="100%" data-tip="2026-05-07: 0 sessions"><title>2026-05-07: 0 sessions</title></rect><rect x="342" y="0" width="52" height="100%" data-tip="2026-05-08: 0 sessions"><title>2026-05-08: 0 sessions</title></rect><rect x="394" y="0" width="53" height="100%" data-tip="2026-05-09: 0 sessions"><title>2026-05-09: 0 sessions</title></rect><rect x="447" y="0" width="53" height="100%" data-tip="2026-05-10: 0 sessions"><title>2026-05-10: 0 sessions</title></rect><rect x="500" y="0" width="52" height="100%" data-tip="2026-05-11: 0 sessions"><title>2026-05-11: 0 sessions</title></rect><rect x="552" y="0" width="53" height="100%" data-tip="2026-05-12: 0 sessions"><title>2026-05-12: 0 sessions</title></rect><rect x="605" y="0" width="53" height="100%" data-tip="2026-05-13: 0 sessions"><title>2026-05-13: 0 sessions</title></rect><rect x="658" y="0" width="52" height="100%" data-tip="2026-05-14: 0 sessions"><title>2026-05-14: 0 sessions</title></rect><rect x="710" y="0" width="53" height="100%" data-tip="2026-05-15: 1 session"><title>2026-05-15: 1 session</title></rect><rect x="763" y="0" width="52" height="100%" data-tip="2026-05-16: 1 session"><title>2026-05-16: 1 session</title></rect><rect x="815" y="0" width="53" height="100%" data-tip="2026-05-17: 0 sessions"><title>2026-05-17: 0 sessions</title></rect><rect x="868" y="0" width="53" height="100%" data-tip="2026-05-18: 1 session"><title>2026-05-18: 1 session</title></rect><rect x="921" y="0" width="52" height="100%" data-tip="2026-05-19: 1 session"><title>2026-05-19: 1 session</title></rect><rect x="973" y="0" width="27" height="100%" data-tip="2026-05-20: 0 sessions"><title>2026-05-20: 0 sessions</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-05-01</span><span>2026-05-05</span><span>2026-05-09</span><span>2026-05-12</span><span>2026-05-16</span><span>2026-05-20</span></div></div></figure>
+<figure class="chart tone-sessions"><figcaption>Daily sessions</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">1</span><span class="y-mid"></span><span class="y-low">0</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily sessions"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polygon class="area" points="0,290 0,10 53,10 105,10 158,290 211,10 263,10 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,10 789,10 842,290 895,10 947,10 1000,290 1000,290"/><polyline class="line" points="0,10 53,10 105,10 158,290 211,10 263,10 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,10 789,10 842,290 895,10 947,10 1000,290"/><g class="hits"><rect x="0" y="0" width="26" height="100%" data-tip="2026-05-01: 1 session"><title>2026-05-01: 1 session</title></rect><rect x="26" y="0" width="53" height="100%" data-tip="2026-05-02: 1 session"><title>2026-05-02: 1 session</title></rect><rect x="79" y="0" width="52" height="100%" data-tip="2026-05-03: 1 session"><title>2026-05-03: 1 session</title></rect><rect x="131" y="0" width="53" height="100%" data-tip="2026-05-04: 0 sessions"><title>2026-05-04: 0 sessions</title></rect><rect x="184" y="0" width="53" height="100%" data-tip="2026-05-05: 1 session"><title>2026-05-05: 1 session</title></rect><rect x="237" y="0" width="52" height="100%" data-tip="2026-05-06: 1 session"><title>2026-05-06: 1 session</title></rect><rect x="289" y="0" width="53" height="100%" data-tip="2026-05-07: 0 sessions"><title>2026-05-07: 0 sessions</title></rect><rect x="342" y="0" width="52" height="100%" data-tip="2026-05-08: 0 sessions"><title>2026-05-08: 0 sessions</title></rect><rect x="394" y="0" width="53" height="100%" data-tip="2026-05-09: 0 sessions"><title>2026-05-09: 0 sessions</title></rect><rect x="447" y="0" width="53" height="100%" data-tip="2026-05-10: 0 sessions"><title>2026-05-10: 0 sessions</title></rect><rect x="500" y="0" width="52" height="100%" data-tip="2026-05-11: 0 sessions"><title>2026-05-11: 0 sessions</title></rect><rect x="552" y="0" width="53" height="100%" data-tip="2026-05-12: 0 sessions"><title>2026-05-12: 0 sessions</title></rect><rect x="605" y="0" width="53" height="100%" data-tip="2026-05-13: 0 sessions"><title>2026-05-13: 0 sessions</title></rect><rect x="658" y="0" width="52" height="100%" data-tip="2026-05-14: 0 sessions"><title>2026-05-14: 0 sessions</title></rect><rect x="710" y="0" width="53" height="100%" data-tip="2026-05-15: 1 session"><title>2026-05-15: 1 session</title></rect><rect x="763" y="0" width="52" height="100%" data-tip="2026-05-16: 1 session"><title>2026-05-16: 1 session</title></rect><rect x="815" y="0" width="53" height="100%" data-tip="2026-05-17: 0 sessions"><title>2026-05-17: 0 sessions</title></rect><rect x="868" y="0" width="53" height="100%" data-tip="2026-05-18: 1 session"><title>2026-05-18: 1 session</title></rect><rect x="921" y="0" width="52" height="100%" data-tip="2026-05-19: 1 session"><title>2026-05-19: 1 session</title></rect><rect x="973" y="0" width="27" height="100%" data-tip="2026-05-20: 0 sessions"><title>2026-05-20: 0 sessions</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-05-01</span><span>2026-05-05</span><span>2026-05-09</span><span>2026-05-12</span><span>2026-05-16</span><span>2026-05-20</span></div></div></figure>
 </section>
 <section class="section">
 <h2>The Efficiency Story</h2>
@@ -1302,6 +1373,16 @@ ol.steps {
 </tbody>
 </table></div>
 <p class="caption">Coverage: $18.22 of $49.48 (36.8%), embedded-price basis</p>
+</section>
+<section class="section">
+<h2>Unobserved and Flagged Spend</h2>
+<p class="lead">Spend worth a second look. These rows overlap and are not a partition of the total.</p>
+<ul class="facts">
+<li>Sessions in <code>no-observed-outcome</code>: 12, spending $49.47 (100% of session spend).</li>
+<li>Heavy model on a short session: 0 sessions, $0.00. Heavy means a model name containing <code>opus</code>, <code>fable</code>; short means at most 3 turns.</li>
+</ul>
+<p class="caption"><code>no-observed-outcome</code> is not &quot;no result&quot;: a sample shows it is mostly <code>claude -p</code> hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to <code>outcome::extract</code>.</p>
+<p class="empty">No session carries an efficiency flag.</p>
 </section>
 <section class="section">
 <h2>Cost Summary</h2>

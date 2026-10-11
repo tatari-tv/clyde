@@ -110,6 +110,15 @@ pub fn compute_charts(by_day: &[DayRow]) -> Charts {
     charts
 }
 
+/// The three y labels: max, midpoint, zero. A midpoint whose text repeats its neighbor (a max-1
+/// integer series prints the midpoint `0.5` as `1`) is blanked, never printed twice: the gridline
+/// keeps its slot and the axis stops reading `1, 1, 0`.
+fn y_labels(max: f64, label: &impl Fn(f64) -> String) -> Vec<String> {
+    let (top, mid, low) = (label(max), label(max / 2.0), label(0.0));
+    let mid = if mid == top || mid == low { String::new() } else { mid };
+    vec![top, mid, low]
+}
+
 /// One chart over `values`, labeled with `dates` on x and `label`-formatted magnitudes on y.
 /// `None` when the series is too short or has no positive maximum to scale against.
 fn line_chart(values: &[f64], dates: &[&str], label: impl Fn(f64) -> String) -> Option<LineChart> {
@@ -131,7 +140,7 @@ fn line_chart(values: &[f64], dates: &[&str], label: impl Fn(f64) -> String) -> 
     let chart = LineChart {
         viewbox: VIEWBOX.to_string(),
         points: points(&coords),
-        y_labels: vec![label(max), label(max / 2.0), label(0.0)],
+        y_labels: y_labels(max, &label),
         x_labels: x_labels(dates),
         coords,
     };

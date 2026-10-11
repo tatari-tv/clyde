@@ -29,6 +29,25 @@ tags:
 
 ## Executive Summary
 
+## What the Money Produced
+
+Every session falls in exactly one band, and the first rule that matches wins. Names say what was observed in the transcript, not what the session achieved.
+
+| Band | Sessions | Spend | Share of Spend |
+|------|---------:|------:|---------------:|
+| `committed` | 9 | $64.86 | 100% |
+| `edited` | 0 | $0.00 | 0% |
+| `wrote-records` | 0 | $0.00 | 0% |
+| `no-observed-outcome` | 0 | $0.00 | 0% |
+| **Total** | 9 | $64.86 | |
+
+- `committed`: at least one commit or opened pull request
+- `edited`: files edited, no commit or pull request
+- `wrote-records`: a Confluence, Jira or Slack write, no file edit
+- `no-observed-outcome`: none of the above
+
+`no-observed-outcome` is not "no result": a sample shows it is mostly `claude -p` hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to `outcome::extract`.
+
 ## Quantified Output
 
 These are observed tool invocations extracted from session transcripts, not estimates.
@@ -96,6 +115,17 @@ Coverage: $4.06 of $64.85 (6.3%), embedded-price basis
 | `wiki-write` | 3.9M | $7.24 |
 
 Coverage: $7.24 of $64.85 (11.2%), embedded-price basis
+
+## Unobserved and Flagged Spend
+
+Spend worth a second look. These rows overlap and are not a partition of the total.
+
+- Sessions in `no-observed-outcome`: 0, spending $0.00 (0% of session spend).
+- Heavy model on a short session: 0 sessions, $0.00. Heavy means a model name containing `opus`, `fable`; short means at most 3 turns.
+
+`no-observed-outcome` is not "no result": a sample shows it is mostly `claude -p` hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to `outcome::extract`.
+
+No session carries an efficiency flag.
 
 ## What This Funded
 

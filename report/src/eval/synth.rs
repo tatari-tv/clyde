@@ -650,6 +650,54 @@ fn outcomes(repo: &str, index: usize, rng: &mut Rng) -> Outcomes {
     }
 }
 
+/// The medium fixture's outcome mix. `outcomes` always yields a committed session; every fourth
+/// session with outcomes is reshaped to `edited` (files, no commit or PR) and every seventh to
+/// `wrote-records` (Jira and Confluence writes, no file edit), so all four bands appear. Reshaping
+/// after the draw keeps the rng sequence, and so every other figure, where it was.
+fn medium_outcomes(mut o: Outcomes, index: usize) -> Outcomes {
+    if index % 7 == 3 {
+        o.commits.clear();
+        o.prs.clear();
+        o.files_edited = 0;
+        o.lines_written = 0;
+        o.lines_replaced = 0;
+        o.repos_touched.clear();
+        o.jira_writes = o.jira_writes.max(1);
+        o.confluence_writes = o.confluence_writes.max(1);
+    } else if index % 4 == 1 {
+        o.commits.clear();
+        o.prs.clear();
+    }
+    o
+}
+
+/// Make every ninth session a two-turn one, so the heavy-model-on-a-short-session rollup has rows,
+/// and flag a few sessions the way `efficiency::score` would, so the flag rollup has rows. The flag
+/// values are invented with the rest of the fixture; nothing re-scores them.
+fn medium_signals(session: &mut CollectedSession, index: usize) {
+    if index % 9 == 5 {
+        session.efficiency.aggregate.raw.turns = 2;
+    }
+    if index % 8 == 3 {
+        session
+            .efficiency
+            .flags
+            .push(efficiency::EfficiencyFlag::HighToolErrorRate {
+                observed: 0.12,
+                ceiling: 0.1,
+            });
+    }
+    if index % 10 == 7 {
+        session
+            .efficiency
+            .flags
+            .push(efficiency::EfficiencyFlag::LowCacheReadShare {
+                observed: 0.41,
+                floor: 0.6,
+            });
+    }
+}
+
 /// SMALL: one repo, no subagents, every session attributed by `git-origin`, a short window. The
 /// baseline shape -- if a check fails here it is not the fixture's complexity that broke it.
 fn small(rng: &mut Rng, pricing: &Pricing) -> (DateTime<Utc>, DateTime<Utc>, Vec<CollectedSession>) {
@@ -741,7 +789,7 @@ fn medium_sessions(since: DateTime<Utc>, count: usize, rng: &mut Rng, pricing: &
         } else {
             Vec::new()
         };
-        sessions.push(session(
+        let mut built = session(
             Spec {
                 index,
                 repo: work.repo,
@@ -755,12 +803,16 @@ fn medium_sessions(since: DateTime<Utc>, count: usize, rng: &mut Rng, pricing: &
                 hours: rng.range(1, 6) as i64,
                 models: &models,
                 subagents: &subagents,
-                outcomes: rng.chance(70).then(|| outcomes(work.repo, index, rng)),
+                outcomes: rng
+                    .chance(70)
+                    .then(|| medium_outcomes(outcomes(work.repo, index, rng), index)),
             },
             since,
             rng,
             pricing,
-        ));
+        );
+        medium_signals(&mut built, index);
+        sessions.push(built);
     }
     sessions
 }

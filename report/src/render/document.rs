@@ -80,6 +80,8 @@ pub(super) fn render(block: &ContextBlock<'_>, prose: &SlotProse, charts: ChartM
             Section::ExecutiveSummary | Section::Tradeoffs | Section::Conclusion => {
                 section(&mut md, s.title(), slot, &reg)
             }
+            Section::Bands => bands(&mut md, block),
+            Section::UnobservedSpend => unobserved_spend(&mut md, block),
             Section::QuantifiedOutput => quantified_output(&mut md, block),
             Section::CostSummary => cost_summary(&mut md, block),
             Section::Reconciliation => reconciliation(&mut md, block),
@@ -285,6 +287,62 @@ fn cost_summary(md: &mut String, block: &ContextBlock<'_>) {
         let _ = writeln!(md, "**{}**", sections::untracked_models_note(&names));
         let _ = writeln!(md);
     }
+}
+
+/// What the Money Produced: one row per outcome band, or the not-collected line.
+fn bands(md: &mut String, block: &ContextBlock<'_>) {
+    let _ = writeln!(md, "## {}", Section::Bands.title());
+    let _ = writeln!(md);
+    let Some(table) = &block.bands.bands else {
+        let _ = writeln!(md, "{}", sections::BANDS_NOT_COLLECTED);
+        let _ = writeln!(md);
+        return;
+    };
+    let _ = writeln!(md, "{}", sections::BANDS_LEAD);
+    let _ = writeln!(md);
+    let _ = writeln!(md, "| Band | Sessions | Spend | Share of Spend |");
+    let _ = writeln!(md, "|------|---------:|------:|---------------:|");
+    for [name, sessions, spend, share] in sections::band_rows(table) {
+        let _ = writeln!(md, "| `{name}` | {sessions} | {spend} | {share} |");
+    }
+    let _ = writeln!(md, "| **Total** | {} | {} | |", table.total_sessions, table.total_spend);
+    let _ = writeln!(md);
+    for row in &table.rows {
+        let _ = writeln!(md, "- `{}`: {}", row.name, row.rule);
+    }
+    let _ = writeln!(md);
+    let _ = writeln!(md, "{}", sections::NO_OBSERVED_CAVEAT);
+    let _ = writeln!(md);
+}
+
+/// Unobserved and Flagged Spend: the no-observed-outcome spend, heavy models on short sessions, and
+/// the efficiency-flag rollup.
+fn unobserved_spend(md: &mut String, block: &ContextBlock<'_>) {
+    let _ = writeln!(md, "## {}", Section::UnobservedSpend.title());
+    let _ = writeln!(md);
+    let _ = writeln!(md, "{}", sections::UNOBSERVED_LEAD);
+    let _ = writeln!(md);
+    if let Some(line) = sections::no_observed_line(block) {
+        let _ = writeln!(md, "- {line}");
+    }
+    let _ = writeln!(md, "- {}", sections::heavy_on_short_line(block));
+    let _ = writeln!(md);
+    if block.bands.bands.is_some() {
+        let _ = writeln!(md, "{}", sections::NO_OBSERVED_CAVEAT);
+        let _ = writeln!(md);
+    }
+    let flags = sections::flag_rows(block);
+    if flags.is_empty() {
+        let _ = writeln!(md, "{}", sections::NO_FLAGS);
+        let _ = writeln!(md);
+        return;
+    }
+    let _ = writeln!(md, "| Efficiency Flag | Sessions | Spend |");
+    let _ = writeln!(md, "|-----------------|---------:|------:|");
+    for [label, sessions, spend] in flags {
+        let _ = writeln!(md, "| {label} | {sessions} | {spend} |");
+    }
+    let _ = writeln!(md);
 }
 
 /// Reconciliation: ALWAYS emitted, present or absent. `reconciliation-status` is quoted verbatim
@@ -664,6 +722,7 @@ pub(super) fn build_views<'a>(
         aggregates,
         efficiency: super::build_efficiency_view(report),
         outcomes: super::build_outcomes_view(report),
+        bands: crate::bands::build_view(report, opts.waste.heavy_models, opts.waste.short_session_turns),
         sessions: report
             .sessions
             .iter()

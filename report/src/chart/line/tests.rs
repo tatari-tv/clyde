@@ -144,3 +144,29 @@ fn spend_and_session_charts_scale_against_their_own_maxima() {
     assert_eq!(charts.by_day_spend.unwrap().points, "0,220 1000,10");
     assert_eq!(charts.by_day_sessions.unwrap().points, "0,10 1000,220");
 }
+
+/// A max-1 integer series: the midpoint `0.5` prints as `1`, which repeats the top label, so it is
+/// blanked rather than printed as `1, 1, 0`.
+#[test]
+fn a_midpoint_label_that_repeats_the_top_label_is_blanked() {
+    let by_day = rows(&[("2026-04-01", 0, 0.0), ("2026-04-02", 1, 5.0)]);
+    let chart = compute_charts(&by_day).by_day_sessions.unwrap();
+
+    assert_eq!(chart.y_labels, vec!["1", "", "0"]);
+}
+
+/// The midpoint that repeats the bottom label is blanked too.
+#[test]
+fn a_midpoint_label_that_repeats_the_zero_label_is_blanked() {
+    let labels = y_labels(0.008, &|v| format!("${v:.2}"));
+
+    assert_eq!(labels, vec!["$0.01", "", "$0.00"]);
+}
+
+/// A midpoint that differs from both neighbors stays.
+#[test]
+fn a_distinct_midpoint_label_stays() {
+    let labels = y_labels(4.0, &|v| format!("{v}"));
+
+    assert_eq!(labels, vec!["4", "2", "0"]);
+}

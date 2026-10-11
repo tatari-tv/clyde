@@ -42,15 +42,15 @@
       }
     },
     "outcomes": {
-      "sessions-with-commits": 35,
-      "commits": 93,
-      "prs-opened": 32,
-      "confluence-writes": 8,
-      "jira-writes": 11,
+      "sessions-with-commits": 22,
+      "commits": 56,
+      "prs-opened": 20,
+      "confluence-writes": 11,
+      "jira-writes": 14,
       "slack-messages": 20,
-      "files-edited": 442,
-      "lines-written": 34331,
-      "lines-replaced": 9402
+      "files-edited": 374,
+      "lines-written": 28321,
+      "lines-replaced": 7500
     },
     "cache-read-share": 0.9215496321998788,
     "tool-error-rate": 0.04216949152542373
@@ -93,32 +93,15 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "12b0a4e885b1c1b420684b82ad035afa39efb29b",
-          "eaf8069ef930e4aec0f0e78be4b0b67d947e5c9c",
-          "f1ffcbb33a5a604fc88c1e50a404f6c7d3405654"
-        ],
-        "prs": [
-          {
-            "number": 193,
-            "url": "https://github.com/openpipe-oss/quill/pull/193",
-            "repository": "openpipe-oss/quill"
-          },
-          {
-            "number": 194,
-            "url": "https://github.com/openpipe-oss/quill/pull/194",
-            "repository": "openpipe-oss/quill"
-          }
-        ],
-        "confluence-writes": 0,
-        "jira-writes": 0,
+        "commits": [],
+        "prs": [],
+        "confluence-writes": 1,
+        "jira-writes": 1,
         "slack-messages": 0,
-        "files-edited": 15,
-        "lines-written": 1680,
-        "lines-replaced": 270,
-        "repos-touched": {
-          "openpipe-oss/quill": 15
-        }
+        "files-edited": 0,
+        "lines-written": 0,
+        "lines-replaced": 0,
+        "repos-touched": {}
       },
       "agent-type-costs": {
         "(main-session)": {
@@ -228,12 +211,7 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "c69a9f755a58b4744aa744f9bfebd3531b2bddb1",
-          "79bb436fa33f0677eb325420067b8657190b2ae1",
-          "0f08f148362452c9c9a1eabf6d532ed52e69bf02",
-          "c2b3d71966a00f9c82d2c6c256721d256ddd4465"
-        ],
+        "commits": [],
         "prs": [],
         "confluence-writes": 0,
         "jira-writes": 0,
@@ -677,18 +655,8 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "17801a9918366573acbd773f3304db457f576350",
-          "babcc2ae446cd78f962eb9840389dadd077b7021",
-          "250206a01d7a66ed40b2cba419d8635fc9eabbcf"
-        ],
-        "prs": [
-          {
-            "number": 211,
-            "url": "https://github.com/northwind-media/beacon/pull/211",
-            "repository": "northwind-media/beacon"
-          }
-        ],
+        "commits": [],
+        "prs": [],
         "confluence-writes": 0,
         "jira-writes": 0,
         "slack-messages": 0,
@@ -790,7 +758,13 @@
           "turn-ms-max": 230131
         },
         "subagents": [],
-        "flags": []
+        "flags": [
+          {
+            "kind": "low-cache-read-share",
+            "observed": 0.41,
+            "floor": 0.6
+          }
+        ]
       }
     },
     "18c8897c-b44d-44be-bb39-9c1022fcecf3": {
@@ -1148,23 +1122,8 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "28ea4cc8353b5609383ea76025f98950f8bad5e6",
-          "efd7fe9cb6d7086278f920a2f2270fd51414bc9d",
-          "04274ccf3bbad451e58a0eea0ce8096b96a9d4c1"
-        ],
-        "prs": [
-          {
-            "number": 187,
-            "url": "https://github.com/openpipe-oss/quill/pull/187",
-            "repository": "openpipe-oss/quill"
-          },
-          {
-            "number": 188,
-            "url": "https://github.com/openpipe-oss/quill/pull/188",
-            "repository": "openpipe-oss/quill"
-          }
-        ],
+        "commits": [],
+        "prs": [],
         "confluence-writes": 0,
         "jira-writes": 0,
         "slack-messages": 0,
@@ -1803,7 +1762,7 @@
             "cache-5m-write-tokens": 1350495,
             "cache-1h-write-tokens": 219165,
             "cost-usd": 15.12,
-            "turns": 85,
+            "turns": 2,
             "turn-durations-ms": [
               40278,
               18249,
@@ -2770,7 +2729,13 @@
           "turn-ms-max": 227545
         },
         "subagents": [],
-        "flags": []
+        "flags": [
+          {
+            "kind": "low-cache-read-share",
+            "observed": 0.41,
+            "floor": 0.6
+          }
+        ]
       }
     },
     "4b1d68f6-bcd0-4289-6846-7441ee0f5ec9": {
@@ -2810,10 +2775,7 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "a6fe216ab3661b0fb5c4607fc8b5734a39a0c1d6",
-          "20c2fb4938ac52f16e03d2f5859ec25fd2e9ef5e"
-        ],
+        "commits": [],
         "prs": [],
         "confluence-writes": 0,
         "jira-writes": 0,
@@ -3030,7 +2992,13 @@
           "turn-ms-max": 211143
         },
         "subagents": [],
-        "flags": []
+        "flags": [
+          {
+            "kind": "high-tool-error-rate",
+            "observed": 0.12,
+            "ceiling": 0.1
+          }
+        ]
       }
     },
     "4e15c3a5-ae17-493c-bd34-6dfd953d4584": {
@@ -3361,11 +3329,7 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "3057f98a21a7ba19273eded1e915975dcc955519",
-          "10d3ca907ad111a7e13b8d5a1cbdea256a61d64e",
-          "b59688e36d6bb6cf3e6540d715c45c2ac1bdd528"
-        ],
+        "commits": [],
         "prs": [],
         "confluence-writes": 0,
         "jira-writes": 0,
@@ -3408,7 +3372,7 @@
             "cache-5m-write-tokens": 1798847,
             "cache-1h-write-tokens": 328330,
             "cost-usd": 32.27,
-            "turns": 95,
+            "turns": 2,
             "turn-durations-ms": [
               178443,
               220683,
@@ -3614,18 +3578,8 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "3e90ae1146e77853832ebb1963fad2ba6764ceaf",
-          "5b66df413c79a071e6b83f6b6fab0f1effd7ed86",
-          "8a3072e6a1949cff3033b6e94476d4d2b46c43d2"
-        ],
-        "prs": [
-          {
-            "number": 127,
-            "url": "https://github.com/openpipe-oss/quill/pull/127",
-            "repository": "openpipe-oss/quill"
-          }
-        ],
+        "commits": [],
+        "prs": [],
         "confluence-writes": 0,
         "jira-writes": 0,
         "slack-messages": 0,
@@ -3985,21 +3939,8 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "c2fc01d9c3587332da2ddfc2740fcb959f6bf2dd"
-        ],
-        "prs": [
-          {
-            "number": 223,
-            "url": "https://github.com/openpipe-oss/quill/pull/223",
-            "repository": "openpipe-oss/quill"
-          },
-          {
-            "number": 224,
-            "url": "https://github.com/openpipe-oss/quill/pull/224",
-            "repository": "openpipe-oss/quill"
-          }
-        ],
+        "commits": [],
+        "prs": [],
         "confluence-writes": 0,
         "jira-writes": 0,
         "slack-messages": 0,
@@ -4038,7 +3979,7 @@
             "cache-5m-write-tokens": 1208572,
             "cache-1h-write-tokens": 79952,
             "cost-usd": 9.28,
-            "turns": 42,
+            "turns": 2,
             "turn-durations-ms": [
               34758,
               236018,
@@ -4130,20 +4071,15 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "12da1cc8ae5538cd876dd2d99d8eec2d00c478fa",
-          "0938fd929242f3bdb2ac50edc79d6925501d0738"
-        ],
+        "commits": [],
         "prs": [],
         "confluence-writes": 1,
-        "jira-writes": 0,
+        "jira-writes": 1,
         "slack-messages": 0,
-        "files-edited": 16,
-        "lines-written": 1280,
-        "lines-replaced": 480,
-        "repos-touched": {
-          "jrivera/driftwood": 16
-        }
+        "files-edited": 0,
+        "lines-written": 0,
+        "lines-replaced": 0,
+        "repos-touched": {}
       },
       "agent-type-costs": {
         "(main-session)": {
@@ -4234,7 +4170,13 @@
           "turn-ms-max": 238917
         },
         "subagents": [],
-        "flags": []
+        "flags": [
+          {
+            "kind": "high-tool-error-rate",
+            "observed": 0.12,
+            "ceiling": 0.1
+          }
+        ]
       }
     },
     "88ac1250-32ac-420a-8512-5de5945a5413": {
@@ -4447,7 +4389,13 @@
             }
           }
         ],
-        "flags": []
+        "flags": [
+          {
+            "kind": "high-tool-error-rate",
+            "observed": 0.12,
+            "ceiling": 0.1
+          }
+        ]
       }
     },
     "89cf1386-0522-4bce-b293-3681b827b9ab": {
@@ -4487,30 +4435,15 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "e238e69c985f25ee0d8dda91fe3e0026fbeddb14"
-        ],
-        "prs": [
-          {
-            "number": 151,
-            "url": "https://github.com/jrivera/driftwood/pull/151",
-            "repository": "jrivera/driftwood"
-          },
-          {
-            "number": 152,
-            "url": "https://github.com/jrivera/driftwood/pull/152",
-            "repository": "jrivera/driftwood"
-          }
-        ],
-        "confluence-writes": 0,
+        "commits": [],
+        "prs": [],
+        "confluence-writes": 1,
         "jira-writes": 1,
         "slack-messages": 0,
-        "files-edited": 9,
-        "lines-written": 1080,
-        "lines-replaced": 306,
-        "repos-touched": {
-          "jrivera/driftwood": 9
-        }
+        "files-edited": 0,
+        "lines-written": 0,
+        "lines-replaced": 0,
+        "repos-touched": {}
       },
       "agent-type-costs": {
         "(main-session)": {
@@ -4608,7 +4541,13 @@
           "turn-ms-max": 234427
         },
         "subagents": [],
-        "flags": []
+        "flags": [
+          {
+            "kind": "low-cache-read-share",
+            "observed": 0.41,
+            "floor": 0.6
+          }
+        ]
       }
     },
     "93071145-d575-4fe0-4e68-b4d304e8e512": {
@@ -4949,7 +4888,7 @@
             "cache-5m-write-tokens": 394121,
             "cache-1h-write-tokens": 0,
             "cost-usd": 1.38,
-            "turns": 30,
+            "turns": 2,
             "turn-durations-ms": [
               130282,
               94819,
@@ -5279,28 +5218,15 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "b1265f27d14e02b28af2a422718f2b17518d7529",
-          "1626993d60d58c7dfe753651e799ac105b56a364",
-          "c652d2c66dcb0502226094f1630c98e20f387052",
-          "8c7568a3cb6f48d53959cfc2c7dd6fa9145849e4"
-        ],
-        "prs": [
-          {
-            "number": 214,
-            "url": "https://github.com/jrivera/sextant/pull/214",
-            "repository": "jrivera/sextant"
-          }
-        ],
-        "confluence-writes": 0,
-        "jira-writes": 0,
+        "commits": [],
+        "prs": [],
+        "confluence-writes": 1,
+        "jira-writes": 1,
         "slack-messages": 0,
-        "files-edited": 10,
-        "lines-written": 1340,
-        "lines-replaced": 180,
-        "repos-touched": {
-          "jrivera/sextant": 10
-        }
+        "files-edited": 0,
+        "lines-written": 0,
+        "lines-replaced": 0,
+        "repos-touched": {}
       },
       "agent-type-costs": {
         "(main-session)": {
@@ -5947,7 +5873,18 @@
             }
           }
         ],
-        "flags": []
+        "flags": [
+          {
+            "kind": "high-tool-error-rate",
+            "observed": 0.12,
+            "ceiling": 0.1
+          },
+          {
+            "kind": "low-cache-read-share",
+            "observed": 0.41,
+            "floor": 0.6
+          }
+        ]
       }
     },
     "cfd90771-0838-4395-897c-e745646108d0": {
@@ -6271,19 +6208,8 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "21be4721b23dfd12d3b5cdcef54e276ab45052de",
-          "37d1c66eff559243ae0d407db749d9b956c1b350",
-          "e033f7048287163998c7078c5d4a81dedcbb9e69",
-          "77c07f3b4c95fa367e25861d84bc276355fd9e0e"
-        ],
-        "prs": [
-          {
-            "number": 199,
-            "url": "https://github.com/northwind-media/halyard/pull/199",
-            "repository": "northwind-media/halyard"
-          }
-        ],
+        "commits": [],
+        "prs": [],
         "confluence-writes": 0,
         "jira-writes": 0,
         "slack-messages": 0,
@@ -6407,22 +6333,15 @@
         }
       },
       "outcomes": {
-        "commits": [
-          "892d2b2c2955bac4c3534b90ccc4e2c1c52a1937",
-          "9b86d0c93d40154d7ddaf68662618e6fc90e7161",
-          "4cc934c73845e4883e8ca7da6b611679a12bc203",
-          "a837b1f6bdae9344942afbe9e12cabf991acb99c"
-        ],
+        "commits": [],
         "prs": [],
         "confluence-writes": 1,
         "jira-writes": 2,
         "slack-messages": 0,
-        "files-edited": 18,
-        "lines-written": 630,
-        "lines-replaced": 666,
-        "repos-touched": {
-          "northwind-media/beacon": 18
-        }
+        "files-edited": 0,
+        "lines-written": 0,
+        "lines-replaced": 0,
+        "repos-touched": {}
       },
       "agent-type-costs": {
         "(main-session)": {
@@ -7172,7 +7091,7 @@
             "cache-5m-write-tokens": 1320660,
             "cache-1h-write-tokens": 0,
             "cost-usd": 18.62,
-            "turns": 41,
+            "turns": 2,
             "turn-durations-ms": [
               27328,
               54622,
@@ -7362,7 +7281,13 @@
           "turn-ms-max": 211878
         },
         "subagents": [],
-        "flags": []
+        "flags": [
+          {
+            "kind": "high-tool-error-rate",
+            "observed": 0.12,
+            "ceiling": 0.1
+          }
+        ]
       }
     },
     "f146c6ed-ddf7-4e9e-18d2-5ad367621dc3": {
@@ -7667,7 +7592,13 @@
             }
           }
         ],
-        "flags": []
+        "flags": [
+          {
+            "kind": "high-tool-error-rate",
+            "observed": 0.12,
+            "ceiling": 0.1
+          }
+        ]
       }
     },
     "f4271278-0f9f-4786-701b-62f76a411f9f": {

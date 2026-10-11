@@ -86,3 +86,32 @@
 - Pre-existing (Phase 2): the daily-sessions line's y labels read `1, 1, 0` on a max-1 series (the midpoint `0.5` rounds to `1`) - `chart/line.rs:compute_charts`. Not changed here (the label format is the markdown backend's too, and this phase only moved the file); Scott should say whether the midpoint label should drop for small integer series.
 - Screenshots (session scratch, not committed): `/tmp/claude-1000/claude-1000/-tmp/1adb2bfa-fbc3-44c0-ae51-0629c8100bc3/scratchpad/p3/final-{medium,path}-{desk,phone,dark}.png`.
 - `otto mutants` exits 1 on one survivor outside this phase: `common/src/repo.rs:196:68: delete ! in Resolver::prewarm` (file unchanged on this branch since main's b530468, #97). The eight `report/src/chart*.rs` files report zero missed and zero timeouts (an earlier run's three `squarify` timeouts were `while`-loop hangs; the loop is now a bounded `for`). Needs a decision on main: a test that bites `prewarm`'s cache filter, or a `mutants:skip` with rationale.
+
+## Phase 4: Outcome bands and waste
+### Design decisions
+- `bands.rs` holds the rule, the integer-cent roll-ups AND the serialized view with its display strings - `report/src/bands.rs` - so everything that decides a figure sits in the mutation-gated file; `BandsView` is serialized into the context block, so the licensing test licenses every band, heavy-model and flag string with no special case. `cents::to_cents` is the new integer-cent twin of `to_dollars`.
+- Unpriced sessions spend zero cents and still count in their band - `bands.rs:session_cents`.
+- Heavy model match is case-insensitive substring over the model names in `SessionEntry.models`; a blank `heavy-models` entry fails config load by name (it would match every model) - `common/src/config.rs:de_heavy_models`.
+- `render.waste` is a nested `WasteConfig` (`deny_unknown_fields`) beside `table-top-n`; resolved into `RenderConfig.{heavy_models, short_session_turns}`, passed to the view builder as `ViewOpts.waste: WasteOpts` (hand-written `Default` = the config defaults, so the many `ViewOpts::default()` test callers keep working) - `report/src/render.rs`, `report/src/config.rs`.
+- Two new shared sections, `Section::Bands` ("What the Money Produced", right after the executive summary in both backends) and `Section::UnobservedSpend` ("Unobserved and Flagged Spend", after Efficiency) - `render/sections.rs`; their sentences (not-collected line, the caveat verbatim, leads) live there as constants.
+- The no-observed-outcome caveat is printed in both sections (design: "with the caveat above"); the not-collected line replaces the band table and the no-observed line only, so heavy-on-short and flags still render under `--no-outcomes`.
+- HTML outcome bar reuses `chart::stack` through a new `figures::band_bar` (bar without legend; the band table is the legend, with swatch, rule sentence, sessions, spend, share) styled after the Smart Report's "Task outcomes" - `render/html.rs:bands`, `render/visuals.rs:build_bands`. Bar segments are sized by spend cents; zero-width segments are kept so segment `i` is band `i`. Phone: fixed table layout, rule sentences hidden under 600px.
+- Share column is the share of session spend, whole percent via integer math (`bands.rs:percent`: `n/a` on a non-positive denominator, `<1%` for a positive share under half a percent).
+- Y-axis fix: a midpoint label equal to the top or zero label is blanked (the gridline keeps its slot), so a max-1 daily-sessions series reads `1, "", 0` - `chart/line.rs:y_labels`. Both backends already tolerate an empty label.
+- Synth: `medium_outcomes` reshapes every 7th (offset 3) outcome-bearing medium session to `wrote-records` and every 4th (offset 1) to `edited`, after the rng draw so the rest of the fixture does not move; `medium_signals` makes every 9th session two turns and flags a few. `small`/`pathological` are byte-identical; `medium/{report,prior}.json` and all six goldens changed.
+
+### Deviations
+- Efficiency flags on the medium fixture are invented values (`observed`/`floor`/`ceiling` set by hand), not scored from the session's signals - the generator builds sessions without running `efficiency::score`, and a cache-heavy synthetic never trips a threshold. Nothing re-scores them.
+- `golden.md` changes on purpose this phase (two new sections), as do all `golden.html` (sections, CSS).
+- `table-top-n` behavior test lives in `render/html/tests.rs` (`bands_a_non_default_table_top_n_changes_the_page`), named `bands_*` so `cargo test -p report bands` runs the render-level tests beside the unit tests in `bands/tests.rs`.
+- The flag table is Markdown-complete and top-N folded in HTML like the other tables; the Markdown backend keeps full tables (Phase 2 rule).
+
+### Tradeoffs
+- Serializing the view into the context block vs a `#[serde(skip)]` view - serialized: licensing and the eval's judge brief then see the figures for free.
+- Blanking the duplicate midpoint vs dropping the gridline - blanking: gridline positions stay one-to-one with labels in both backends.
+- One outcome bar sized by spend vs by sessions - spend: the section is "what the money produced"; session counts sit in the table.
+
+### Open questions
+- Mutation run for `bands.rs`: `cargo mutants -p report -f report/src/bands.rs` = 56 mutants, 39 caught, 17 unviable, 0 missed. `otto mutants` itself was not rerun end to end (the known `common/src/repo.rs` survivor is being fixed on main).
+- The Unobserved section repeats the caveat sentence that sits under the band table; say if one copy should go.
+- Screenshots (session scratch, not committed): `/tmp/claude-1000/claude-1000/-tmp/1adb2bfa-fbc3-44c0-ae51-0629c8100bc3/scratchpad/p4/{medium-desk,medium-phone,medium-dark}.png` (full) and `crop-*.png`, `u1.png` (section crops).

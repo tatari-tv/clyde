@@ -106,6 +106,58 @@ where
     Ok(value)
 }
 
+/// Default `render.waste.heavy-models`: model-name substrings that count as heavy.
+pub const DEFAULT_HEAVY_MODELS: [&str; 2] = ["opus", "fable"];
+
+/// Default `render.waste.short-session-turns`: a session with at most this many turns is short.
+pub const DEFAULT_SHORT_SESSION_TURNS: u64 = 3;
+
+fn default_heavy_models() -> Vec<String> {
+    DEFAULT_HEAVY_MODELS.iter().map(|m| (*m).to_string()).collect()
+}
+
+fn default_short_session_turns() -> u64 {
+    DEFAULT_SHORT_SESSION_TURNS
+}
+
+/// Deserialize `render.waste.heavy-models`, rejecting a blank entry loudly and by name: a blank
+/// substring matches every model, which would flag every short session as heavy.
+fn de_heavy_models<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let models = Vec::<String>::deserialize(deserializer)?;
+    if models.iter().any(|m| m.trim().is_empty()) {
+        return Err(serde::de::Error::custom(
+            "render.waste.heavy-models entries must not be blank; a blank substring matches every model",
+        ));
+    }
+    Ok(models)
+}
+
+/// The `render.waste:` section: where the "heavy model on a short session" line sits. Both keys
+/// default, so an absent section is all-defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields)]
+pub struct WasteConfig {
+    /// Model-name substrings (case-insensitive) that count as a heavy model.
+    #[serde(default = "default_heavy_models", deserialize_with = "de_heavy_models")]
+    heavy_models: Vec<String>,
+    /// A session with at most this many turns is short.
+    #[serde(default = "default_short_session_turns")]
+    short_session_turns: u64,
+}
+
+impl Default for WasteConfig {
+    fn default() -> Self {
+        Self {
+            heavy_models: default_heavy_models(),
+            short_session_turns: default_short_session_turns(),
+        }
+    }
+}
+
 fn default_model() -> String {
     DEFAULT_MODEL.to_string()
 }
@@ -201,6 +253,9 @@ pub struct RenderConfig {
     /// [`DEFAULT_TABLE_TOP_N`]. `0` is rejected loudly.
     #[serde(default = "default_table_top_n", deserialize_with = "de_table_top_n")]
     table_top_n: usize,
+    /// The "heavy model on a short session" thresholds.
+    #[serde(default)]
+    waste: WasteConfig,
 }
 
 impl Default for RenderConfig {
@@ -211,6 +266,7 @@ impl Default for RenderConfig {
             judge_max_output_tokens: default_judge_max_output_tokens(),
             slot_max_output_tokens: default_slot_max_output_tokens(),
             table_top_n: default_table_top_n(),
+            waste: WasteConfig::default(),
         }
     }
 }
@@ -726,6 +782,16 @@ impl Config {
     /// ([`DEFAULT_TABLE_TOP_N`] when unset).
     pub fn render_table_top_n(&self) -> usize {
         self.render.table_top_n
+    }
+
+    /// The configured heavy-model substrings ([`DEFAULT_HEAVY_MODELS`] when unset).
+    pub fn render_waste_heavy_models(&self) -> &[String] {
+        &self.render.waste.heavy_models
+    }
+
+    /// The configured short-session turn ceiling ([`DEFAULT_SHORT_SESSION_TURNS`] when unset).
+    pub fn render_waste_short_session_turns(&self) -> u64 {
+        self.render.waste.short_session_turns
     }
 
     /// The resolved projects root: the configured `projects-dir`, else the platform default

@@ -29,34 +29,52 @@ tags:
 
 ## Executive Summary
 
+## What the Money Produced
+
+Every session falls in exactly one band, and the first rule that matches wins. Names say what was observed in the transcript, not what the session achieved.
+
+| Band | Sessions | Spend | Share of Spend |
+|------|---------:|------:|---------------:|
+| `committed` | 22 | $409.66 | 61% |
+| `edited` | 8 | $92.23 | 14% |
+| `wrote-records` | 5 | $40.42 | 6% |
+| `no-observed-outcome` | 9 | $128.95 | 19% |
+| **Total** | 44 | $671.26 | |
+
+- `committed`: at least one commit or opened pull request
+- `edited`: files edited, no commit or pull request
+- `wrote-records`: a Confluence, Jira or Slack write, no file edit
+- `no-observed-outcome`: none of the above
+
+`no-observed-outcome` is not "no result": a sample shows it is mostly `claude -p` hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to `outcome::extract`.
+
 ## Quantified Output
 
 These are observed tool invocations extracted from session transcripts, not estimates.
 
 | Metric | Count |
 |--------|------:|
-| Sessions producing commits | 35 |
-| Commits | 93 |
-| Pull requests opened | 32 |
-| Confluence pages written or updated | 8 |
-| Jira issues written or updated | 11 |
+| Sessions producing commits | 22 |
+| Commits | 56 |
+| Pull requests opened | 20 |
+| Confluence pages written or updated | 11 |
+| Jira issues written or updated | 14 |
 | Slack messages sent | 20 |
-| Files edited | 442 |
-| Lines of file content written | 34,331 |
-| Lines of file content replaced | 9,402 |
+| Files edited | 374 |
+| Lines of file content written | 28,321 |
+| Lines of file content replaced | 7,500 |
 
 | Repo | Spend | Commits | PRs Opened | Files Edited |
 |------|------:|--------:|-----------:|-------------:|
-| `openpipe-oss/quill` | $264.79 | 30 | 16 | 161 |
-| `northwind-media/beacon` | $165.85 | 24 | 3 | 67 |
+| `openpipe-oss/quill` | $264.79 | 20 | 9 | 146 |
+| `northwind-media/beacon` | $165.85 | 12 | 2 | 49 |
 | `northwind-media/tideline` | $83.29 | 8 | 4 | 56 |
-| `northwind-media/halyard` | $58.42 | 15 | 5 | 71 |
-| `jrivera/driftwood` | $49.28 | 6 | 2 | 55 |
+| `northwind-media/halyard` | $58.42 | 7 | 4 | 71 |
+| `jrivera/driftwood` | $49.28 | 3 | 0 | 30 |
 | `northwind-media/almanac` | $45.49 | 6 | 1 | 22 |
-| `jrivera/sextant` | $4.16 | 4 | 1 | 10 |
 
-A ratio of $7.22 of period spend per observed commit.
-A ratio of $20.98 of period spend per pull request opened.
+A ratio of $11.99 of period spend per observed commit.
+A ratio of $33.56 of period spend per pull request opened.
 A ratio of $26.85 of period spend per active day.
 A ratio of $15.26 of period spend per session (the mean).
 Median session spend was $12.71; the 90th percentile was $28.43.
@@ -124,29 +142,43 @@ Coverage: $72.03 of $671.28 (10.7%), embedded-price basis
 
 Coverage: $58.34 of $671.28 (8.7%), embedded-price basis
 
+## Unobserved and Flagged Spend
+
+Spend worth a second look. These rows overlap and are not a partition of the total.
+
+- Sessions in `no-observed-outcome`: 9, spending $128.95 (19% of session spend).
+- Heavy model on a short session: 2 sessions, $50.89. Heavy means a model name containing `opus`, `fable`; short means at most 3 turns.
+
+`no-observed-outcome` is not "no result": a sample shows it is mostly `claude -p` hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to `outcome::extract`.
+
+| Efficiency Flag | Sessions | Spend |
+|-----------------|---------:|------:|
+| Low cache-read share | 4 | $141.20 |
+| High tool-error rate | 6 | $126.91 |
+
 ## What This Funded
 
 ### northwind-media
 
 20 sessions across 4 repositories, 504.0M tokens, $353.05.
 
-- `northwind-media/beacon` (7 sessions, 208.9M tokens, $165.85 spend): 24 commits, 3 PRs opened, 67 files edited
+- `northwind-media/beacon` (7 sessions, 208.9M tokens, $165.85 spend): 12 commits, 2 PRs opened, 49 files edited
 - `northwind-media/tideline` (4 sessions, 109.3M tokens, $83.29 spend): 8 commits, 4 PRs opened, 56 files edited
-- `northwind-media/halyard` (6 sessions, 132.7M tokens, $58.42 spend): 15 commits, 5 PRs opened, 71 files edited
+- `northwind-media/halyard` (6 sessions, 132.7M tokens, $58.42 spend): 7 commits, 4 PRs opened, 71 files edited
 - `northwind-media/almanac` (3 sessions, 53.1M tokens, $45.49 spend): 6 commits, 1 PR opened, 22 files edited
 
 ### openpipe-oss
 
 17 sessions across 1 repository, 370.0M tokens, $264.79.
 
-- `openpipe-oss/quill` (17 sessions, 370.0M tokens, $264.79 spend): 30 commits, 16 PRs opened, 161 files edited
+- `openpipe-oss/quill` (17 sessions, 370.0M tokens, $264.79 spend): 20 commits, 9 PRs opened, 146 files edited
 
 ### jrivera
 
 7 sessions across 2 repositories, 87.9M tokens, $53.44.
 
-- `jrivera/driftwood` (5 sessions, 65.6M tokens, $49.28 spend): 6 commits, 2 PRs opened, 55 files edited
-- `jrivera/sextant` (2 sessions, 22.3M tokens, $4.16 spend): 4 commits, 1 PR opened, 10 files edited
+- `jrivera/driftwood` (5 sessions, 65.6M tokens, $49.28 spend): 3 commits, 30 files edited
+- `jrivera/sextant` (2 sessions, 22.3M tokens, $4.16 spend)
 
 ## Usage Profile
 
@@ -227,12 +259,12 @@ Coverage: $58.34 of $671.28 (8.7%), embedded-price basis
 | Wire the ingest retry backoff | `northwind-media/beacon` | 83.1M | $72.45 | 4 commits, 5 files edited |
 | Document the quill plugin hooks | `openpipe-oss/quill` | 43.8M | $41.12 | 4 commits, 2 PRs opened, 20 files edited |
 | 3aed06b6 | `openpipe-oss/quill` | 35.3M | $34.04 | 3 commits, 9 files edited |
-| 54f9d4bb | `northwind-media/beacon` | 29.4M | $32.27 | 3 commits, 1 file edited |
+| 54f9d4bb | `northwind-media/beacon` | 29.4M | $32.27 | 1 file edited |
 | Document the quill plugin hooks | `openpipe-oss/quill` | 27.9M | $28.43 | (no recorded output) |
 | 18c8897c | `northwind-media/tideline` | 24.9M | $26.74 | 4 commits, 1 PR opened, 16 files edited |
 | Add a rollback trigger to halyard | `northwind-media/halyard` | 66.6M | $26.70 | 3 commits, 1 PR opened, 7 files edited |
 | Harden the quill release script | `openpipe-oss/quill` | 27.4M | $26.36 | (no recorded output) |
-| Add a dead-letter queue to the ingest path | `northwind-media/beacon` | 25.3M | $25.96 | 3 commits, 1 PR opened, 12 files edited |
+| Add a dead-letter queue to the ingest path | `northwind-media/beacon` | 25.3M | $25.96 | 12 files edited |
 | Repair the nightly almanac backfill | `northwind-media/almanac` | 23.7M | $24.98 | 2 commits, 1 PR opened, 5 files edited |
 
 ## Month over Month

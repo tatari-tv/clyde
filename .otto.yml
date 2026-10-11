@@ -245,6 +245,7 @@ tasks:
         -f "sessions/src/db/enrich.rs" \
         -f "efficiency/src/outcome.rs" \
         -f "sessions/src/db/migrate.rs" \
+        -f "report/src/bands.rs" \
         -f "report/src/chart.rs" \
         -f "report/src/chart/line.rs" \
         -f "report/src/chart/bars.rs" \

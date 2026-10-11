@@ -853,6 +853,11 @@ fn render_run_rejects_yaml_input_extension() {
             judge_max_output_tokens: common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
             table_top_n: common::config::DEFAULT_TABLE_TOP_N,
+            heavy_models: common::config::DEFAULT_HEAVY_MODELS
+                .iter()
+                .map(|m| (*m).to_string())
+                .collect(),
+            short_session_turns: common::config::DEFAULT_SHORT_SESSION_TURNS,
             input: yml,
             output: None,
             format: crate::cli::Format::Markdown,
@@ -915,6 +920,8 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
         judge_max_output_tokens: common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
         table_top_n: common::config::DEFAULT_TABLE_TOP_N,
+        heavy_models: vec!["opus".to_string()],
+        short_session_turns: common::config::DEFAULT_SHORT_SESSION_TURNS,
         input: input.clone(),
         output: Some(tmp.path().join("out.md")),
         format: crate::cli::Format::Markdown,

@@ -38,10 +38,27 @@ use workload::build_efficiency_view;
 /// [`document::build_views`] and its callers cannot transpose four same-shaped optionals.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ViewOpts<'a> {
+    pub(crate) waste: WasteOpts<'a>,
     pub(crate) include_tradeoffs: bool,
     pub(crate) prior: Option<&'a Path>,
     pub(crate) reconcile: Option<&'a Path>,
     pub(crate) reconcile_user: Option<&'a str>,
+}
+
+/// The two `render.waste.*` thresholds the unobserved-and-flagged section reads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WasteOpts<'a> {
+    pub(crate) heavy_models: &'a [&'a str],
+    pub(crate) short_session_turns: u64,
+}
+
+impl Default for WasteOpts<'_> {
+    fn default() -> Self {
+        Self {
+            heavy_models: &common::config::DEFAULT_HEAVY_MODELS,
+            short_session_turns: common::config::DEFAULT_SHORT_SESSION_TURNS,
+        }
+    }
 }
 
 const STDOUT_SIGIL: &str = "-";
@@ -102,12 +119,17 @@ fn generate(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<Ge
     let default_persona = PersonaBlock::default();
     let resolved = persona::whoami();
     let aggregates = aggregate::compute(report, cfg.outliers, pricing);
+    let heavy_models: Vec<&str> = cfg.heavy_models.iter().map(String::as_str).collect();
     let block = document::build_views(
         report,
         &aggregates,
         resolved.as_ref().unwrap_or(&default_persona),
         pricing,
         ViewOpts {
+            waste: WasteOpts {
+                heavy_models: &heavy_models,
+                short_session_turns: cfg.short_session_turns,
+            },
             include_tradeoffs: cfg.include_tradeoffs,
             prior: cfg.prior.as_deref(),
             reconcile: cfg.reconcile.as_deref(),
@@ -501,6 +523,10 @@ struct ContextBlock<'a> {
     /// Quantified Output section when this key is missing.
     #[serde(skip_serializing_if = "Option::is_none")]
     outcomes: Option<OutcomesView>,
+    /// What the money produced (outcome bands), heavy-model-on-short-session spend, and the
+    /// efficiency-flag rollup (design Phase 4). `bands.bands` is absent when outcomes were not
+    /// collected.
+    bands: crate::bands::BandsView,
     sessions: Vec<SessionView<'a>>,
     /// The prior period's aggregates (design Phase 8, gap 7): lights up the Month over Month
     /// section both templates already document but had no backing field for. Absent entirely
@@ -782,6 +808,7 @@ pub(crate) fn build_context_block(
     let opts = ViewOpts {
         include_tradeoffs,
         prior: prior_path,
+        waste: WasteOpts::default(),
         reconcile: reconcile_path,
         reconcile_user,
     };

@@ -12,6 +12,7 @@ use log::debug;
 use super::ContextBlock;
 use super::sections;
 use crate::aggregate::{self, UNATTRIBUTED_ORG};
+use crate::bands::Band;
 use crate::chart::{bars, calendar, histogram, stack, treemap, waterfall};
 use crate::fmt::{format_int, format_usd, format_usd_edge};
 
@@ -27,6 +28,8 @@ pub(super) struct Visuals {
     pub(super) repos: Option<Pairs>,
     pub(super) treemap: Option<Treemap>,
     pub(super) models: Option<Stack>,
+    /// Session spend by outcome band; `None` when outcomes were not collected or nothing was spent.
+    pub(super) bands: Option<Stack>,
     pub(super) waterfall: Cascade,
     pub(super) histogram: Option<Histogram>,
     pub(super) calendar: Option<Calendar>,
@@ -160,6 +163,7 @@ pub(super) fn build(block: &ContextBlock<'_>) -> Visuals {
         repos,
         treemap: build_treemap(block, total_spend),
         models: build_models(block),
+        bands: build_bands(block),
         waterfall: build_waterfall(block),
         histogram: build_histogram(block),
         calendar: build_calendar(block),
@@ -341,6 +345,39 @@ fn build_models(block: &ContextBlock<'_>) -> Option<Stack> {
     Some(Stack { segments: out })
 }
 
+/// Palette slot per band: committed leads blue, edited orange, wrote-records green, and the band
+/// that observed nothing is the muted tone, so it never reads as a category.
+pub(super) fn band_tone(band: Band) -> usize {
+    match band {
+        Band::Committed => 0,
+        Band::Edited => 4,
+        Band::WroteRecords => 1,
+        Band::NoObservedOutcome => MUTED_TONE,
+    }
+}
+
+/// The stacked outcome bar: one segment per band, in band order, sized by spend cents. Zero-width
+/// segments are kept so segment `i` is always band `i`.
+fn build_bands(block: &ContextBlock<'_>) -> Option<Stack> {
+    let table = block.bands.bands.as_ref()?;
+    let values: Vec<f64> = table.rows.iter().map(|r| r.tally.cents as f64).collect();
+    let segments = stack::stack(&values)?;
+    let out = table
+        .rows
+        .iter()
+        .zip(segments)
+        .map(|(row, segment)| StackSegment {
+            tip: format!("{}: {} ({}, {} sessions)", row.name, row.spend, row.share, row.sessions),
+            label: row.name.to_string(),
+            share: row.share.clone(),
+            spend: row.spend.clone(),
+            tone: band_tone(row.band),
+            segment,
+        })
+        .collect();
+    Some(Stack { segments: out })
+}
+
 fn build_waterfall(block: &ContextBlock<'_>) -> Cascade {
     let cache = &block.aggregates.cache;
     let (Some(list_cents), Some(savings_cents), Some(list), Some(savings)) = (
@@ -455,6 +492,11 @@ pub(super) fn display_strings(v: &Visuals) -> Vec<String> {
         }
     }
     if let Some(s) = &v.models {
+        for seg in &s.segments {
+            out.extend([seg.label.clone(), seg.share.clone(), seg.spend.clone(), seg.tip.clone()]);
+        }
+    }
+    if let Some(s) = &v.bands {
         for seg in &s.segments {
             out.extend([seg.label.clone(), seg.share.clone(), seg.spend.clone(), seg.tip.clone()]);
         }

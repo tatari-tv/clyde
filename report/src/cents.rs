@@ -114,6 +114,11 @@ pub(crate) fn allocate(values: &[f64], total: f64) -> Option<Vec<i64>> {
     Some(cents)
 }
 
+/// A dollar figure as whole cents. The unit every band sum is taken in, so bands add up exactly.
+pub(crate) fn to_cents(dollars: f64) -> i64 {
+    (dollars * CENTS_PER_DOLLAR).round() as i64
+}
+
 /// One allocated bucket back in dollars, for `format_usd`.
 pub(crate) fn to_dollars(cents: i64) -> f64 {
     cents as f64 / CENTS_PER_DOLLAR

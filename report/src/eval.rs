@@ -459,6 +459,7 @@ fn eval_opts(fixture: &Fixture) -> crate::render::ViewOpts<'_> {
         prior: fixture.prior.as_deref(),
         reconcile: fixture.analytics.as_deref(),
         reconcile_user: None,
+        ..Default::default()
     }
 }
 

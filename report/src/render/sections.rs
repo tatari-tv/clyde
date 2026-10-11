@@ -16,11 +16,13 @@ use crate::reconcile::Reconciliation;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Section {
     ExecutiveSummary,
+    Bands,
     QuantifiedOutput,
     CostSummary,
     Reconciliation,
     AgentTypeCosts,
     Efficiency,
+    UnobservedSpend,
     WhatThisFunded,
     UsageProfile,
     MonthOverMonth,
@@ -33,6 +35,8 @@ impl Section {
     pub(super) fn title(self) -> &'static str {
         match self {
             Section::ExecutiveSummary => "Executive Summary",
+            Section::Bands => "What the Money Produced",
+            Section::UnobservedSpend => "Unobserved and Flagged Spend",
             Section::QuantifiedOutput => "Quantified Output",
             Section::CostSummary => "Cost Summary",
             Section::Reconciliation => "Reconciliation",
@@ -54,7 +58,9 @@ impl Section {
             Section::UsageProfile => Some("usage-profile"),
             Section::Tradeoffs => Some("tradeoffs"),
             Section::Conclusion => Some("closing"),
-            Section::QuantifiedOutput
+            Section::Bands
+            | Section::UnobservedSpend
+            | Section::QuantifiedOutput
             | Section::CostSummary
             | Section::Reconciliation
             | Section::AgentTypeCosts
@@ -69,11 +75,13 @@ impl Section {
 pub(super) fn section_order(block: &ContextBlock<'_>) -> Vec<Section> {
     [
         Section::ExecutiveSummary,
+        Section::Bands,
         Section::QuantifiedOutput,
         Section::CostSummary,
         Section::Reconciliation,
         Section::AgentTypeCosts,
         Section::Efficiency,
+        Section::UnobservedSpend,
         Section::WhatThisFunded,
         Section::UsageProfile,
         Section::MonthOverMonth,
@@ -94,6 +102,78 @@ pub(super) const ANONYMOUS: &str = "[anonymous]";
 /// Lead-in to the Quantified Output tables.
 pub(super) const QUANTIFIED_OUTPUT_LEAD: &str =
     "These are observed tool invocations extracted from session transcripts, not estimates.";
+
+/// What the bands section says when outcomes were not extracted: every session would otherwise
+/// fall into `no-observed-outcome`, which would read as a finding.
+pub(super) const BANDS_NOT_COLLECTED: &str = "Outcomes were not collected for this report (it was collected \
+     with --no-outcomes, or merged from reports that did not collect them), so spend cannot be split by \
+     what it produced.";
+
+/// The caveat both band sections carry verbatim: what `no-observed-outcome` does and does not mean.
+pub(super) const NO_OBSERVED_CAVEAT: &str = "`no-observed-outcome` is not \"no result\": a sample shows it is mostly \
+     `claude -p` hook sessions that answered a question, and files written through Bash heredocs or \
+     commits made by subprocesses are invisible to `outcome::extract`.";
+
+/// Lead under "What the Money Produced".
+pub(super) const BANDS_LEAD: &str = "Every session falls in exactly one band, and the first rule that matches \
+     wins. Names say what was observed in the transcript, not what the session achieved.";
+
+/// Lead under "Unobserved and Flagged Spend": these rows are signals to look at, not verdicts.
+pub(super) const UNOBSERVED_LEAD: &str = "Spend worth a second look. These rows overlap and are not a \
+     partition of the total.";
+
+/// Shown in place of the flag table when no session carries an efficiency flag.
+pub(super) const NO_FLAGS: &str = "No session carries an efficiency flag.";
+
+/// One band's table row `(name, rule, sessions, spend, share)`.
+pub(super) fn band_rows(table: &crate::bands::BandTable) -> Vec<[String; 4]> {
+    table
+        .rows
+        .iter()
+        .map(|r| [r.name.to_string(), r.sessions.clone(), r.spend.clone(), r.share.clone()])
+        .collect()
+}
+
+/// The no-observed-outcome line of the unobserved section, `None` when outcomes were not collected.
+pub(super) fn no_observed_line(block: &ContextBlock<'_>) -> Option<String> {
+    let table = block.bands.bands.as_ref()?;
+    let row = table
+        .rows
+        .iter()
+        .find(|r| r.band == crate::bands::Band::NoObservedOutcome)?;
+    Some(format!(
+        "Sessions in `no-observed-outcome`: {}, spending {} ({} of session spend).",
+        row.sessions, row.spend, row.share
+    ))
+}
+
+/// The heavy-model-on-a-short-session line, with the configured thresholds spelled out.
+pub(super) fn heavy_on_short_line(block: &ContextBlock<'_>) -> String {
+    let h = &block.bands.heavy_on_short;
+    let models = if h.models.is_empty() {
+        "no model".to_string()
+    } else {
+        h.models.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", ")
+    };
+    format!(
+        "Heavy model on a short session: {} {}, {}. Heavy means a model name containing {models}; short \
+         means at most {} turns.",
+        h.sessions,
+        if h.sessions == "1" { "session" } else { "sessions" },
+        h.spend,
+        h.max_turns
+    )
+}
+
+/// The efficiency-flag rows `(label, sessions, spend)`.
+pub(super) fn flag_rows(block: &ContextBlock<'_>) -> Vec<[String; 3]> {
+    block
+        .bands
+        .flags
+        .iter()
+        .map(|f| [f.label.to_string(), f.sessions.clone(), f.spend.clone()])
+        .collect()
+}
 
 /// `N thing` / `N things`, with the count formatted by the same helper every table uses.
 pub(super) fn plural(n: usize, noun: &str) -> String {

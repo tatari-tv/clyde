@@ -877,6 +877,28 @@ details.pairs-more {
   filter: brightness(1.08);
 }
 
+/* Outcome bands */
+
+.band-fig .stackbar {
+  height: 14px;
+}
+
+.band-fig .seg {
+  padding: 0;
+  font-size: 0;
+}
+
+table.bands .rule {
+  display: block;
+  margin: 2px 0 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+table.bands td:first-child {
+  white-space: normal;
+}
+
 /* Waterfall */
 
 ol.steps {
@@ -1129,6 +1151,39 @@ ol.steps {
 }
 
 @media (max-width: 600px) {
+  table.bands .rule {
+    display: none;
+  }
+
+  table.bands td,
+  table.bands th {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  table.bands {
+    table-layout: fixed;
+  }
+
+  table.bands th:nth-child(2) {
+    width: 21%;
+  }
+
+  table.bands th:nth-child(3) {
+    width: 22%;
+  }
+
+  table.bands th:nth-child(4) {
+    width: 16%;
+  }
+
+  table.bands code {
+    font-size: 11px;
+    padding: 1px 2px;
+    white-space: normal;
+  }
+
+
   .page {
     padding: 36px 16px 64px;
   }
@@ -1258,6 +1313,22 @@ ol.steps {
 <p class="empty">No narrative was generated for this render.</p>
 </section>
 <section class="section">
+<h2>What the Money Produced</h2>
+<p class="lead">Every session falls in exactly one band, and the first rule that matches wins. Names say what was observed in the transcript, not what the session achieved.</p>
+<figure class="chart stack-fig band-fig"><figcaption>Session spend by what it produced</figcaption><div class="stackbar"><span class="seg tone-1" style="--x:0;--w:61" data-tip="committed: $409.66 (61%, 22 sessions)"><span>61%</span></span><span class="seg tone-5" style="--x:61;--w:13.8" data-tip="edited: $92.23 (14%, 8 sessions)"><span>14%</span></span><span class="seg tone-2" style="--x:74.8;--w:6" data-tip="wrote-records: $40.42 (6%, 5 sessions)"></span><span class="seg tone-6" style="--x:80.8;--w:19.2" data-tip="no-observed-outcome: $128.95 (19%, 9 sessions)"><span>19%</span></span></div></figure>
+<div class="table-wrap"><table class="bands">
+<thead><tr><th>Band</th><th class="num">Sessions</th><th class="num">Spend</th><th class="num">Share</th></tr></thead>
+<tbody>
+<tr><td><i class="swatch tone-1"></i> <code>committed</code><span class="rule">at least one commit or opened pull request</span></td><td class="num">22</td><td class="num">$409.66</td><td class="num">61%</td></tr>
+<tr><td><i class="swatch tone-5"></i> <code>edited</code><span class="rule">files edited, no commit or pull request</span></td><td class="num">8</td><td class="num">$92.23</td><td class="num">14%</td></tr>
+<tr><td><i class="swatch tone-2"></i> <code>wrote-records</code><span class="rule">a Confluence, Jira or Slack write, no file edit</span></td><td class="num">5</td><td class="num">$40.42</td><td class="num">6%</td></tr>
+<tr><td><i class="swatch tone-6"></i> <code>no-observed-outcome</code><span class="rule">none of the above</span></td><td class="num">9</td><td class="num">$128.95</td><td class="num">19%</td></tr>
+</tbody>
+<tfoot><tr><td>Total</td><td class="num">44</td><td class="num">$671.26</td><td></td></tr></tfoot>
+</table></div>
+<p class="caption"><code>no-observed-outcome</code> is not &quot;no result&quot;: a sample shows it is mostly <code>claude -p</code> hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to <code>outcome::extract</code>.</p>
+</section>
+<section class="section">
 <h2>Where It Went</h2>
 <p class="lead">Each row compares a share of the period&#39;s sessions with its share of spend. A spend bar longer than its sessions bar is work that cost more than its share of the sessions.</p>
 <figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By org</figcaption><div class="sort" role="group" hidden="" aria-label="Sort rows"><span class="sort-label">Sort by</span><button type="button" data-key="by-spend" aria-pressed="true">% spend</button><button type="button" data-key="by-sessions" aria-pressed="false">% sessions</button><button type="button" data-key="by-per-session" aria-pressed="false">Spend per session</button></div></div>
@@ -1285,33 +1356,32 @@ ol.steps {
 <h2>Quantified Output</h2>
 <p class="lead">These are observed tool invocations extracted from session transcripts, not estimates.</p>
 <div class="kpis">
-<div class="kpi"><div class="kpi-value">35</div><div class="kpi-label">Sessions producing commits</div></div>
-<div class="kpi"><div class="kpi-value">93</div><div class="kpi-label">Commits</div></div>
-<div class="kpi"><div class="kpi-value">32</div><div class="kpi-label">Pull requests opened</div></div>
-<div class="kpi"><div class="kpi-value">8</div><div class="kpi-label">Confluence pages written or updated</div></div>
-<div class="kpi"><div class="kpi-value">11</div><div class="kpi-label">Jira issues written or updated</div></div>
+<div class="kpi"><div class="kpi-value">22</div><div class="kpi-label">Sessions producing commits</div></div>
+<div class="kpi"><div class="kpi-value">56</div><div class="kpi-label">Commits</div></div>
+<div class="kpi"><div class="kpi-value">20</div><div class="kpi-label">Pull requests opened</div></div>
+<div class="kpi"><div class="kpi-value">11</div><div class="kpi-label">Confluence pages written or updated</div></div>
+<div class="kpi"><div class="kpi-value">14</div><div class="kpi-label">Jira issues written or updated</div></div>
 <div class="kpi"><div class="kpi-value">20</div><div class="kpi-label">Slack messages sent</div></div>
-<div class="kpi"><div class="kpi-value">442</div><div class="kpi-label">Files edited</div></div>
-<div class="kpi"><div class="kpi-value">34,331</div><div class="kpi-label">Lines of file content written</div></div>
-<div class="kpi"><div class="kpi-value">9,402</div><div class="kpi-label">Lines of file content replaced</div></div>
+<div class="kpi"><div class="kpi-value">374</div><div class="kpi-label">Files edited</div></div>
+<div class="kpi"><div class="kpi-value">28,321</div><div class="kpi-label">Lines of file content written</div></div>
+<div class="kpi"><div class="kpi-value">7,500</div><div class="kpi-label">Lines of file content replaced</div></div>
 </div>
 <h3>By repository</h3>
 <div class="table-wrap"><table>
 <thead><tr><th>Repo</th><th class="num">Spend</th><th class="num">Commits</th><th class="num">PRs Opened</th><th class="num">Files Edited</th></tr></thead>
 <tbody>
-<tr><td><code>openpipe-oss/quill</code></td><td class="num">$264.79</td><td class="num">30</td><td class="num">16</td><td class="num">161</td></tr>
-<tr><td><code>northwind-media/beacon</code></td><td class="num">$165.85</td><td class="num">24</td><td class="num">3</td><td class="num">67</td></tr>
+<tr><td><code>openpipe-oss/quill</code></td><td class="num">$264.79</td><td class="num">20</td><td class="num">9</td><td class="num">146</td></tr>
+<tr><td><code>northwind-media/beacon</code></td><td class="num">$165.85</td><td class="num">12</td><td class="num">2</td><td class="num">49</td></tr>
 <tr><td><code>northwind-media/tideline</code></td><td class="num">$83.29</td><td class="num">8</td><td class="num">4</td><td class="num">56</td></tr>
-<tr><td><code>northwind-media/halyard</code></td><td class="num">$58.42</td><td class="num">15</td><td class="num">5</td><td class="num">71</td></tr>
-<tr><td><code>jrivera/driftwood</code></td><td class="num">$49.28</td><td class="num">6</td><td class="num">2</td><td class="num">55</td></tr>
+<tr><td><code>northwind-media/halyard</code></td><td class="num">$58.42</td><td class="num">7</td><td class="num">4</td><td class="num">71</td></tr>
+<tr><td><code>jrivera/driftwood</code></td><td class="num">$49.28</td><td class="num">3</td><td class="num">0</td><td class="num">30</td></tr>
 <tr><td><code>northwind-media/almanac</code></td><td class="num">$45.49</td><td class="num">6</td><td class="num">1</td><td class="num">22</td></tr>
-<tr><td><code>jrivera/sextant</code></td><td class="num">$4.16</td><td class="num">4</td><td class="num">1</td><td class="num">10</td></tr>
 </tbody>
 </table></div>
 <h3>Unit costs</h3>
 <ul class="facts">
-<li>A ratio of $7.22 of period spend per observed commit.</li>
-<li>A ratio of $20.98 of period spend per pull request opened.</li>
+<li>A ratio of $11.99 of period spend per observed commit.</li>
+<li>A ratio of $33.56 of period spend per pull request opened.</li>
 <li>A ratio of $26.85 of period spend per active day.</li>
 <li>A ratio of $15.26 of period spend per session (the mean).</li>
 <li>Median session spend was $12.71; the 90th percentile was $28.43.</li>
@@ -1355,6 +1425,23 @@ ol.steps {
 <p class="caption">Coverage: $58.34 of $671.28 (8.7%), embedded-price basis</p>
 </section>
 <section class="section">
+<h2>Unobserved and Flagged Spend</h2>
+<p class="lead">Spend worth a second look. These rows overlap and are not a partition of the total.</p>
+<ul class="facts">
+<li>Sessions in <code>no-observed-outcome</code>: 9, spending $128.95 (19% of session spend).</li>
+<li>Heavy model on a short session: 2 sessions, $50.89. Heavy means a model name containing <code>opus</code>, <code>fable</code>; short means at most 3 turns.</li>
+</ul>
+<p class="caption"><code>no-observed-outcome</code> is not &quot;no result&quot;: a sample shows it is mostly <code>claude -p</code> hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to <code>outcome::extract</code>.</p>
+<h3>Efficiency flags</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Flag</th><th class="num">Sessions</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td>Low cache-read share</td><td class="num">4</td><td class="num">$141.20</td></tr>
+<tr><td>High tool-error rate</td><td class="num">6</td><td class="num">$126.91</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="section">
 <h2>Cost Summary</h2>
 <figure class="chart stack-fig"><figcaption>Spend by model</figcaption><div class="stackbar"><span class="seg tone-1" style="--x:0;--w:57.6" data-tip="claude-opus-4-7: $386.51 (58%)"><span>58%</span></span><span class="seg tone-2" style="--x:57.6;--w:36.2" data-tip="claude-sonnet-4-6: $243.46 (36%)"><span>36%</span></span><span class="seg tone-3" style="--x:93.8;--w:6.2" data-tip="claude-haiku-4-5: $41.31 (6%)"></span></div><ul class="legend stack-legend"><li><i class="swatch tone-1"></i><code>claude-opus-4-7</code> <span class="figures">$386.51 · 58%</span></li><li><i class="swatch tone-2"></i><code>claude-sonnet-4-6</code> <span class="figures">$243.46 · 36%</span></li><li><i class="swatch tone-3"></i><code>claude-haiku-4-5</code> <span class="figures">$41.31 · 6%</span></li></ul></figure>
 <div class="table-wrap"><table>
@@ -1392,12 +1479,12 @@ ol.steps {
 <tr><td>Wire the ingest retry backoff</td><td><code>northwind-media/beacon</code></td><td class="num">83.1M</td><td class="num">$72.45</td><td>4 commits, 5 files edited</td></tr>
 <tr><td>Document the quill plugin hooks</td><td><code>openpipe-oss/quill</code></td><td class="num">43.8M</td><td class="num">$41.12</td><td>4 commits, 2 PRs opened, 20 files edited</td></tr>
 <tr><td>3aed06b6</td><td><code>openpipe-oss/quill</code></td><td class="num">35.3M</td><td class="num">$34.04</td><td>3 commits, 9 files edited</td></tr>
-<tr><td>54f9d4bb</td><td><code>northwind-media/beacon</code></td><td class="num">29.4M</td><td class="num">$32.27</td><td>3 commits, 1 file edited</td></tr>
+<tr><td>54f9d4bb</td><td><code>northwind-media/beacon</code></td><td class="num">29.4M</td><td class="num">$32.27</td><td>1 file edited</td></tr>
 <tr><td>Document the quill plugin hooks</td><td><code>openpipe-oss/quill</code></td><td class="num">27.9M</td><td class="num">$28.43</td><td>(no recorded output)</td></tr>
 <tr><td>18c8897c</td><td><code>northwind-media/tideline</code></td><td class="num">24.9M</td><td class="num">$26.74</td><td>4 commits, 1 PR opened, 16 files edited</td></tr>
 <tr><td>Add a rollback trigger to halyard</td><td><code>northwind-media/halyard</code></td><td class="num">66.6M</td><td class="num">$26.70</td><td>3 commits, 1 PR opened, 7 files edited</td></tr>
 <tr><td>Harden the quill release script</td><td><code>openpipe-oss/quill</code></td><td class="num">27.4M</td><td class="num">$26.36</td><td>(no recorded output)</td></tr>
-<tr><td>Add a dead-letter queue to the ingest path</td><td><code>northwind-media/beacon</code></td><td class="num">25.3M</td><td class="num">$25.96</td><td>3 commits, 1 PR opened, 12 files edited</td></tr>
+<tr><td>Add a dead-letter queue to the ingest path</td><td><code>northwind-media/beacon</code></td><td class="num">25.3M</td><td class="num">$25.96</td><td>12 files edited</td></tr>
 <tr><td>Repair the nightly almanac backfill</td><td><code>northwind-media/almanac</code></td><td class="num">23.7M</td><td class="num">$24.98</td><td>2 commits, 1 PR opened, 5 files edited</td></tr>
 </tbody>
 </table></div>
@@ -1429,9 +1516,9 @@ ol.steps {
 <h3>northwind-media</h3>
 <p class="lead">20 sessions across 4 repositories, 504.0M tokens, $353.05.</p>
 <ul class="repos">
-<li><code>northwind-media/beacon</code> <span class="figures">(7 sessions, 208.9M tokens, $165.85 spend)</span>: 24 commits, 3 PRs opened, 67 files edited</li>
+<li><code>northwind-media/beacon</code> <span class="figures">(7 sessions, 208.9M tokens, $165.85 spend)</span>: 12 commits, 2 PRs opened, 49 files edited</li>
 <li><code>northwind-media/tideline</code> <span class="figures">(4 sessions, 109.3M tokens, $83.29 spend)</span>: 8 commits, 4 PRs opened, 56 files edited</li>
-<li><code>northwind-media/halyard</code> <span class="figures">(6 sessions, 132.7M tokens, $58.42 spend)</span>: 15 commits, 5 PRs opened, 71 files edited</li>
+<li><code>northwind-media/halyard</code> <span class="figures">(6 sessions, 132.7M tokens, $58.42 spend)</span>: 7 commits, 4 PRs opened, 71 files edited</li>
 <li><code>northwind-media/almanac</code> <span class="figures">(3 sessions, 53.1M tokens, $45.49 spend)</span>: 6 commits, 1 PR opened, 22 files edited</li>
 </ul>
 </div>
@@ -1439,15 +1526,15 @@ ol.steps {
 <h3>openpipe-oss</h3>
 <p class="lead">17 sessions across 1 repository, 370.0M tokens, $264.79.</p>
 <ul class="repos">
-<li><code>openpipe-oss/quill</code> <span class="figures">(17 sessions, 370.0M tokens, $264.79 spend)</span>: 30 commits, 16 PRs opened, 161 files edited</li>
+<li><code>openpipe-oss/quill</code> <span class="figures">(17 sessions, 370.0M tokens, $264.79 spend)</span>: 20 commits, 9 PRs opened, 146 files edited</li>
 </ul>
 </div>
 <div class="org">
 <h3>jrivera</h3>
 <p class="lead">7 sessions across 2 repositories, 87.9M tokens, $53.44.</p>
 <ul class="repos">
-<li><code>jrivera/driftwood</code> <span class="figures">(5 sessions, 65.6M tokens, $49.28 spend)</span>: 6 commits, 2 PRs opened, 55 files edited</li>
-<li><code>jrivera/sextant</code> <span class="figures">(2 sessions, 22.3M tokens, $4.16 spend)</span>: 4 commits, 1 PR opened, 10 files edited</li>
+<li><code>jrivera/driftwood</code> <span class="figures">(5 sessions, 65.6M tokens, $49.28 spend)</span>: 3 commits, 30 files edited</li>
+<li><code>jrivera/sextant</code> <span class="figures">(2 sessions, 22.3M tokens, $4.16 spend)</span></li>
 </ul>
 </div>
 </section>

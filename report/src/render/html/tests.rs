@@ -60,6 +60,7 @@ fn with_case<R>(case: &Case, adjust: impl FnOnce(&mut Aggregates), f: impl FnOnc
         prior: case.prior.as_deref(),
         reconcile: case.reconcile.as_deref(),
         reconcile_user: None,
+        ..ViewOpts::default()
     };
     let block = build_views(&case.report, &aggregates, &case.persona, &pricing, opts).unwrap();
     f(&block)
@@ -355,13 +356,17 @@ fn the_page_draws_every_chart_the_data_supports() {
     );
     for marker in [
         "<div class=\"treemap\">",
-        "<div class=\"stackbar\">",
         "<ol class=\"steps\">",
         "<div class=\"histo\"",
         "<div class=\"cal\">",
     ] {
         assert_eq!(html.matches(marker).count(), 1, "{marker}");
     }
+    assert_eq!(
+        html.matches("<div class=\"stackbar\">").count(),
+        2,
+        "the outcome bar and the model bar"
+    );
     assert!(!html.contains("NaN"));
     assert!(!html.contains(line_empty_marker()));
 }
@@ -405,8 +410,8 @@ fn zero_data_renders_every_chart_as_an_empty_state() {
         |block| render(block, &SlotProse::new(), 10).unwrap(),
     );
     assert!(!html.contains("<svg"));
-    // by org, by repo, treemap, two lines, calendar, waterfall, model stack, histogram
-    assert_eq!(html.matches(line_empty_marker()).count(), 9);
+    // outcome bar, by org, by repo, treemap, two lines, calendar, waterfall, model stack, histogram
+    assert_eq!(html.matches(line_empty_marker()).count(), 10);
     assert!(!html.contains("NaN"));
 }
 
@@ -418,7 +423,7 @@ fn the_pathological_page_states_the_unpriced_waterfall() {
     assert!(html.contains("1 session with no price is not shown."));
     // One repo and one priced model: the treemap and the model bar would each be one full block.
     assert!(!html.contains("<div class=\"treemap\">"));
-    assert!(!html.contains("<div class=\"stackbar\">"));
+    assert!(!html.contains("Spend by model"));
     assert!(!html.contains("By org"), "one org");
 }
 
@@ -434,10 +439,12 @@ fn the_page_leads_with_charts_in_dashboard_order() {
         titles,
         vec![
             "Executive Summary",
+            "What the Money Produced",
             "Where It Went",
             "Quantified Output",
             "Spend Over Time",
             "The Efficiency Story",
+            "Unobserved and Flagged Spend",
             "Cost Summary",
             "Agent-Type Cost Attribution",
             "Session Cost",
@@ -574,4 +581,118 @@ fn hover_columns_tile_the_plot_width() {
     let cols = line::columns(&[(0, 5), (500, 5), (1000, 5)], 1000);
     assert_eq!(cols, vec![(0, 250), (250, 750), (750, 1000)]);
     assert!(line::columns(&[], 1000).is_empty());
+}
+
+// ---- Phase 4: outcome bands and unobserved spend ------------------------------------------------
+
+/// Both backends for `case` under the given waste thresholds and top-n.
+fn both_with_waste(case: &Case, heavy: &[&str], turns: u64, top_n: usize) -> (String, String) {
+    let pricing = pricing();
+    let aggregates = aggregate::compute(&case.report, aggregate::DEFAULT_OUTLIERS, &pricing);
+    let opts = ViewOpts {
+        include_tradeoffs: true,
+        prior: case.prior.as_deref(),
+        reconcile: case.reconcile.as_deref(),
+        waste: crate::render::WasteOpts {
+            heavy_models: heavy,
+            short_session_turns: turns,
+        },
+        ..ViewOpts::default()
+    };
+    let block = build_views(&case.report, &aggregates, &case.persona, &pricing, opts).unwrap();
+    let html = render(&block, &SlotProse::new(), top_n).unwrap();
+    let md = document::render(&block, &SlotProse::new(), document::ChartMode::Table).markdown;
+    (html, md)
+}
+
+#[test]
+fn bands_both_backends_render_the_outcome_section_and_the_unobserved_section() {
+    let (html, md) = both_with_waste(&medium(), &["opus", "fable"], 3, 10);
+    for heading in ["What the Money Produced", "Unobserved and Flagged Spend"] {
+        assert!(html.contains(&format!("<h2>{heading}</h2>")), "html: {heading}");
+        assert!(md.contains(&format!("## {heading}")), "markdown: {heading}");
+    }
+    for band in ["committed", "edited", "wrote-records", "no-observed-outcome"] {
+        assert!(html.contains(&format!("<code>{band}</code>")), "html: {band}");
+        assert!(md.contains(&format!("| `{band}` |")), "markdown: {band}");
+    }
+    assert!(html.contains("<div class=\"stackbar\">"));
+    for caveat in [&html, &md] {
+        assert!(caveat.contains("not \"no result\"") || caveat.contains("not &quot;no result&quot;"));
+    }
+}
+
+#[test]
+fn bands_the_outcome_bar_comes_straight_after_the_executive_summary() {
+    let (html, _) = both_with_waste(&medium(), &["opus"], 3, 10);
+    let summary = html.find("<h2>Executive Summary</h2>").unwrap();
+    let bands = html.find("<h2>What the Money Produced</h2>").unwrap();
+    let where_it_went = html.find("<h2>Where It Went</h2>").unwrap();
+    assert!(summary < bands && bands < where_it_went);
+}
+
+#[test]
+fn bands_without_outcomes_render_the_not_collected_line_and_no_band_table() {
+    let mut case = medium();
+    case.report.outcomes_enabled = Some(false);
+    let (html, md) = both_with_waste(&case, &["opus"], 3, 10);
+    assert!(html.contains("Outcomes were not collected for this report"));
+    assert!(md.contains("Outcomes were not collected for this report"));
+    for out in [&html, &md] {
+        assert!(!out.contains("no-observed-outcome"), "no band may be named");
+    }
+    assert!(!html.contains("<table class=\"bands\">"));
+    // The two outcome-free rollups still render.
+    assert!(html.contains("Heavy model on a short session"));
+    assert!(md.contains("Heavy model on a short session"));
+}
+
+#[test]
+fn bands_a_non_default_heavy_models_list_changes_the_page() {
+    let default = both_with_waste(&medium(), &["opus", "fable"], 3, 10);
+    let other = both_with_waste(&medium(), &["haiku"], 3, 10);
+    assert_ne!(default.0, other.0, "html");
+    assert_ne!(default.1, other.1, "markdown");
+    assert!(other.0.contains("<code>haiku</code>"));
+    assert!(other.1.contains("`haiku`"));
+}
+
+#[test]
+fn bands_a_non_default_short_session_turns_changes_the_page() {
+    let default = both_with_waste(&medium(), &["opus", "fable"], 3, 10);
+    let other = both_with_waste(&medium(), &["opus", "fable"], 1000, 10);
+    assert_ne!(default.0, other.0, "html");
+    assert_ne!(default.1, other.1, "markdown");
+    assert!(other.0.contains("at most 1,000 turns"));
+}
+
+#[test]
+fn bands_a_non_default_table_top_n_changes_the_page() {
+    let wide = both_with_waste(&medium(), &["opus"], 3, 10).0;
+    let narrow = both_with_waste(&medium(), &["opus"], 1, 10).0;
+    let folded = both_with_waste(&medium(), &["opus"], 3, 1).0;
+    assert_ne!(wide, folded);
+    assert!(
+        folded.contains("Show all 2 rows"),
+        "the two-row flag table folds at a top-n of one"
+    );
+    assert!(!wide.contains("Show all 2 rows"));
+    assert_ne!(wide, narrow);
+}
+
+#[test]
+fn bands_flag_rows_name_the_kinds_the_medium_fixture_carries() {
+    let (html, md) = both_with_waste(&medium(), &["opus"], 3, 10);
+    for label in ["High tool-error rate", "Low cache-read share"] {
+        assert!(html.contains(label) && md.contains(label), "{label}");
+    }
+    assert!(!html.contains("Auto-compaction"));
+}
+
+#[test]
+fn bands_a_report_with_no_flags_says_so() {
+    let case = cases().into_iter().next().unwrap();
+    let (html, md) = both_with_waste(&case, &["opus"], 3, 10);
+    assert!(html.contains("No session carries an efficiency flag."));
+    assert!(md.contains("No session carries an efficiency flag."));
 }

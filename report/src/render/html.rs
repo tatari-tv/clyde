@@ -100,10 +100,12 @@ fn page_order(block: &ContextBlock<'_>) -> Vec<Part> {
     let shared = sections::section_order(block);
     [
         Part::Shared(Section::ExecutiveSummary),
+        Part::Shared(Section::Bands),
         Part::WhereItWent,
         Part::Shared(Section::QuantifiedOutput),
         Part::SpendOverTime,
         Part::Shared(Section::Efficiency),
+        Part::Shared(Section::UnobservedSpend),
         Part::Shared(Section::CostSummary),
         Part::Shared(Section::AgentTypeCosts),
         Part::SessionCost,
@@ -155,6 +157,8 @@ fn build(block: &ContextBlock<'_>, prose: &SlotProse, top_n: usize) -> Page {
                 slot_body(&mut p, s, slot, &reg);
                 close_section(&mut p);
             }
+            Section::Bands => bands(&mut p, block, &v),
+            Section::UnobservedSpend => unobserved_spend(&mut p, block, top_n),
             Section::QuantifiedOutput => quantified_output(&mut p, block),
             Section::CostSummary => cost_summary(&mut p, block, &v, top_n),
             Section::Reconciliation => reconciliation(&mut p, block),
@@ -447,6 +451,73 @@ fn table_row(p: &mut Page, columns: &[Column], row: &[String]) {
 
 fn subheading(p: &mut Page, text: &str) {
     p.raw("<h3>").text(text).raw("</h3>\n");
+}
+
+/// Section 3: the outcome bar and the band table, or the not-collected line.
+fn bands(p: &mut Page, block: &ContextBlock<'_>, v: &Visuals) {
+    open_section(p, Section::Bands);
+    let Some(bands) = &block.bands.bands else {
+        para(p, "<p class=\"warn\">", sections::BANDS_NOT_COLLECTED);
+        close_section(p);
+        return;
+    };
+    para(p, "<p class=\"lead\">", sections::BANDS_LEAD);
+    figures::band_bar(p, "Session spend by what it produced", v.bands.as_ref());
+    p.raw("<div class=\"table-wrap\"><table class=\"bands\">\n<thead><tr><th>Band</th>");
+    p.raw("<th class=\"num\">Sessions</th><th class=\"num\">Spend</th><th class=\"num\">Share</th>");
+    p.raw("</tr></thead>\n<tbody>\n");
+    for row in &bands.rows {
+        let tone = figures::tone_class(visuals::band_tone(row.band));
+        p.raw("<tr><td><i class=\"swatch").raw(tone).raw("\"></i> <code>");
+        p.text(row.name)
+            .raw("</code><span class=\"rule\">")
+            .text(row.rule)
+            .raw("</span></td>");
+        for value in [&row.sessions, &row.spend, &row.share] {
+            p.raw("<td class=\"num\">").text(value).raw("</td>");
+        }
+        p.raw("</tr>\n");
+    }
+    p.raw("</tbody>\n<tfoot><tr><td>Total</td><td class=\"num\">")
+        .text(&bands.total_sessions);
+    p.raw("</td><td class=\"num\">")
+        .text(&bands.total_spend)
+        .raw("</td><td></td></tr></tfoot>\n");
+    p.raw("</table></div>\n");
+    para(p, "<p class=\"caption\">", sections::NO_OBSERVED_CAVEAT);
+    close_section(p);
+}
+
+/// Section 8: spend no outcome was observed for, heavy models on short sessions, and the flag
+/// rollup. Titled for what it measures: these are signals to look at, not verdicts.
+fn unobserved_spend(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
+    open_section(p, Section::UnobservedSpend);
+    para(p, "<p class=\"lead\">", sections::UNOBSERVED_LEAD);
+    p.raw("<ul class=\"facts\">\n");
+    if let Some(line) = sections::no_observed_line(block) {
+        p.raw("<li>");
+        code_text(p, &line);
+        p.raw("</li>\n");
+    }
+    p.raw("<li>");
+    code_text(p, &sections::heavy_on_short_line(block));
+    p.raw("</li>\n</ul>\n");
+    if block.bands.bands.is_some() {
+        para(p, "<p class=\"caption\">", sections::NO_OBSERVED_CAVEAT);
+    }
+    let flags: Vec<Vec<String>> = sections::flag_rows(block).into_iter().map(Vec::from).collect();
+    if flags.is_empty() {
+        para(p, "<p class=\"empty\">", sections::NO_FLAGS);
+    } else {
+        subheading(p, "Efficiency flags");
+        let columns = [
+            col("Flag", Cell::Text),
+            col("Sessions", Cell::Num),
+            col("Spend", Cell::Num),
+        ];
+        table(p, &columns, &flags, None, Some(top_n));
+    }
+    close_section(p);
 }
 
 fn quantified_output(p: &mut Page, block: &ContextBlock<'_>) {
