@@ -23,6 +23,7 @@ use std::process::{Command, Output, Stdio};
 mod document;
 pub(crate) mod facts;
 mod reconciliation;
+mod sections;
 mod slots;
 use reconciliation::{build_reconciliation_view, no_reconcile_warning};
 mod workload;

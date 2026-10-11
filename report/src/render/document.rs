@@ -20,6 +20,7 @@ use std::path::Path;
 
 use super::ContextBlock;
 use super::facts::{self, FactRegistry};
+use super::sections;
 use crate::aggregate::{DayRow, OrgRow, RepoRow};
 use crate::chart::LineChart;
 use crate::report::Report;
@@ -141,17 +142,8 @@ fn header(md: &mut String, block: &ContextBlock<'_>) {
     let _ = writeln!(md, "**Period:** {} - {}", block.period.since, block.period.until);
     let _ = writeln!(md, "**Total Spend:** {}", block.totals.spend);
     let _ = writeln!(md, "**Pricing Basis:** {}", block.basis.note);
-    let _ = writeln!(
-        md,
-        "**Sessions:** {} across {}",
-        crate::fmt::format_int(block.totals.sessions as u64),
-        quantity(block.totals.repo_count, "repository", "repositories")
-    );
-    let _ = writeln!(
-        md,
-        "**Active Days:** {} of {}",
-        block.period.active_days, block.period.days
-    );
+    let _ = writeln!(md, "**Sessions:** {}", sections::sessions_across(block));
+    let _ = writeln!(md, "**Active Days:** {}", sections::active_days(block));
     let _ = writeln!(md);
     if !block.notes.is_empty() {
         for note in &block.notes {
@@ -199,61 +191,31 @@ fn section(md: &mut String, title: &str, prose: Option<&String>, reg: &FactRegis
 /// rollup -- an absent rollup is not a rollup of zeros, and a section explaining that nothing was
 /// recorded is still that section.
 fn quantified_output(md: &mut String, block: &ContextBlock<'_>) {
-    let Some(outcomes) = &block.outcomes else {
-        return;
-    };
-    let t = &outcomes.totals;
-    let rows: Vec<(&str, u64)> = [
-        ("Sessions producing commits", t.sessions_with_commits),
-        ("Commits", t.commits),
-        ("Pull requests opened", t.prs_opened),
-        ("Confluence pages written or updated", t.confluence_writes),
-        ("Jira issues written or updated", t.jira_writes),
-        ("Slack messages sent", t.slack_messages),
-        ("Files edited", t.files_edited),
-        ("Lines of file content written", t.lines_written),
-        ("Lines of file content replaced", t.lines_replaced),
-    ]
-    .into_iter()
-    .filter_map(|(label, v)| v.map(|v| (label, v)))
-    .collect();
+    let rows = sections::outcome_metric_rows(block);
     if rows.is_empty() {
         return;
     }
 
     let _ = writeln!(md, "## Quantified Output");
     let _ = writeln!(md);
-    let _ = writeln!(
-        md,
-        "These are observed tool invocations extracted from session transcripts, not estimates."
-    );
+    let _ = writeln!(md, "{}", sections::QUANTIFIED_OUTPUT_LEAD);
     let _ = writeln!(md);
     let _ = writeln!(md, "| Metric | Count |");
     let _ = writeln!(md, "|--------|------:|");
     for (label, v) in rows {
-        let _ = writeln!(md, "| {label} | {} |", crate::fmt::format_int(v));
+        let _ = writeln!(md, "| {label} | {v} |");
     }
     let _ = writeln!(md);
 
-    let with_outcomes: Vec<&RepoRow> = block
-        .aggregates
-        .by_repo
-        .iter()
-        .filter(|r| r.outcomes.is_some())
-        .collect();
+    let with_outcomes = sections::repo_outcome_rows(block);
     if !with_outcomes.is_empty() {
         let _ = writeln!(md, "| Repo | Spend | Commits | PRs Opened | Files Edited |");
         let _ = writeln!(md, "|------|------:|--------:|-----------:|-------------:|");
         for row in with_outcomes {
-            let o = row.outcomes.as_ref().expect("filtered to rows carrying outcomes");
             let _ = writeln!(
                 md,
                 "| `{}` | {} | {} | {} | {} |",
-                row.repo,
-                row.spend,
-                crate::fmt::format_int(o.commits),
-                crate::fmt::format_int(o.prs_opened),
-                crate::fmt::format_int(o.files_edited),
+                row.repo, row.spend, row.commits, row.prs_opened, row.files_edited,
             );
         }
         let _ = writeln!(md);
@@ -267,28 +229,7 @@ fn quantified_output(md: &mut String, block: &ContextBlock<'_>) {
 /// framing is false. The wording here is fixed in code, which is stronger than the prompt rule it
 /// replaces -- a model could paraphrase its way past that rule; this layer cannot.
 fn unit_costs(md: &mut String, block: &ContextBlock<'_>) {
-    let u = &block.unit_costs;
-    let mut lines: Vec<String> = Vec::new();
-    if let Some(v) = &u.per_commit {
-        lines.push(format!("A ratio of {v} of period spend per observed commit."));
-    }
-    if let Some(v) = &u.per_pr {
-        lines.push(format!("A ratio of {v} of period spend per pull request opened."));
-    }
-    if let Some(v) = &u.per_active_day {
-        lines.push(format!("A ratio of {v} of period spend per active day."));
-    }
-    if let Some(v) = &u.per_session {
-        lines.push(format!("A ratio of {v} of period spend per session (the mean)."));
-    }
-    match (&u.session_spend_p50, &u.session_spend_p90) {
-        (Some(p50), Some(p90)) => lines.push(format!(
-            "Median session spend was {p50}; the 90th percentile was {p90}."
-        )),
-        (Some(p50), None) => lines.push(format!("Median session spend was {p50}.")),
-        (None, Some(p90)) => lines.push(format!("The 90th percentile of session spend was {p90}.")),
-        (None, None) => {}
-    }
+    let lines = sections::unit_cost_lines(block);
     if lines.is_empty() {
         return;
     }
@@ -327,12 +268,7 @@ fn cost_summary(md: &mut String, block: &ContextBlock<'_>) {
             .map(|m| format!("`{m}`"))
             .collect::<Vec<_>>()
             .join(", ");
-        let _ = writeln!(
-            md,
-            "**Note: spend for the following models was not computed because they are not in this \
-             binary's pricing table: {names}. The total above understates actual spend. Update \
-             clyde's pricing data to include them.**"
-        );
+        let _ = writeln!(md, "**{}**", sections::untracked_models_note(&names));
         let _ = writeln!(md);
     }
 }
@@ -353,11 +289,7 @@ fn reconciliation(md: &mut String, block: &ContextBlock<'_>) {
     let _ = writeln!(md, "| Billed | {} |", r.billed);
     let _ = writeln!(md, "| Modeled | {} |", r.modeled);
     let _ = writeln!(md);
-    let _ = writeln!(
-        md,
-        "Unseen account spend is {}, from {} for {} over {}.",
-        r.delta, r.source, r.operator, r.window
-    );
+    let _ = writeln!(md, "{}", sections::unseen_spend_sentence(r));
     let _ = writeln!(md);
     let _ = writeln!(md, "{}", r.scope_note);
     let _ = writeln!(md);
@@ -387,9 +319,8 @@ fn agent_type_costs(md: &mut String, block: &ContextBlock<'_>) {
     let _ = writeln!(md);
     let _ = writeln!(
         md,
-        "Every dollar of the period's {} spend lands in exactly one row below; `{}` carried the \
-         most. The `(main-session)` row is work a session did itself rather than delegating.",
-        block.totals.spend, rows[0].name
+        "{}",
+        sections::agent_type_lead(block, &format!("`{}`", rows[0].name))
     );
     let _ = writeln!(md);
     let _ = writeln!(md, "| Agent Type | Tokens | Spend |");
@@ -404,44 +335,15 @@ fn agent_type_costs(md: &mut String, block: &ContextBlock<'_>) {
 /// cache-savings counterfactual is the one permitted in the document, and it carries its
 /// methodology note in the same breath.
 fn efficiency(md: &mut String, block: &ContextBlock<'_>) {
-    let cache = &block.aggregates.cache;
     let eff = &block.efficiency;
     let _ = writeln!(md, "## The Efficiency Story");
     let _ = writeln!(md);
-    let _ = writeln!(
-        md,
-        "- Cache read share was {}: most of the context read each turn is re-read from cache at a \
-         fraction of the fresh-input rate, which is what makes sustained agentic sessions \
-         economical. Fresh input was {} against {} read from cache.",
-        cache.cache_read_share, cache.input_tokens_human, cache.cache_read_tokens_human
-    );
-    if let (Some(list), Some(saved)) = (&cache.list_price_equivalent, &cache.cache_savings) {
-        let _ = writeln!(
-            md,
-            "- At full list-price input rates the same tokens would model to {list}, so cache reuse \
-             accounts for {saved} (computed from published per-token rates)."
-        );
+    let _ = writeln!(md, "- {}", sections::cache_read_sentence(block));
+    if let Some(sentence) = sections::cache_savings_sentence(block) {
+        let _ = writeln!(md, "- {sentence}");
     }
-    for (label, value) in [
-        ("Tool error rate", &eff.tool_error_rate),
-        (
-            "Share of cache writes paying the 1h premium",
-            &eff.cache_1h_write_fraction,
-        ),
-    ] {
-        if value != "n/a" {
-            let _ = writeln!(md, "- {label}: {value}.");
-        }
-    }
-    if eff.interrupts > 0 {
-        let _ = writeln!(md, "- Interrupts observed: {}.", crate::fmt::format_int(eff.interrupts));
-    }
-    if eff.compactions > 0 {
-        let _ = writeln!(
-            md,
-            "- Context compactions observed: {}.",
-            crate::fmt::format_int(eff.compactions)
-        );
+    for (label, value) in sections::efficiency_signals(block) {
+        let _ = writeln!(md, "- {label}: {value}.");
     }
     let _ = writeln!(md);
     workload_table(md, "Skill", &eff.by_skill, &eff.by_skill_coverage);
@@ -461,7 +363,7 @@ fn workload_table(md: &mut String, label: &str, rows: &[super::WorkloadRow], cov
         let _ = writeln!(md, "| `{}` | {} | {} |", row.name, row.tokens_human, row.spend);
     }
     let _ = writeln!(md);
-    let _ = writeln!(md, "Coverage: {coverage}");
+    let _ = writeln!(md, "{}", sections::coverage_line(coverage));
     let _ = writeln!(md);
 }
 
@@ -469,74 +371,22 @@ fn workload_table(md: &mut String, label: &str, rows: &[super::WorkloadRow], cov
 /// by org using the pre-sorted `by-org` rows; within a tier the repos keep `by-repo` order.
 fn what_this_funded(md: &mut String, block: &ContextBlock<'_>, prose: Option<&String>, reg: &FactRegistry) {
     section(md, "What This Funded", prose, reg);
-    if block.aggregates.by_org.is_empty() {
-        return;
-    }
-    for org in &block.aggregates.by_org {
-        let repos: Vec<&RepoRow> = block.aggregates.by_repo.iter().filter(|r| r.org == org.org).collect();
-        if repos.is_empty() {
-            continue;
-        }
-        let _ = writeln!(md, "### {}", org.org);
+    for tier in sections::org_tiers(block) {
+        let _ = writeln!(md, "### {}", tier.org.org);
         let _ = writeln!(md);
-        let _ = writeln!(
-            md,
-            "{} across {}, {} tokens, {}.",
-            plural(org.sessions, "session"),
-            quantity(org.repos, "repository", "repositories"),
-            org.tokens_human,
-            org.spend
-        );
+        let _ = writeln!(md, "{}", sections::org_summary(tier.org));
         let _ = writeln!(md);
-        for row in repos {
+        for row in tier.repos {
             let _ = writeln!(
                 md,
-                "- `{}` ({}, {} tokens, {} spend){}",
+                "- `{}` {}{}",
                 row.repo,
-                plural(row.sessions, "session"),
-                row.tokens_human,
-                row.spend,
-                repo_outcome_tail(row),
+                sections::repo_figures(row),
+                sections::repo_outcome_tail(row),
             );
         }
         let _ = writeln!(md);
     }
-}
-
-/// The observed-output tail on a per-repo stat line, e.g. `: 12 commits, 3 PRs opened`. Empty when
-/// the row carries no outcomes, so the line ends at the figures rather than at a bare colon.
-fn repo_outcome_tail(row: &RepoRow) -> String {
-    let Some(o) = &row.outcomes else {
-        return String::new();
-    };
-    let mut parts = Vec::new();
-    if o.commits > 0 {
-        parts.push(plural(o.commits as usize, "commit"));
-    }
-    if o.prs_opened > 0 {
-        parts.push(format!("{} opened", plural(o.prs_opened as usize, "PR")));
-    }
-    if o.files_edited > 0 {
-        parts.push(format!("{} edited", plural(o.files_edited as usize, "file")));
-    }
-    if parts.is_empty() {
-        return String::new();
-    }
-    format!(": {}", parts.join(", "))
-}
-
-/// `N thing` / `N things`, with the count formatted by the same helper every table uses.
-fn plural(n: usize, noun: &str) -> String {
-    let s = if n == 1 { "" } else { "s" };
-    format!("{} {noun}{s}", crate::fmt::format_int(n as u64))
-}
-
-/// `N thing` / `N things` for an IRREGULAR plural (`repository` -> `repositories`). Separate from
-/// [`plural`] rather than a special case inside it: an English-pluralization rule engine in a report
-/// renderer is exactly the kind of cleverness that goes wrong silently.
-fn quantity(n: usize, one: &str, many: &str) -> String {
-    let noun = if n == 1 { one } else { many };
-    format!("{} {noun}", crate::fmt::format_int(n as u64))
 }
 
 /// Usage Profile: the slot's narrative, then the by-day charts and the outlier table.
@@ -550,16 +400,8 @@ fn usage_profile(
 ) {
     section(md, "Usage Profile", prose, reg);
 
-    let carried = &block.aggregates.carried_in;
-    if carried.sessions > 0 {
-        let _ = writeln!(
-            md,
-            "{} began before the window opened and carried in {} tokens and {}; the by-day series \
-             below does not cover that spend.",
-            plural(carried.sessions, "session"),
-            carried.tokens_human,
-            carried.spend
-        );
+    if let Some(sentence) = sections::carried_in_sentence(block) {
+        let _ = writeln!(md, "{sentence}");
         let _ = writeln!(md);
     }
 
@@ -599,13 +441,8 @@ fn day_table(md: &mut String, label: &str, rows: &[DayRow], is_spend: bool) {
     let column = if is_spend { "Spend" } else { "Sessions" };
     let _ = writeln!(md, "| Day | {column} |");
     let _ = writeln!(md, "|-----|------:|");
-    for row in rows {
-        let value = if is_spend {
-            row.spend.clone()
-        } else {
-            crate::fmt::format_int(row.sessions as u64)
-        };
-        let _ = writeln!(md, "| {} | {} |", row.date, value);
+    for (date, value) in sections::day_rows(rows, is_spend) {
+        let _ = writeln!(md, "| {date} | {value} |");
     }
     let _ = writeln!(md);
     debug!("document::day_table: label={label} rows={}", rows.len());
@@ -688,8 +525,8 @@ fn outliers(md: &mut String, block: &ContextBlock<'_>) {
     let _ = writeln!(md, "| Session | Repo | Tokens | Spend | What it produced |");
     let _ = writeln!(md, "|---------|------|-------:|------:|------------------|");
     for row in rows {
-        let session = row.title.as_deref().unwrap_or(&row.short_id);
-        let repo = row.repo.as_deref().unwrap_or("(no repo)");
+        let session = sections::outlier_label(row);
+        let repo = sections::outlier_repo(row);
         let _ = writeln!(
             md,
             "| {} | `{}` | {} | {} | {} |",
@@ -697,32 +534,10 @@ fn outliers(md: &mut String, block: &ContextBlock<'_>) {
             repo,
             row.tokens_human,
             row.spend,
-            produced(row),
+            sections::produced(row),
         );
     }
     let _ = writeln!(md);
-}
-
-/// The `What it produced` cell: observed outcome counts, or `(no recorded output)`. Never a guess
-/// about how long the work would otherwise have taken.
-fn produced(row: &crate::aggregate::OutlierRow) -> String {
-    let Some(o) = &row.outcomes else {
-        return "(no recorded output)".to_string();
-    };
-    let mut parts = Vec::new();
-    if !o.commits.is_empty() {
-        parts.push(plural(o.commits.len(), "commit"));
-    }
-    if !o.prs.is_empty() {
-        parts.push(format!("{} opened", plural(o.prs.len(), "PR")));
-    }
-    if o.files_edited > 0 {
-        parts.push(format!("{} edited", plural(o.files_edited as usize, "file")));
-    }
-    if parts.is_empty() {
-        return "(no recorded output)".to_string();
-    }
-    parts.join(", ")
 }
 
 /// Neutralize a pipe in free text so a session title cannot break out of its table cell. Titles are
@@ -748,9 +563,8 @@ fn month_over_month(md: &mut String, block: &ContextBlock<'_>) {
     if !prior.comparable {
         let _ = writeln!(
             md,
-            "The two periods are different lengths: the prior period covers {} days against this \
-             period's {}. The figures below are not an apples-to-apples comparison.",
-            prior.days, block.period.days
+            "{}",
+            sections::period_length_mismatch_sentence(prior.days, block.period.days)
         );
         let _ = writeln!(md);
     }
@@ -760,45 +574,35 @@ fn month_over_month(md: &mut String, block: &ContextBlock<'_>) {
         prior.since, prior.until, block.period.since, block.period.until
     );
     let _ = writeln!(md, "|--------|---:|---:|");
-    let _ = writeln!(md, "| Spend | {} | {} |", prior.totals.spend, block.totals.spend);
-    let _ = writeln!(
-        md,
-        "| Sessions | {} | {} |",
-        prior.totals.sessions, block.totals.sessions
-    );
-    let _ = writeln!(
-        md,
-        "| Total tokens | {} | {} |",
-        prior.totals.tokens_human, block.totals.tokens_human
-    );
+    for (label, before, now) in sections::month_over_month_rows(block, prior) {
+        let _ = writeln!(md, "| {label} | {before} | {now} |");
+    }
     let _ = writeln!(md);
     repo_movement(md, &prior.by_repo, &block.aggregates.by_repo);
     org_movement(md, &prior.by_org, &block.aggregates.by_org);
 }
 
-/// Which repos appeared and which wound down, as a set difference over the two periods' repo
-/// lists. A set difference is not arithmetic on the figures: no number is subtracted.
+/// Repo movement bullets, from the shared set difference.
 fn repo_movement(md: &mut String, prior: &[RepoRow], current: &[RepoRow]) {
-    let before: Vec<&str> = prior.iter().map(|r| r.repo.as_str()).collect();
-    let now: Vec<&str> = current.iter().map(|r| r.repo.as_str()).collect();
-    let appeared: Vec<&str> = now.iter().copied().filter(|r| !before.contains(r)).collect();
-    let wound_down: Vec<&str> = before.iter().copied().filter(|r| !now.contains(r)).collect();
-    if !appeared.is_empty() {
-        let _ = writeln!(md, "- Repos new this period: {}", backticked(&appeared));
+    let moved = sections::repo_movement(prior, current);
+    if !moved.appeared.is_empty() {
+        let _ = writeln!(md, "- Repos new this period: {}", backticked(&moved.appeared));
     }
-    if !wound_down.is_empty() {
-        let _ = writeln!(md, "- Repos with no sessions this period: {}", backticked(&wound_down));
+    if !moved.wound_down.is_empty() {
+        let _ = writeln!(
+            md,
+            "- Repos with no sessions this period: {}",
+            backticked(&moved.wound_down)
+        );
     }
-    if !appeared.is_empty() || !wound_down.is_empty() {
+    if !moved.appeared.is_empty() || !moved.wound_down.is_empty() {
         let _ = writeln!(md);
     }
 }
 
-/// The same set difference over orgs.
+/// Org movement bullet, from the shared set difference.
 fn org_movement(md: &mut String, prior: &[OrgRow], current: &[OrgRow]) {
-    let before: Vec<&str> = prior.iter().map(|r| r.org.as_str()).collect();
-    let now: Vec<&str> = current.iter().map(|r| r.org.as_str()).collect();
-    let appeared: Vec<&str> = now.iter().copied().filter(|o| !before.contains(o)).collect();
+    let appeared = sections::orgs_appeared(prior, current);
     if !appeared.is_empty() {
         let _ = writeln!(md, "- Orgs new this period: {}", backticked(&appeared));
         let _ = writeln!(md);

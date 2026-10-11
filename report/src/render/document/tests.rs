@@ -4,6 +4,7 @@ use super::*;
 use crate::aggregate;
 use crate::persona::PersonaBlock;
 use crate::render::ViewOpts;
+use crate::render::sections::{plural, quantity};
 use crate::render::tests::{pricing, report_with_efficiency, report_with_outcomes, sample_report};
 use crate::report::Report;
 
@@ -429,4 +430,41 @@ fn untracked_models_get_the_understatement_warning() {
 fn month_over_month_is_absent_without_a_prior_period() {
     let md = render_bare(&sample_report()).markdown;
     assert!(!md.contains("## Month over Month"));
+}
+
+/// Pins `svg()` byte-for-byte for the medium fixture's two charts. Eval renders charts as tables, so
+/// no golden.md can prove SVG parity; this is the only guard on the sibling-asset path.
+#[test]
+fn svg_output_is_pinned_for_the_medium_fixture() {
+    let report = crate::eval::synth::build(crate::eval::synth::Kind::Medium, &pricing()).unwrap();
+    let artifact = render_with(&report, &SlotProse::new(), ChartMode::Svg);
+    assert_eq!(artifact.assets.len(), 2);
+    let expected_0 = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" role="img" aria-label="Daily spend">
+  <polyline fill="none" stroke="#4c6ef5" stroke-width="3" points="0,223 34,190 69,268 103,105 138,234 172,135 207,193 241,285 276,228 310,290 345,214 379,232 414,290 448,271 483,290 517,173 552,129 586,128 621,246 655,232 690,193 724,211 759,10 793,244 828,290 862,108 897,235 931,140 966,187 1000,290"/>
+  <text x="4" y="18" font-size="16">$77.16</text>
+  <text x="4" y="157" font-size="16">$38.58</text>
+  <text x="4" y="296" font-size="16">$0.00</text>
+  <text x="0" y="270" font-size="14">2026-04-01</text>
+  <text x="176" y="270" font-size="14">2026-04-07</text>
+  <text x="352" y="270" font-size="14">2026-04-13</text>
+  <text x="528" y="270" font-size="14">2026-04-18</text>
+  <text x="704" y="270" font-size="14">2026-04-24</text>
+  <text x="880" y="270" font-size="14">2026-04-30</text>
+</svg>
+"##;
+    assert_eq!(artifact.assets[0].body, expected_0);
+    let expected_1 = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" role="img" aria-label="Daily sessions">
+  <polyline fill="none" stroke="#4c6ef5" stroke-width="3" points="0,150 34,80 69,220 103,150 138,220 172,150 207,150 241,220 276,150 310,290 345,220 379,220 414,290 448,150 483,290 517,220 552,80 586,80 621,220 655,150 690,220 724,150 759,150 793,220 828,290 862,10 897,220 931,150 966,220 1000,290"/>
+  <text x="4" y="18" font-size="16">4</text>
+  <text x="4" y="157" font-size="16">2</text>
+  <text x="4" y="296" font-size="16">0</text>
+  <text x="0" y="270" font-size="14">2026-04-01</text>
+  <text x="176" y="270" font-size="14">2026-04-07</text>
+  <text x="352" y="270" font-size="14">2026-04-13</text>
+  <text x="528" y="270" font-size="14">2026-04-18</text>
+  <text x="704" y="270" font-size="14">2026-04-24</text>
+  <text x="880" y="270" font-size="14">2026-04-30</text>
+</svg>
+"##;
+    assert_eq!(artifact.assets[1].body, expected_1);
 }
