@@ -563,8 +563,8 @@ fn the_page_draws_every_chart_the_data_supports() {
     assert!(html.contains("data-tip=\"2026-04-01: $11.80\""));
     assert_eq!(
         html.matches("<figure class=\"chart pairs-fig\"").count(),
-        2,
-        "by org and by repo"
+        4,
+        "by org, by repo, skill calls and MCP tool calls"
     );
     for marker in [
         "<div class=\"treemap\">",
@@ -1084,9 +1084,9 @@ fn per_session_spend_is_visible_text_not_only_a_tooltip() {
                 .collect();
             assert!(!rows.is_empty());
             for row in rows {
-                assert!(row.per_session.ends_with(" per session"), "{}", row.per_session);
-                let text = format!("<span class=\"pair-per\">{}</span>", page::escape(&row.per_session));
-                assert!(html.contains(&text), "{} is not visible text", row.per_session);
+                assert!(row.per_unit.ends_with(" per session"), "{}", row.per_unit);
+                let text = format!("<span class=\"pair-per\">{}</span>", page::escape(&row.per_unit));
+                assert!(html.contains(&text), "{} is not visible text", row.per_unit);
             }
         },
     );
@@ -1170,4 +1170,81 @@ fn header_equals_the_attribution_rows_on_every_fixture() {
             },
         );
     }
+}
+
+/// The calls / spend figures carry call wording, not session wording, and every number on them is
+/// licensed by the view model's strings. Labels are not numbers, so they are asserted here.
+/// BITES: change a call share in the VIEW the page draws (not in `display_strings`) and the
+/// licensing check refuses the page.
+#[test]
+fn calls_pairs_labels_and_numbers() {
+    let case = medium();
+    with_case(
+        &case,
+        |_| {},
+        |block| {
+            let v = visuals::build(block);
+            for (pairs, rows) in [
+                (v.skill_calls.as_ref().unwrap(), &block.efficiency.by_skill),
+                (v.mcp_calls.as_ref().unwrap(), &block.efficiency.by_mcp),
+            ] {
+                assert_eq!(pairs.kind, visuals::PairsKind::CALLS);
+                assert_eq!(pairs.rows.len(), rows.len());
+                for (row, source) in pairs.rows.iter().zip(rows.iter()) {
+                    assert_eq!(row.label, source.chart_label());
+                    assert!(
+                        row.count.ends_with(" calls") || row.count.ends_with(" call"),
+                        "{}",
+                        row.count
+                    );
+                    assert!(
+                        row.per_unit == "n/a" || row.per_unit.ends_with(" per call"),
+                        "{}",
+                        row.per_unit
+                    );
+                }
+            }
+            let html = render(block, &SlotProse::new(), 10).unwrap();
+            for label in [
+                "% of calls",
+                "% calls",
+                "Spend per call",
+                "By skill: calls and spend",
+                "By MCP tool: calls and spend",
+            ] {
+                assert!(html.contains(label), "{label}");
+            }
+            assert!(html.contains("data-by-per-unit="));
+            assert!(!html.contains("data-by-per-session="));
+
+            let licensed = licensed(block);
+            assert_ledger_is_licensed(&build(block, &SlotProse::new(), 10).ledger, &licensed);
+
+            let mut mutated = visuals::build(block);
+            mutated.skill_calls.as_mut().unwrap().rows[0].count_share = "73%".to_string();
+            let page = build_with_view(block, &SlotProse::new(), 10, &mutated);
+            let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert_ledger_is_licensed(&page.ledger, &licensed);
+            }));
+            assert!(
+                refused.is_err(),
+                "a call share the display strings never carried must not license"
+            );
+        },
+    );
+}
+
+/// With no counted session the page draws no calls figure and no call columns.
+#[test]
+fn uncounted_report_draws_no_call_figure_or_columns() {
+    let mut case = medium();
+    for entry in case.report.sessions.values_mut() {
+        entry.skill_calls = None;
+        entry.mcp_calls = None;
+    }
+    let html = page(&case, 10);
+    assert!(!html.contains("calls and spend"));
+    assert!(!html.contains("<th class=\"num\">Calls</th>"));
+    assert!(!html.contains("$/call"));
+    assert!(html.contains("Calls counted on 0 of"));
 }

@@ -26,7 +26,7 @@ const NAMED_SUBAGENTS: &str = concat!(
 );
 
 fn ex(path: &str) -> FileEfficiency {
-    extract(Path::new(path)).unwrap_or_else(|e| panic!("extract {path} failed: {e}"))
+    extract_one(Path::new(path)).unwrap_or_else(|e| panic!("extract {path} failed: {e}"))
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn attribution_effort_and_web_tool_use_populate_from_multi_subagent_fixture() {
     assert_eq!(a.agent_type.as_deref(), Some("phase-implementer"));
     assert_eq!(a.raw.effort_xhigh, 1);
     // createJiraIssue: tokens = 20+10+100+0+500 = 630.
-    assert_eq!(a.raw.by_mcp_tool["mcp__atlassian__createJiraIssue"].tokens, 630);
+    assert_eq!(a.raw.by_mcp_tool["atlassian__createJiraIssue"].tokens, 630);
 
     // Subagent B: web fetch, structured interrupt.
     let b = &f.subagents["asubagentbbb000000000002"];
@@ -260,8 +260,8 @@ fn attribution_effort_and_web_tool_use_populate_from_multi_subagent_fixture() {
 
 /// One assistant turn is written as MULTIPLE content-block records (thinking / text / tool_use), each
 /// stamped with the SAME message-level `usage`. The fold must count that usage ONCE per `message.id`,
-/// not once per block. BITES: drop the `first_seen_usage` gate in `apply_record` and the 3-block turn
-/// is counted 3x (turns=4, input=310, cost 3x) -- the exact ~2-3x cost inflation this fixes.
+/// not once per block. BITES: apply usage per record instead of buffering it in `GroupUsage` and the
+/// 3-block turn is counted 3x (turns=4, input=310, cost 3x) -- the exact ~2-3x cost inflation this fixes.
 #[test]
 fn message_level_usage_counted_once_per_message_id_not_per_block() {
     let f = ex(concat!(
@@ -301,9 +301,10 @@ fn empty_message_id_is_never_deduped_fails_open() {
     assert_eq!(p.output_tokens, 20, "7 + 13, both applied");
 }
 
-/// Dedupe keeps the FIRST record of a repeated `message.id`, and its day with it: a later block of
-/// the same turn stamped after midnight does not move the turn. BITES: bucket outside the
-/// `first_seen_usage` gate and the turn lands on both days.
+/// Dedupe keeps the FIRST record's attributes for a repeated `message.id`, its day included: a later
+/// block of the same turn stamped after midnight does not move the turn. BITES: take the timestamp
+/// from the later record in `MessageUsage::absorb_max`, or apply usage per record, and the turn
+/// moves or lands on both days.
 #[test]
 fn by_day_dedupe_keeps_the_first_records_timestamp() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -348,4 +349,273 @@ fn by_day_holds_an_undated_turn_back_for_fold() {
     assert!(f.parent.by_day.is_empty(), "no record here carries a timestamp");
     let held = &f.undated[&Scope::Parent]["claude-opus-4-8"];
     assert_eq!(held.total, f.parent.by_model["claude-opus-4-8"].total);
+}
+
+/// A subagent streams one message's usage over several records with a growing `output_tokens`; the
+/// message counts its field-wise max, once, across files of the group, and only after `finish`.
+/// BITES: keep the first record's usage (the old `first_seen_usage` rule) and output reads 3; apply
+/// per record and the turn counts three times.
+#[test]
+fn streamed_usage_takes_the_field_wise_max_across_the_group() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let a = tmp.path().join("a.jsonl");
+    let b = tmp.path().join("b.jsonl");
+    let rec = |agent: &str, out: u64, inp: u64| {
+        format!(
+            r#"{{"type":"assistant","agentId":"{agent}","timestamp":"2026-10-01T10:00:00Z","message":{{"id":"m1","role":"assistant","model":"claude-opus-4-8","usage":{{"input_tokens":{inp},"output_tokens":{out}}}}}}}"#
+        )
+    };
+    std::fs::write(
+        &a,
+        format!(
+            "{}\n{}\n{}\n",
+            rec("src", 3, 10),
+            rec("src", 3, 10),
+            rec("src", 159, 10)
+        ),
+    )
+    .unwrap();
+    // A copy in another file with a larger input and a smaller output: each field takes its own max.
+    std::fs::write(&b, format!("{}\n", rec("fork", 2, 12))).unwrap();
+
+    let mut group = GroupSeen::default();
+    let fa = extract(&a, &mut group).unwrap();
+    let fb = extract(&b, &mut group).unwrap();
+    assert_eq!(
+        fa.subagents.get("src").map_or(0, |s| s.raw.turns),
+        0,
+        "nothing applied before finish"
+    );
+    assert_eq!(fa.tokens_file_local, 13, "old rule: first record of the file only");
+    assert_eq!(fb.tokens_file_local, 14);
+
+    let applied = group.finish();
+    let src = &applied.subagents["src"].raw;
+    assert_eq!((src.turns, src.input_tokens, src.output_tokens), (1, 12, 159));
+    assert!(
+        !applied.subagents.contains_key("fork"),
+        "the first holder's scope keeps the message"
+    );
+}
+
+/// `finish` on a group that saw no message ids is an empty result, not an error.
+#[test]
+fn finish_on_an_empty_group_is_empty() {
+    let applied = GroupSeen::default().finish();
+    assert_eq!(applied, FileEfficiency::default());
+}
+
+/// The group-wide signal gates fail open: a `tool_result` with no `tool_use_id` and a record with no
+/// `uuid` count every time, while a repeated id or uuid counts once. BITES: treat a missing id as a
+/// key (or skip it) and the id-less pair counts once (or never).
+#[test]
+fn signal_gates_dedupe_ids_and_always_count_id_less_records() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("t.jsonl");
+    let with_id = r#"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true}]}}"#;
+    let no_id = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","is_error":true}]}}"#;
+    let duration = r#"{"type":"system","subtype":"turn_duration","uuid":"u2","durationMs":10}"#;
+    let duration_no_uuid = r#"{"type":"system","subtype":"turn_duration","durationMs":20}"#;
+    let body = [
+        with_id,
+        with_id,
+        no_id,
+        no_id,
+        duration,
+        duration,
+        duration_no_uuid,
+        duration_no_uuid,
+    ]
+    .join("\n");
+    std::fs::write(&path, body).unwrap();
+    let p = ex(path.to_str().unwrap()).parent;
+    assert_eq!((p.tool_calls, p.tool_errors), (3, 3), "t1 once + two id-less results");
+    assert_eq!(p.turn_durations_ms, vec![10, 20, 20], "u2 once + two uuid-less records");
+}
+
+#[test]
+fn mcp_cost_keyed_by_server() {
+    assert_eq!(server_key("claude.ai Atlassian"), "claude_ai_Atlassian");
+    assert_eq!(server_key("hindsight-work"), "hindsight-work");
+    assert_eq!(server_key("claude.ai Foo (Bar)"), "claude_ai_Foo_Bar");
+    assert_eq!(mcp_cost_key(None, "getJiraIssue"), "_unknown__getJiraIssue");
+
+    let turn = |server: Option<&str>| MessageUsage {
+        scope: Scope::Parent,
+        timestamp: None,
+        model: "claude-opus-4-8".to_string(),
+        attribution_skill: None,
+        attribution_mcp_tool: Some("getJiraIssue".to_string()),
+        attribution_mcp_server: server.map(str::to_string),
+        effort: None,
+        usage: TokenUsage {
+            input_tokens: 10,
+            output_tokens: 0,
+            cache_5m_write_tokens: 0,
+            cache_1h_write_tokens: 0,
+            cache_read_tokens: 0,
+        },
+        web_search_requests: 0,
+        web_fetch_requests: 0,
+    };
+    let mut raw = RawCounters::default();
+    apply_usage(&turn(Some("claude.ai Atlassian")), &mut raw);
+    apply_usage(&turn(Some("atlassian")), &mut raw);
+    apply_usage(&turn(None), &mut raw);
+    assert_eq!(raw.by_mcp_tool.len(), 3);
+    assert_eq!(raw.by_mcp_tool["claude_ai_Atlassian__getJiraIssue"].tokens, 10);
+    assert_eq!(raw.by_mcp_tool["atlassian__getJiraIssue"].tokens, 10);
+    assert_eq!(raw.by_mcp_tool["_unknown__getJiraIssue"].tokens, 10);
+}
+
+fn mcp(calls: u64, timed: u64, total_ms: u64) -> crate::metrics::McpCalls {
+    crate::metrics::McpCalls { calls, timed, total_ms }
+}
+
+/// Calls are counted from events, deduped group-wide, and slash candidates resolve in `fold`.
+///
+/// - `/handoff` is confirmed on the spot by the next record's "Base directory" marker.
+/// - `/simplify` has no marker but the group spent under `simplify`, so `fold` counts it.
+/// - `/model` has neither, so it is dropped.
+/// - A `tool_result` quoting `<command-name>/bogus</command-name>` is block content, never counted.
+/// - The fork copies the source's `Skill` and MCP calls: each counts once, in the source's scope.
+/// - Two MCP calls share the bare name `search` on different servers: two keys. The persona call's
+///   result is only in the fork's file (a later file), and its 2500ms lands on the source's scope;
+///   the Atlassian call has no result, so it is counted and not timed.
+///
+/// BITES: drop the `call_ids` gate and `rust-ci` / `persona__search` read 2; match block text and
+/// `bogus` appears; widen the candidate rule and `model` appears.
+#[test]
+fn counts_calls_from_events() {
+    let paths = calls_group_paths();
+    let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+    let files = extract_group(&refs).unwrap();
+    let session = crate::fold::fold(CALLS_SID, &files);
+
+    let skill = |pairs: &[(&str, u64)]| -> Option<BTreeMap<String, u64>> {
+        Some(pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect())
+    };
+    let agg = &session.aggregate.raw;
+    assert_eq!(
+        agg.skill_calls,
+        skill(&[("handoff", 1), ("marquee:publish", 1), ("rust-ci", 1), ("simplify", 1)])
+    );
+    assert_eq!(
+        agg.mcp_calls,
+        Some(BTreeMap::from([
+            ("claude_ai_Atlassian__search".to_string(), mcp(1, 0, 0)),
+            ("persona__search".to_string(), mcp(1, 1, 2500)),
+        ]))
+    );
+
+    let scope = |id: &str| {
+        &session
+            .subagents
+            .iter()
+            .find(|s| s.agent_id == id)
+            .unwrap_or_else(|| panic!("subagent {id} missing"))
+            .signals
+            .raw
+    };
+    let source = scope("a5555555555555555");
+    assert_eq!(source.skill_calls, skill(&[("rust-ci", 1)]));
+    assert_eq!(
+        source.mcp_calls,
+        Some(BTreeMap::from([("persona__search".to_string(), mcp(1, 1, 2500))]))
+    );
+    let fork = scope("a6666666666666666");
+    assert_eq!(
+        fork.skill_calls,
+        Some(BTreeMap::new()),
+        "the fork's copies count nothing"
+    );
+    assert_eq!(fork.mcp_calls, Some(BTreeMap::new()));
+
+    // The parent file holds `/simplify` and `/model` as candidates; `fold` kept one of them.
+    assert_eq!(
+        files[0].slash_candidates.get(&Scope::Parent),
+        Some(&BTreeMap::from([("model".to_string(), 1), ("simplify".to_string(), 1)]))
+    );
+}
+
+/// The count-not-time cases on one file: a paired result is timed; a result with no `tool_use_id`, a
+/// call with no timestamp, and a result timestamped before its call count the call and add no time;
+/// a copied call and a second copy of a result change nothing. An `mcp__` name with no tool segment
+/// and a `Skill` with no `input.skill` are not counted.
+#[test]
+fn mcp_time_counts_calls_it_cannot_time() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("t.jsonl");
+    let call = |id: &str, ts: Option<&str>| {
+        let ts = ts.map_or(String::new(), |t| format!(r#""timestamp":"{t}","#));
+        format!(
+            r#"{{"type":"assistant",{ts}"message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{id}","name":"mcp__srv__get","input":{{}}}}]}}}}"#
+        )
+    };
+    let result = |id: Option<&str>, ts: &str| {
+        let id = id.map_or(String::new(), |i| format!(r#","tool_use_id":"{i}""#));
+        format!(
+            r#"{{"type":"user","timestamp":"{ts}","message":{{"role":"user","content":[{{"type":"tool_result"{id}}}]}}}}"#
+        )
+    };
+    let lines = [
+        call("t-ok", Some("2026-10-02T10:00:00Z")),
+        result(Some("t-ok"), "2026-10-02T10:00:01.250Z"),
+        result(Some("t-ok"), "2026-10-02T10:00:09Z"),
+        call("t-ok", Some("2026-10-02T10:00:00Z")),
+        call("t-nots", None),
+        result(Some("t-nots"), "2026-10-02T10:00:02Z"),
+        call("t-neg", Some("2026-10-02T10:00:05Z")),
+        result(Some("t-neg"), "2026-10-02T10:00:04Z"),
+        call("t-noid", Some("2026-10-02T10:00:06Z")),
+        result(None, "2026-10-02T10:00:07Z"),
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t-bad","name":"mcp__nosep","input":{}},{"type":"tool_use","id":"t-sk","name":"Skill","input":{}}]}}"#.to_string(),
+    ];
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    let p = ex(path.to_str().unwrap()).parent;
+    assert_eq!(
+        p.mcp_calls,
+        Some(BTreeMap::from([("srv__get".to_string(), mcp(4, 1, 1250))]))
+    );
+    assert_eq!(p.skill_calls, Some(BTreeMap::new()));
+}
+
+/// A slash command whose record is copied (same `uuid`) counts once; one with no `uuid` counts every
+/// time; a meta record and a slash that ends the file are handled.
+#[test]
+fn slash_dedupes_on_uuid_and_ends_of_file_become_candidates() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("t.jsonl");
+    let slash = |uuid: Option<&str>, name: &str| {
+        let uuid = uuid.map_or(String::new(), |u| format!(r#""uuid":"{u}","#));
+        format!(
+            r#"{{"type":"user",{uuid}"message":{{"role":"user","content":"<command-name>/{name}</command-name>"}}}}"#
+        )
+    };
+    let confirm =
+        r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"Base directory for this skill: /x"}}"#;
+    let meta_slash =
+        r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"<command-name>/metaone</command-name>"}}"#;
+    let lines = [
+        slash(Some("u1"), "a"),
+        confirm.to_string(),
+        slash(Some("u1"), "a"),
+        confirm.to_string(),
+        slash(None, "b"),
+        confirm.to_string(),
+        slash(None, "b"),
+        confirm.to_string(),
+        meta_slash.to_string(),
+        slash(Some("u2"), "tail"),
+    ];
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    let f = ex(path.to_str().unwrap());
+    assert_eq!(
+        f.parent.skill_calls,
+        Some(BTreeMap::from([("a".to_string(), 1), ("b".to_string(), 2)]))
+    );
+    assert_eq!(
+        f.slash_candidates.get(&Scope::Parent),
+        Some(&BTreeMap::from([("tail".to_string(), 1)]))
+    );
 }

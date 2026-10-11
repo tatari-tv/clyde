@@ -8,7 +8,7 @@
 
 use super::page::Page;
 use crate::chart::{self, calendar, treemap};
-use crate::render::visuals::{Calendar, Cascade, DailyStack, Histogram, Pairs, Stack, Treemap};
+use crate::render::visuals::{Calendar, Cascade, DailyStack, Histogram, Pairs, PairsKind, Stack, Treemap};
 
 /// Shown in place of a chart with nothing to draw.
 const EMPTY: &str = "No data in this window to draw.";
@@ -47,7 +47,7 @@ pub(super) fn pairs(p: &mut Page, caption: &str, pairs: Option<&Pairs>, code_lab
         return;
     };
     if pairs.rows.len() > 1 {
-        sort_control(p);
+        sort_control(p, pairs.kind);
     }
     p.raw("</div>\n<ol class=\"pairs\">\n");
     for (i, row) in pairs.rows.iter().enumerate() {
@@ -57,8 +57,8 @@ pub(super) fn pairs(p: &mut Page, caption: &str, pairs: Option<&Pairs>, code_lab
             "<li class=\"pair extra\""
         });
         p.geom_int("data-by-spend", row.rank.spend as i64);
-        p.geom_int("data-by-sessions", row.rank.sessions as i64);
-        p.geom_int("data-by-per-session", row.rank.per_session as i64);
+        p.geom_int("data-by-count", row.rank.count as i64);
+        p.geom_int("data-by-per-unit", row.rank.per_unit as i64);
         p.attr("data-tip", &row.tip).raw("><div class=\"pair-head\">");
         p.raw(if code_labels {
             "<code class=\"pair-label\">"
@@ -69,10 +69,10 @@ pub(super) fn pairs(p: &mut Page, caption: &str, pairs: Option<&Pairs>, code_lab
         p.raw(if code_labels { "</code>" } else { "</span>" });
         // Visible text, not only the tooltip: with JS off the page still shows every number.
         p.raw("<span class=\"pair-per\">")
-            .text(&row.per_session)
+            .text(&row.per_unit)
             .raw("</span></div>");
         p.raw("<div class=\"pair-bars\">");
-        bar_track(p, "sessions", row.bars.first, &row.sessions_share, &row.sessions);
+        bar_track(p, "sessions", row.bars.first, &row.count_share, &row.count);
         bar_track(p, "spend", row.bars.second, &row.spend_share, &row.spend);
         p.raw("</div></li>\n");
     }
@@ -89,27 +89,29 @@ pub(super) fn pairs(p: &mut Page, caption: &str, pairs: Option<&Pairs>, code_lab
             .raw("</span></summary></details>\n");
     }
     p.raw("<div class=\"legend\"><span class=\"key\"><i class=\"swatch sessions\"></i>");
-    p.text("% of sessions")
+    p.text(pairs.kind.count_label)
         .raw("</span><span class=\"key\"><i class=\"swatch spend\"></i>");
     p.text("% of spend").raw("</span></div>");
     p.raw("</figure>\n");
 }
 
 /// The sort buttons, hidden until `app.js` shows them: without JS they would do nothing.
-fn sort_control(p: &mut Page) {
+fn sort_control(p: &mut Page, kind: PairsKind) {
     p.raw("<div class=\"sort\" role=\"group\" hidden=\"\"")
         .attr("aria-label", "Sort rows");
     p.raw("><span class=\"sort-label\">").text("Sort by").raw("</span>");
+    let count_label = format!("% {}s", kind.count_noun);
+    let per_label = format!("Spend {}", kind.per_label);
     for (key, label, pressed) in [
         ("spend", "% spend", true),
-        ("sessions", "% sessions", false),
-        ("per-session", "Spend per session", false),
+        ("count", count_label.as_str(), false),
+        ("per-unit", per_label.as_str(), false),
     ] {
         p.raw("<button type=\"button\"");
         p.raw(match key {
             "spend" => " data-key=\"by-spend\"",
-            "sessions" => " data-key=\"by-sessions\"",
-            _ => " data-key=\"by-per-session\"",
+            "count" => " data-key=\"by-count\"",
+            _ => " data-key=\"by-per-unit\"",
         });
         p.raw(if pressed {
             " aria-pressed=\"true\">"

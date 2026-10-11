@@ -81,6 +81,8 @@ fn session_entry(
         compactions: 0,
         by_skill: BTreeMap::new(),
         by_mcp: BTreeMap::new(),
+        skill_calls: Some(BTreeMap::new()),
+        mcp_calls: Some(BTreeMap::new()),
         efficiency: empty_efficiency(),
     }
 }
@@ -794,7 +796,7 @@ fn render_rejects_v1_artifact_by_version_not_serde_error() {
         "the error must name the artifact's version: {msg}"
     );
     assert!(
-        msg.contains("schema v3"),
+        msg.contains("schema v4"),
         "the error must name the expected version: {msg}"
     );
     assert!(
@@ -806,9 +808,9 @@ fn render_rejects_v1_artifact_by_version_not_serde_error() {
         "the version gate must fire BEFORE serde reports an internal field: {msg}"
     );
 
-    // A current v3 envelope passes the gate.
-    let v3 = r#"{"schema-version": 3}"#;
-    check_schema_version(v3, Path::new("./claude-report.json")).expect("a v3 artifact must pass the gate");
+    // A current v4 envelope passes the gate.
+    let v4 = r#"{"schema-version": 4}"#;
+    check_schema_version(v4, Path::new("./claude-report.json")).expect("a v4 artifact must pass the gate");
 
     // Something that is not a clyde report at all is named as such, not as a version mismatch.
     let junk = r#"{"hello": "world"}"#;
@@ -1004,20 +1006,39 @@ mod prior;
 mod reconcile;
 mod workload;
 
-/// Schema v3 is the per-day-bucket break: a v2 artifact has no `by-day`, so render refuses it by
-/// name, both versions stated, before any serde error about a field.
+/// Schema v4 is the call-count break: a v3 artifact has no `skill-calls` / `mcp-calls`, and a
+/// session missing them would read as uncounted, so render refuses a v3 artifact by name, both
+/// versions stated, before any serde error. The same gate covers `-i` and `--prior`. Inverts the
+/// v3-era `render_schema_v2_artifact_is_refused_naming_v2_and_v3`.
 #[test]
-fn render_schema_v2_artifact_is_refused_naming_v2_and_v3() {
+fn v3_input_rejected_by_name() {
     let tmp = TempDir::new().unwrap();
     let input = tmp.path().join("claude-report.json");
     let report = crate::eval::synth::build(crate::eval::synth::Kind::Small, &pricing()).unwrap();
     let mut json = serde_json::to_value(&report).unwrap();
-    json["schema-version"] = serde_json::json!(2);
+    json["schema-version"] = serde_json::json!(3);
     fs::write(&input, json.to_string()).unwrap();
     let msg = format!("{:#}", load_report(&input, "report").unwrap_err());
     assert!(
-        msg.contains("schema v2") && msg.contains("schema v3") && msg.contains("report collect"),
+        msg.contains("schema v3") && msg.contains("schema v4") && msg.contains("report collect"),
         "{msg}"
+    );
+
+    let err = build_context_block(
+        &report,
+        false,
+        None,
+        &pricing(),
+        crate::aggregate::DEFAULT_OUTLIERS,
+        Some(&input),
+        None,
+        None,
+    )
+    .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("schema v3") && msg.contains("schema v4") && msg.contains("report collect"),
+        "the --prior gate must refuse v3 by name: {msg}"
     );
 }
 

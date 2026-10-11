@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use efficiency::WorkloadCost;
+use efficiency::{McpCalls, WorkloadCost};
 
 use crate::render::tests::sample_report;
 use crate::render::{WorkloadRow, workload::*};
@@ -171,4 +171,188 @@ fn an_empty_partition_renders_no_rows() {
 #[test]
 fn coverage_note_on_a_zero_total_is_zero_percent_not_nan() {
     assert_eq!(coverage_note(0.0, 0.0), "$0.00 of $0.00 (0.0%), embedded-price basis");
+}
+
+fn cost(tokens: u64, usd: f64) -> WorkloadCost {
+    WorkloadCost { tokens, cost_usd: usd }
+}
+
+/// Two sessions: `counted` carries call maps, `uncounted` is the shape a pre-call-counting blob
+/// parses to (`None`), and both hold spend under the same keys.
+fn two_sessions(uncounted_calls: bool) -> crate::report::Report {
+    let mut report = sample_report();
+    let mut entries = std::mem::take(&mut report.sessions).into_iter();
+    let (id_a, mut a) = entries.next().unwrap();
+    let (id_b, mut b) = entries.next().unwrap();
+    a.by_skill = BTreeMap::from([("a".to_string(), cost(1_000, 1.0)), ("b".to_string(), cost(10, 0.5))]);
+    a.skill_calls = Some(BTreeMap::from([("a".to_string(), 4), ("b".to_string(), 0)]));
+    a.by_mcp = BTreeMap::from([
+        ("srv__t".to_string(), cost(500, 2.0)),
+        ("srv__u".to_string(), cost(500, 1.0)),
+    ]);
+    a.mcp_calls = Some(BTreeMap::from([
+        (
+            "srv__t".to_string(),
+            McpCalls {
+                calls: 2,
+                timed: 2,
+                total_ms: 5_000,
+            },
+        ),
+        (
+            "srv__u".to_string(),
+            McpCalls {
+                calls: 3,
+                timed: 0,
+                total_ms: 0,
+            },
+        ),
+    ]));
+    b.by_skill = BTreeMap::from([("a".to_string(), cost(3_000, 3.0)), ("c".to_string(), cost(20, 2.0))]);
+    b.by_mcp = BTreeMap::from([("bare".to_string(), cost(100, 0.7))]);
+    if uncounted_calls {
+        b.skill_calls = None;
+        b.mcp_calls = None;
+    } else {
+        a.skill_calls = None;
+        a.mcp_calls = None;
+    }
+    report.sessions.insert(id_a, a);
+    report.sessions.insert(id_b, b);
+    report
+}
+
+fn cell<'a>(rows: &'a [crate::render::CallRow], name: &str) -> &'a crate::render::CallRow {
+    rows.iter().find(|r| r.name == name).unwrap()
+}
+
+/// A row fed by a session that did not count calls carries `\u{2020}`, divides only counted-session
+/// spend, and shows `n/a` rather than `0` when no counted call backs it. A counted row that really
+/// made no calls keeps its `0`. BITES: divide total spend, or default a missing call count to 0.
+#[test]
+fn partial_row_marks_and_never_zero() {
+    let eff = build_efficiency_view(&two_sessions(true));
+
+    let a = cell(&eff.by_skill, "a");
+    assert_eq!(a.calls.as_deref(), Some("4\u{2020}"));
+    assert_eq!(a.sessions.as_deref(), Some("2"));
+    assert_eq!(a.spend, "$4.00", "spend is every session's");
+    assert_eq!(
+        a.per_call.as_deref(),
+        Some("$0.25"),
+        "$1.00 counted spend over 4 calls, not $4.00"
+    );
+
+    let c = cell(&eff.by_skill, "c");
+    assert_eq!(c.calls.as_deref(), Some("n/a"));
+    assert_eq!(c.per_call.as_deref(), Some("n/a"));
+
+    let b = cell(&eff.by_skill, "b");
+    assert_eq!(
+        b.calls.as_deref(),
+        Some("0"),
+        "a counted session's zero is a measurement"
+    );
+    assert_eq!(b.per_call.as_deref(), Some("n/a"));
+
+    let t = cell(&eff.by_mcp, "t");
+    assert_eq!(t.server.as_deref(), Some("srv"));
+    assert_eq!(t.calls.as_deref(), Some("2"));
+    assert_eq!(t.time.as_deref(), Some("5.0s"));
+    assert_eq!(t.avg.as_deref(), Some("2.5s"));
+    assert_eq!(t.per_call.as_deref(), Some("$1.00"));
+    let u = cell(&eff.by_mcp, "u");
+    assert_eq!(u.avg.as_deref(), Some("n/a"), "3 calls, none timed");
+    assert_eq!(u.time.as_deref(), Some("0.0s"));
+
+    let bare = cell(&eff.by_mcp, "bare");
+    assert_eq!(
+        bare.server.as_deref(),
+        Some("_unknown"),
+        "a key with no `__` has no server"
+    );
+    assert_eq!(bare.calls.as_deref(), Some("n/a"));
+    assert_eq!(bare.avg.as_deref(), Some("n/a"));
+    assert_eq!(bare.time.as_deref(), Some("n/a"));
+
+    assert_eq!(
+        eff.call_captions,
+        [
+            "\u{2020} includes sessions recorded before call counting",
+            "Calls counted on 1 of 2 sessions"
+        ]
+    );
+}
+
+/// The row set is the union of the cost and calls maps: a key with calls but no attributed turns
+/// shows `$0.00` and `0` tokens.
+#[test]
+fn calls_without_attributed_spend_still_get_a_row() {
+    let mut report = two_sessions(true);
+    let entry = report.sessions.values_mut().next().unwrap();
+    entry.skill_calls.as_mut().unwrap().insert("ghost".to_string(), 7);
+    let eff = build_efficiency_view(&report);
+    let ghost = cell(&eff.by_skill, "ghost");
+    assert_eq!(ghost.calls.as_deref(), Some("7"));
+    assert_eq!(ghost.spend, "$0.00");
+    assert_eq!(ghost.tokens_human, "0");
+    assert_eq!(ghost.per_call.as_deref(), Some("$0.00"));
+    assert_eq!(ghost.sessions.as_deref(), Some("1"));
+}
+
+/// With no counted session the call columns do not exist: no cell is `n/a`, no `\u{2020}`, and the
+/// caption says how few counted.
+#[test]
+fn no_counted_sessions_omits_call_columns() {
+    let mut report = two_sessions(true);
+    for entry in report.sessions.values_mut() {
+        entry.skill_calls = None;
+        entry.mcp_calls = None;
+    }
+    let eff = build_efficiency_view(&report);
+    assert!(!eff.by_skill.is_empty() && !eff.by_mcp.is_empty());
+    for row in eff.by_skill.iter().chain(&eff.by_mcp) {
+        assert!(row.calls.is_none() && row.sessions.is_none() && row.per_call.is_none());
+        assert!(row.time.is_none() && row.avg.is_none() && row.counts.is_none());
+    }
+    assert_eq!(eff.call_captions, ["Calls counted on 0 of 2 sessions"]);
+    let json = serde_json::to_string(&eff.by_skill).unwrap();
+    assert!(!json.contains("calls") && !json.contains("per-call"), "{json}");
+}
+
+/// Every session counted: no `\u{2020}`, no counted-on caption.
+#[test]
+fn fully_counted_report_has_no_captions() {
+    let mut report = two_sessions(true);
+    for entry in report.sessions.values_mut() {
+        entry.skill_calls.get_or_insert_with(BTreeMap::new);
+        entry.mcp_calls.get_or_insert_with(BTreeMap::new);
+    }
+    let eff = build_efficiency_view(&report);
+    assert!(eff.call_captions.is_empty());
+    assert_eq!(cell(&eff.by_skill, "c").calls.as_deref(), Some("0"));
+}
+
+/// A `--no-rollup` report (one holding a `<sid>/<agent-id>` subagent row) explains why an inherited
+/// skill tag shows tokens with 0 calls; a rolled-up report does not. BITES: drop the caption, or
+/// show it on every report.
+#[test]
+fn no_rollup_report_explains_inherited_skill_tags() {
+    let inherited =
+        "Under --no-rollup, a subagent that inherited its parent's skill tag shows that skill's tokens with 0 calls";
+    let rolled = build_efficiency_view(&two_sessions(true));
+    assert!(!rolled.call_captions.iter().any(|c| c == inherited));
+
+    let mut report = two_sessions(true);
+    let (sid, entry) = report.sessions.pop_first().unwrap();
+    report.sessions.insert(format!("{sid}/agent-a1"), entry);
+    let exploded = build_efficiency_view(&report);
+    assert_eq!(
+        exploded.call_captions,
+        [
+            "\u{2020} includes sessions recorded before call counting",
+            inherited,
+            "Calls counted on 1 of 2 sessions"
+        ]
+    );
 }

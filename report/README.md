@@ -98,14 +98,53 @@ Render knobs live under `render:` in `clyde.yml` (see `clyde.yml.example`): `for
 `table-top-n` (rows shown before a table folds), `waste.heavy-models` and
 `waste.short-session-turns` (the rules behind the "Unobserved and Flagged Spend" section).
 
+### Skill and MCP call columns
+
+The "By skill" and "By MCP tool" tables carry call columns next to spend, and each has a calls/spend
+chart above it:
+
+- **Calls**: how many times the skill or MCP tool was invoked
+- **Sessions**: sessions that touched the key
+- **$/call**: spend divided by calls, over the sessions that counted calls only
+- **Time** and **Avg** (MCP only): wall time and mean time per timed call
+- MCP keys read `server / tool`. A key with no server segment shows server `_unknown`
+- `†` marks a partial row: some session spent on that key without counting calls (a catalog row
+  from before call counting). Calls, Time and $/call show `n/a` when none of the row's sessions counted
+- The chart carries the same `†` on a partial row's call count. An `n/a` row is left off the chart
+- Under `--no-rollup`, a subagent that inherited its parent's skill tag shows that skill's tokens with
+  0 calls. A caption says so
+- Coverage line under both tables: "Calls counted on N of M sessions". It prints only when N < M
+- When no session counted calls, the call columns are omitted. No wall of `n/a`
+
+What is not counted:
+
+- Skill time. A skill's work runs through the normal turn loop, so there is no clean span to time
+- Built-in slash commands (`/model`, `/clear`, and the like). A slash command counts as a skill call
+  in one of two ways:
+  - Confirmed: the next record loads a skill (`Base directory for this skill:`)
+  - Unconfirmed: no skill loads, but the session group spends under that skill name. So `/simplify`
+    counts, `/model` does not
+- MCP calls with no result or no timestamp are counted but not timed
+
+Fork dedupe. A forked subagent copies its source's history inline, so the same message shows up in
+more than one file. Within a session group:
+
+- Usage is taken once per `message.id`, group-wide, as the field-wise max across copies
+- Outcomes are summed, and each result is counted once by `tool_use_id`
+- Efficiency signals (tool errors, interrupts, compactions, turn durations) are counted once per
+  `tool_use_id` or record `uuid`
+- Skill and MCP calls are counted once per tool_use `id`
+
+Cost per skill and per MCP tool moved with it, so figures from an older binary will not match.
+
 ### After upgrading: reindex, then re-collect
 
-The report JSON is schema v3 (per-day per-model buckets). A v2 report is rejected by `render` and
-`merge` with a message naming the schema. On each host:
+The report JSON is schema v4 (v3's per-day per-model buckets, plus skill and MCP call counts). An
+older report is rejected by `render` and `merge` with a message naming the schema. On each host:
 
 ```bash
 clyde session reindex    # backfills per-day buckets into the catalog; check recomputed / kept / unrecoverable
-clyde report collect ... # write a fresh v3 report
+clyde report collect ... # write a fresh v4 report
 ```
 
 `reindex` keeps stored accounting for any session whose transcript bytes are gone (`kept`); it

@@ -97,10 +97,10 @@ fn collect_matching_returns_empty_for_an_unknown_prefix() {
 
 // --- Staged-root union across every `clyde efficiency` surface (archived-session-spend Phase 4).
 //
-// The efficiency surfaces are where a double count would actually land: `extract`'s
-// `seen_usage_msg_ids` dedup is PER FILE and `fold` adds no cross-file check, so live-then-staged
-// precedence in `find_session_files_with_staged` is the ONLY thing preventing a session with bytes in
-// both roots from being billed twice. `clyde cost` dedups message ids globally and is protected even
+// The efficiency surfaces are where a double count would actually land: the usage dedupe is per
+// SESSION GROUP, and a live root and a staged root holding the same session are two groups' worth of
+// files only if precedence fails, so live-then-staged precedence in `find_session_files_with_staged`
+// is the thing preventing a session with bytes in both roots from being billed twice. `clyde cost` dedups message ids globally and is protected even
 // if precedence failed, which is why the panel required these assertions here specifically.
 
 const STAGED_ONLY: &str = "aaaaaaaa-bbbb-4ccc-8ddd-999999999999";
@@ -216,5 +216,268 @@ fn daily_weekly_and_worst_see_the_staged_root_without_double_counting() {
         ranked.iter().filter(|id| **id == BOTH_ROOTS).count(),
         1,
         "--worst must list a both-roots session once: {ranked:?}"
+    );
+}
+
+// --- Group-wide dedupe across a fork group (report-workload-calls Phase 1).
+//
+// `fixtures/efficiency/fork-group/` is one session group: a parent, a fork of the main session (the
+// `fork-context-ref` plus its copied spawning turn `msg_p2`), a non-fork subagent `a2222...` whose
+// `msg_s1` streams `output_tokens` 3, 3, 159, and a fork of that subagent `a1333...` copying its whole
+// history, where the copy of `msg_s2` carries `output_tokens` 2185 against the source's 7. Every
+// usage below is `input + output + cache_read` (no cache writes).
+//
+// Field-wise max per message id, summed:
+//   msg_p1 100+10+1000=1110, msg_p2 200+20+2000=2220, msg_p3 10+1+100=111, msg_f1 50+5+500=555,
+//   msg_s1 30+159+300=489, msg_s2 40+2185+400=2625, msg_g1 60+6+600=666            => 7776
+// Old per-file rule (first record per id, every file on its own):
+//   parent 3441, fork-of-main 2220+555=2775, subagent 333+447=780,
+//   fork-of-subagent 333+2625+666=3624                                             => 10620
+
+const FORK_GROUP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/efficiency/fork-group");
+const FORK_SID: &str = "5e55f0e0-0000-4000-8000-00000000f0f0";
+const FORK_OF_MAIN: &str = "a1111111111111111";
+const SUBAGENT: &str = "a2222222222222222";
+const FORK_OF_SUBAGENT: &str = "a1333333333333333";
+const GROUP_WIDE_TOKENS: u64 = 7776;
+const PER_FILE_TOKENS: u64 = 10620;
+
+fn layout(dir: &Path) -> Vec<SessionFile> {
+    common::scan::layout_files(
+        FORK_SID,
+        &dir.join(format!("{FORK_SID}.jsonl")),
+        &dir.join(FORK_SID).join("subagents"),
+    )
+}
+
+/// The fork group copied into `tmp` with every `.meta.json` left behind: the layout a pre-Phase-2
+/// staged copy has.
+fn fork_group_without_meta(tmp: &TempDir) -> std::path::PathBuf {
+    let dst = tmp.path().join("no-meta");
+    let subs = dst.join(FORK_SID).join("subagents");
+    fs::create_dir_all(&subs).unwrap();
+    let src = Path::new(FORK_GROUP);
+    fs::copy(
+        src.join(format!("{FORK_SID}.jsonl")),
+        dst.join(format!("{FORK_SID}.jsonl")),
+    )
+    .unwrap();
+    for entry in fs::read_dir(src.join(FORK_SID).join("subagents")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            fs::copy(&path, subs.join(path.file_name().unwrap())).unwrap();
+        }
+    }
+    dst
+}
+
+fn scope_tokens(eff: &SessionEfficiency, agent_id: &str) -> u64 {
+    eff.subagents
+        .iter()
+        .find(|s| s.agent_id == agent_id)
+        .map_or(0, |s| s.signals.raw.total_tokens())
+}
+
+fn fold_ordered(files: &[&SessionFile]) -> SessionEfficiency {
+    fold(FORK_SID, &extract_ordered(files).files)
+}
+
+/// BITES: go back to a per-file seen-set and the copies bill again (10620 with first-record usage);
+/// keep the first record instead of the field-wise max and `msg_s1` counts 3 output tokens, not 159,
+/// and the totals start depending on file order (the fork's 2185 vs the source's 7); drop the meta
+/// read from `is_fork` and the copied turns move to the fork's scope.
+#[test]
+fn fork_group_counts_copies_once() {
+    let config = EfficiencyConfig::default();
+    let files = layout(Path::new(FORK_GROUP));
+    let refs: Vec<&SessionFile> = files.iter().collect();
+    assert_eq!(refs.len(), 4, "parent + three subagent transcripts");
+
+    let built = build_session(FORK_SID, &refs, &config, None);
+    let eff = &built.session.efficiency;
+    let raw = &eff.aggregate.raw;
+    assert_eq!(raw.total_tokens(), GROUP_WIDE_TOKENS, "field-wise-max sum: {raw:?}");
+    assert_eq!(raw.output_tokens, 10 + 20 + 1 + 5 + 159 + 2185 + 6);
+    assert_eq!(raw.turns, 7, "seven distinct message ids");
+    assert_eq!(
+        built.tokens_file_local, PER_FILE_TOKENS,
+        "the old rule's figure, for the guard"
+    );
+    assert_eq!(built.failed, 0);
+
+    // The streamed message, alone in its own file: 159 (its last record), plus msg_s2's 7.
+    let sub_file: Vec<&SessionFile> = refs
+        .iter()
+        .copied()
+        .filter(|f| f.path.to_string_lossy().contains(SUBAGENT))
+        .collect();
+    assert_eq!(fold_ordered(&sub_file).aggregate.raw.output_tokens, 159 + 7);
+
+    // Reversed order: forks first. The totals are the max rule's, so they do not move.
+    let reversed: Vec<&SessionFile> = refs.iter().rev().copied().collect();
+    let rev = fold_ordered(&reversed);
+    assert_eq!(rev.aggregate.raw.total_tokens(), GROUP_WIDE_TOKENS);
+    assert_eq!(rev.aggregate.raw.output_tokens, raw.output_tokens);
+    assert_eq!(rev.aggregate.raw.turns, raw.turns);
+    assert_eq!(rev.aggregate.raw.by_model, raw.by_model);
+    assert!((rev.aggregate.raw.cost_usd - raw.cost_usd).abs() < 1e-9);
+
+    // Meta present: every copied turn stays on the scope it was copied FROM.
+    assert_eq!(
+        eff.aggregate.raw.total_tokens()
+            - scope_tokens(eff, FORK_OF_MAIN)
+            - scope_tokens(eff, SUBAGENT)
+            - scope_tokens(eff, FORK_OF_SUBAGENT),
+        1110 + 2220 + 111,
+        "parent keeps msg_p1..p3"
+    );
+    assert_eq!(
+        scope_tokens(eff, FORK_OF_MAIN),
+        555,
+        "the fork of main keeps only its own msg_f1"
+    );
+    assert_eq!(
+        scope_tokens(eff, SUBAGENT),
+        489 + 2625,
+        "the source keeps msg_s1 and msg_s2 (at the max)"
+    );
+    assert_eq!(
+        scope_tokens(eff, FORK_OF_SUBAGENT),
+        666,
+        "the fork of the subagent keeps only msg_g1"
+    );
+
+    // Meta removed: the fork of main still carries its ref; the fork of the subagent now sorts as a
+    // plain subagent, ahead of its source by path. The split shifts, the totals do not.
+    let tmp = TempDir::new().unwrap();
+    let bare = layout(&fork_group_without_meta(&tmp));
+    let bare_refs: Vec<&SessionFile> = bare.iter().collect();
+    let no_meta = build_session(FORK_SID, &bare_refs, &config, None).session.efficiency;
+    assert_eq!(no_meta.aggregate.raw.total_tokens(), GROUP_WIDE_TOKENS);
+    assert_eq!(no_meta.aggregate.raw.output_tokens, raw.output_tokens);
+    assert_eq!(
+        scope_tokens(&no_meta, FORK_OF_MAIN),
+        555,
+        "the ref alone still marks it a fork"
+    );
+    assert_eq!(scope_tokens(&no_meta, FORK_OF_SUBAGENT), 489 + 2625 + 666);
+    assert_eq!(scope_tokens(&no_meta, SUBAGENT), 0);
+}
+
+fn fork_candidate(stored_tokens: Option<u64>, stored_has_skill_calls: bool) -> EfficiencyCandidate {
+    EfficiencyCandidate {
+        session_id: FORK_SID.to_string(),
+        transcript_path: Path::new(FORK_GROUP).join(format!("{FORK_SID}.jsonl")),
+        project_dir: FORK_GROUP.to_string(),
+        staged_path: None,
+        stored_tokens,
+        stored_has_skill_calls,
+    }
+}
+
+/// The keep-blob guard compares on the stored blob's own basis, so the dedupe's drop never trips it.
+/// BITES: compare an old-shape blob against the deduped total and case 1 is kept forever (the
+/// double count survives every reindex); compare it against nothing and case 2 is overwritten by a
+/// truncated recompute; compare a new-shape blob against the per-file figure and case 3 is
+/// overwritten.
+#[test]
+fn guard_ignores_dedupe_drop() {
+    let config = EfficiencyConfig::default();
+    let run = |c: EfficiencyCandidate| collect_layouts(&[c], &config, &[]).unwrap();
+
+    // 1. An old-shape blob equal to the per-file sum: the recompute sees exactly that per file, so
+    //    it is not a truncation, and the deduped total (7776) replaces it.
+    let got = run(fork_candidate(Some(PER_FILE_TOKENS), false));
+    assert!(got.kept.is_empty(), "{:?}", got.kept);
+    assert_eq!(got.sessions.len(), 1);
+    assert_eq!(
+        got.sessions[0].efficiency.aggregate.raw.total_tokens(),
+        GROUP_WIDE_TOKENS
+    );
+
+    // 2. An old-shape blob larger than the per-file sum: the bytes are a truncated view; keep it.
+    let got = run(fork_candidate(Some(PER_FILE_TOKENS + 1), false));
+    assert_eq!(got.kept, vec![FORK_SID.to_string()]);
+    assert!(got.sessions.is_empty());
+
+    // 3. A new-shape blob larger than the deduped sum: same rule, group-wide basis; keep it. (Below
+    //    the per-file figure, so a per-file comparison would wrongly overwrite it.)
+    let got = run(fork_candidate(Some(GROUP_WIDE_TOKENS + 1), true));
+    assert_eq!(got.kept, vec![FORK_SID.to_string()]);
+    assert!(got.sessions.is_empty());
+
+    // And a new-shape blob equal to the deduped sum is recomputed.
+    let got = run(fork_candidate(Some(GROUP_WIDE_TOKENS), true));
+    assert!(got.kept.is_empty());
+    assert_eq!(got.sessions.len(), 1);
+}
+
+/// The non-usage signals a fork copies count once (P1c). The parent holds one completed tool call and
+/// a 9000ms turn duration; the source subagent `a2222...` holds three completed calls (one an errored
+/// Bash exit, one a structured interrupt), a text interrupt, a compaction and a 4000ms turn duration.
+/// The fork of the subagent copies all of it inline, ids and uuids included, and adds none of its own.
+///
+/// BITES: drop the `tool_use_id` gate in `apply_tool_results` and `tool_calls` reads 7 with the
+/// errors, Bash failures and structured interrupts doubled; drop the `uuid` gate in `apply_record`
+/// and the text interrupts, compactions and turn durations double.
+#[test]
+fn fork_group_counts_signals_once() {
+    fn signals(raw: &crate::metrics::RawCounters) -> (u64, u64, u64, u64, u64, usize, Vec<u64>) {
+        let mut durations = raw.turn_durations_ms.clone();
+        durations.sort_unstable();
+        (
+            raw.tool_calls,
+            raw.tool_errors,
+            raw.bash_command_failures,
+            raw.interrupts_structured,
+            raw.interrupts_text,
+            raw.compactions.len(),
+            durations,
+        )
+    }
+    let parent_plus_source = (1 + 3, 1, 1, 1, 1, 1, vec![4000, 9000]);
+    let none = (0, 0, 0, 0, 0, 0, vec![]);
+    let scope = |eff: &SessionEfficiency, id: &str| {
+        eff.subagents
+            .iter()
+            .find(|s| s.agent_id == id)
+            .map_or(none.clone(), |s| signals(&s.signals.raw))
+    };
+
+    let files = layout(Path::new(FORK_GROUP));
+    let refs: Vec<&SessionFile> = files.iter().collect();
+
+    let forward = fold_ordered(&order_group(&refs));
+    assert_eq!(signals(&forward.aggregate.raw), parent_plus_source);
+    assert_eq!(scope(&forward, SUBAGENT), (3, 1, 1, 1, 1, 1, vec![4000]));
+    assert_eq!(
+        scope(&forward, FORK_OF_SUBAGENT),
+        none,
+        "the fork's copies contribute 0"
+    );
+    assert_eq!(scope(&forward, FORK_OF_MAIN), none);
+
+    // Reversed order: the totals do not move.
+    let reversed: Vec<&SessionFile> = refs.iter().rev().copied().collect();
+    let rev = fold_ordered(&reversed);
+    assert_eq!(signals(&rev.aggregate.raw), parent_plus_source);
+
+    // Plain path order puts the fork (`a1333...`) ahead of its source (`a2222...`): ITS copy is the
+    // one that counts, the source's adds 0, and the totals still do not move.
+    let by_path = fold_ordered(&refs);
+    assert_eq!(signals(&by_path.aggregate.raw), parent_plus_source);
+    assert_eq!(scope(&by_path, FORK_OF_SUBAGENT), (3, 1, 1, 1, 1, 1, vec![4000]));
+    assert_eq!(scope(&by_path, SUBAGENT), none);
+
+    // Control: each file read on its own (the old per-file state) bills the fork's copies again.
+    let per_file: Vec<FileEfficiency> = refs
+        .iter()
+        .flat_map(|f| extract_ordered(std::slice::from_ref(f)).files)
+        .collect();
+    let old = fold(FORK_SID, &per_file);
+    assert_eq!(
+        signals(&old.aggregate.raw).0,
+        1 + 3 + 3,
+        "control: copies counted again"
     );
 }

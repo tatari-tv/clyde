@@ -73,6 +73,8 @@ fn entry(
         compactions: 0,
         by_skill: BTreeMap::new(),
         by_mcp: BTreeMap::new(),
+        skill_calls: Some(BTreeMap::new()),
+        mcp_calls: Some(BTreeMap::new()),
         efficiency: empty_efficiency(),
     }
 }

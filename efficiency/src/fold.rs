@@ -9,10 +9,10 @@
 //! is a stored redundant number that could diverge from the counters it was computed from; the
 //! `aggregate_equals_recompute_of_parent_and_subagents` test pins exactly that.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, NaiveDate, Utc};
-use log::{debug, warn};
+use log::{debug, trace, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::extract::{FileEfficiency, Scope, SubagentRaw, name_from_agent_id};
@@ -106,6 +106,8 @@ pub fn fold(session_id: &str, files: &[FileEfficiency]) -> SessionEfficiency {
         }
     }
 
+    resolve_slash_candidates(session_id, files, &mut parent_own, &mut subagents);
+
     // The invariant: aggregate = finalize(parent_own ⊎ all subagents' counters). Recomputed from
     // the unioned RAW counters, never field-summed from the sub-scope derived metrics.
     let mut aggregate_raw = parent_own.clone();
@@ -145,6 +147,43 @@ pub fn fold(session_id: &str, files: &[FileEfficiency]) -> SessionEfficiency {
         subagents: subagent_breakdown,
         flags: Vec::new(),
     }
+}
+
+/// Count each unconfirmed slash command whose name the GROUP spent under (`by_skill`, any scope), in
+/// the scope of the file that held it, and drop the rest. The lookup is group-wide, so a parent slash
+/// command whose spend landed only in a subagent still counts on the parent. Run after the scopes are
+/// unioned (so `by_skill` holds the group's applied usage) and before the aggregate is recomputed.
+fn resolve_slash_candidates(
+    session_id: &str,
+    files: &[FileEfficiency],
+    parent_own: &mut RawCounters,
+    subagents: &mut BTreeMap<String, SubagentRaw>,
+) {
+    let spent: BTreeSet<String> = parent_own
+        .by_skill
+        .keys()
+        .chain(subagents.values().flat_map(|s| s.raw.by_skill.keys()))
+        .cloned()
+        .collect();
+    let (mut counted, mut dropped) = (0u64, 0u64);
+    for file in files {
+        for (scope, names) in &file.slash_candidates {
+            for (name, n) in names {
+                if !spent.contains(name) {
+                    trace!("fold: session_id={session_id} slash /{name} x{n} dropped (no spend under that skill)");
+                    dropped += n;
+                    continue;
+                }
+                let raw = match scope {
+                    Scope::Parent => &mut *parent_own,
+                    Scope::Subagent(id) => &mut subagents.entry(id.clone()).or_default().raw,
+                };
+                raw.add_skill_calls(name, *n);
+                counted += n;
+            }
+        }
+    }
+    debug!("fold: session_id={session_id} slash-candidates counted={counted} dropped={dropped}");
 }
 
 /// The session's begin as a UTC day: the earliest record timestamp across every file (the catalog's

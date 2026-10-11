@@ -93,6 +93,8 @@ fn entry_with_outcomes(model: &str, mt: ModelTokens, outcomes: Option<Outcomes>)
         compactions: 0,
         by_skill: BTreeMap::new(),
         by_mcp: BTreeMap::new(),
+        skill_calls: Some(BTreeMap::new()),
+        mcp_calls: Some(BTreeMap::new()),
         efficiency,
     }
 }
@@ -207,10 +209,10 @@ fn merge_distinct_sessions_sums_without_overlap() {
 }
 
 /// Inverts `schema_version_mismatch_is_typed_error_naming_both`: inputs no longer merely have to
-/// agree with each other, each must be the CURRENT schema (v3, per-day buckets). A v2 input is
+/// agree with each other, each must be the CURRENT schema (v4, call counts). A v3 input is
 /// refused by name with both versions, whatever the others are.
 #[test]
-fn schema_v2_input_is_refused_naming_v2_and_v3() {
+fn schema_v3_input_is_refused_naming_v3_and_v4() {
     let r1 = report(
         "desk",
         SID_SHARED,
@@ -227,24 +229,24 @@ fn schema_v2_input_is_refused_naming_v2_and_v3() {
         "claude-opus-4-7",
         model_tokens(100, Some(1.00)),
     );
-    r2.schema_version = 2;
+    r2.schema_version = 3;
 
     let err = merge_reports(vec![r1, r2]).unwrap_err();
     match &err {
         MergeError::UnsupportedSchema { input, found, expected } => {
-            assert_eq!((*found, *expected), (2, 3));
+            assert_eq!((*found, *expected), (3, 4));
             assert!(input.contains("laptop"), "names which input: {input}");
         }
         other => panic!("expected UnsupportedSchema, got {other:?}"),
     }
     let message = err.to_string();
-    assert!(message.contains("v2") && message.contains("v3"), "{message}");
+    assert!(message.contains("v3") && message.contains("v4"), "{message}");
 }
 
-/// The single-input path used to return its input without any version check, so a lone v2 file
+/// The single-input path used to return its input without any version check, so a lone old file
 /// "merged" cleanly into an artifact render then refused. Now it is refused here, by path.
 #[test]
-fn schema_v2_single_input_is_refused_by_path() {
+fn schema_v3_single_input_is_refused_by_path() {
     let tmp = TempDir::new().unwrap();
     let mut r = report(
         "desk",
@@ -254,7 +256,7 @@ fn schema_v2_single_input_is_refused_by_path() {
         "claude-opus-4-7",
         model_tokens(100, Some(1.00)),
     );
-    r.schema_version = 2;
+    r.schema_version = 3;
     let path = tmp.path().join("old.json");
     std::fs::write(&path, serde_json::to_string(&r).unwrap()).unwrap();
 
@@ -264,21 +266,21 @@ fn schema_v2_single_input_is_refused_by_path() {
         matches!(
             err,
             MergeError::UnsupportedSchema {
-                found: 2,
-                expected: 3,
+                found: 3,
+                expected: 4,
                 ..
             }
         ),
         "{err:?}"
     );
     assert!(
-        message.contains("old.json") && message.contains("v2") && message.contains("v3"),
+        message.contains("old.json") && message.contains("v3") && message.contains("v4"),
         "{message}"
     );
 
     let direct = merge_reports(vec![r]).unwrap_err();
     assert!(
-        matches!(direct, MergeError::UnsupportedSchema { found: 2, .. }),
+        matches!(direct, MergeError::UnsupportedSchema { found: 3, .. }),
         "{direct:?}"
     );
 }

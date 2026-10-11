@@ -10,18 +10,18 @@
 //!   and the rows sum those integer parts ([`partition_rows`]), so they equal the headline exactly.
 //! - `by-skill` and `by-mcp` are attribution TAGS, not a partition: a dollar can carry no skill tag
 //!   or several, and they keep the catalog's embedded prices. They cannot sum to anything, so they
-//!   go through [`workload_rows`] untouched and carry a [`coverage_note`] instead.
+//!   go through [`call_rows`] untouched, joined to their call counts, and carry a [`coverage_note`].
 //!
 //! Split out of `render.rs` for file-size discipline, along the seam that was already there.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use efficiency::{RawCounters, WorkloadCost, finalize};
+use efficiency::{McpCalls, RawCounters, WorkloadCost, finalize};
 use log::debug;
 
-use super::{EfficiencyView, WorkloadRow};
+use super::{CallCounts, CallRow, EfficiencyView, WorkloadRow};
 use crate::cents;
-use crate::fmt::{format_tokens_human, format_usd};
+use crate::fmt::{format_duration_ms, format_int, format_tokens_human, format_usd};
 use crate::report::{MAIN_SESSION_BUCKET, Report, SessionEntry};
 
 /// Build the report-wide [`EfficiencyView`] from the collected sessions' curated signals + raw
@@ -43,6 +43,10 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
     let mut agent: BTreeMap<String, AgentCents> = BTreeMap::new();
     let mut by_skill: BTreeMap<String, WorkloadCost> = BTreeMap::new();
     let mut by_mcp: BTreeMap<String, WorkloadCost> = BTreeMap::new();
+    let skill_rows = tally_calls(report, |e| &e.by_skill, |e| e.skill_calls.as_ref().map(skill_call_map));
+    let mcp_rows = tally_calls(report, |e| &e.by_mcp, |e| e.mcp_calls.clone());
+    let counted = report.sessions.values().filter(|e| e.skill_calls.is_some()).count();
+    let total = report.sessions.len();
     let mut interrupts: u64 = 0;
     let mut compactions: u64 = 0;
     for entry in report.sessions.values() {
@@ -68,13 +72,18 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
         compactions,
         // The declared partition: its rows must sum to the headline the prose states.
         agent_type_costs: partition_rows(agent),
-        by_skill: workload_rows(by_skill),
-        by_mcp: workload_rows(by_mcp),
+        by_skill: call_rows(skill_rows, counted > 0, false),
+        by_mcp: call_rows(mcp_rows, counted > 0, true),
         by_skill_coverage: coverage_note(skill_covered, report.totals.spend_usd),
         by_mcp_coverage: coverage_note(mcp_covered, report.totals.spend_usd),
+        call_captions: Vec::new(),
     };
+    let mut view = view;
+    // Only `--no-rollup` emits `<sid>/<agent-id>` rows; session ids never hold a `/`.
+    let subagent_rows = report.sessions.keys().any(|k| k.contains('/'));
+    view.call_captions = call_captions(&view, counted, total, subagent_rows);
     debug!(
-        "render::build_efficiency_view: agent-types={} skills={} mcp-tools={} interrupts={} compactions={} skill-coverage={} mcp-coverage={}",
+        "render::build_efficiency_view: calls-counted={counted}/{total} agent-types={} skills={} mcp-tools={} interrupts={} compactions={} skill-coverage={} mcp-coverage={}",
         view.agent_type_costs.len(),
         view.by_skill.len(),
         view.by_mcp.len(),
@@ -84,6 +93,180 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
         view.by_mcp_coverage
     );
     view
+}
+
+/// Everything the call join accumulates for one tag key across the report's sessions.
+#[derive(Debug, Default)]
+struct Tally {
+    tokens: u64,
+    spend: f64,
+    /// Spend from sessions that counted calls.
+    counted_spend: f64,
+    calls: McpCalls,
+    sessions: usize,
+    /// A session that contributed spend to this key did not count calls.
+    partial: bool,
+}
+
+fn skill_call_map(calls: &BTreeMap<String, u64>) -> BTreeMap<String, McpCalls> {
+    calls
+        .iter()
+        .map(|(k, n)| {
+            (
+                k.clone(),
+                McpCalls {
+                    calls: *n,
+                    ..McpCalls::default()
+                },
+            )
+        })
+        .collect()
+}
+
+/// Join one tag table's spend map to its calls map over every session, key by key. The row set is
+/// the union of both maps; Sessions is +1 per session whose spend or calls map holds the key.
+fn tally_calls(
+    report: &Report,
+    cost_of: impl Fn(&SessionEntry) -> &BTreeMap<String, WorkloadCost>,
+    calls_of: impl Fn(&SessionEntry) -> Option<BTreeMap<String, McpCalls>>,
+) -> BTreeMap<String, Tally> {
+    let mut rows: BTreeMap<String, Tally> = BTreeMap::new();
+    for entry in report.sessions.values() {
+        let cost = cost_of(entry);
+        let calls = calls_of(entry);
+        let counted = calls.is_some();
+        let keys: BTreeSet<&String> = cost.keys().chain(calls.iter().flat_map(|c| c.keys())).collect();
+        for key in keys {
+            let row = rows.entry(key.clone()).or_default();
+            row.sessions += 1;
+            if let Some(wc) = cost.get(key) {
+                row.tokens += wc.tokens;
+                row.spend += wc.cost_usd;
+                if counted {
+                    row.counted_spend += wc.cost_usd;
+                } else {
+                    row.partial = true;
+                }
+            }
+            if let Some(c) = calls.as_ref().and_then(|m| m.get(key)) {
+                row.calls.calls += c.calls;
+                row.calls.timed += c.timed;
+                row.calls.total_ms += c.total_ms;
+            }
+        }
+    }
+    rows
+}
+
+/// Split an MCP key `server__tool` on its first `__`. A key with no `__` (written before servers
+/// were part of the key) has server `_unknown` and keeps the whole key as its tool.
+fn split_mcp_key(key: &str) -> (&str, &str) {
+    key.split_once("__").unwrap_or(("_unknown", key))
+}
+
+/// The display rows for one tag table, spend descending, name ascending on a tie. `with_calls` is
+/// false when no session counted calls: the call cells are then absent rather than a wall of `n/a`.
+///
+/// A PARTIAL row (some contributing session did not count calls) marks its Calls with `†`, and
+/// shows `n/a` rather than `0` when no counted call backs it: an uncounted session's zero is not a
+/// measurement. $/call divides counted-session spend only.
+fn call_rows(map: BTreeMap<String, Tally>, with_calls: bool, mcp: bool) -> Vec<CallRow> {
+    let mut rows: Vec<(String, Tally)> = map.into_iter().collect();
+    rows.sort_by(|a, b| {
+        b.1.spend
+            .partial_cmp(&a.1.spend)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    rows.into_iter()
+        .map(|(key, t)| {
+            let (server, name) = if mcp {
+                let (server, tool) = split_mcp_key(&key);
+                (Some(server.to_string()), tool.to_string())
+            } else {
+                (None, key.clone())
+            };
+            let mut row = CallRow {
+                name,
+                server,
+                calls: None,
+                sessions: None,
+                tokens_human: format_tokens_human(t.tokens),
+                spend: format_usd(t.spend),
+                per_call: None,
+                time: None,
+                avg: None,
+                counts: None,
+            };
+            if !with_calls {
+                return row;
+            }
+            let none_counted = t.partial && t.calls.calls == 0;
+            row.calls = Some(if none_counted {
+                "n/a".to_string()
+            } else if t.partial {
+                format!("{}†", format_int(t.calls.calls))
+            } else {
+                format_int(t.calls.calls)
+            });
+            row.sessions = Some(format_int(t.sessions as u64));
+            row.per_call = Some(if t.calls.calls == 0 {
+                "n/a".to_string()
+            } else {
+                format_usd(t.counted_spend / t.calls.calls as f64)
+            });
+            if mcp {
+                row.time = Some(if none_counted {
+                    "n/a".to_string()
+                } else {
+                    format_duration_ms(t.calls.total_ms)
+                });
+                row.avg = Some(
+                    t.calls
+                        .total_ms
+                        .checked_div(t.calls.timed)
+                        .map_or_else(|| "n/a".to_string(), format_duration_ms),
+                );
+            }
+            row.counts = Some(CallCounts {
+                calls: t.calls.calls,
+                spend: t.spend,
+                counted_spend: t.counted_spend,
+                partial: t.partial,
+            });
+            row
+        })
+        .collect()
+}
+
+/// The captions under the call columns: the `†` meaning once, only when some row carries it, how
+/// many sessions counted calls, only when not all did, and, on a `--no-rollup` report (one holding
+/// subagent rows) with counted skill calls, why a subagent's inherited skill tag shows tokens with 0
+/// calls.
+fn call_captions(view: &EfficiencyView, counted: usize, total: usize, subagent_rows: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let partial = view
+        .by_skill
+        .iter()
+        .chain(&view.by_mcp)
+        .any(|r| r.counts.is_some_and(|c| c.partial));
+    if partial {
+        out.push("† includes sessions recorded before call counting".to_string());
+    }
+    if subagent_rows && counted > 0 && !view.by_skill.is_empty() {
+        out.push(
+            "Under --no-rollup, a subagent that inherited its parent's skill tag shows that skill's tokens with 0 calls"
+                .to_string(),
+        );
+    }
+    if counted < total {
+        out.push(format!(
+            "Calls counted on {} of {} sessions",
+            format_int(counted as u64),
+            format_int(total as u64)
+        ));
+    }
+    out
 }
 
 /// The `by-skill` / `by-mcp` coverage statement (design Phase 5): how much of `totals.spend` a TAG
@@ -122,36 +305,6 @@ fn merge_workload(base: &mut BTreeMap<String, WorkloadCost>, add: &BTreeMap<Stri
         bucket.tokens += v.tokens;
         bucket.cost_usd += v.cost_usd;
     }
-}
-
-/// Convert an accumulated `WorkloadCost` map into pre-formatted display rows, pre-sorted by spend
-/// descending (ties broken by name for determinism) so the model copies the order, never re-sorts.
-///
-/// For `by-skill` / `by-mcp`, which the design states are attribution tags and not a partition (a
-/// dollar can carry no skill tag or several). The one map that IS a declared partition goes through
-/// [`partition_rows`] instead.
-pub(super) fn workload_rows(map: BTreeMap<String, WorkloadCost>) -> Vec<WorkloadRow> {
-    sorted_workload(map)
-        .into_iter()
-        .map(|(name, wc)| WorkloadRow {
-            name,
-            tokens_human: format_tokens_human(wc.tokens),
-            spend: format_usd(wc.cost_usd),
-        })
-        .collect()
-}
-
-/// Sort an accumulated workload map into display order: spend descending, name ascending on a tie.
-/// The agent-type partition sorts the same way on its cents ([`partition_rows`]).
-fn sorted_workload(map: BTreeMap<String, WorkloadCost>) -> Vec<(String, WorkloadCost)> {
-    let mut rows: Vec<(String, WorkloadCost)> = map.into_iter().collect();
-    rows.sort_by(|a, b| {
-        b.1.cost_usd
-            .partial_cmp(&a.1.cost_usd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    rows
 }
 
 /// One agent type's accumulated tokens and whole cents across the window.

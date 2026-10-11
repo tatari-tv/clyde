@@ -23,7 +23,9 @@ use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use claude_pricing::Pricing;
 use common::metrics::{TokenTotals, price};
 use common::repo::RepoSource;
-use efficiency::{Compaction, CompactionTrigger, RawCounters, SessionEfficiency, SubagentEfficiency, finalize};
+use efficiency::{
+    Compaction, CompactionTrigger, McpCalls, RawCounters, SessionEfficiency, SubagentEfficiency, finalize,
+};
 use eyre::Result;
 use log::debug;
 use std::collections::BTreeMap;
@@ -284,7 +286,9 @@ const AGENT_TYPES: &[&str] = &["phase-implementer", "code-reviewer", "doc-writer
 /// Skill / MCP attribution tags for the medium fixture. These are an attribution TAG SET, never a
 /// partition, which is exactly the shape the coverage strings exist to state.
 const SKILLS: &[&str] = &["release-notes", "schema-review"];
-const MCP_TOOLS: &[&str] = &["tracker-search", "wiki-write"];
+/// Live `server__tool` cost keys, plus one bare name (the shape a pre-server catalog blob keeps) so
+/// the render's `_unknown` server path is exercised.
+const MCP_TOOLS: &[&str] = &["tracker__search", "wiki-write"];
 
 /// A splitmix64 step. A fixed, self-contained PRNG so a fixture is reproducible from its seed with
 /// no dependency whose version could change the stream underneath a committed golden.
@@ -370,7 +374,7 @@ impl Kind {
     }
 }
 
-/// Build one synthesized window as a schema-v3 [`Report`], through the real
+/// Build one synthesized window as a schema-v4 [`Report`], through the real
 /// [`crate::report::build_report`]. Deterministic: same `kind`, same bytes.
 pub fn build(kind: Kind, pricing: &Pricing) -> Result<Report> {
     debug!("synth::build: kind={kind:?} seed={}", kind.seed());
@@ -501,6 +505,7 @@ fn session(spec: Spec<'_>, since: DateTime<Utc>, rng: &mut Rng, pricing: &Pricin
     let mut parent = counters(spec.models, rng);
     parent.by_skill = tagged(SKILLS, spec.index, &parent, rng);
     parent.by_mcp_tool = tagged(MCP_TOOLS, spec.index + 1, &parent, rng);
+    let counted = seed_calls(&mut parent, spec.index);
     parent.by_day = spread(&parent.by_model, begin, end);
 
     let mut subagents: Vec<SubagentEfficiency> = Vec::new();
@@ -509,6 +514,9 @@ fn session(spec: Spec<'_>, since: DateTime<Utc>, rng: &mut Rng, pricing: &Pricin
         let sub_models: Vec<(&str, u64)> = spec.models.iter().map(|(m, _)| (*m, *scale)).collect();
         let mut raw = counters(&sub_models, rng);
         raw.by_day = spread(&raw.by_model, begin, end);
+        if !counted {
+            uncount(&mut raw);
+        }
         aggregate.merge(&raw);
         subagents.push(SubagentEfficiency {
             agent_id: format!("agent_{}", rng.hex(10)),
@@ -671,6 +679,38 @@ fn tagged(
         },
     );
     out
+}
+
+/// Seed a parent scope's skill / MCP call counts from its tagged attribution buckets, one call
+/// count per tagged name, so the calls join the spend rows the way live data does. Every fourth
+/// session (by index) is UNCOUNTED instead: its maps are `None`, the shape a catalog blob written
+/// before call counting parses to, so every fixture with four or more sessions carries both kinds.
+/// Returns whether the session is counted, so its subagents follow suit. No rng draw: seeding calls
+/// moved nothing else in a fixture.
+fn seed_calls(parent: &mut RawCounters, index: usize) -> bool {
+    if index % 4 == 3 {
+        uncount(parent);
+        return false;
+    }
+    let calls = 1 + (index as u64 % 5);
+    for skill in parent.by_skill.keys().cloned().collect::<Vec<_>>() {
+        parent.add_skill_calls(&skill, calls);
+    }
+    for tool in parent.by_mcp_tool.keys().cloned().collect::<Vec<_>>() {
+        let timed = calls - u64::from(index % 2 == 1);
+        *parent.mcp_call_mut(&tool) = McpCalls {
+            calls,
+            timed,
+            total_ms: timed * (400 + 150 * (index as u64 % 7)),
+        };
+    }
+    true
+}
+
+/// Mark a scope uncounted: no call maps, as a pre-call-counting blob parses.
+fn uncount(raw: &mut RawCounters) {
+    raw.skill_calls = None;
+    raw.mcp_calls = None;
 }
 
 /// The catalog's own embedded-priced `cost_usd` scalar for a scope. `report` re-prices from

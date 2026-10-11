@@ -128,7 +128,7 @@ fn v6_content_update_nulls_stale_efficiency() {
     db.upsert_session(&p, "desk").unwrap();
     db.set_efficiency_many(&[EfficiencyWrite {
         session_id: UUID_A,
-        efficiency_json: r#"{"aggregate":{"raw":{"by-day":{}}}}"#,
+        efficiency_json: r#"{"aggregate":{"raw":{"by-day":{},"skill-calls":{}}}}"#,
         cache_read_share: Some(0.9),
         tool_errors: 1,
         cost_usd: 0.5,
@@ -186,7 +186,7 @@ fn v6_sessions_missing_efficiency_includes_archived_and_excludes_annotated() {
         .unwrap();
     db.set_efficiency_many(&[EfficiencyWrite {
         session_id: UUID_B,
-        efficiency_json: r#"{"aggregate":{"raw":{"by-day":{}}}}"#,
+        efficiency_json: r#"{"aggregate":{"raw":{"by-day":{},"skill-calls":{}}}}"#,
         cache_read_share: None,
         tool_errors: 0,
         cost_usd: 0.0,
@@ -326,7 +326,7 @@ fn v6_migration_from_v5_preserves_cursor_and_adds_efficiency_columns() {
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 15,
+        SCHEMA_VERSION, 16,
         "this test pins the v5->current hop; bump me deliberately"
     );
 
@@ -588,7 +588,7 @@ fn v8_migration_from_v7_adds_outcome_column_and_invalidates_efficiency_without_a
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 15,
+        SCHEMA_VERSION, 16,
         "this test pins the v7->current hop; bump me deliberately"
     );
 
@@ -711,7 +711,7 @@ fn v10_migration_from_v9_invalidates_both_blobs_without_advancing_cursor() {
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
     assert_eq!(uv, SCHEMA_VERSION, "reopen migrates to the current schema");
     assert_eq!(
-        SCHEMA_VERSION, 15,
+        SCHEMA_VERSION, 16,
         "this test pins the v9->current hop; raise me deliberately"
     );
 
@@ -934,8 +934,11 @@ fn trigger_exists_on(conn: &rusqlite::Connection) -> bool {
 
 /// A blob from before per-day buckets (v14 shape): no `by-day` key under `aggregate.raw`.
 const V14_BLOB: &str = r#"{"session-id":"x","aggregate":{"raw":{"input-tokens":5,"cost-usd":1.25}}}"#;
-/// A current blob: the key is present, even when empty.
+/// A v15 blob: per-day buckets present, per-call counts absent.
 const V15_BLOB: &str = r#"{"session-id":"x","aggregate":{"raw":{"input-tokens":5,"cost-usd":1.25,"by-day":{}}}}"#;
+/// A current blob: both keys are present, even when empty.
+const V16_BLOB: &str =
+    r#"{"session-id":"x","aggregate":{"raw":{"input-tokens":5,"cost-usd":1.25,"by-day":{},"skill-calls":{}}}}"#;
 
 fn annotate(db: &Db, session_id: &str, blob: &str) {
     db.set_efficiency_many(&[EfficiencyWrite {
@@ -976,11 +979,11 @@ fn migrate_v15_snapshots_a_v14_catalog_and_rewrites_no_row() {
 
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-    assert_eq!(uv, 15);
+    assert_eq!(uv, SCHEMA_VERSION);
     assert_eq!(
         efficiency_of(&db, UUID_A).0.as_deref(),
         Some(V14_BLOB),
-        "the v14 blob survives v15"
+        "the v14 blob survives v15 and v16"
     );
     assert_eq!(efficiency_of(&db, UUID_A).3, Some(1.25), "and its stored spend");
     assert_eq!(efficiency_of(&db, UUID_B).0, None);
@@ -1025,7 +1028,7 @@ fn migrate_v15_eligibility_offers_null_and_bucket_less_blobs_only() {
             .unwrap();
     }
     annotate(&db, UUID_B, V14_BLOB);
-    annotate(&db, UUID_C, V15_BLOB);
+    annotate(&db, UUID_C, V16_BLOB);
     annotate(&db, UUID_D, "{not json");
 
     let candidates = db.sessions_missing_efficiency().unwrap();
@@ -1043,7 +1046,10 @@ fn migrate_v15_eligibility_offers_null_and_bucket_less_blobs_only() {
         Some(&true),
         "bucket-less blob, offered with its fallback"
     );
-    assert!(!by_id.contains_key(UUID_C), "a bucketed blob is current");
+    assert!(
+        !by_id.contains_key(UUID_C),
+        "a blob with buckets and call maps is current"
+    );
     assert!(
         !by_id.contains_key(UUID_D),
         "a corrupt blob is left for collect to reject"
@@ -1081,5 +1087,97 @@ fn candidates_carry_the_stored_blobs_aggregate_token_total() {
         by_id.get(UUID_C),
         Some(&Some(5 + 7 + 11 + 13 + 17)),
         "all five counters"
+    );
+}
+
+/// A candidate says whether its stored blob carries `skill-calls` (priced under the group-wide
+/// dedupe), which picks the keep-blob guard's comparison basis. BITES: read the wrong key, or report
+/// `true` for a NULL row, and the guard compares an old blob against the deduped total.
+#[test]
+fn candidates_carry_whether_the_stored_blob_has_skill_calls() {
+    const WITH_CALLS: &str = r#"{"session-id":"x","aggregate":{"raw":{"input-tokens":5,"skill-calls":{}}}}"#;
+    let db = Db::open_memory().unwrap();
+    for id in [UUID_A, UUID_B, UUID_C] {
+        db.upsert_session(&parsed(id, &format!("/tmp/{id}.jsonl")), "desk")
+            .unwrap();
+    }
+    annotate(&db, UUID_B, V14_BLOB);
+    annotate(&db, UUID_C, WITH_CALLS);
+    let by_id: std::collections::BTreeMap<String, bool> = db
+        .sessions_missing_efficiency()
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.session_id, c.stored_has_skill_calls))
+        .collect();
+    assert_eq!(by_id.get(UUID_A), Some(&false), "no blob");
+    assert_eq!(by_id.get(UUID_B), Some(&false), "an old-shape blob");
+    assert_eq!(by_id.get(UUID_C), Some(&true), "an empty map still marks the new shape");
+}
+
+/// v16 widens the predicate: a v15 blob (buckets, no `skill-calls`) is offered with its fallback, a
+/// v16 blob is not. BITES: dropping the `skill-calls` clause leaves every v15 row stale forever.
+#[test]
+fn v16_offers_rows_missing_skill_calls() {
+    let db = Db::open_memory().unwrap();
+    for id in [UUID_A, UUID_B] {
+        db.upsert_session(&parsed(id, &format!("/tmp/{id}.jsonl")), "desk")
+            .unwrap();
+    }
+    annotate(&db, UUID_A, V15_BLOB);
+    annotate(&db, UUID_B, V16_BLOB);
+    let by_id: std::collections::BTreeMap<String, bool> = db
+        .sessions_missing_efficiency()
+        .unwrap()
+        .into_iter()
+        .map(|c| {
+            let blob = c.has_blob();
+            (c.session_id, blob)
+        })
+        .collect();
+    assert_eq!(
+        by_id.get(UUID_A),
+        Some(&true),
+        "a v15 blob is offered, keeping its fallback"
+    );
+    assert!(!by_id.contains_key(UUID_B), "a v16 blob is current");
+}
+
+/// A v15 catalog is snapshotted to `.pre-v16.bak` exactly once, holding the v15 state, and the step
+/// rewrites no row. A fresh catalog and a current one are never snapshotted. BITES: dropping the
+/// `snapshot_before_v16` call in `Db::init` loses the copy; a second open must not overwrite it.
+#[test]
+fn v16_snapshot_written_once() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("sessions.db");
+    let snapshot = PathBuf::from(format!("{}.pre-v16.bak", path.display()));
+    drop(Db::open_at(&path).unwrap());
+    assert!(!snapshot.exists(), "a fresh catalog has no pre-v16 state");
+    {
+        let db = Db::open_at(&path).unwrap();
+        db.upsert_session(&parsed(UUID_A, "/tmp/gone-a.jsonl"), "desk").unwrap();
+        annotate(&db, UUID_A, V15_BLOB);
+        db.conn.pragma_update(None, "user_version", 15i64).unwrap();
+    }
+    let db = Db::open_at(&path).unwrap();
+    let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(uv, 16);
+    assert_eq!(
+        efficiency_of(&db, UUID_A).0.as_deref(),
+        Some(V15_BLOB),
+        "v16 rewrites no row"
+    );
+    assert!(snapshot.exists(), "a genuine pre-v16 catalog is snapshotted first");
+    let snap = rusqlite::Connection::open(&snapshot).unwrap();
+    let snap_uv: i64 = snap.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(snap_uv, 15, "the snapshot is the state immediately before the step");
+    let first = std::fs::metadata(&snapshot).unwrap().modified().unwrap();
+    drop(snap);
+    drop(db);
+
+    drop(Db::open_at(&path).unwrap());
+    let second = std::fs::metadata(&snapshot).unwrap().modified().unwrap();
+    assert_eq!(
+        first, second,
+        "a v16 catalog is past the step; the snapshot is not rewritten"
     );
 }

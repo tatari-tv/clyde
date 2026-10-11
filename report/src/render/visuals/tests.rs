@@ -177,8 +177,8 @@ fn repo_pairs_carry_both_shares_and_three_sort_ranks() {
             assert_eq!(repos.rows.len(), block.aggregates.by_repo.len());
             let quill = &repos.rows[0];
             assert_eq!(quill.label, "openpipe-oss/quill");
-            assert_eq!(quill.sessions, "17 sessions");
-            assert_eq!(quill.sessions_share, "39%");
+            assert_eq!(quill.count, "17 sessions");
+            assert_eq!(quill.count_share, "39%");
             assert_eq!(quill.spend, "$264.78");
             assert_eq!(quill.spend_share, "39%");
             assert_eq!(
@@ -191,10 +191,10 @@ fn repo_pairs_carry_both_shares_and_three_sort_ranks() {
                 "openpipe-oss/quill: 17 sessions (39%), $264.78 (39%), $15.58 per session"
             );
             assert_eq!(quill.rank.spend, 0);
-            assert_eq!(quill.rank.sessions, 0);
+            assert_eq!(quill.rank.count, 0);
             let spend_ranks: Vec<usize> = repos.rows.iter().map(|r| r.rank.spend).collect();
             assert_eq!(spend_ranks, (0..repos.rows.len()).collect::<Vec<_>>());
-            let mut per: Vec<usize> = repos.rows.iter().map(|r| r.rank.per_session).collect();
+            let mut per: Vec<usize> = repos.rows.iter().map(|r| r.rank.per_unit).collect();
             per.sort_unstable();
             assert_eq!(per, (0..repos.rows.len()).collect::<Vec<_>>());
             assert_eq!(v.orgs.unwrap().rows.len(), block.aggregates.by_org.len());
@@ -428,4 +428,59 @@ fn display_strings_cover_every_chart_label() {
             }
         },
     );
+}
+
+// ---- calls charts keep the table's row coverage ------------------------------------------------
+
+fn call_row(name: &str, calls: u64, spend: f64, partial: bool) -> crate::render::CallRow {
+    crate::render::CallRow {
+        name: name.to_string(),
+        server: None,
+        calls: Some(String::new()),
+        sessions: Some(String::new()),
+        tokens_human: String::new(),
+        spend: format_usd(spend),
+        per_call: Some(String::new()),
+        time: None,
+        avg: None,
+        counts: Some(crate::render::CallCounts {
+            calls,
+            spend,
+            counted_spend: spend,
+            partial,
+        }),
+    }
+}
+
+/// A partial row's count label and tip carry `\u{2020}` the way its table cell does, a counted row's
+/// do not, and a partial row with 0 counted calls (the table's `n/a`) is not drawn. BITES: drop the
+/// flag from `CallCounts` and the chart says `3 calls` and `0 calls (0%)`.
+#[test]
+fn partial_call_rows_carry_the_dagger_and_na_rows_are_not_drawn() {
+    let rows = [
+        call_row("counted", 4, 2.0, false),
+        call_row("partial", 3, 1.0, true),
+        call_row("none-counted", 0, 1.0, true),
+    ];
+    let pairs = call_pairs(&rows).unwrap();
+    let labels: Vec<&str> = pairs.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(labels, ["counted", "partial"], "the n/a row has no share to draw");
+    assert_eq!(pairs.rows[0].count, "4 calls");
+    assert!(
+        pairs.rows[0].tip.starts_with("counted: 4 calls (57%)"),
+        "{}",
+        pairs.rows[0].tip
+    );
+    assert_eq!(pairs.rows[1].count, "3\u{2020} calls");
+    assert!(
+        pairs.rows[1].tip.starts_with("partial: 3\u{2020} calls (43%)"),
+        "{}",
+        pairs.rows[1].tip
+    );
+}
+
+/// Every call row partial with 0 counted calls: nothing to draw, so no figure.
+#[test]
+fn a_calls_chart_of_only_na_rows_is_not_drawn() {
+    assert!(call_pairs(&[call_row("a", 0, 1.0, true)]).is_none());
 }

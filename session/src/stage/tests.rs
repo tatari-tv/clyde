@@ -84,3 +84,30 @@ fn missing_parent_with_no_subagents_stages_nothing() {
     assert_eq!(staged.files_total, 0);
     assert_eq!(staged.files_copied, 0);
 }
+
+#[test]
+fn stages_subagent_meta() {
+    let tmp = TempDir::new().unwrap();
+    let project = tmp.path().join("proj");
+    let staged_root = tmp.path().join("staged");
+    let subs = project.join(UUID_A).join("subagents");
+    write(&project.join(format!("{UUID_A}.jsonl")), "parent\n");
+    write(&subs.join("agent-x.jsonl"), "sub x\n");
+    write(&subs.join("agent-x.meta.json"), "{\"isFork\": true}\n");
+    write(&subs.join("agent-y.jsonl"), "sub y\n");
+
+    let staged = stage_session(&project, UUID_A, &staged_root).unwrap();
+    assert_eq!(staged.files_total, 4);
+    assert_eq!(staged.files_copied, 4);
+
+    let staged_subs = staged_root.join(UUID_A).join("subagents");
+    assert_eq!(
+        fs::read(staged_subs.join("agent-x.meta.json")).unwrap(),
+        fs::read(subs.join("agent-x.meta.json")).unwrap()
+    );
+    assert!(staged_subs.join("agent-y.jsonl").is_file());
+    assert!(!staged_subs.join("agent-y.meta.json").exists());
+
+    let again = stage_session(&project, UUID_A, &staged_root).unwrap();
+    assert_eq!(again.files_copied, 0);
+}

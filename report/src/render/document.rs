@@ -442,21 +442,74 @@ fn efficiency(md: &mut String, block: &ContextBlock<'_>) {
         let _ = writeln!(md, "- {label}: {value}.");
     }
     let _ = writeln!(md);
-    workload_table(md, "Skill", &eff.by_skill, &eff.by_skill_coverage);
-    workload_table(md, "MCP Tool", &eff.by_mcp, &eff.by_mcp_coverage);
+    call_table(md, &eff.by_skill, &eff.by_skill_coverage);
+    call_table(md, &eff.by_mcp, &eff.by_mcp_coverage);
+    if !(eff.by_skill.is_empty() && eff.by_mcp.is_empty()) {
+        for caption in &eff.call_captions {
+            let _ = writeln!(md, "{caption}");
+            let _ = writeln!(md);
+        }
+    }
 }
 
 /// One attribution-TAG table (`by-skill` / `by-mcp`) with its coverage statement beside it. These
 /// are tags rather than a partition, so they cannot sum to anything and the coverage string is the
-/// binary's statement of how much of the period they cover.
-fn workload_table(md: &mut String, label: &str, rows: &[super::WorkloadRow], coverage: &str) {
-    if rows.is_empty() {
+/// binary's statement of how much of the period they cover. The call columns are present only when
+/// some session counted calls.
+fn call_table(md: &mut String, rows: &[super::CallRow], coverage: &str) {
+    let Some(first) = rows.first() else {
         return;
+    };
+    let mcp = first.server.is_some();
+    let counted = first.calls.is_some();
+    let mut header = Vec::new();
+    if mcp {
+        header.push("Server");
     }
-    let _ = writeln!(md, "| {label} | Tokens | Spend |");
-    let _ = writeln!(md, "|---|-------:|------:|");
+    header.push(if mcp { "MCP Tool" } else { "Skill" });
+    if counted {
+        header.extend(["Calls", "Sessions"]);
+        if mcp {
+            header.extend(["Time", "Avg"]);
+        }
+    }
+    header.extend(["Tokens", "Spend"]);
+    if counted {
+        header.push("$/call");
+    }
+    let _ = writeln!(md, "| {} |", header.join(" | "));
+    let aligns: Vec<&str> = header
+        .iter()
+        .map(|h| {
+            if matches!(*h, "Server" | "MCP Tool" | "Skill") {
+                "---"
+            } else {
+                "---:"
+            }
+        })
+        .collect();
+    let _ = writeln!(md, "|{}|", aligns.join("|"));
     for row in rows {
-        let _ = writeln!(md, "| `{}` | {} | {} |", row.name, row.tokens_human, row.spend);
+        let mut cells = Vec::new();
+        cells.extend(row.server.as_ref().map(|s| format!("`{s}`")));
+        cells.push(format!("`{}`", row.name));
+        if counted {
+            cells.extend([
+                row.calls.clone().unwrap_or_default(),
+                row.sessions.clone().unwrap_or_default(),
+            ]);
+            if mcp {
+                cells.extend([
+                    row.time.clone().unwrap_or_default(),
+                    row.avg.clone().unwrap_or_default(),
+                ]);
+            }
+        }
+        cells.extend([row.tokens_human.clone(), row.spend.clone()]);
+        if counted {
+            cells.push(row.per_call.clone().unwrap_or_default());
+        }
+        let _ = writeln!(md, "| {} |", cells.join(" | "));
     }
     let _ = writeln!(md);
     let _ = writeln!(md, "{}", sections::coverage_line(coverage));

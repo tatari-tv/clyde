@@ -8,7 +8,7 @@ use session::ParsedSession;
 use sessions::{Db, ExportContext, ExportFilters};
 
 use super::*;
-use crate::extract::extract;
+use crate::extract::extract_one;
 use crate::fold::fold;
 use crate::score::scored;
 
@@ -37,7 +37,7 @@ fn dt(s: &str) -> DateTime<Utc> {
 
 /// A `SessionEfficiency` computed through the REAL pipeline on the multi-subagent fixture.
 fn real_session_efficiency() -> crate::fold::SessionEfficiency {
-    let fe = extract(Path::new(MULTI_SUBAGENT)).unwrap();
+    let fe = extract_one(Path::new(MULTI_SUBAGENT)).unwrap();
     scored(fold(SID, &[fe]), &config())
 }
 
@@ -532,7 +532,7 @@ fn v14_blob(session_id: &str) -> String {
             _ => {}
         }
     }
-    let fe = extract(Path::new(MULTI_SUBAGENT)).unwrap();
+    let fe = extract_one(Path::new(MULTI_SUBAGENT)).unwrap();
     let mut json = serde_json::to_value(scored(fold(session_id, &[fe]), &config())).unwrap();
     strip(&mut json);
     let blob = json.to_string();
@@ -633,7 +633,10 @@ fn migrate_v15_then_reindex_recomputes_a_mixed_live_staged_session_from_both() {
 
     let want = fold(
         SID_V14_MIXED,
-        &[extract(&live_parent).unwrap(), extract(Path::new(USAGE)).unwrap()],
+        &[
+            extract_one(&live_parent).unwrap(),
+            extract_one(Path::new(USAGE)).unwrap(),
+        ],
     );
     let stored: crate::fold::SessionEfficiency =
         serde_json::from_str(&db.get_efficiency_json(SID_V14_MIXED).unwrap().unwrap()).unwrap();
@@ -710,7 +713,7 @@ fn migrate_v15_then_reindex_keeps_the_old_blob_when_the_recompute_sees_fewer_tok
     build_v14_catalog(&path, &project, &[(SID_V14_TRUNCATED, &truncated, None)]);
     let before = v14_blob(SID_V14_TRUNCATED);
     let stored: crate::fold::SessionEfficiency = serde_json::from_str(&before).unwrap();
-    let on_disk = fold(SID_V14_TRUNCATED, &[extract(&truncated).unwrap()]);
+    let on_disk = fold(SID_V14_TRUNCATED, &[extract_one(&truncated).unwrap()]);
     assert!(
         on_disk.aggregate.raw.total_tokens() < stored.aggregate.raw.total_tokens(),
         "precondition: the truncated copy holds fewer tokens than the blob"

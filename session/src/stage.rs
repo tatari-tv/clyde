@@ -17,15 +17,16 @@ use log::{debug, trace, warn};
 pub struct Staged {
     /// The session's staging directory (mirrors the parent + subagents layout).
     pub dir: PathBuf,
-    /// Transcript files actually copied this call (0 when everything was already current).
+    /// Transcript and subagent meta files actually copied this call (0 when everything was already current).
     pub files_copied: usize,
-    /// Total transcript files present for the session.
+    /// Total transcript and subagent meta files present for the session.
     pub files_total: usize,
 }
 
 /// Stage a session's transcripts from `project_dir` into `staged_root/<session_id>/`.
 ///
-/// Stages the parent `<session_id>.jsonl` and every `<session_id>/subagents/*.jsonl`. A source
+/// Stages the parent `<session_id>.jsonl`, every `<session_id>/subagents/*.jsonl`, and each
+/// subagent's sibling `<agent>.meta.json` when present (counted in the file totals). A source
 /// with no live parent (already TTL-reaped) still stages whatever subagents remain; callers should
 /// avoid staging sessions already flagged archived. Returns the staging dir and copy counts.
 pub fn stage_session(project_dir: &Path, session_id: &str, staged_root: &Path) -> Result<Staged> {
@@ -70,6 +71,14 @@ pub fn stage_session(project_dir: &Path, session_id: &str, staged_root: &Path) -
             let dst = dest_dir.join("subagents").join(name);
             if copy_if_newer(&src, &dst)? {
                 files_copied += 1;
+            }
+            // `<agent>.meta.json` sits beside `<agent>.jsonl`; it carries the `isFork` marker.
+            let meta_src = src.with_extension("meta.json");
+            if meta_src.is_file() {
+                files_total += 1;
+                if copy_if_newer(&meta_src, &dst.with_extension("meta.json"))? {
+                    files_copied += 1;
+                }
             }
         }
     }

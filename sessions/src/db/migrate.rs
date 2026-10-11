@@ -135,6 +135,8 @@ pub(super) fn migrate(conn: &Connection) -> Result<()> {
     migrate_v14_scope_policy(&tx)?;
     // v15: nothing to apply. Per-day buckets are found missing by reading the blob (see
     // `snapshot_before_v15`), so no row is rewritten and no stored accounting is put at risk here.
+    // v16: nothing to apply. Blobs without `skill-calls` are found missing by reading the blob (see
+    // `snapshot_before_v16`), so no row is rewritten here.
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -481,6 +483,17 @@ pub(super) fn snapshot_before_v14(conn: &Connection, path: &Path) -> Result<()> 
 /// first mass rewrite of `efficiency_json` since v10, which is what this copy protects.
 pub(super) fn snapshot_before_v15(conn: &Connection, path: &Path) -> Result<()> {
     snapshot_before(conn, path, 15)
+}
+
+/// Snapshot the on-disk DB to `<path>.pre-v16.bak` before the v16 migration's first run. Same
+/// contract and same one-shot guarantee as [`snapshot_before_v10`], gated on a PRE-migration
+/// `user_version` in `1..16`.
+///
+/// v16 itself writes nothing, like v15. The backfill predicate (`Db::sessions_missing_efficiency`)
+/// also offers a blob with no `skill-calls` key, so the next reindex rewrites every row it can
+/// recompute: a second mass rewrite of `efficiency_json`, which this copy protects.
+pub(super) fn snapshot_before_v16(conn: &Connection, path: &Path) -> Result<()> {
+    snapshot_before(conn, path, 16)
 }
 
 /// Apply the schema v14 extension inside the caller's migration transaction.

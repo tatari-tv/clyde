@@ -211,6 +211,18 @@ additive, forward-compatible-envelope rule), so a consumer must tolerate unknown
 block. The block's PRESENCE (the `efficiency` key itself) and `null`-when-absent behavior are the
 stable part.
 
+Additive fields in `aggregate.raw` (and each subagent's `signals.raw`), no contract bump:
+
+- `skill-calls`: map of skill name -> call count
+- `mcp-calls`: map of `server__tool` -> `{ "calls", "timed", "total-ms" }`. `timed` is how many
+  calls had a result to pair with, and `total-ms` sums those gaps
+- Both keys are always serialized once counted. A blob without `skill-calls` predates counting, and
+  clyde recomputes it on the next reindex
+
+Key change in `by-mcp-tool`: keys are now `server_key(server)__tool`. The server comes from the
+record's `attributionMcpServer`, normalized by `server_key`, and a missing or empty server becomes
+`_unknown`. Keys used to be the bare tool name.
+
 ### Body (only with `--with-body`)
 
 These three fields are present together, or not at all: a bulk metadata record (no `--with-body`)

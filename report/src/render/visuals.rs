@@ -9,8 +9,8 @@
 use chrono::NaiveDate;
 use log::debug;
 
-use super::ContextBlock;
 use super::sections;
+use super::{CallRow, ContextBlock};
 use crate::aggregate::{self, UNATTRIBUTED_ORG};
 use crate::bands::Band;
 use crate::chart::{self, bars, calendar, histogram, stack, treemap, waterfall};
@@ -37,6 +37,10 @@ pub(super) struct Visuals {
     pub(super) daily: Option<DailyStack>,
     /// The daily cache-read share line.
     pub(super) cache_share: Option<ShareChart>,
+    /// Skill calls against spend; `None` when no call was counted.
+    pub(super) skill_calls: Option<Pairs>,
+    /// MCP tool calls against spend; `None` when no call was counted.
+    pub(super) mcp_calls: Option<Pairs>,
 }
 
 /// Daily spend as standing columns, one per day, split by model.
@@ -64,19 +68,58 @@ pub(super) struct ShareChart {
     pub(super) y_labels: Vec<String>,
 }
 
-/// Paired %-sessions / %-spend bars, one row per org or repo, in spend order.
+/// What a [`Pairs`] figure counts: the words around its first bar and its per-unit figure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PairsKind {
+    /// Singular noun: `"session"`, `"call"`.
+    pub(super) count_noun: &'static str,
+    /// The legend and share label: `"% of sessions"`.
+    pub(super) count_label: &'static str,
+    /// The per-unit phrase: `"per session"`.
+    pub(super) per_label: &'static str,
+}
+
+impl PairsKind {
+    pub(super) const SESSIONS: PairsKind = PairsKind {
+        count_noun: "session",
+        count_label: "% of sessions",
+        per_label: "per session",
+    };
+    pub(super) const CALLS: PairsKind = PairsKind {
+        count_noun: "call",
+        count_label: "% of calls",
+        per_label: "per call",
+    };
+}
+
+/// One numeric row for [`pairs`]: the figure is built from numbers, never from parsed cells.
+pub(super) struct PairInput<'a> {
+    pub(super) label: &'a str,
+    pub(super) count: u64,
+    pub(super) spend: f64,
+    pub(super) spend_display: &'a str,
+    /// What the per-unit figure divides by `count`: the row's spend, or for calls the spend of the
+    /// sessions that counted them.
+    pub(super) per_unit_numerator: f64,
+    /// Calls only: the row includes sessions that did not count calls, so its count carries `†`.
+    pub(super) partial: bool,
+}
+
+/// Paired %-count / %-spend bars, one row per org, repo, skill or MCP tool, in spend order.
 pub(super) struct Pairs {
+    pub(super) kind: PairsKind,
     pub(super) rows: Vec<PairRow>,
 }
 
 pub(super) struct PairRow {
     pub(super) label: String,
-    pub(super) sessions_share: String,
-    pub(super) sessions: String,
+    pub(super) count_share: String,
+    pub(super) count: String,
     pub(super) spend_share: String,
     pub(super) spend: String,
-    /// `"$17.65 per session"`, printed under the label so the figure reads with JS off.
-    pub(super) per_session: String,
+    /// `"$17.65 per session"`, printed under the label so the figure reads with JS off. `"n/a"` on
+    /// a zero count.
+    pub(super) per_unit: String,
     pub(super) tip: String,
     pub(super) bars: bars::Pair,
     /// Position of this row under each sort key, `0` first.
@@ -86,8 +129,8 @@ pub(super) struct PairRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Ranks {
     pub(super) spend: usize,
-    pub(super) sessions: usize,
-    pub(super) per_session: usize,
+    pub(super) count: usize,
+    pub(super) per_unit: usize,
 }
 
 /// The org -> repo treemap.
@@ -176,18 +219,30 @@ pub(super) fn build(block: &ContextBlock<'_>) -> Visuals {
         agg.by_repo.len()
     );
     let orgs = pairs(
-        agg.by_org
-            .iter()
-            .map(|r| (r.org.as_str(), r.sessions, r.spend_raw, r.spend.as_str())),
-        total_sessions,
+        agg.by_org.iter().map(|r| PairInput {
+            label: r.org.as_str(),
+            count: r.sessions as u64,
+            spend: r.spend_raw,
+            spend_display: r.spend.as_str(),
+            per_unit_numerator: r.spend_raw,
+            partial: false,
+        }),
+        total_sessions as u64,
         total_spend,
+        PairsKind::SESSIONS,
     );
     let repos = pairs(
-        agg.by_repo
-            .iter()
-            .map(|r| (r.repo.as_str(), r.sessions, r.spend_raw, r.spend.as_str())),
-        total_sessions,
+        agg.by_repo.iter().map(|r| PairInput {
+            label: r.repo.as_str(),
+            count: r.sessions as u64,
+            spend: r.spend_raw,
+            spend_display: r.spend.as_str(),
+            per_unit_numerator: r.spend_raw,
+            partial: false,
+        }),
+        total_sessions as u64,
         total_spend,
+        PairsKind::SESSIONS,
     );
     Visuals {
         orgs,
@@ -200,6 +255,48 @@ pub(super) fn build(block: &ContextBlock<'_>) -> Visuals {
         calendar: build_calendar(block),
         daily: build_daily(block),
         cache_share: build_cache_share(block),
+        skill_calls: call_pairs(&block.efficiency.by_skill),
+        mcp_calls: call_pairs(&block.efficiency.by_mcp),
+    }
+}
+
+/// The calls / spend figure over a tag table's rows. `None` when the table has no call columns
+/// (nothing was counted) or no rows. Shares are of the table's own totals.
+///
+/// A partial row's count carries `†`, as its table cell does. A partial row with 0 counted calls
+/// (the table's `n/a`) is left out: its call share is not a measurement, so it has no bar to draw.
+fn call_pairs(rows: &[CallRow]) -> Option<Pairs> {
+    if rows.iter().any(|r| r.counts.is_none()) {
+        return None;
+    }
+    let total_calls: u64 = rows.iter().filter_map(|r| r.counts).map(|c| c.calls).sum();
+    let total_spend: f64 = rows.iter().filter_map(|r| r.counts).map(|c| c.spend).sum();
+    let labels: Vec<String> = rows.iter().map(CallRow::chart_label).collect();
+    pairs(
+        rows.iter().zip(&labels).filter_map(|(r, label)| {
+            r.counts.filter(|c| !(c.partial && c.calls == 0)).map(|c| PairInput {
+                label,
+                count: c.calls,
+                spend: c.spend,
+                spend_display: r.spend.as_str(),
+                per_unit_numerator: c.counted_spend,
+                partial: c.partial,
+            })
+        }),
+        total_calls,
+        total_spend,
+        PairsKind::CALLS,
+    )
+}
+
+/// `N nouns`, or `N† nouns` for a partial row (the mark sits on the number, as in the table cell).
+fn marked_count(count: u64, noun: &str, partial: bool) -> String {
+    let text = sections::plural(count as usize, noun);
+    if partial {
+        // `format_int` never emits a space, so the first space ends the number.
+        text.replacen(' ', "\u{2020} ", 1)
+    } else {
+        text
     }
 }
 
@@ -220,56 +317,59 @@ fn ratio(part: f64, whole: f64) -> f64 {
     if whole <= 0.0 { 0.0 } else { part / whole }
 }
 
-/// One row per `(label, sessions, spend, spend display)`, already in spend order.
+/// One row per [`PairInput`], already in spend order. A zero count renders its per-unit figure
+/// `n/a`, matching the tables.
 fn pairs<'a>(
-    rows: impl Iterator<Item = (&'a str, usize, f64, &'a str)>,
-    total_sessions: usize,
+    rows: impl Iterator<Item = PairInput<'a>>,
+    total_count: u64,
     total_spend: f64,
+    kind: PairsKind,
 ) -> Option<Pairs> {
-    let rows: Vec<(&str, usize, f64, &str)> = rows.collect();
+    let rows: Vec<PairInput<'a>> = rows.collect();
     let shares: Vec<(f64, f64)> = rows
         .iter()
-        .map(|(_, sessions, spend, _)| {
-            (
-                ratio(*sessions as f64, total_sessions as f64),
-                ratio(*spend, total_spend),
-            )
-        })
+        .map(|r| (ratio(r.count as f64, total_count as f64), ratio(r.spend, total_spend)))
         .collect();
     let lengths = bars::paired(&shares)?;
-    let per_session: Vec<f64> = rows
+    let per_unit: Vec<Option<f64>> = rows
         .iter()
-        .map(|(_, sessions, spend, _)| ratio(*spend, *sessions as f64))
+        .map(|r| (r.count > 0).then(|| r.per_unit_numerator / r.count as f64))
         .collect();
-    let by_sessions = ranks(&rows.iter().map(|r| r.1 as f64).collect::<Vec<_>>());
-    let by_per_session = ranks(&per_session);
+    let by_count = ranks(&rows.iter().map(|r| r.count as f64).collect::<Vec<_>>());
+    let by_per_unit = ranks(&per_unit.iter().map(|p| p.unwrap_or(0.0)).collect::<Vec<_>>());
     let out = rows
         .iter()
         .enumerate()
         .zip(lengths)
-        .map(|((i, (label, sessions, spend_raw, spend)), bars)| {
-            let sessions_share = share(*sessions as f64, total_sessions as f64);
-            let spend_share = share(*spend_raw, total_spend);
-            let sessions_text = sections::plural(*sessions, "session");
-            let per = format!("{} per session", format_usd(per_session[i]));
+        .map(|((i, r), bars)| {
+            let count_share = share(r.count as f64, total_count as f64);
+            let spend_share = share(r.spend, total_spend);
+            let count_text = marked_count(r.count, kind.count_noun, r.partial);
+            let per = match per_unit[i] {
+                Some(v) => format!("{} {}", format_usd(v), kind.per_label),
+                None => "n/a".to_string(),
+            };
             PairRow {
-                tip: format!("{label}: {sessions_text} ({sessions_share}), {spend} ({spend_share}), {per}"),
-                per_session: per,
-                label: (*label).to_string(),
-                sessions_share,
-                sessions: sessions_text,
+                tip: format!(
+                    "{}: {count_text} ({count_share}), {} ({spend_share}), {per}",
+                    r.label, r.spend_display
+                ),
+                per_unit: per,
+                label: r.label.to_string(),
+                count_share,
+                count: count_text,
                 spend_share,
-                spend: (*spend).to_string(),
+                spend: r.spend_display.to_string(),
                 bars,
                 rank: Ranks {
                     spend: i,
-                    sessions: by_sessions[i],
-                    per_session: by_per_session[i],
+                    count: by_count[i],
+                    per_unit: by_per_unit[i],
                 },
             }
         })
         .collect();
-    Some(Pairs { rows: out })
+    Some(Pairs { kind, rows: out })
 }
 
 /// Each value's position when sorted descending, ties kept in input order.
@@ -596,15 +696,15 @@ fn build_calendar(block: &ContextBlock<'_>) -> Option<Calendar> {
 #[cfg(test)]
 pub(super) fn display_strings(v: &Visuals) -> Vec<String> {
     let mut out = Vec::new();
-    for pairs in [&v.orgs, &v.repos].into_iter().flatten() {
+    for pairs in [&v.orgs, &v.repos, &v.skill_calls, &v.mcp_calls].into_iter().flatten() {
         for r in &pairs.rows {
             out.extend([
                 r.label.clone(),
-                r.sessions_share.clone(),
-                r.sessions.clone(),
+                r.count_share.clone(),
+                r.count.clone(),
                 r.spend_share.clone(),
                 r.spend.clone(),
-                r.per_session.clone(),
+                r.per_unit.clone(),
                 r.tip.clone(),
             ]);
         }

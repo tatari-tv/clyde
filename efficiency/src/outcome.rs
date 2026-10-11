@@ -105,8 +105,9 @@ pub struct PrRef {
 
 /// Per-FILE extraction result. Carries the distinct sets (commit shas, edited file paths) and the
 /// url-deduped PR list so [`union`] can merge across a session group's parent + subagent files before
-/// collapsing `files_edited` to a distinct count. The MCP counts are plain sums (they carry no
-/// cross-file identity to dedupe on).
+/// collapsing `files_edited` to a distinct count. The MCP counts and line counts are plain sums:
+/// their cross-file identity (the `tool_use` id) is deduped upstream, in the group's [`OutcomeSeen`],
+/// so a fork's copied call never reaches a second file's counts.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FileOutcomes {
     pub commits: BTreeSet<String>,
@@ -141,6 +142,22 @@ struct Pending {
     file_path: Option<String>,
     lines_written: u64,
     lines_replaced: u64,
+}
+
+/// The outcome seen-state shared by every file of ONE session group, threaded through [`extract`] in
+/// file order.
+///
+/// A forked subagent copies its source's records, `tool_use` ids included, into its own file. With
+/// a per-file pending map the copy re-armed the call and its copied result confirmed it again, so
+/// `lines_written`, `slack_messages` and the MCP counts were billed once per copy. Here a `tool_use`
+/// id arms a pending entry only the FIRST time the group sees it, and a confirmed call leaves the
+/// map, so a copied result finds nothing. A result in a later file of the group still confirms its
+/// call. Kept apart from the efficiency pass's `GroupSeen`: this pass runs after that one has been
+/// consumed.
+#[derive(Default)]
+pub struct OutcomeSeen {
+    tool_use_ids: HashSet<String>,
+    pending: HashMap<String, Pending>,
 }
 
 /// Union a session group's per-file [`FileOutcomes`] into the persisted per-session [`Outcomes`]:
@@ -255,10 +272,13 @@ fn repos_touched(files_edited: &BTreeSet<String>, slugs: &SharedResolver) -> BTr
 /// Extract every outcome from one session-transcript JSONL (NO period filter -- the catalog holds
 /// whole-session truth; windowing is session-level at read time, M2).
 ///
+/// `seen` is the group's [`OutcomeSeen`]: pass the same one for every file of a session group, in
+/// file order, so a call copied into a fork counts once.
+///
 /// Fails only when the file cannot be opened; individual unparseable lines are WARN-and-skipped
 /// (fail closed toward ABSENT, never a wrong count). A transcript with no outcome records (e.g.
 /// pre-v2.1.159, before `gitOperation` existed) yields an empty [`FileOutcomes`] without error.
-pub fn extract(path: &Path) -> Result<FileOutcomes> {
+pub fn extract(path: &Path, seen: &mut OutcomeSeen) -> Result<FileOutcomes> {
     debug!("outcome::extract: path={}", path.display());
 
     let file =
@@ -267,7 +287,6 @@ pub fn extract(path: &Path) -> Result<FileOutcomes> {
 
     let mut out = FileOutcomes::default();
     let mut seen_pr_urls: HashSet<String> = HashSet::new();
-    let mut pending: HashMap<String, Pending> = HashMap::new();
     let mut line_no: u64 = 0;
 
     for line in reader.lines() {
@@ -336,6 +355,16 @@ pub fn extract(path: &Path) -> Result<FileOutcomes> {
                             Some(i) => i,
                             None => continue,
                         };
+                        // An empty id carries no identity to dedupe on: it is never inserted and
+                        // always counts, the same rule as the efficiency pass.
+                        if !id.is_empty() && !seen.tool_use_ids.insert(id.to_string()) {
+                            trace!(
+                                "outcome::extract: {}:{} tool_use {id} already seen in the group (copy skipped)",
+                                path.display(),
+                                line_no
+                            );
+                            continue;
+                        }
                         let input = block.get("input");
                         let file_path = input
                             .and_then(|i| i.get("file_path"))
@@ -345,7 +374,7 @@ pub fn extract(path: &Path) -> Result<FileOutcomes> {
                         // absent field counts zero lines rather than dropping the call.
                         let lines_written = line_count(input, "new_string") + line_count(input, "content");
                         let lines_replaced = line_count(input, "old_string");
-                        pending.insert(
+                        seen.pending.insert(
                             id.to_string(),
                             Pending {
                                 kind,
@@ -360,7 +389,7 @@ pub fn extract(path: &Path) -> Result<FileOutcomes> {
                             Some(i) => i,
                             None => continue,
                         };
-                        let pend = match pending.remove(id) {
+                        let pend = match seen.pending.remove(id) {
                             Some(p) => p,
                             None => continue,
                         };
@@ -379,7 +408,7 @@ pub fn extract(path: &Path) -> Result<FileOutcomes> {
 
     debug!(
         "outcome::extract: path={} commits={} prs={} confluence={} jira={} slack={} files={} \
-         lines-written={} lines-replaced={}",
+         lines-written={} lines-replaced={} group-pending={}",
         path.display(),
         out.commits.len(),
         out.prs.len(),
@@ -388,7 +417,8 @@ pub fn extract(path: &Path) -> Result<FileOutcomes> {
         out.slack_messages,
         out.files_edited.len(),
         out.lines_written,
-        out.lines_replaced
+        out.lines_replaced,
+        seen.pending.len()
     );
     Ok(out)
 }

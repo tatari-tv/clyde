@@ -236,6 +236,11 @@ pub struct EfficiencyCandidate {
     /// copy taken before the session ended), the old blob stays and the row is never counted
     /// unrecoverable.
     pub stored_tokens: Option<u64>,
+    /// Whether the stored blob carries `aggregate.raw."skill-calls"`, the marker of a blob written
+    /// under the group-wide usage dedupe. The keep-blob guard picks its comparison basis from this:
+    /// a blob without it was priced per file, so it is compared against the recompute's per-file
+    /// figure, never against the (always smaller) group-wide one. `false` for a row with no blob.
+    pub stored_has_skill_calls: bool,
 }
 
 impl EfficiencyCandidate {
