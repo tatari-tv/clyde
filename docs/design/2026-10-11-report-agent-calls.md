@@ -2,8 +2,8 @@
 
 **Author:** Scott Idler
 **Date:** 2026-10-11
-**Status:** Draft
-**Review Passes Completed:** 5/5
+**Status:** In Review
+**Review Passes Completed:** 5/5 (panel round 1 folded in)
 
 ## Summary
 
@@ -41,13 +41,19 @@
 ### Goals
 
 - G1 (Scott, "adding Calls and Sessions"): Calls and Sessions columns on the agent table, in HTML, Markdown and marquee formats.
-- G2 (Scott, "the same two things you did for skills and mcps"): the table matches its siblings. That means $/call and the % of calls vs % of spend chart too, same columns, same chart shape, same `render.table-top-n`. Siblings behave identically (`rules/taste.md`).
+- G2 (author proposal, 2026-10-11): the table matches its siblings, so $/call and the % of calls vs % of spend chart ride along, with the same columns, chart shape and `render.table-top-n`.
+  - Scott asked for Calls and Sessions only. I proposed $/call ("cost per spawn") and the chart in my reply to his ask. He then invoked `/create-design-doc` without comment on them.
+  - The grounds are sibling parity: "siblings behave identically" (`rules/taste.md`). This is derived scope, not Scott's words; he can cut it at review.
 - G3 (Scott, "we are fixing everything we find"): the `--no-rollup` caption prints only on a `--no-rollup` report.
 
 ### Non-Goals
 
 - **Excluded: time per spawn.** Not asked for, and no data exists: no per-subagent timestamp in `RawCounters` (`efficiency/src/metrics.rs`), 0 of 1,159 September subagents carry `turn-durations-ms`, meta files carry no timing. It would need new extract fields and catalog v17.
-- **Excluded: counting failed spawns.** 58 September `Agent` tool_uses errored and never ran; 27 teammate spawns left no transcript anywhere. A call is an agent that ran, which is the unit that carries spend.
+- **Excluded: counting failed spawns.** 58 September `Agent` tool_uses errored and never ran.
+- **Excluded: counting teammates as calls.** A teammate spawn runs as its own top-level session, not as a subagent of the spawner:
+  - its transcript is `~/.claude/projects/<dir>/<sid>.jsonl` with `teamName` / `agentName` set (e.g. `pr-collector`, session `94671e92`, team `session-e04c652d`)
+  - measured: 22 of September's 27 teammate spawns are their own sessions in the September report; the other 5 are not in the September window
+  - its spend is in the report, under that session's `(main-session)` row, and it adds no call. README says so.
 - **Excluded: coverage machinery (`†`, "Calls counted on N of M").** Every v16 blob carries `subagents`: the field has no `#[serde(default)]` (`efficiency/src/fold.rs:65`), so a blob without it cannot parse. Measured: 0 blobs lack it. Spawns are always counted.
 - **Excluded: facts for agent calls.** The skill and MCP rows register no facts either.
 
@@ -69,7 +75,7 @@ render: build_efficiency_view(report)
 
 **What a call is.**
 
-- One `SubagentEfficiency` entry with tokens. Measured 2026-10-11:
+- **Definition: a call is a subagent recorded in `efficiency.subagents` with tokens.** Measured 2026-10-11:
   - one entry per `agentId`, one file per `agentId`: 0 `agentId`s in more than one file, 0 files holding two
   - for September, catalog subagent ids equal live file ids in all 174 sessions with subagents
   - a resumed agent (SendMessage, teammate continuation) appends to its own file under the same `agentId`: 66 resumes across 58 ids, each still one file. **A resumed agent counts once.**
@@ -88,15 +94,18 @@ render: build_efficiency_view(report)
 - Agent rows become `CallRow` (`render.rs:598`): `server: None`, `time: None`, `avg: None`, `partial: false`. `WorkloadRow` has no other user and is deleted (the workspace denies `dead_code`).
 - Sort stays by cents, as `partition_rows` does today.
 - `(main-session)`: Calls `n/a`, $/call `n/a`, Sessions as counted. It is not a spawn, and `n/a` is the precedent's rule for a figure that does not apply. Never `0`.
-- $/call = row cents / spawns.
+- $/call = `cents::to_dollars(row cents) / spawns`. `CallCounts.spend` and `counted_spend` are f64 dollars (`render.rs:627-632`), so the row's cents convert to dollars before they go in; dividing raw cents puts the chart off by 100x while the partition test still passes.
+- `(main-session)` keys on `MAIN_SESSION_BUCKET`, not on `spawns == 0`.
 
 **Chart.**
 
 - One calls/spend figure for the agent table through `call_pairs` (`visuals.rs:268-292`), `PairsKind::CALLS`.
 - `call_pairs` returns `None` when any row has `counts == None` (`visuals.rs:268-270`). That check is how a skill or MCP table with nothing counted (N == 0, every row count-less) draws no figure.
-- It changes to: skip count-less rows; return `None` when no row has counts. So `(main-session)` is left out instead of killing the figure, and the N == 0 case still draws nothing. A counted skill or MCP table has no count-less rows, so its figure does not change.
-- Shares are of the drawn rows' own totals, the rule `call_pairs` documents today (`visuals.rs:263`). So the agent figure's spend share is of delegated spend, and the two bars compare the same population.
-- `render.table-top-n` cuts the table first, as for the siblings. `(main-session)` is usually the top row, so the figure usually draws one row fewer than the table.
+- It changes to: skip count-less rows; return `None` when no row has counts, and keep returning `None` when every counted row is a partial zero (the existing regression test, `visuals/tests.rs` ~484, stays).
+  - So `(main-session)` is left out instead of killing the figure, and the N == 0 case still draws nothing.
+  - `call_rows` makes a skill or MCP table homogeneous: every row count-less when nothing was counted, otherwise every row counted (`workload.rs:173-215`). So the skill and MCP figures do not change.
+- Shares are of the totals over the rows with counts (`visuals.rs:271-272`), which today include partial zero rows that are not drawn. For the agent figure that excludes `(main-session)`, so the spend share is of delegated spend and the two bars compare the same population.
+- `render.table-top-n` does not cut rows. The table shows the first N and folds the rest into `<details>` (`html.rs:398-417`); the figure gets every row and marks those past N `extra` (`figures.rs:35-57`). The agent figure gets every counted row; only `(main-session)` drops out.
 
 **`--no-rollup`.**
 
@@ -134,14 +143,18 @@ Every `cargo test ...` criterion requires the output line `test result: ok. 1 pa
 - **Success criteria:**
   - `cargo test -p report render::tests::workload::merged_rollup_report_has_no_no_rollup_caption`: two counted rollup reports merged under different hosts render with no "Under --no-rollup" caption.
   - `cargo test -p report render::tests::workload::merged_no_rollup_report_keeps_caption`: the same with `--no-rollup` inputs still prints it.
+  - `cargo test -p report render::tests::workload::no_rollup_report_keeps_caption`: an unmerged `--no-rollup` report prints it.
+  - `cargo test -p report render::tests::workload::single_subagent_rollup_session_is_not_a_subagent_row`: a rollup session with exactly one subagent does not trigger it.
 
 #### Phase 2: Agent calls and sessions in the view
 **Model:** opus
 - `UNKNOWN_AGENT_TYPE` `pub`; `AgentCents` spawns and sessions; agent rows as `CallRow`; `(main-session)` `n/a`; delete `WorkloadRow`.
+- Add agent-type call totals to the `build_efficiency_view` debug line.
 - **Success criteria:**
   - `cargo test -p report render::tests::workload::agent_calls_equal_subagent_entries`: on synth medium, Calls per type equal the count of tokened `efficiency.subagents` per type, and the rows still sum to `totals.spend` in cents.
   - `cargo test -p report render::tests::workload::agent_calls_same_under_no_rollup`: per-type Calls are equal with and without rollup.
   - `cargo test -p report render::tests::workload::zero_token_subagent_adds_no_call`: a 0-token untyped subagent creates no `unknown` row and no call; `(main-session)` shows Calls `n/a`.
+  - `cargo test -p report render::tests::workload::agent_sessions_and_per_call_values`: on a hand-built report, Sessions is one per type per rollup entry, and $/call equals dollars / calls (e.g. 2 spawns over $3.00 shows `$1.50`, not `$150.00`).
 
 #### Phase 3: Columns, chart, goldens
 **Model:** sonnet
@@ -155,8 +168,12 @@ Every `cargo test ...` criterion requires the output line `test result: ok. 1 pa
 
 #### Phase 4: Docs
 **Model:** sonnet
-- `report/README.md`: what an agent call is (an agent that ran; a resume counts once; failed spawns and `(main-session)` do not), `n/a` on `(main-session)`, the `--no-rollup` Sessions note.
-- **Success criteria:** `rg -c 'agent call' report/README.md` prints 1 or more.
+- `report/README.md`: an agent call is a subagent recorded in the session with tokens; a resumed agent counts once; failed spawns are not calls; a teammate runs as its own session, so its spend sits under that session's `(main-session)` and adds no call; `(main-session)` shows `n/a`; under `--no-rollup` a type's Sessions equals its Calls.
+- **Success criteria:** each of these prints 1 or more:
+  - `rg -c 'counts once' report/README.md`
+  - `rg -c 'teammate' report/README.md`
+  - `rg -c 'main-session.*n/a' report/README.md`
+  - `rg -c 'Sessions equals its Calls' report/README.md`
 
 ## Acceptance Criteria
 
@@ -167,31 +184,40 @@ Run against the installed build after re-rendering September from the existing `
   - Expected: `Agent Type|Calls|Sessions|Tokens|Spend|$/call|`
   - Observed on main: `Agent Type|Tokens|Spend|`
 - [ ] Markdown header:
-  - Command: `rg -n '^\| Agent Type ' report.md`
+  - Command: `rg '^\| Agent Type ' report.md`
   - Expected: `| Agent Type | Calls | Sessions | Tokens | Spend | $/call |`
-  - Observed on main: `149:| Agent Type | Tokens | Spend |`
-- [ ] Figures:
-  - Command: `rg -c '<figure class="chart pairs-fig' report.html`
+  - Observed on main: `| Agent Type | Tokens | Spend |`
+- [ ] Figures that draw rows (an empty figure still writes its `<figure>` tag, `figures.rs:38`, so the tag count alone proves nothing):
+  - Command: `perl -0ne 'print scalar(grep {/class="pair"/} /<figure class="chart pairs-fig.*?<\/figure>/gs),"\n"' report.html`
   - Expected: `5`
-  - Observed on main: `4` (org, repo, skill calls, MCP calls; one figure per line)
+  - Observed on main: `4` (org, repo, skill calls, MCP calls)
 - [ ] Calls match the data:
-  - Command: `jq -r '[.sessions[].efficiency.subagents[] | select(([.signals.raw."by-model"[].total]|add // 0) > 0) | (."agent-type" // "unknown")] | group_by(.) | map("\(.[0]) \(length)") | .[]' 2026-09-report.json`
-  - Expected: each type's Calls cell in `report.md` equals its count here (e.g. `general-purpose 557`, `phase-implementer 265`, `review-panel 168`).
-  - Observed on main: the jq prints 17 types, `general-purpose 557` through nine types at `1`; `report.md` has no Calls column.
+  - Command: `diff <(jq -r '[.sessions[].efficiency.subagents[] | select(([.signals.raw."by-model"[].total]|add // 0) > 0) | (."agent-type" // "unknown")] | group_by(.) | map("\(.[0]) \(length)") | .[]' 2026-09-report.json | sort) <(awk '/^\| Agent Type /{f=1;next} f&&/^\|---/{next} f&&/^\|/{gsub(/`/,"");split($0,c,"|");gsub(/ /,"",c[2]);gsub(/[ ,]/,"",c[3]); if(c[3]!="n/a") print c[2]" "c[3]; next} f{exit}' report.md | sort)`
+  - Expected: no output, exit 0. Every type's Calls cell equals its tokened subagent count (e.g. `general-purpose 557`, `phase-implementer 265`, `review-panel 168`).
+  - Observed on main: diff exits 1 (`1,17c1,18`): the jq side has 17 types, and the Markdown side reads the Tokens column, since no Calls column exists.
 - [ ] Merged caption (P2):
-  - Command: `jq '.host="other"' 2026-09-report.json > other.json; clyde report merge 2026-09-report.json other.json -o merged.json; clyde report render -i merged.json --format markdown -o merged.md; rg -c 'Under --no-rollup' merged.md`
-  - Expected: prints nothing, exit 1.
-  - Observed on main: `merged.md:344` holds the caption (`rg -c` prints `1`).
+  - Command: `jq '.host="other"' 2026-09-report.json > other.json && clyde report merge 2026-09-report.json other.json -o merged.json && clyde report render -i merged.json --format markdown -o merged.md && rg -c 'Under --no-rollup' merged.md`
+  - Expected: prints nothing, exit 1 (from `rg` only; every earlier step succeeds).
+  - Observed on main: `1` (the caption is at `merged.md:344`).
 
 ## Resolved Decisions
 
-- 2026-10-11, Scott: the agent table gets the same treatment as the skill and MCP tables.
+- 2026-10-11, Scott: Calls and Sessions on the agent table.
+- 2026-10-11, author: $/call and the chart ride along for sibling parity (G2). Panel round 1 flagged the first draft for attributing this to Scott; it is attributed to the author now.
 - 2026-10-11, Scott: design doc, not a targeted fix (he invoked `/create-design-doc` after "targetted fix or full design doc?").
 - 2026-10-11, author, from the design-research brief:
   - Count in render from `efficiency.subagents`; add no `SessionEntry` field. A stored count would be a derived field that can drift from the list it is derived from.
   - Zero-token subagents are not calls, so the call rows and the cost rows are the same set.
   - `(main-session)` shows `n/a` for Calls and $/call.
   - P2 is fixed here, under Scott's "we are fixing everything we find."
+
+- 2026-10-11, panel round 1 (`~/.cache/review-panel/runs/IRwYWkPr/synthesis.md`): 4 must-fix and 7 cheap-win findings folded in. Dispositions of the rest:
+  - agent ids equal to a session id or holding `/`: not in the corpus; a code-comment contract (Risks)
+  - the "one agent split over several files" risk: dropped, `fold.rs:77` merges by `agent_id`
+  - `(main-session)` keyed on `MAIN_SESSION_BUCKET`: folded into Rows
+  - agent counts on the `build_efficiency_view` debug line: folded into Phase 2, per `refs/logging.md`
+  - retain the old marquee version and probe the page: dropped, marquee keeps versions
+  - split orchestration from delegation tiers: not asked for, dropped
 
 ## Alternatives Considered
 
@@ -205,7 +231,7 @@ Run against the installed build after re-rendering September from the existing `
 
 ### Alternative 3: Calls and Sessions only, no $/call or chart
 - **Description:** the two columns Scott named, nothing else.
-- **Why not chosen:** Scott asked for "the same two things you did for skills and mcps". Those tables carry $/call and a chart, and siblings behave identically. A table with Calls but no $/call is the one inconsistent table in the report.
+- **Why not chosen:** the author's call, on sibling parity: the skill and MCP tables carry $/call and a chart, and a table with Calls but no $/call would be the one inconsistent table in the report. This is the option Scott literally asked for; picking it at review is a one-line cut from Phase 3.
 
 ### Alternative 4: Mark `--no-rollup` in the report JSON
 - **Description:** a `rollup: bool` field on `Report` for P2.
@@ -236,7 +262,8 @@ Run against the installed build after re-rendering September from the existing `
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| A future Claude Code splits one agent over several files | Low | Calls over-count | The Phase 2 test pins entries per type; the corpus measure is in this doc |
+| A teammate is read as uncounted work | Med | A reader expects teammates in Calls | Non-Goals and README state teammates run as their own sessions |
+| An agent id equal to a session id, or holding `/`, fools `is_subagent_row` | Low (0 in the corpus) | A false or missing `--no-rollup` caption | Contract noted in a code comment on `is_subagent_row` |
 | `call_pairs` change moves the skill or MCP figures | Low | Goldens drift | Phase 3 criterion: no skill or MCP figure in the golden diff |
 | `is_subagent_row` misses a `--no-rollup` row | Low | The caption disappears where it belongs | Phase 1 tests both merged and unmerged `--no-rollup` |
 
