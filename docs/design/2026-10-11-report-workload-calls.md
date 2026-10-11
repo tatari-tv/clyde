@@ -84,7 +84,7 @@ The counts come from call events in the transcripts. They are stored in the cata
 
 - G1 (Scott, 2026-10-11, "we are going to handle both the bug and these counts"):
   - A copied record counts once per session group in every token, cost, attribution and summed-outcome figure.
-  - Each message's usage is its final usage (P1b). This is the same dedupe rule, so it rides with G1. Recorded under Resolved Decisions for Scott to veto.
+  - Each message's usage is its final usage (P1b). Scott, 2026-10-11: "we are fixing everything we find. add it to the list."
 - G2 (Scott, 2026-10-11, "counts or ... invocations"): Calls and Sessions columns on By skill and By MCP tool, in the HTML, Markdown and marquee formats.
 - G3 (Scott, 2026-10-11, "times"): Time (total) and Avg (per call) columns on By MCP tool.
 - G4 (Scott, 2026-10-11, "charts or graphs similar to the others"):
@@ -461,10 +461,11 @@ Run these against the installed build after `clyde session reindex` on desk and 
 ## Resolved Decisions
 
 - 2026-10-11, Scott: the fork double count is fixed in this doc, not parked ("we are going to handle both the bug and these counts").
+- 2026-10-11, Scott: every bug found along the way is fixed in this doc ("we are fixing everything we find. add it to the list."). This covers P1b, the streamed subagent usage.
 - 2026-10-11, author, from transcript probes and panel round 1:
   - Count events, not tags.
   - Dedupe group-wide by reading the files in order with shared seen-sets, not count-then-subtract. This answers the panel's "a set of ids cannot undo a count".
-  - Usage per message is the field-wise max across the group, which also fixes P1b. Panel round 2 flagged P1b as a scope call for Scott. I folded it in because it is the same rule in the same function, and the max rule is what makes fork totals order-free. Scott can veto it.
+  - Usage per message is the field-wise max across the group, which also fixes P1b. Panel round 2 flagged P1b as a scope call. Scott ruled it in on 2026-10-11 ("we are fixing everything we find"). It is the same rule in the same function, and the max rule is what makes fork totals order-free.
   - `server_key` copies Claude Code's `In()` exactly; it is not a rule invented here.
   - The slash confirm window is the next record only.
   - Unconfirmed slash commands count only when the group spends under that skill name.
