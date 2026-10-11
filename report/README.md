@@ -100,12 +100,12 @@ Render knobs live under `render:` in `clyde.yml` (see `clyde.yml.example`): `for
 
 ### After upgrading: reindex, then re-collect
 
-The report JSON is schema v3 (per-day per-model buckets). A v2 report is rejected by `render` and
-`merge` with a message naming the schema. On each host:
+The report JSON is schema v4 (v3's per-day per-model buckets, plus skill and MCP call counts). An
+older report is rejected by `render` and `merge` with a message naming the schema. On each host:
 
 ```bash
 clyde session reindex    # backfills per-day buckets into the catalog; check recomputed / kept / unrecoverable
-clyde report collect ... # write a fresh v3 report
+clyde report collect ... # write a fresh v4 report
 ```
 
 `reindex` keeps stored accounting for any session whose transcript bytes are gone (`kept`); it

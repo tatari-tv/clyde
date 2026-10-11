@@ -58,7 +58,7 @@ pub use collect::{Collected, CollectedSession, collect_all, collect_layouts, col
 pub use extract::{FileEfficiency, Scope, SubagentRaw, extract};
 pub use fold::{EfficiencyFlag, SessionEfficiency, SubagentEfficiency, fold};
 pub use metrics::{
-    Compaction, CompactionTrigger, EfficiencySignals, RawCounters, WorkloadCost, aggregate_tokens, finalize,
+    Compaction, CompactionTrigger, EfficiencySignals, McpCalls, RawCounters, WorkloadCost, aggregate_tokens, finalize,
 };
 pub use narrate::{NarrationInput, narrate, narration_input};
 pub use outcome::{FileOutcomes, Outcomes, PrRef};

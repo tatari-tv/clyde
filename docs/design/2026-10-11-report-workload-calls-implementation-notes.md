@@ -118,3 +118,27 @@
 
 ### Open questions
 - None.
+
+## Phase 6: Report schema v4
+### Design decisions
+- `SessionEntry::skill_calls` / `mcp_calls` are `Option` with `#[serde(default, skip_serializing_if = "Option::is_none")]`, the same convention as `by_day`: an uncounted scope is absent from the JSON, and a counted scope with no calls serializes as `{}`. The round trip keeps the two apart. (`report/src/report.rs:SessionEntry`, `entry_from_scope`)
+- `subtract_subagents` subtracts the call maps once per subagent: `Some - Some` goes key-wise and saturates at 0, and `None` on either side makes the residual's map `None`, so one uncounted subagent makes the parent's share unknown. Skill keys use the existing `subtract_counts`, which drops zeroed keys. MCP keys use a new `subtract_mcp_calls` (calls, timed and total_ms each saturating), which drops a key once its `calls` reaches 0. (`report.rs:subtract_subagents`, `subtract_mcp_calls`)
+- `scope_is_nonempty` treats a residual as non-empty when any skill count is above 0 or any MCP entry has `calls` above 0, on top of the existing tokens/turns check. (`report.rs:scope_is_nonempty`)
+- The render, `--prior` and merge gates already compared against `SCHEMA_VERSION` and named both versions in the error, so bumping the constant to 4 is what makes them reject v3 by name. No gate code changed. `v3_input_rejected_by_name` drives both `load_report` (`-i`) and `build_context_block` (`--prior`) with a v3 copy of the synth report.
+- Synth seeds calls in a new `seed_calls`, called right after `tagged()`, rather than inside `tagged()`. Each tagged skill / MCP name gets `1 + index % 5` calls, and odd-index sessions leave one MCP call untimed. Every session with `index % 4 == 3` is uncounted (parent and all subagents `None`). The seeding draws nothing from the rng, so no other fixture value moved. Fixture counts: small has 2 of 9 sessions uncounted, medium 11 of 44, pathological 2 of 12. (`report/src/eval/synth.rs:seed_calls`, `uncount`)
+- `efficiency` now re-exports `McpCalls`, so `report` can name it. (`efficiency/src/lib.rs`)
+
+### Deviations
+- The design names `tagged()` as the seeding site. The seeding is a sibling `seed_calls` called right after it, because `tagged()` returns one attribution map and has no access to the scope it would mark uncounted. Same effect, correct seam.
+- No gate code in render.rs or merge.rs changed. The existing generic `!= SCHEMA_VERSION` check already names the found and expected versions (see Design decisions).
+- Tests pinned to the old version were inverted by name, not deleted: `render_schema_v2_artifact_is_refused_naming_v2_and_v3` became `v3_input_rejected_by_name`; `schema_v2_input_is_refused_naming_v2_and_v3` became `schema_v3_input_is_refused_naming_v3_and_v4`; `schema_v2_single_input_is_refused_by_path` became `schema_v3_single_input_is_refused_by_path`; `write_json_round_trips_and_emits_schema_v3` and `collect_reads_catalog_and_emits_schema_v3` became `..._v4`. The `schema-version` pins in `json_uses_kebab_case_keys_and_carries_v2_fields`, `render_rejects_v1_artifact_by_version_not_serde_error` and `clyde/tests/collect.rs` were raised to 4.
+- I added one test beyond the three criteria: `subtract_subagents_subtracts_calls_keywise`, which covers key-wise subtraction, saturation, and `None` from either side.
+- The schema version in `report/README.md` (the upgrade section) and `fixtures/report/README.md` went from v3 to v4, because after this commit both were false. The rest of the README is still Phase 8's work.
+- Eval goldens (`golden.md` / `golden.html`) did not change. Only the four `report.json` / `prior.json` fixtures were regenerated.
+
+### Tradeoffs
+- Omitting `None` from the JSON vs. writing it as `null`: omission matches `by_day`, and an old v3 file cannot reach a v4 reader anyway because the gate rejects it first.
+- Choosing uncounted sessions by index modulus vs. by an rng draw: an extra draw would shift the rng stream and churn every fixture value. The modulus moves nothing else.
+
+### Open questions
+- Synth's `MCP_TOOLS` are still bare names (`tracker-search`, `wiki-write`), so the seeded `mcp_calls` keys have no `server__` segment. Live call keys always have one (Phase 4's `split_mcp_name` requires both segments), and Phase 7's render reads a key with no `__` as server `_unknown`. Renaming the tools to `server__tool` would change the committed LLM goldens, which cite those names, so I left it. Should Phase 7 rename them and re-record the goldens?

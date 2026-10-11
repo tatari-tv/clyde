@@ -28,7 +28,7 @@ clyde report eval --fixture fixtures/report/local
 
 | file | what it is |
 |---|---|
-| `report.json` | the collected schema-v3 artifact (generated) |
+| `report.json` | the collected schema-v4 artifact (generated) |
 | `eval.yml` | the per-fixture spec: required sections, required citations, judge floors, persona |
 | `prior.json` | a prior-period artifact, lighting up Month over Month (medium only) |
 | `analytics.json` | a synthesized Analytics cost export, lighting up Reconciliation (medium only) |

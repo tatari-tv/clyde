@@ -1,5 +1,5 @@
 {
-  "schema-version": 3,
+  "schema-version": 4,
   "generated": "2026-06-01T12:00:00Z",
   "host": "fixture-host",
   "since": "2026-03-02T00:00:00Z",
@@ -239,8 +239,8 @@
               }
             },
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": null,
+            "mcp-calls": null
           },
           "cache-read-share": 0.9214031816029298,
           "cache-1h-write-fraction": 0.08682480654427643,
@@ -327,8 +327,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9204180016826052,
               "cache-1h-write-fraction": 0.10126140064130557,
@@ -426,6 +426,8 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "08e82643-15c2-43df-6267-3998376aae34",
         "aggregate": {
@@ -658,8 +660,8 @@
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": null,
+            "mcp-calls": null
           },
           "cache-read-share": 0.9422596590852198,
           "cache-1h-write-fraction": 0.0,
@@ -728,8 +730,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9410156320881227,
               "cache-1h-write-fraction": 0.0,
@@ -798,8 +800,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9477573109799001,
               "cache-1h-write-fraction": 0.0,
@@ -955,8 +957,8 @@
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": null,
+            "mcp-calls": null
           },
           "cache-read-share": 0.9187197649587403,
           "cache-1h-write-fraction": 0.18415233613228682,
@@ -1061,6 +1063,8 @@
       "compactions": 2,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "12cedb0c-1149-4873-0c73-56feb6fae624",
         "aggregate": {
@@ -1477,6 +1481,16 @@
           "cost-usd": 1.78
         }
       },
+      "skill-calls": {
+        "schema-review": 5
+      },
+      "mcp-calls": {
+        "tracker-search": {
+          "calls": 5,
+          "timed": 4,
+          "total-ms": 2800
+        }
+      },
       "efficiency": {
         "session-id": "25b851a0-0969-4f2f-2072-a019e12be09b",
         "aggregate": {
@@ -1576,8 +1590,16 @@
               }
             },
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": {
+              "schema-review": 5
+            },
+            "mcp-calls": {
+              "tracker-search": {
+                "calls": 5,
+                "timed": 4,
+                "total-ms": 2800
+              }
+            }
           },
           "cache-read-share": 0.9308114828802296,
           "cache-1h-write-fraction": 0.1449191448934236,
@@ -1890,6 +1912,10 @@
         }
       },
       "by-mcp": {},
+      "skill-calls": {
+        "schema-review": 1
+      },
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "2caf5755-953c-4ef1-ac96-77216fb712c0",
         "aggregate": {
@@ -1951,7 +1977,9 @@
             },
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
+            "skill-calls": {
+              "schema-review": 1
+            },
             "mcp-calls": {}
           },
           "cache-read-share": 0.9117493029546454,
@@ -2144,8 +2172,8 @@
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": null,
+            "mcp-calls": null
           },
           "cache-read-share": 0.9038289567213491,
           "cache-1h-write-fraction": 0.1372193735476561,
@@ -2232,8 +2260,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9167276998460819,
               "cache-1h-write-fraction": 0.10114186256900651,
@@ -2371,6 +2399,8 @@
       "compactions": 1,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "343438ce-84db-4e7e-bd36-25a225eb5ac7",
         "aggregate": {
@@ -2578,6 +2608,8 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "3a5ab212-4f6e-410e-b995-e0db69164552",
         "aggregate": {
@@ -2754,6 +2786,10 @@
         }
       },
       "by-mcp": {},
+      "skill-calls": {
+        "release-notes": 3
+      },
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "43f8b11b-f6fa-4b6a-1bcb-9008ade8aaca",
         "aggregate": {
@@ -2838,7 +2874,9 @@
             },
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
+            "skill-calls": {
+              "release-notes": 3
+            },
             "mcp-calls": {}
           },
           "cache-read-share": 0.8999785826615233,
@@ -2924,6 +2962,10 @@
         }
       },
       "by-mcp": {},
+      "skill-calls": {
+        "schema-review": 4
+      },
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "47a69a08-f034-41c9-7fc2-dc2d45f2ce7c",
         "aggregate": {
@@ -2991,7 +3033,9 @@
             },
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
+            "skill-calls": {
+              "schema-review": 4
+            },
             "mcp-calls": {}
           },
           "cache-read-share": 0.9386640205885141,
@@ -3081,6 +3125,10 @@
         }
       },
       "by-mcp": {},
+      "skill-calls": {
+        "schema-review": 2
+      },
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "5691aef5-8f0c-49be-8494-28a8fab7f96e",
         "aggregate": {
@@ -3163,7 +3211,9 @@
             },
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
+            "skill-calls": {
+              "schema-review": 2
+            },
             "mcp-calls": {}
           },
           "cache-read-share": 0.92676500551,
@@ -3239,6 +3289,16 @@
         "tracker-search": {
           "tokens": 1080924,
           "cost-usd": 2.0
+        }
+      },
+      "skill-calls": {
+        "schema-review": 1
+      },
+      "mcp-calls": {
+        "tracker-search": {
+          "calls": 1,
+          "timed": 0,
+          "total-ms": 0
         }
       },
       "efficiency": {
@@ -3321,8 +3381,16 @@
               }
             },
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": {
+              "schema-review": 1
+            },
+            "mcp-calls": {
+              "tracker-search": {
+                "calls": 1,
+                "timed": 0,
+                "total-ms": 0
+              }
+            }
           },
           "cache-read-share": 0.9253283200646355,
           "cache-1h-write-fraction": 0.0,
@@ -3513,8 +3581,8 @@
             },
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": null,
+            "mcp-calls": null
           },
           "cache-read-share": 0.9318573521715491,
           "cache-1h-write-fraction": 0.0,
@@ -3586,8 +3654,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9290865594321306,
               "cache-1h-write-fraction": 0.0,
@@ -3659,8 +3727,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9398179327778574,
               "cache-1h-write-fraction": 0.0,
@@ -3728,8 +3796,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9282891529978635,
               "cache-1h-write-fraction": 0.0,
@@ -3841,6 +3909,16 @@
           "cost-usd": 9.0
         }
       },
+      "skill-calls": {
+        "schema-review": 2
+      },
+      "mcp-calls": {
+        "tracker-search": {
+          "calls": 2,
+          "timed": 1,
+          "total-ms": 400
+        }
+      },
       "efficiency": {
         "session-id": "68d00196-d79f-4d8f-a861-770763d43884",
         "aggregate": {
@@ -3938,8 +4016,16 @@
               }
             },
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": {
+              "schema-review": 2
+            },
+            "mcp-calls": {
+              "tracker-search": {
+                "calls": 2,
+                "timed": 1,
+                "total-ms": 400
+              }
+            }
           },
           "cache-read-share": 0.9263865910115126,
           "cache-1h-write-fraction": 0.04679395564690957,
@@ -4135,6 +4221,8 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "6b653726-09c6-42d9-0648-8125b71ac45d",
         "aggregate": {
@@ -4315,6 +4403,10 @@
         }
       },
       "by-mcp": {},
+      "skill-calls": {
+        "release-notes": 3
+      },
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "73243d2a-4fd4-4ee3-2b05-5e3df104ef80",
         "aggregate": {
@@ -4405,7 +4497,9 @@
             },
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
+            "skill-calls": {
+              "release-notes": 3
+            },
             "mcp-calls": {}
           },
           "cache-read-share": 0.9249819386946522,
@@ -4630,6 +4724,8 @@
       "compactions": 1,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "863bed84-0e04-4c78-631a-1a6a0be9afd9",
         "aggregate": {
@@ -4958,6 +5054,8 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "8976e5cc-2deb-4eb4-d6ae-c2a9139551f0",
         "aggregate": {
@@ -5165,6 +5263,16 @@
           "cost-usd": 4.5
         }
       },
+      "skill-calls": {
+        "release-notes": 2
+      },
+      "mcp-calls": {
+        "wiki-write": {
+          "calls": 2,
+          "timed": 2,
+          "total-ms": 1400
+        }
+      },
       "efficiency": {
         "session-id": "a14bf2af-523e-4c83-7431-ae1fcd1cfa13",
         "aggregate": {
@@ -5280,8 +5388,16 @@
               }
             },
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": {
+              "release-notes": 2
+            },
+            "mcp-calls": {
+              "wiki-write": {
+                "calls": 2,
+                "timed": 2,
+                "total-ms": 1400
+              }
+            }
           },
           "cache-read-share": 0.9245485551624428,
           "cache-1h-write-fraction": 0.07970741039296977,
@@ -5729,8 +5845,8 @@
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": null,
+            "mcp-calls": null
           },
           "cache-read-share": 0.9247213430419997,
           "cache-1h-write-fraction": 0.04430204140583726,
@@ -5806,8 +5922,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9448978806498812,
               "cache-1h-write-fraction": 0.0,
@@ -5880,8 +5996,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9386640205885141,
               "cache-1h-write-fraction": 0.0,
@@ -5956,8 +6072,8 @@
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": [],
-                "skill-calls": {},
-                "mcp-calls": {}
+                "skill-calls": null,
+                "mcp-calls": null
               },
               "cache-read-share": 0.9218275599264317,
               "cache-1h-write-fraction": 0.18433963590356364,
@@ -6070,6 +6186,16 @@
           "cost-usd": 2.14
         }
       },
+      "skill-calls": {
+        "release-notes": 4
+      },
+      "mcp-calls": {
+        "wiki-write": {
+          "calls": 4,
+          "timed": 4,
+          "total-ms": 4000
+        }
+      },
       "efficiency": {
         "session-id": "be0c9f57-90f6-44cd-1bce-012e7cafaad0",
         "aggregate": {
@@ -6163,8 +6289,16 @@
               }
             },
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": {
+              "release-notes": 4
+            },
+            "mcp-calls": {
+              "wiki-write": {
+                "calls": 4,
+                "timed": 4,
+                "total-ms": 4000
+              }
+            }
           },
           "cache-read-share": 0.9343782186168491,
           "cache-1h-write-fraction": 0.11350914041598753,
@@ -6490,6 +6624,14 @@
           "cost-usd": 4.53
         }
       },
+      "skill-calls": {},
+      "mcp-calls": {
+        "wiki-write": {
+          "calls": 2,
+          "timed": 2,
+          "total-ms": 2600
+        }
+      },
       "efficiency": {
         "session-id": "cce4339f-37a5-487d-bb2a-42c982f74c5b",
         "aggregate": {
@@ -6581,7 +6723,13 @@
             },
             "unpriced-models": [],
             "skill-calls": {},
-            "mcp-calls": {}
+            "mcp-calls": {
+              "wiki-write": {
+                "calls": 2,
+                "timed": 2,
+                "total-ms": 2600
+              }
+            }
           },
           "cache-read-share": 0.9364782913643909,
           "cache-1h-write-fraction": 0.0,
@@ -6758,6 +6906,10 @@
         }
       },
       "by-mcp": {},
+      "skill-calls": {
+        "schema-review": 5
+      },
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "cf427f1e-3eb0-4e22-12c8-fd4c7cdfa683",
         "aggregate": {
@@ -6826,7 +6978,9 @@
             },
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
+            "skill-calls": {
+              "schema-review": 5
+            },
             "mcp-calls": {}
           },
           "cache-read-share": 0.9253283200646355,
@@ -6926,6 +7080,16 @@
           "cost-usd": 2.48
         }
       },
+      "skill-calls": {
+        "release-notes": 4
+      },
+      "mcp-calls": {
+        "wiki-write": {
+          "calls": 4,
+          "timed": 4,
+          "total-ms": 1600
+        }
+      },
       "efficiency": {
         "session-id": "d9dbbcb8-e64b-4e4a-54ba-5b7ad60d4b9d",
         "aggregate": {
@@ -6996,8 +7160,16 @@
               }
             },
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": {
+              "release-notes": 4
+            },
+            "mcp-calls": {
+              "wiki-write": {
+                "calls": 4,
+                "timed": 4,
+                "total-ms": 1600
+              }
+            }
           },
           "cache-read-share": 0.93544224266904,
           "cache-1h-write-fraction": 0.0,
@@ -7092,6 +7264,8 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "d9f6ccec-f5be-490e-6c91-05f536cd6b9f",
         "aggregate": {
@@ -7343,8 +7517,8 @@
               }
             },
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": null,
+            "mcp-calls": null
           },
           "cache-read-share": 0.9077365979212925,
           "cache-1h-write-fraction": 0.0,
@@ -7422,6 +7596,8 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "f6a54041-cd79-425a-d731-6527aabd1393",
         "aggregate": {
@@ -7578,6 +7754,16 @@
           "cost-usd": 4.12
         }
       },
+      "skill-calls": {
+        "release-notes": 1
+      },
+      "mcp-calls": {
+        "wiki-write": {
+          "calls": 1,
+          "timed": 1,
+          "total-ms": 850
+        }
+      },
       "efficiency": {
         "session-id": "fcc053c0-0439-41cf-5ed7-c2401ecf5e69",
         "aggregate": {
@@ -7659,8 +7845,16 @@
               }
             },
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": {
+              "release-notes": 1
+            },
+            "mcp-calls": {
+              "wiki-write": {
+                "calls": 1,
+                "timed": 1,
+                "total-ms": 850
+              }
+            }
           },
           "cache-read-share": 0.9277708977746781,
           "cache-1h-write-fraction": 0.0,
@@ -7897,6 +8091,14 @@
           "cost-usd": 2.72
         }
       },
+      "skill-calls": {},
+      "mcp-calls": {
+        "wiki-write": {
+          "calls": 1,
+          "timed": 1,
+          "total-ms": 700
+        }
+      },
       "efficiency": {
         "session-id": "fccfb004-e2b5-46dc-0fe8-385739010a71",
         "aggregate": {
@@ -7961,7 +8163,13 @@
             },
             "unpriced-models": [],
             "skill-calls": {},
-            "mcp-calls": {}
+            "mcp-calls": {
+              "wiki-write": {
+                "calls": 1,
+                "timed": 1,
+                "total-ms": 700
+              }
+            }
           },
           "cache-read-share": 0.9059926328197984,
           "cache-1h-write-fraction": 0.0,

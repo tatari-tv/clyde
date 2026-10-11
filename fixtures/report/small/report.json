@@ -1,5 +1,5 @@
 {
-  "schema-version": 3,
+  "schema-version": 4,
   "generated": "2026-06-01T12:00:00Z",
   "host": "fixture-host",
   "since": "2026-03-02T00:00:00Z",
@@ -121,6 +121,14 @@
           "cost-usd": 2.58
         }
       },
+      "skill-calls": {},
+      "mcp-calls": {
+        "wiki-write": {
+          "calls": 5,
+          "timed": 5,
+          "total-ms": 5000
+        }
+      },
       "efficiency": {
         "session-id": "3e0cfd4a-de96-4212-d979-0a304fad97f2",
         "aggregate": {
@@ -190,7 +198,13 @@
             },
             "unpriced-models": [],
             "skill-calls": {},
-            "mcp-calls": {}
+            "mcp-calls": {
+              "wiki-write": {
+                "calls": 5,
+                "timed": 5,
+                "total-ms": 5000
+              }
+            }
           },
           "cache-read-share": 0.9061754298794457,
           "cache-1h-write-fraction": 0.183516852048516,
@@ -290,6 +304,10 @@
         }
       },
       "by-mcp": {},
+      "skill-calls": {
+        "release-notes": 3
+      },
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "47cff873-38be-4595-84f8-86b312614bfe",
         "aggregate": {
@@ -357,7 +375,9 @@
             },
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
+            "skill-calls": {
+              "release-notes": 3
+            },
             "mcp-calls": {}
           },
           "cache-read-share": 0.9364782913643909,
@@ -449,6 +469,8 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "511c0e88-3d4c-47e2-dabb-98eaab09efe2",
         "aggregate": {
@@ -668,8 +690,8 @@
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": null,
+            "mcp-calls": null
           },
           "cache-read-share": 0.9226888559133113,
           "cache-1h-write-fraction": 0.0,
@@ -770,6 +792,10 @@
         }
       },
       "by-mcp": {},
+      "skill-calls": {
+        "schema-review": 2
+      },
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "b6a2340c-73ec-4620-0f28-ce6ddebe6be1",
         "aggregate": {
@@ -832,7 +858,9 @@
             },
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
+            "skill-calls": {
+              "schema-review": 2
+            },
             "mcp-calls": {}
           },
           "cache-read-share": 0.9141573421679658,
@@ -927,6 +955,14 @@
           "cost-usd": 1.83
         }
       },
+      "skill-calls": {},
+      "mcp-calls": {
+        "wiki-write": {
+          "calls": 1,
+          "timed": 1,
+          "total-ms": 400
+        }
+      },
       "efficiency": {
         "session-id": "ce6093cc-5161-4f5c-dc6f-5d5ea94c54f0",
         "aggregate": {
@@ -988,7 +1024,13 @@
             },
             "unpriced-models": [],
             "skill-calls": {},
-            "mcp-calls": {}
+            "mcp-calls": {
+              "wiki-write": {
+                "calls": 1,
+                "timed": 1,
+                "total-ms": 400
+              }
+            }
           },
           "cache-read-share": 0.9364782913643909,
           "cache-1h-write-fraction": 0.0,
@@ -1076,6 +1118,8 @@
       "compactions": 0,
       "by-skill": {},
       "by-mcp": {},
+      "skill-calls": {},
+      "mcp-calls": {},
       "efficiency": {
         "session-id": "cedee722-6ec0-4d84-d194-04d468fbc2cb",
         "aggregate": {
@@ -1234,6 +1278,14 @@
           "cost-usd": 2.83
         }
       },
+      "skill-calls": {},
+      "mcp-calls": {
+        "wiki-write": {
+          "calls": 4,
+          "timed": 4,
+          "total-ms": 2200
+        }
+      },
       "efficiency": {
         "session-id": "f33eb686-59b8-4563-96bb-5c4ffd03f056",
         "aggregate": {
@@ -1296,7 +1348,13 @@
             },
             "unpriced-models": [],
             "skill-calls": {},
-            "mcp-calls": {}
+            "mcp-calls": {
+              "wiki-write": {
+                "calls": 4,
+                "timed": 4,
+                "total-ms": 2200
+              }
+            }
           },
           "cache-read-share": 0.9282891529978635,
           "cache-1h-write-fraction": 0.0,
@@ -1454,8 +1512,8 @@
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": [],
-            "skill-calls": {},
-            "mcp-calls": {}
+            "skill-calls": null,
+            "mcp-calls": null
           },
           "cache-read-share": 0.9192263874709817,
           "cache-1h-write-fraction": 0.0,

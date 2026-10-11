@@ -1,6 +1,7 @@
-//! The report artifact (`schema-version: 3`) and the builder that shapes it from catalog-sourced
+//! The report artifact (`schema-version: 4`) and the builder that shapes it from catalog-sourced
 //! sessions (Phase 4, `docs/design/2026-07-24-report-collect-once-render-from-data.md`; v3 adds
-//! per-day per-model buckets, `docs/design/2026-10-10-report-html-dashboard.md`).
+//! per-day per-model buckets, `docs/design/2026-10-10-report-html-dashboard.md`; v4 adds skill and
+//! MCP call counts, `docs/design/2026-10-11-report-workload-calls.md`).
 //!
 //! Collect no longer scans JSONL. It reads a window from `sessions.db` (session rows + the RAW
 //! `efficiency_json` / `outcome_json` blobs), parses the blobs with `efficiency`'s own types, and
@@ -19,7 +20,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use claude_pricing::Pricing;
 use common::metrics::{TokenTotals, price};
 use common::repo::RepoSource;
-use efficiency::{RawCounters, SessionEfficiency, SubagentEfficiency, WorkloadCost, finalize};
+use efficiency::{McpCalls, RawCounters, SessionEfficiency, SubagentEfficiency, WorkloadCost, finalize};
 use eyre::{Context, Result, bail};
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
@@ -31,8 +32,10 @@ use std::path::{Path, PathBuf};
 /// carried no efficiency/agent-type signals; v2 sources everything from the catalog and carries the
 /// curated efficiency signal set plus the full per-session efficiency object as passthrough; v3
 /// adds each session's per-day per-model buckets ([`SessionEntry::by_day`]), whose cents sum to the
-/// session's own, so daily spend lands on the day it was spent.
-pub const SCHEMA_VERSION: u32 = 3;
+/// session's own, so daily spend lands on the day it was spent; v4 adds each scope's skill and MCP
+/// call counts ([`SessionEntry::skill_calls`] / [`SessionEntry::mcp_calls`]), `None` for a session
+/// whose catalog blob predates call counting.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// A short line stating the M2 window redefinition, recorded in every v2 report's [`Report::notes`]
 /// so a differing count for a boundary session reads as expected (design Phase 4).
@@ -170,6 +173,16 @@ pub struct SessionEntry {
     /// Tokens/`$` grouped by MCP tool (`attributionMcpTool`), embedded-priced.
     #[serde(default)]
     pub by_mcp: BTreeMap<String, WorkloadCost>,
+    /// Skill invocations by skill name (schema v4), straight from the scope's
+    /// `RawCounters::skill_calls`. `None` when the catalog blob predates call counting (an
+    /// uncounted session), which is NOT the same as `Some(empty)`, a counted session that invoked
+    /// no skill. Absent from the JSON when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_calls: Option<BTreeMap<String, u64>>,
+    /// MCP invocations and call-to-result time keyed `server__tool` (schema v4). `None` exactly as
+    /// for [`Self::skill_calls`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_calls: Option<BTreeMap<String, McpCalls>>,
     // ---- full raw passthrough ----
     /// The full per-session `SessionEfficiency` (aggregate + subagent breakdown + flags), verbatim
     /// from the catalog, so render can evolve to surface any signal without a re-collect. The curated
@@ -580,6 +593,8 @@ fn entry_from_scope(
         compactions: raw.compactions.len() as u64,
         by_skill: raw.by_skill.clone(),
         by_mcp: raw.by_mcp_tool.clone(),
+        skill_calls: raw.skill_calls.clone(),
+        mcp_calls: raw.mcp_calls.clone(),
         efficiency,
     })
 }
@@ -854,16 +869,22 @@ fn check_fold_invariant(
     Ok(())
 }
 
-/// `true` when a residual scope has any real activity (tokens or turns), so an all-zero residual
-/// (a session whose entire spend was in subagents) does not emit an empty parent row.
+/// `true` when a residual scope has any real activity (tokens, turns, or a skill/MCP call), so an
+/// all-zero residual (a session whose entire spend was in subagents) does not emit an empty parent
+/// row, while a call-only residual is kept.
 fn scope_is_nonempty(raw: &RawCounters) -> bool {
-    raw.total_tokens() > 0 || raw.turns > 0
+    let any_skill_call = raw.skill_calls.as_ref().is_some_and(|m| m.values().any(|&n| n > 0));
+    let any_mcp_call = raw.mcp_calls.as_ref().is_some_and(|m| m.values().any(|c| c.calls > 0));
+    raw.total_tokens() > 0 || raw.turns > 0 || any_skill_call || any_mcp_call
 }
 
 /// Parent-residual raw counters = `aggregate − Σ subagents`. Additive scalar counters and the
 /// key-wise attribution/model maps subtract (saturating, so a rounding/ordering artifact can never
 /// underflow); the concatenated turn-duration and compaction SAMPLES cannot be split back out, so
-/// the residual carries none (its percentile/compaction signals are then absent, by design).
+/// the residual carries none (its percentile/compaction signals are then absent, by design). The
+/// call maps subtract key-wise too (counts and `total_ms` are sums, so this is exact); `None` on
+/// either side makes the residual's map `None`, since an uncounted side leaves the parent's share
+/// unknown.
 fn subtract_subagents(aggregate: &RawCounters, subs: &[SubagentEfficiency]) -> RawCounters {
     let mut r = aggregate.clone();
     // Cannot attribute concatenated samples to the parent vs a subagent; drop them on the residual.
@@ -899,8 +920,35 @@ fn subtract_subagents(aggregate: &RawCounters, subs: &[SubagentEfficiency]) -> R
         }
         subtract_workload(&mut r.by_skill, &o.by_skill);
         subtract_workload(&mut r.by_mcp_tool, &o.by_mcp_tool);
+        r.skill_calls = match (r.skill_calls.take(), &o.skill_calls) {
+            (Some(mut base), Some(other)) => {
+                subtract_counts(&mut base, other);
+                Some(base)
+            }
+            _ => None,
+        };
+        r.mcp_calls = match (r.mcp_calls.take(), &o.mcp_calls) {
+            (Some(mut base), Some(other)) => {
+                subtract_mcp_calls(&mut base, other);
+                Some(base)
+            }
+            _ => None,
+        };
     }
     r
+}
+
+fn subtract_mcp_calls(base: &mut BTreeMap<String, McpCalls>, other: &BTreeMap<String, McpCalls>) {
+    for (k, o) in other {
+        if let Some(cur) = base.get_mut(k) {
+            cur.calls = cur.calls.saturating_sub(o.calls);
+            cur.timed = cur.timed.saturating_sub(o.timed);
+            cur.total_ms = cur.total_ms.saturating_sub(o.total_ms);
+            if cur.calls == 0 {
+                base.remove(k);
+            }
+        }
+    }
 }
 
 fn subtract_counts(base: &mut BTreeMap<String, u64>, other: &BTreeMap<String, u64>) {

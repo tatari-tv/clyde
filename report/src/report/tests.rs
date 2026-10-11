@@ -108,7 +108,7 @@ fn pr(number: u64, url: &str) -> PrRef {
 }
 
 #[test]
-fn write_json_round_trips_and_emits_schema_v3() {
+fn write_json_round_trips_and_emits_schema_v4() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("claude-report.json");
     let s = opus_session(SID_A, Some("do the thing"));
@@ -128,7 +128,7 @@ fn write_json_round_trips_and_emits_schema_v3() {
 
     let body = fs::read_to_string(&path).unwrap();
     let report: Report = serde_json::from_str(&body).unwrap();
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     assert_eq!(report.schema_version, SCHEMA_VERSION);
     assert_eq!(report.host, "desk");
     assert_eq!(report.totals.sessions, 1);
@@ -225,7 +225,7 @@ fn json_uses_kebab_case_keys_and_carries_v2_fields() {
     .unwrap();
 
     let body = fs::read_to_string(&path).unwrap();
-    assert!(body.contains("\"schema-version\": 3"), "body:\n{}", body);
+    assert!(body.contains("\"schema-version\": 4"), "body:\n{}", body);
     assert!(body.contains("\"spend-usd\":"));
     assert!(body.contains("\"cache-5m-write\":"));
     assert!(body.contains("\"cache-1h-write\":"));
@@ -1332,4 +1332,146 @@ fn totals_spend_is_the_sum_of_session_cents_and_model_rows_sum_to_it() {
         .map(to_cents)
         .sum();
     assert_eq!(model_sum, session_sum);
+}
+
+/// A scope's counters with `skill_calls` / `mcp_calls` stripped the way a v15-era blob parses: the
+/// keys are absent, so field-level `#[serde(default)]` reads them as `None`.
+fn uncounted(raw: RawCounters) -> RawCounters {
+    let mut json = serde_json::to_value(&raw).unwrap();
+    let obj = json.as_object_mut().unwrap();
+    obj.remove("skill-calls");
+    obj.remove("mcp-calls");
+    let parsed: RawCounters = serde_json::from_value(json).unwrap();
+    assert!(parsed.skill_calls.is_none() && parsed.mcp_calls.is_none());
+    parsed
+}
+
+/// A session whose blob predates call counting carries `None` call maps into its entry (absent
+/// from the JSON), never `Some(empty)`: "uncounted" must not read as "zero calls". A counted session
+/// that called nothing is the opposite, `Some(empty)`. BITES: copying the maps with
+/// `unwrap_or_default()` (or not copying them) turns the uncounted session into a counted zero.
+#[test]
+fn uncounted_session_is_none_not_zero() {
+    let old = collected(
+        SID_A,
+        None,
+        session_eff(SID_A, uncounted(raw_with("claude-opus-4-7", opus_usage())), vec![]),
+        None,
+    );
+    let counted = opus_session(SID_B, None);
+    let report = build_report(
+        &[old, counted],
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        false,
+        &[],
+    )
+    .unwrap();
+
+    let old_entry = &report.sessions[SID_A];
+    assert_eq!(old_entry.skill_calls, None);
+    assert_eq!(old_entry.mcp_calls, None);
+    let counted_entry = &report.sessions[SID_B];
+    assert_eq!(counted_entry.skill_calls, Some(BTreeMap::new()));
+    assert_eq!(counted_entry.mcp_calls, Some(BTreeMap::new()));
+
+    let json = serde_json::to_value(&report).unwrap();
+    let old_json = &json["sessions"][SID_A];
+    assert!(old_json.get("skill-calls").is_none(), "{old_json}");
+    assert!(old_json.get("mcp-calls").is_none(), "{old_json}");
+    assert_eq!(json["sessions"][SID_B]["skill-calls"], serde_json::json!({}));
+    assert_eq!(json["sessions"][SID_B]["mcp-calls"], serde_json::json!({}));
+
+    // Round trip keeps the distinction.
+    let back: Report = serde_json::from_value(json).unwrap();
+    assert_eq!(back.sessions[SID_A].skill_calls, None);
+    assert_eq!(back.sessions[SID_B].skill_calls, Some(BTreeMap::new()));
+}
+
+/// The parent residual's call maps are `aggregate - Σ subagents` key-wise, saturating at 0, and an
+/// uncounted side on either end makes the residual's map `None`.
+#[test]
+fn subtract_subagents_subtracts_calls_keywise() {
+    let mut parent = raw_with("claude-opus-4-7", small_usage(300));
+    parent.add_skill_calls("release-notes", 2);
+    *parent.mcp_call_mut("tracker__search") = McpCalls {
+        calls: 3,
+        timed: 2,
+        total_ms: 900,
+    };
+    let mut sub_raw = raw_with("claude-opus-4-7", small_usage(700));
+    sub_raw.add_skill_calls("release-notes", 1);
+    sub_raw.add_skill_calls("schema-review", 4);
+    *sub_raw.mcp_call_mut("tracker__search") = McpCalls {
+        calls: 1,
+        timed: 1,
+        total_ms: 100,
+    };
+    let sub = subagent("asub-1", Some("worker"), sub_raw.clone());
+    let mut aggregate = parent.clone();
+    aggregate.merge(&sub.signals.raw);
+
+    let residual = subtract_subagents(&aggregate, std::slice::from_ref(&sub));
+    assert_eq!(
+        residual.skill_calls, parent.skill_calls,
+        "a sub-only skill leaves no residual key"
+    );
+    assert_eq!(residual.mcp_calls, parent.mcp_calls);
+
+    // Saturating: a subagent overstating a key never underflows the residual.
+    let mut over = sub_raw.clone();
+    over.add_skill_calls("release-notes", 50);
+    let over_sub = subagent("asub-2", Some("worker"), over);
+    let residual = subtract_subagents(&aggregate, std::slice::from_ref(&over_sub));
+    assert_eq!(residual.skill_calls.as_ref().unwrap().get("release-notes"), None);
+
+    // An uncounted subagent (or aggregate) leaves the parent's share unknown.
+    let none_sub = subagent("asub-3", Some("worker"), uncounted(sub_raw));
+    let residual = subtract_subagents(&aggregate, std::slice::from_ref(&none_sub));
+    assert_eq!((residual.skill_calls, residual.mcp_calls), (None, None));
+    let residual = subtract_subagents(&uncounted(aggregate), std::slice::from_ref(&sub));
+    assert_eq!((residual.skill_calls, residual.mcp_calls), (None, None));
+}
+
+/// Under `--no-rollup`, a parent residual with no tokens and no turns but a skill/MCP call of its
+/// own is kept as a row, carrying its calls; one with neither is still dropped. BITES: without the
+/// call clauses in `scope_is_nonempty`, the call-only residual vanishes and its calls are lost.
+#[test]
+fn call_only_residual_kept() {
+    let mut parent = RawCounters::default();
+    parent.add_skill_calls("release-notes", 1);
+    *parent.mcp_call_mut("tracker__search") = McpCalls {
+        calls: 2,
+        timed: 2,
+        total_ms: 400,
+    };
+    let sub = subagent("asub-1", Some("worker"), raw_with("claude-opus-4-7", small_usage(1000)));
+    let s = collected(SID_A, None, session_eff(SID_A, parent, vec![sub.clone()]), None);
+    let empty = collected(SID_B, None, session_eff(SID_B, RawCounters::default(), vec![sub]), None);
+
+    let exploded = build_report(
+        &[s, empty],
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "desk",
+        &pricing(),
+        true,
+        true,
+        &[],
+    )
+    .unwrap();
+    let residual = exploded.sessions.get(SID_A).expect("call-only residual is kept");
+    assert_eq!(residual.total_tokens(), 0);
+    assert_eq!(
+        residual.skill_calls,
+        Some(BTreeMap::from([("release-notes".to_string(), 1)]))
+    );
+    assert_eq!(residual.mcp_calls.as_ref().unwrap()["tracker__search"].calls, 2);
+    assert!(
+        !exploded.sessions.contains_key(SID_B),
+        "a residual with no tokens, turns or calls is still dropped"
+    );
 }
