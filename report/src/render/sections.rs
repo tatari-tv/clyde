@@ -193,15 +193,21 @@ pub(super) fn unit_cost_lines(block: &ContextBlock<'_>) -> Vec<String> {
     if let Some(v) = &u.per_session {
         lines.push(format!("A ratio of {v} of period spend per session (the mean)."));
     }
+    lines.extend(session_spend_percentiles(block));
+    lines
+}
+
+/// The median and 90th-percentile session spend, as one sentence, when either is known.
+pub(super) fn session_spend_percentiles(block: &ContextBlock<'_>) -> Option<String> {
+    let u = &block.unit_costs;
     match (&u.session_spend_p50, &u.session_spend_p90) {
-        (Some(p50), Some(p90)) => lines.push(format!(
+        (Some(p50), Some(p90)) => Some(format!(
             "Median session spend was {p50}; the 90th percentile was {p90}."
         )),
-        (Some(p50), None) => lines.push(format!("Median session spend was {p50}.")),
-        (None, Some(p90)) => lines.push(format!("The 90th percentile of session spend was {p90}.")),
-        (None, None) => {}
+        (Some(p50), None) => Some(format!("Median session spend was {p50}.")),
+        (None, Some(p90)) => Some(format!("The 90th percentile of session spend was {p90}.")),
+        (None, None) => None,
     }
-    lines
 }
 
 /// The pricing-gap warning. `names` is the backend's styled list of the unpriced models.

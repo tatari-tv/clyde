@@ -1,3 +1,37 @@
+// Sort toggles on the paired-bar charts. Optional: with JS off the controls stay hidden and the
+// rows keep their server order (by spend). Rows carry their rank under each key in a data- attribute,
+// so sorting only reorders existing nodes; rows past the figure's data-top fold behind its expander.
+(function () {
+  "use strict";
+  var figures = document.querySelectorAll("[data-sortable]");
+  Array.prototype.forEach.call(figures, function (figure) {
+    var control = figure.querySelector(".sort");
+    var list = figure.querySelector(".pairs");
+    if (!control || !list) {
+      return;
+    }
+    var top = Number(figure.getAttribute("data-top"));
+    var buttons = control.querySelectorAll("button");
+    control.hidden = false;
+    Array.prototype.forEach.call(buttons, function (button) {
+      button.addEventListener("click", function () {
+        var key = "data-" + button.getAttribute("data-key");
+        var rows = Array.prototype.slice.call(list.children);
+        rows.sort(function (a, b) {
+          return Number(a.getAttribute(key)) - Number(b.getAttribute(key));
+        });
+        rows.forEach(function (row, index) {
+          row.classList.toggle("extra", index >= top);
+          list.appendChild(row);
+        });
+        Array.prototype.forEach.call(buttons, function (other) {
+          other.setAttribute("aria-pressed", other === button ? "true" : "false");
+        });
+      });
+    });
+  });
+})();
+
 // Hover tooltips for any element carrying data-tip. Optional: with JS off, each chart column keeps
 // its SVG title as the browser's native tooltip, and every figure is already printed on the page.
 // This script builds no display text of its own; it only moves data-tip into the tooltip.

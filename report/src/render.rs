@@ -26,6 +26,7 @@ mod html;
 mod reconciliation;
 mod sections;
 mod slots;
+mod visuals;
 use reconciliation::{build_reconciliation_view, no_reconcile_warning};
 mod workload;
 use document::{Artifact, ChartMode, PriorView};
@@ -739,6 +740,10 @@ struct SessionView<'a> {
     end: DateTime<Utc>,
     tokens_human: String,
     spend_display: String,
+    /// Raw twin of [`Self::spend_display`] (the session-cost histogram buckets it); `None` for an
+    /// unpriced session. Never serialized.
+    #[serde(skip)]
+    spend_raw: Option<f64>,
     models: Vec<&'a str>,
     /// The session's observed outcomes (commit shas, PR refs, write counts), absent when
     /// extraction ran and found nothing or never ran; theme/citation material only, per the
@@ -936,6 +941,7 @@ fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a>
         end: entry.end,
         tokens_human: format_tokens_human(entry.total_tokens()),
         spend_display: format_optional_usd(entry.spend_usd),
+        spend_raw: entry.spend_usd,
         models: entry.models.keys().map(String::as_str).collect(),
         outcomes: entry.outcomes.as_ref(),
     }

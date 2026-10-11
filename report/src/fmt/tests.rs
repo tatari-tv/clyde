@@ -67,3 +67,14 @@ fn short_id_is_uuid_prefix_for_bare_and_merged_keys() {
     assert_eq!(short_id("host/abc"), "abc");
     assert_eq!(short_id("abc"), "abc");
 }
+
+#[test]
+fn format_usd_edge_drops_cents_only_on_whole_dollars() {
+    assert_eq!(format_usd_edge(0), "$0");
+    assert_eq!(format_usd_edge(10), "$0.10");
+    assert_eq!(format_usd_edge(250), "$2.50");
+    assert_eq!(format_usd_edge(500), "$5");
+    assert_eq!(format_usd_edge(100_000), "$1,000");
+    assert_eq!(format_usd_edge(-200), "-$2");
+    assert_eq!(format_usd_edge(-250), "-$2.50");
+}

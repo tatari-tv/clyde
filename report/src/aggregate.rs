@@ -72,6 +72,17 @@ pub struct CacheStats {
     /// `list_price_equivalent` minus actual priced spend. `None` under the same condition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_savings: Option<String>,
+    /// Raw twin of [`Self::list_price_equivalent`], whole cents. Never serialized.
+    #[serde(skip)]
+    pub list_price_cents: Option<i64>,
+    /// Raw twin of [`Self::cache_savings`], whole cents: exactly `list_price_cents - spend_cents`,
+    /// and the display string is formatted from it, so the waterfall's three figures reconcile to
+    /// the cent. Negative when the 1h write premium outweighs the read savings.
+    #[serde(skip)]
+    pub cache_savings_cents: Option<i64>,
+    /// Raw twin of the headline spend (`totals.spend-usd`), whole cents.
+    #[serde(skip)]
+    pub spend_cents: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -345,14 +356,13 @@ fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
         .map(|r| r * 100.0)
         .unwrap_or(0.0);
 
-    let (list_price_equivalent, cache_savings) = if counterfactual_ok {
-        (
-            Some(format_usd(list_price)),
-            Some(format_usd(list_price - report.totals.spend_usd)),
-        )
-    } else {
-        (None, None)
-    };
+    // Whole cents first, then every display string from those cents: savings are the difference of
+    // the two ROUNDED figures, so list price minus savings is the displayed spend exactly.
+    let spend_cents = to_cents(report.totals.spend_usd);
+    let list_price_cents = counterfactual_ok.then(|| to_cents(list_price));
+    let cache_savings_cents = list_price_cents.map(|list| list - spend_cents);
+    let list_price_equivalent = list_price_cents.map(|c| format_usd(cents::to_dollars(c)));
+    let cache_savings = cache_savings_cents.map(|c| format_usd(cents::to_dollars(c)));
 
     CacheStats {
         cache_read_share: format!("{:.1}%", share_pct),
@@ -360,7 +370,15 @@ fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
         cache_read_tokens_human: format_tokens_human(total_cache_read),
         list_price_equivalent,
         cache_savings,
+        list_price_cents,
+        cache_savings_cents,
+        spend_cents,
     }
+}
+
+/// Dollars to whole cents, the unit every display string rounds to.
+fn to_cents(dollars: f64) -> i64 {
+    (dollars * cents::CENTS_PER_DOLLAR).round() as i64
 }
 
 /// `repo.split_once('/')` first component per the Definitions section; `None` repos (and repos
@@ -905,7 +923,7 @@ fn per_unit(spend: f64, count: u64) -> Option<String> {
 /// Nearest-rank percentile over an ASCENDING-sorted slice: index `ceil(p * n) - 1`, so p50 of an
 /// even-length series is the lower of the two middle values rather than an interpolated figure no
 /// session actually spent. Every value it can return is a real session's own spend.
-fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
+pub(crate) fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
     if sorted.is_empty() {
         return None;
     }

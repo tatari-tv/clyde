@@ -7,7 +7,8 @@
 //! - [`Page::text`] writes an escaped text node.
 //! - [`Page::attr`] writes an escaped human-readable attribute (`title`, `aria-label`, `data-tip`).
 //! - [`Page::geom`] writes a numeric SVG geometry attribute, and refuses anything that is not
-//!   geometry.
+//!   geometry; [`Page::geom_int`] writes one integer (a coordinate, or a sort rank), and
+//!   [`Page::vars`] writes chart geometry as CSS custom properties.
 //!
 //! Every [`Page::text`] and [`Page::attr`] value is recorded in a ledger (test builds only), which
 //! is what the number-licensing test reads: the page's figures are checked where they enter, so the
@@ -66,9 +67,21 @@ impl Page {
         self
     }
 
-    /// [`Page::geom`] for one integer coordinate.
+    /// [`Page::geom`] for one integer: a coordinate, or a `data-` sort rank the script reads.
     pub(super) fn geom_int(&mut self, name: &'static str, value: i64) -> &mut Self {
         let _ = write!(self.out, " {name}=\"{value}\"");
+        self
+    }
+
+    /// ` style="--a:1.2;--b:30"`: CSS custom properties carrying chart geometry, each value in
+    /// TENTHS written as a fixed one-decimal number ([`crate::chart::tenths`]). The stylesheet turns
+    /// them into lengths; no value can be anything but a number.
+    pub(super) fn vars(&mut self, vars: &[(&'static str, i64)]) -> &mut Self {
+        let body: Vec<String> = vars
+            .iter()
+            .map(|(name, value)| format!("{name}:{}", crate::chart::tenths(*value)))
+            .collect();
+        let _ = write!(self.out, " style=\"{}\"", body.join(";"));
         self
     }
 

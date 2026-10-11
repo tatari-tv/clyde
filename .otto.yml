@@ -245,6 +245,14 @@ tasks:
         -f "sessions/src/db/enrich.rs" \
         -f "efficiency/src/outcome.rs" \
         -f "sessions/src/db/migrate.rs" \
+        -f "report/src/chart.rs" \
+        -f "report/src/chart/line.rs" \
+        -f "report/src/chart/bars.rs" \
+        -f "report/src/chart/stack.rs" \
+        -f "report/src/chart/treemap.rs" \
+        -f "report/src/chart/waterfall.rs" \
+        -f "report/src/chart/histogram.rs" \
+        -f "report/src/chart/calendar.rs" \
         --jobs "$MUTANT_JOBS"
 
   eval:

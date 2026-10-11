@@ -130,6 +130,15 @@ fn licensed(block: &ContextBlock<'_>) -> std::collections::BTreeSet<String> {
         strings.push(format_int(len as u64));
     }
     strings.extend(["1h".to_string(), "90th".to_string()]);
+    // The chart view model's display strings: shares, bucket edges, tooltips. Formatted once in
+    // `visuals` from the same block, never by a chart or by this backend.
+    strings.extend(visuals::display_strings(&visuals::build(block)));
+    for pairs in [&visuals::build(block).orgs, &visuals::build(block).repos]
+        .into_iter()
+        .flatten()
+    {
+        strings.push(format_int(pairs.rows.len() as u64));
+    }
     strings.iter().flat_map(|s| numeric_tokens(s)).collect()
 }
 
@@ -331,13 +340,30 @@ fn two_renders_are_byte_identical() {
     }
 }
 
+/// The medium page draws every chart current data supports: both daily lines, the treemap and the
+/// calendar as inline SVG; paired bars, the model stack, the waterfall and the histogram as HTML.
 #[test]
-fn the_page_draws_both_daily_charts_as_inline_svg() {
+fn the_page_draws_every_chart_the_data_supports() {
     let html = page(&medium(), 10);
-    assert_eq!(html.matches("<svg").count(), 2);
+    assert_eq!(html.matches("<svg").count(), 4, "two lines, the treemap, the calendar");
     assert!(html.contains("<polyline class=\"line\""));
     assert!(html.contains("data-tip=\"2026-04-01: $18.43\""));
+    assert_eq!(
+        html.matches("<figure class=\"chart pairs-fig\"").count(),
+        2,
+        "by org and by repo"
+    );
+    for marker in [
+        "<div class=\"treemap\">",
+        "<div class=\"stackbar\">",
+        "<ol class=\"steps\">",
+        "<div class=\"histo\"",
+        "<div class=\"cal\">",
+    ] {
+        assert_eq!(html.matches(marker).count(), 1, "{marker}");
+    }
     assert!(!html.contains("NaN"));
+    assert!(!html.contains(line_empty_marker()));
 }
 
 #[test]
@@ -350,9 +376,79 @@ fn a_chart_with_no_drawable_series_renders_its_empty_state() {
         },
         |block| render(block, &SlotProse::new(), 10).unwrap(),
     );
-    assert!(!html.contains("<svg"));
+    assert_eq!(html.matches("<polyline").count(), 0);
     assert_eq!(html.matches(line_empty_marker()).count(), 2);
     assert!(!html.contains("NaN"));
+}
+
+/// With every series empty, every chart still renders, as its empty state: no SVG, no NaN, no
+/// zero-size geometry.
+#[test]
+fn zero_data_renders_every_chart_as_an_empty_state() {
+    let mut case = medium();
+    case.report.sessions.clear();
+    for m in case.report.totals.models.values_mut() {
+        m.spend_usd = None;
+    }
+    let html = with_case(
+        &case,
+        |agg| {
+            agg.by_org.clear();
+            agg.by_repo.clear();
+            agg.by_day.clear();
+            agg.charts.by_day_spend = None;
+            agg.charts.by_day_sessions = None;
+            agg.cache.list_price_cents = Some(0);
+            agg.cache.cache_savings_cents = Some(0);
+            agg.cache.spend_cents = 0;
+        },
+        |block| render(block, &SlotProse::new(), 10).unwrap(),
+    );
+    assert!(!html.contains("<svg"));
+    // by org, by repo, treemap, two lines, calendar, waterfall, model stack, histogram
+    assert_eq!(html.matches(line_empty_marker()).count(), 9);
+    assert!(!html.contains("NaN"));
+}
+
+#[test]
+fn the_pathological_page_states_the_unpriced_waterfall() {
+    let case = cases().into_iter().nth(2).unwrap();
+    let html = page(&case, 10);
+    assert!(html.contains("so the list-price comparison is not drawn"));
+    assert!(html.contains("1 session with no price is not shown."));
+    // One repo and one priced model: the treemap and the model bar would each be one full block.
+    assert!(!html.contains("<div class=\"treemap\">"));
+    assert!(!html.contains("<div class=\"stackbar\">"));
+    assert!(!html.contains("By org"), "one org");
+}
+
+/// The page leads with charts: Where It Went comes straight after the executive summary.
+#[test]
+fn the_page_leads_with_charts_in_dashboard_order() {
+    let titles: Vec<&str> = with_case(
+        &medium(),
+        |_| {},
+        |block| page_order(block).into_iter().map(Part::title).collect(),
+    );
+    assert_eq!(
+        titles,
+        vec![
+            "Executive Summary",
+            "Where It Went",
+            "Quantified Output",
+            "Spend Over Time",
+            "The Efficiency Story",
+            "Cost Summary",
+            "Agent-Type Cost Attribution",
+            "Session Cost",
+            "Reconciliation",
+            "What This Funded",
+            "Usage Profile",
+            "Month over Month",
+            "Tradeoffs",
+            "Conclusion",
+        ]
+    );
 }
 
 fn line_empty_marker() -> &'static str {
@@ -369,8 +465,11 @@ fn long_tables_fold_past_top_n_into_details() {
     assert!(!flat.contains("<details"), "no table in medium exceeds ten rows");
 }
 
+/// Was `sections_appear_in_the_shared_order_with_the_markdown_headings`: Phase 3 reorders the
+/// dashboard (charts first) and adds three chart-only sections, so the HTML headings are now the
+/// page order's titles, and every markdown heading still appears exactly once among them.
 #[test]
-fn sections_appear_in_the_shared_order_with_the_markdown_headings() {
+fn html_headings_are_the_page_order_and_cover_every_markdown_heading() {
     for case in cases() {
         let (html, md) = with_case(
             &case,
@@ -386,8 +485,30 @@ fn sections_appear_in_the_shared_order_with_the_markdown_headings() {
             .skip(1)
             .filter_map(|s| s.split_once("</h2>").map(|(h, _)| h))
             .collect();
-        let md_headings: Vec<&str> = md.lines().filter_map(|l| l.strip_prefix("## ")).collect();
-        assert_eq!(html_headings, md_headings);
+        let mut md_headings: Vec<&str> = md.lines().filter_map(|l| l.strip_prefix("## ")).collect();
+        let chart_only = [Part::WhereItWent, Part::SpendOverTime, Part::SessionCost].map(Part::title);
+        for title in chart_only {
+            assert_eq!(html_headings.iter().filter(|h| **h == title).count(), 1, "{title}");
+        }
+        let mut shared: Vec<&str> = html_headings
+            .iter()
+            .copied()
+            .filter(|h| !chart_only.contains(h))
+            .collect();
+        shared.sort_unstable();
+        md_headings.sort_unstable();
+        assert_eq!(shared, md_headings, "the same shared sections, each once");
+        let order: Vec<&str> = with_case(
+            &case,
+            |_| {},
+            |block| page_order(block).into_iter().map(Part::title).collect(),
+        );
+        let mut positions = html_headings.iter().map(|h| order.iter().position(|o| o == h).unwrap());
+        let mut last = positions.next().unwrap();
+        for next in positions {
+            assert!(next > last, "headings follow the page order");
+            last = next;
+        }
     }
 }
 

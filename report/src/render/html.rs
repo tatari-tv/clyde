@@ -9,6 +9,7 @@
 //! The page reads with JS off: expanders are native `<details>`, chart tooltips fall back to SVG
 //! `<title>`. `app.js` only upgrades the tooltips.
 
+mod figures;
 mod line;
 mod page;
 
@@ -19,6 +20,7 @@ use super::ContextBlock;
 use super::document::{self, SlotProse};
 use super::facts::FactRegistry;
 use super::sections::{self, Section};
+use super::visuals::{self, Visuals};
 use crate::fmt::format_int;
 use line::Tone;
 use page::Page;
@@ -70,30 +72,95 @@ fn operator<'a>(block: &'a ContextBlock<'_>) -> &'a str {
     block.persona.name.as_deref().unwrap_or(sections::ANONYMOUS)
 }
 
+/// One titled part of the page: a section the markdown backend shares, or a chart section only the
+/// dashboard has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Shared(Section),
+    WhereItWent,
+    SpendOverTime,
+    SessionCost,
+}
+
+impl Part {
+    fn title(self) -> &'static str {
+        match self {
+            Part::Shared(s) => s.title(),
+            Part::WhereItWent => "Where It Went",
+            Part::SpendOverTime => "Spend Over Time",
+            Part::SessionCost => "Session Cost",
+        }
+    }
+}
+
+/// The page's parts in dashboard order (design "Page sections"): charts lead, ledgers follow. Each
+/// shared section appears exactly where [`sections::section_order`] keeps it, so the markdown
+/// backend's filtering (Tradeoffs) applies here unchanged; only the order differs.
+fn page_order(block: &ContextBlock<'_>) -> Vec<Part> {
+    let shared = sections::section_order(block);
+    [
+        Part::Shared(Section::ExecutiveSummary),
+        Part::WhereItWent,
+        Part::Shared(Section::QuantifiedOutput),
+        Part::SpendOverTime,
+        Part::Shared(Section::Efficiency),
+        Part::Shared(Section::CostSummary),
+        Part::Shared(Section::AgentTypeCosts),
+        Part::SessionCost,
+        Part::Shared(Section::Reconciliation),
+        Part::Shared(Section::WhatThisFunded),
+        Part::Shared(Section::UsageProfile),
+        Part::Shared(Section::MonthOverMonth),
+        Part::Shared(Section::Tradeoffs),
+        Part::Shared(Section::Conclusion),
+    ]
+    .into_iter()
+    .filter(|part| match part {
+        Part::Shared(s) => shared.contains(s),
+        _ => true,
+    })
+    .collect()
+}
+
 /// Build the page body. Split from [`render`] so the tests can read the ledger.
 fn build(block: &ContextBlock<'_>, prose: &SlotProse, top_n: usize) -> Page {
     let reg = document::registry(block);
+    let v = visuals::build(block);
     let mut p = Page::new();
     // The `<title>` is filled into the template, outside this page; recording its text here keeps
     // it inside the licensing test's reach without writing it twice.
     #[cfg(test)]
     p.ledger.push(title_text(block));
     header(&mut p, block);
-    for s in sections::section_order(block) {
+    for part in page_order(block) {
+        let s = match part {
+            Part::WhereItWent => {
+                where_it_went(&mut p, &v, top_n);
+                continue;
+            }
+            Part::SpendOverTime => {
+                spend_over_time(&mut p, block, &v);
+                continue;
+            }
+            Part::SessionCost => {
+                session_cost(&mut p, block, &v);
+                continue;
+            }
+            Part::Shared(s) => s,
+        };
         let slot = s.slot().and_then(|key| prose.get(key));
         match s {
-            Section::ExecutiveSummary | Section::Tradeoffs | Section::Conclusion => {
+            Section::ExecutiveSummary | Section::Tradeoffs | Section::Conclusion | Section::UsageProfile => {
                 open_section(&mut p, s);
                 slot_body(&mut p, s, slot, &reg);
                 close_section(&mut p);
             }
             Section::QuantifiedOutput => quantified_output(&mut p, block),
-            Section::CostSummary => cost_summary(&mut p, block, top_n),
+            Section::CostSummary => cost_summary(&mut p, block, &v, top_n),
             Section::Reconciliation => reconciliation(&mut p, block),
             Section::AgentTypeCosts => agent_type_costs(&mut p, block, top_n),
-            Section::Efficiency => efficiency(&mut p, block, top_n),
+            Section::Efficiency => efficiency(&mut p, block, &v, top_n),
             Section::WhatThisFunded => what_this_funded(&mut p, block, slot, &reg),
-            Section::UsageProfile => usage_profile(&mut p, block, slot, &reg),
             Section::MonthOverMonth => month_over_month(&mut p, block),
         }
     }
@@ -171,9 +238,70 @@ fn header(p: &mut Page, block: &ContextBlock<'_>) {
 }
 
 fn open_section(p: &mut Page, s: Section) {
+    open_part(p, Part::Shared(s));
+}
+
+fn open_part(p: &mut Page, part: Part) {
     p.raw("<section class=\"section\">\n<h2>")
-        .text(s.title())
+        .text(part.title())
         .raw("</h2>\n");
+}
+
+/// Lead under "Where It Went".
+const WHERE_LEAD: &str = "Each row compares a share of the period's sessions with its share of spend. \
+     A spend bar longer than its sessions bar is work that cost more than its share of the sessions.";
+
+/// Section 4: paired bars by org and by repo, then the org -> repo treemap.
+fn where_it_went(p: &mut Page, v: &Visuals, top_n: usize) {
+    open_part(p, Part::WhereItWent);
+    para(p, "<p class=\"lead\">", WHERE_LEAD);
+    // One org is one full bar pair that says nothing the header strip does not.
+    if v.orgs.as_ref().is_none_or(|o| o.rows.len() > 1) {
+        figures::pairs(p, "By org", v.orgs.as_ref(), false, top_n);
+    }
+    figures::pairs(p, "By repository", v.repos.as_ref(), true, top_n);
+    // A treemap of one tile is one rectangle the bars above already state.
+    let tiles = v
+        .treemap
+        .as_ref()
+        .map_or(0, |t| t.groups.iter().map(|g| g.tiles.len()).sum());
+    if v.treemap.is_none() || tiles > 1 {
+        figures::treemap(p, "Spend by org and repository", v.treemap.as_ref());
+    }
+    close_section(p);
+}
+
+/// Section 6: the daily spend line beside its calendar, then daily sessions.
+fn spend_over_time(p: &mut Page, block: &ContextBlock<'_>, v: &Visuals) {
+    open_part(p, Part::SpendOverTime);
+    if let Some(sentence) = sections::carried_in_sentence(block) {
+        para(p, "<p class=\"lead\">", &sentence);
+    }
+    let charts = &block.aggregates.charts;
+    let by_day = &block.aggregates.by_day;
+    p.raw("<div class=\"split\">");
+    line::figure(p, "Daily spend", charts.by_day_spend.as_ref(), by_day, Tone::Spend);
+    figures::calendar(p, "Spend by day", v.calendar.as_ref());
+    p.raw("</div>\n");
+    line::figure(
+        p,
+        "Daily sessions",
+        charts.by_day_sessions.as_ref(),
+        by_day,
+        Tone::Sessions,
+    );
+    close_section(p);
+}
+
+/// Section 10: the session-cost histogram and the outlier sessions.
+fn session_cost(p: &mut Page, block: &ContextBlock<'_>, v: &Visuals) {
+    open_part(p, Part::SessionCost);
+    if let Some(sentence) = sections::session_spend_percentiles(block) {
+        para(p, "<p class=\"lead\">", &sentence);
+    }
+    figures::histogram(p, "Sessions by cost", v.histogram.as_ref());
+    outliers(p, block);
+    close_section(p);
 }
 
 fn close_section(p: &mut Page) {
@@ -364,8 +492,12 @@ fn quantified_output(p: &mut Page, block: &ContextBlock<'_>) {
     close_section(p);
 }
 
-fn cost_summary(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
+fn cost_summary(p: &mut Page, block: &ContextBlock<'_>, v: &Visuals, top_n: usize) {
     open_section(p, Section::CostSummary);
+    // One priced model is one full bar the table below already states.
+    if v.models.as_ref().is_none_or(|m| m.segments.len() > 1) {
+        figures::stack(p, "Spend by model", v.models.as_ref());
+    }
     let columns = [
         col("Model", Cell::Code),
         col("Sessions Using", Cell::Num),
@@ -471,9 +603,10 @@ fn agent_type_costs(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
     close_section(p);
 }
 
-fn efficiency(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
+fn efficiency(p: &mut Page, block: &ContextBlock<'_>, v: &Visuals, top_n: usize) {
     let eff = &block.efficiency;
     open_section(p, Section::Efficiency);
+    figures::waterfall(p, "List price, cache savings, spend", &v.waterfall);
     para(p, "<p>", &sections::cache_read_sentence(block));
     if let Some(sentence) = sections::cache_savings_sentence(block) {
         para(p, "<p>", &sentence);
@@ -521,26 +654,6 @@ fn what_this_funded(p: &mut Page, block: &ContextBlock<'_>, prose: Option<&Strin
         }
         p.raw("</ul>\n</div>\n");
     }
-    close_section(p);
-}
-
-fn usage_profile(p: &mut Page, block: &ContextBlock<'_>, prose: Option<&String>, reg: &FactRegistry) {
-    open_section(p, Section::UsageProfile);
-    slot_body(p, Section::UsageProfile, prose, reg);
-    if let Some(sentence) = sections::carried_in_sentence(block) {
-        para(p, "<p class=\"lead\">", &sentence);
-    }
-    let charts = &block.aggregates.charts;
-    let by_day = &block.aggregates.by_day;
-    line::figure(p, "Daily spend", charts.by_day_spend.as_ref(), by_day, Tone::Spend);
-    line::figure(
-        p,
-        "Daily sessions",
-        charts.by_day_sessions.as_ref(),
-        by_day,
-        Tone::Sessions,
-    );
-    outliers(p, block);
     close_section(p);
 }
 
