@@ -554,10 +554,8 @@ fn print_summary(report: &EvalReport) {
                 r.dimension, r.score, r.floor, r.reason
             );
         }
-        for (path, e) in [("render", &f.markdown_error)] {
-            if let Some(e) = e {
-                eprintln!("        {path} render rejected -- {e}");
-            }
+        if let Some(e) = &f.markdown_error {
+            eprintln!("        render render rejected -- {e}");
         }
         if let Some(e) = &f.judge_error {
             eprintln!("        judge failed -- {e}");

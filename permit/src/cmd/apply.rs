@@ -42,7 +42,9 @@ pub fn parse_apply_filter(actions: &[String]) -> Result<ApplyFilter> {
     for action in actions {
         match action.as_str() {
             "promote" | "remove" | "deny" | "dupe" => {}
-            other => bail!("Unknown apply action '{}'. Valid: promote, remove, deny, dupe", other),
+            other => {
+                bail!("Unknown apply action '{}'. Valid: promote, remove, deny, dupe", other);
+            }
         }
     }
     Ok(ApplyFilter {

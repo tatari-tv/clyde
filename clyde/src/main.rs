@@ -871,8 +871,12 @@ fn resolve_one_session_id(db: &Db, needle: &str) -> Result<String> {
     let ids = db.resolve_id(needle)?;
     match ids.as_slice() {
         [id] => Ok(id.clone()),
-        [] => eyre::bail!("no session matches {needle:?}"),
-        many => eyre::bail!("{needle:?} is ambiguous ({} matches)", many.len()),
+        [] => {
+            eyre::bail!("no session matches {needle:?}");
+        }
+        many => {
+            eyre::bail!("{needle:?} is ambiguous ({} matches)", many.len());
+        }
     }
 }
 

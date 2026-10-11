@@ -37,7 +37,7 @@ struct FailingNarrator;
 
 impl Narrator for FailingNarrator {
     fn narrate(&self, _: &str, _: &str) -> Result<String> {
-        eyre::bail!("simulated narration failure")
+        eyre::bail!("simulated narration failure");
     }
 }
 

@@ -214,7 +214,9 @@ pub fn parse(raw: &str) -> Result<Verdict> {
     let end = trimmed.rfind('}');
     let body = match (start, end) {
         (Some(s), Some(e)) if e > s => trimmed.get(s..=e).unwrap_or(trimmed),
-        _ => bail!("the judge reply contains no JSON object: {:?}", preview(trimmed)),
+        _ => {
+            bail!("the judge reply contains no JSON object: {:?}", preview(trimmed));
+        }
     };
     let verdict: Verdict = serde_json::from_str(body)
         .with_context(|| format!("the judge reply is not the expected verdict shape: {:?}", preview(body)))?;
