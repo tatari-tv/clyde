@@ -61,7 +61,26 @@ pub struct LineChart {
     /// X-axis display strings: the series' dates, subsampled to at most [`MAX_X_LABELS`], first and
     /// last always present.
     pub x_labels: Vec<String>,
+    /// The same points as [`Self::points`], as integer `(x, y)` pairs in row order, for a backend
+    /// that draws per-point geometry (hover columns). Never serialized: [`Self::points`] is the
+    /// one string the context block carries.
+    #[serde(skip)]
+    pub coords: Vec<(i64, i64)>,
 }
+
+/// The y coordinate of the three horizontal gridlines, top to bottom: the series max, its midpoint,
+/// and zero. They line up with [`LineChart::y_labels`] one for one.
+pub const GRIDLINE_YS: [i64; 3] = [
+    PLOT_MARGIN as i64,
+    (PLOT_HEIGHT / 2.0) as i64,
+    (PLOT_HEIGHT - PLOT_MARGIN) as i64,
+];
+
+/// The zero line's y coordinate, where an area fill under a line closes.
+pub const BASELINE_Y: i64 = (PLOT_HEIGHT - PLOT_MARGIN) as i64;
+
+/// The `viewBox` width as an integer coordinate, where an area fill's closing edge sits.
+pub const PLOT_RIGHT: i64 = PLOT_WIDTH as i64;
 
 /// The window's precomputed charts. A field is ABSENT (never an empty or flat chart) when its
 /// series cannot honestly be drawn as a line: fewer than [`MIN_POINTS`] rows, or an all-zero
@@ -115,11 +134,13 @@ fn line_chart(values: &[f64], dates: &[&str], label: impl Fn(f64) -> String) -> 
         debug!("chart::line_chart: absent, series maximum is not positive");
         return None;
     }
+    let coords = coords(values, max);
     let chart = LineChart {
         viewbox: VIEWBOX.to_string(),
-        points: points(values, max),
+        points: points(&coords),
         y_labels: vec![label(max), label(max / 2.0), label(0.0)],
         x_labels: x_labels(dates),
+        coords,
     };
     debug!(
         "chart::line_chart: points-bytes={} y-labels={:?} x-labels={}",
@@ -130,19 +151,30 @@ fn line_chart(values: &[f64], dates: &[&str], label: impl Fn(f64) -> String) -> 
     Some(chart)
 }
 
-/// The `points` attribute value: `x,y` pairs space-separated, one per value, rounded to whole user
-/// units so the string stays short on a long window. x spreads the series evenly across the full
+/// Each value's `(x, y)` in whole user units. x spreads the series evenly across the full
 /// [`PLOT_WIDTH`]; y maps the series max to [`PLOT_MARGIN`] and zero to `PLOT_HEIGHT - PLOT_MARGIN`.
 ///
 /// Callers guarantee at least [`MIN_POINTS`] values and a positive `max`.
-fn points(values: &[f64], max: f64) -> String {
+fn coords(values: &[f64], max: f64) -> Vec<(i64, i64)> {
     let last = (values.len() - 1) as f64;
     let plot = PLOT_HEIGHT - 2.0 * PLOT_MARGIN;
-    let mut out = String::with_capacity(values.len() * 9);
-    for (i, value) in values.iter().enumerate() {
-        let x = (i as f64 / last * PLOT_WIDTH).round() as i64;
-        let y = (PLOT_HEIGHT - PLOT_MARGIN - (value / max) * plot).round() as i64;
-        trace!("chart::points: i={i} value={value} x={x} y={y}");
+    values
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let x = (i as f64 / last * PLOT_WIDTH).round() as i64;
+            let y = (PLOT_HEIGHT - PLOT_MARGIN - (value / max) * plot).round() as i64;
+            trace!("chart::coords: i={i} value={value} x={x} y={y}");
+            (x, y)
+        })
+        .collect()
+}
+
+/// The `points` attribute value: `x,y` pairs space-separated, one per value, rounded to whole user
+/// units so the string stays short on a long window.
+fn points(coords: &[(i64, i64)]) -> String {
+    let mut out = String::with_capacity(coords.len() * 9);
+    for (i, (x, y)) in coords.iter().enumerate() {
         if i > 0 {
             out.push(' ');
         }

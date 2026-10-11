@@ -11,6 +11,86 @@ use crate::aggregate::{DayRow, OrgRow, OutlierRow, RepoRow};
 use crate::fmt::format_int;
 use crate::reconcile::Reconciliation;
 
+/// One titled section of the report body, in the order every backend emits them. The header (and
+/// the markdown frontmatter) always precede these and are not listed: they are not sections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Section {
+    ExecutiveSummary,
+    QuantifiedOutput,
+    CostSummary,
+    Reconciliation,
+    AgentTypeCosts,
+    Efficiency,
+    WhatThisFunded,
+    UsageProfile,
+    MonthOverMonth,
+    Tradeoffs,
+    Conclusion,
+}
+
+impl Section {
+    /// The section heading, identical in every backend.
+    pub(super) fn title(self) -> &'static str {
+        match self {
+            Section::ExecutiveSummary => "Executive Summary",
+            Section::QuantifiedOutput => "Quantified Output",
+            Section::CostSummary => "Cost Summary",
+            Section::Reconciliation => "Reconciliation",
+            Section::AgentTypeCosts => "Agent-Type Cost Attribution",
+            Section::Efficiency => "The Efficiency Story",
+            Section::WhatThisFunded => "What This Funded",
+            Section::UsageProfile => "Usage Profile",
+            Section::MonthOverMonth => "Month over Month",
+            Section::Tradeoffs => "Tradeoffs",
+            Section::Conclusion => "Conclusion",
+        }
+    }
+
+    /// The prose slot that opens this section, when it has one.
+    pub(super) fn slot(self) -> Option<&'static str> {
+        match self {
+            Section::ExecutiveSummary => Some("executive-summary"),
+            Section::WhatThisFunded => Some("what-this-funded"),
+            Section::UsageProfile => Some("usage-profile"),
+            Section::Tradeoffs => Some("tradeoffs"),
+            Section::Conclusion => Some("closing"),
+            Section::QuantifiedOutput
+            | Section::CostSummary
+            | Section::Reconciliation
+            | Section::AgentTypeCosts
+            | Section::Efficiency
+            | Section::MonthOverMonth => None,
+        }
+    }
+}
+
+/// The body sections this render emits, in order. Tradeoffs is the one section the options filter
+/// out; every other section decides its own emptiness from its data.
+pub(super) fn section_order(block: &ContextBlock<'_>) -> Vec<Section> {
+    [
+        Section::ExecutiveSummary,
+        Section::QuantifiedOutput,
+        Section::CostSummary,
+        Section::Reconciliation,
+        Section::AgentTypeCosts,
+        Section::Efficiency,
+        Section::WhatThisFunded,
+        Section::UsageProfile,
+        Section::MonthOverMonth,
+        Section::Tradeoffs,
+        Section::Conclusion,
+    ]
+    .into_iter()
+    .filter(|s| *s != Section::Tradeoffs || block.options.include_tradeoffs)
+    .collect()
+}
+
+/// The report's title line.
+pub(super) const REPORT_TITLE: &str = "Claude Enterprise Usage Report";
+
+/// The operator name when persona resolved none.
+pub(super) const ANONYMOUS: &str = "[anonymous]";
+
 /// Lead-in to the Quantified Output tables.
 pub(super) const QUANTIFIED_OUTPUT_LEAD: &str =
     "These are observed tool invocations extracted from session transcripts, not estimates.";

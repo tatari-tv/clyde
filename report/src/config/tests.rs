@@ -582,3 +582,11 @@ fn collect_min_enrichment_rejects_a_percent() {
     assert!(err.contains("--min-enrichment"), "must name the flag: {err}");
     assert!(err.contains("0.5 means 50%"), "must say what the units are: {err}");
 }
+
+#[test]
+fn table_top_n_comes_from_clyde_yml_and_defaults_without_it() {
+    let cfg = resolved_render(render_args_base(), None);
+    assert_eq!(cfg.table_top_n, common::config::DEFAULT_TABLE_TOP_N);
+    let cfg = resolved_render(render_args_base(), Some("render:\n  table-top-n: 3\n"));
+    assert_eq!(cfg.table_top_n, 3);
+}

@@ -50,7 +50,7 @@ pub struct CollectConfig {
 pub struct RenderConfig {
     pub input: PathBuf,
     /// Explicit output path. When `None`, render::run resolves a default of the form
-    /// `./<YYYY-MM>-claude-report.{md,pdf}` using the `since` field from the input JSON.
+    /// `./<YYYY-MM>-claude-report.{md,pdf,html}` using the `since` field from the input JSON.
     /// Always `None` for the `marquee-*` formats (rejected during resolution).
     pub output: Option<PathBuf>,
     /// Selected output format. `markdown`/`pdf` write locally; `marquee-*` publish to marquee.
@@ -72,6 +72,9 @@ pub struct RenderConfig {
     /// `common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS`). Small on purpose: a slot is a few
     /// sentences, and a model that starts writing a document hits this instead of billing for one.
     pub slot_max_output_tokens: u32,
+    /// Rows a long HTML table shows before the rest fold into a `<details>` expander, from
+    /// `render.table-top-n` (default `common::config::DEFAULT_TABLE_TOP_N`).
+    pub table_top_n: usize,
     /// Prior-period report JSON (`--prior`), lighting up the Month over Month section. `None`
     /// omits the section entirely from the render.
     pub prior: Option<PathBuf>,
@@ -119,6 +122,8 @@ fn format_name(format: crate::cli::Format) -> &'static str {
         crate::cli::Format::Markdown => "markdown",
         crate::cli::Format::Pdf => "pdf",
         crate::cli::Format::MarqueeMarkdown => "marquee-markdown",
+        crate::cli::Format::Html => "html",
+        crate::cli::Format::MarqueeHtml => "marquee-html",
     }
 }
 
@@ -152,7 +157,7 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
             // Config is now loaded UNCONDITIONALLY, which is a deliberate behavior change from the
             // previous "only when --format is absent" laziness. The model pins live in `clyde.yml`
             // and render always needs one, so there is no flag that opts out of reading config. The
-            // consequence, accepted and tested: a malformed `clyde.yml` now breaks a `--format html`
+            // consequence, accepted and tested: a malformed `clyde.yml` now breaks a `--format markdown`
             // invocation that previously worked. A config key that is not read is not config, so the
             // load moves rather than the keys.
             let file = common::config::load()?;
@@ -187,6 +192,7 @@ pub fn resolve_command(command: crate::cli::Command) -> Result<ResolvedCommand> 
                 model: file.render_model().to_string(),
                 judge_max_output_tokens: file.render_judge_max_output_tokens(),
                 slot_max_output_tokens: file.render_slot_max_output_tokens(),
+                table_top_n: file.render_table_top_n(),
                 prior: args.prior,
                 reconcile: args.reconcile,
                 reconcile_user: args.reconcile_user,

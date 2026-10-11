@@ -329,7 +329,8 @@ fn evaluate(dir: &Path, cfg: &EvalConfig, pricing: &Pricing, guards: &mut Guards
                 // broken renderer.
                 if cfg.write_goldens {
                     if findings.is_empty() {
-                        write_golden(&fixture, &r.markdown)?;
+                        write_golden(&fixture.golden_path(), &r.markdown)?;
+                        write_golden(&fixture.golden_html_path(), &r.html)?;
                     } else {
                         eprintln!("eval: {} FAILED its checks; its golden is left untouched", fixture.name);
                     }
@@ -461,15 +462,14 @@ fn eval_opts(fixture: &Fixture) -> crate::render::ViewOpts<'_> {
     }
 }
 
-/// Overwrite a fixture's `golden.md`.
+/// Overwrite one of a fixture's goldens (`golden.md` or `golden.html`).
 ///
 /// The artifact handed in is always a STUBBED render (see the `SlotSource` choice in `evaluate`),
 /// because a golden whose bytes move between runs is not a regression net. Live slot prose is not
 /// reproducible; the deterministic document is, and that is exactly what `otto ci` compares offline
 /// and for free.
-fn write_golden(fixture: &Fixture, artifact: &str) -> Result<()> {
-    let path = fixture.golden_path();
-    std::fs::write(&path, artifact).with_context(|| format!("failed to write the golden at {}", path.display()))?;
+fn write_golden(path: &Path, artifact: &str) -> Result<()> {
+    std::fs::write(path, artifact).with_context(|| format!("failed to write the golden at {}", path.display()))?;
     eprintln!("eval: wrote {} ({} bytes)", path.display(), artifact.len());
     Ok(())
 }

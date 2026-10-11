@@ -3,8 +3,8 @@ use clap::{Args, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// Output format for `report render`, selected via `--format` (case-insensitive, kebab-case).
-/// `markdown` and `pdf` write locally (see `-o`); `marquee-markdown` publishes
-/// to marquee and prints the resulting URL instead of writing a file.
+/// `markdown`, `pdf` and `html` write locally (see `-o`); `marquee-markdown` and `marquee-html`
+/// publish to marquee and print the resulting URL instead of writing a file.
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[clap(rename_all = "kebab-case")]
 pub enum Format {
@@ -12,12 +12,19 @@ pub enum Format {
     Markdown,
     Pdf,
     MarqueeMarkdown,
+    Html,
+    MarqueeHtml,
 }
 
 impl Format {
-    /// The publishing variant, whose output is a marquee URL rather than a local path.
+    /// The publishing variants, whose output is a marquee URL rather than a local path.
     pub fn is_marquee(self) -> bool {
-        matches!(self, Format::MarqueeMarkdown)
+        matches!(self, Format::MarqueeMarkdown | Format::MarqueeHtml)
+    }
+
+    /// The variants whose artifact is the self-contained HTML page rather than the markdown document.
+    pub fn is_html(self) -> bool {
+        matches!(self, Format::Html | Format::MarqueeHtml)
     }
 }
 
@@ -29,6 +36,8 @@ impl From<common::config::FormatConfig> for Format {
             common::config::FormatConfig::Markdown => Format::Markdown,
             common::config::FormatConfig::Pdf => Format::Pdf,
             common::config::FormatConfig::MarqueeMarkdown => Format::MarqueeMarkdown,
+            common::config::FormatConfig::Html => Format::Html,
+            common::config::FormatConfig::MarqueeHtml => Format::MarqueeHtml,
         }
     }
 }
@@ -53,12 +62,13 @@ pub enum Command {
     /// Fails (writing nothing) if any session in the window has not been indexed -- run
     /// `clyde session reindex` first.
     Collect(CollectArgs),
-    /// Render a collected JSON report into Markdown, PDF, or a published marquee post
+    /// Render a collected JSON report into Markdown, PDF, HTML, or a published marquee post
     /// (`--format`).
     ///
     /// Reads the JSON produced by `collect` (default: `./claude-report.json`) and writes a
     /// human-readable Markdown summary. `--format pdf` converts it with the configured
-    /// `--pdf-engine`; `--format marquee-markdown` publishes it to marquee and prints the URL.
+    /// `--pdf-engine`; `--format html` writes one self-contained HTML page (inline CSS, SVG charts
+    /// and script); `--format marquee-markdown` / `marquee-html` publish to marquee and print the URL.
     Render(RenderArgs),
     /// Merge two or more collected JSON reports into one.
     ///
@@ -129,27 +139,29 @@ pub struct RenderArgs {
     #[arg(short, long)]
     pub input: Option<PathBuf>,
 
-    /// Write the rendered Markdown or PDF to this path. When omitted, the output defaults to
-    /// `./<YYYY-MM>-claude-report.{md,pdf}` in the current directory (month derived from the
-    /// report's `since`). Not valid with `marquee-markdown`, whose output is a published URL.
+    /// Write the rendered Markdown, PDF or HTML to this path. When omitted, the output defaults to
+    /// `./<YYYY-MM>-claude-report.{md,pdf,html}` in the current directory (month derived from the
+    /// report's `since`). Not valid with `marquee-markdown` or `marquee-html`, whose output is a
+    /// published URL.
     ///
-    /// `-o -` streams the markdown to stdout. Charts render as markdown tables there rather than as
-    /// sibling `chart-N.svg` files, because stdout has no directory to put a sibling file in.
+    /// `-o -` streams the markdown (or the HTML page) to stdout. Markdown charts render as tables
+    /// there rather than as sibling `chart-N.svg` files, because stdout has no directory to put a
+    /// sibling file in; the HTML page is self-contained, so it streams whole.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Output format: `markdown`, `pdf`, or `marquee-markdown`. When omitted, falls back to the
-    /// `render.format` value in `clyde.yml`, and to `markdown` if that too is unset.
-    /// `markdown`/`pdf` write locally (see `-o`); `marquee-markdown` publishes to marquee and
-    /// prints the URL. `pdf` requires `pandoc`; `marquee-markdown` requires the `marquee` CLI with
-    /// an authenticated session.
+    /// Output format: `markdown`, `pdf`, `html`, `marquee-markdown`, or `marquee-html`. When
+    /// omitted, falls back to the `render.format` value in `clyde.yml`, and to `markdown` if that
+    /// too is unset. `markdown`/`pdf`/`html` write locally (see `-o`); the `marquee-*` formats
+    /// publish to marquee and print the URL. `pdf` requires `pandoc`; the `marquee-*` formats
+    /// require the `marquee` CLI with an authenticated session.
     ///
-    /// clyde emits no HTML. The artifact is markdown plus sibling SVG chart assets, and marquee owns
-    /// turning that into a page.
+    /// `html` is written by clyde from a fixed template: Rust writes every number, table and chart,
+    /// and the model contributes only the digit-free prose slots, same as markdown.
     #[arg(long, value_enum, ignore_case = true)]
     pub format: Option<Format>,
 
-    /// Target marquee space for `marquee-markdown` (defaults to your personal ~space).
+    /// Target marquee space for `marquee-markdown` / `marquee-html` (defaults to your personal ~space).
     /// Ignored by `markdown`/`pdf`.
     #[arg(long)]
     pub space: Option<String>,
@@ -215,7 +227,8 @@ pub struct EvalArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Overwrite each fixture's committed `golden.md` with a fresh deterministic render.
+    /// Overwrite each fixture's committed `golden.md` and `golden.html` with a fresh deterministic
+    /// render.
     /// The goldens are model-authored, so this is how they are regenerated; a hand-run `report
     /// render` would splice in the machine's real persona and price against the live feed instead
     /// of the fixture's invented persona and the eval's pinned embedded pricing. A render that

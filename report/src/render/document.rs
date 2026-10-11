@@ -20,7 +20,7 @@ use std::path::Path;
 
 use super::ContextBlock;
 use super::facts::{self, FactRegistry};
-use super::sections;
+use super::sections::{self, Section};
 use crate::aggregate::{DayRow, OrgRow, RepoRow};
 use crate::chart::LineChart;
 use crate::report::Report;
@@ -74,19 +74,22 @@ pub(super) fn render(block: &ContextBlock<'_>, prose: &SlotProse, charts: ChartM
 
     frontmatter(&mut md, block);
     header(&mut md, block);
-    section(&mut md, "Executive Summary", prose.get("executive-summary"), &reg);
-    quantified_output(&mut md, block);
-    cost_summary(&mut md, block);
-    reconciliation(&mut md, block);
-    agent_type_costs(&mut md, block);
-    efficiency(&mut md, block);
-    what_this_funded(&mut md, block, prose.get("what-this-funded"), &reg);
-    usage_profile(&mut md, block, prose.get("usage-profile"), charts, &mut assets, &reg);
-    month_over_month(&mut md, block);
-    if block.options.include_tradeoffs {
-        section(&mut md, "Tradeoffs", prose.get("tradeoffs"), &reg);
+    for s in sections::section_order(block) {
+        let slot = s.slot().and_then(|key| prose.get(key));
+        match s {
+            Section::ExecutiveSummary | Section::Tradeoffs | Section::Conclusion => {
+                section(&mut md, s.title(), slot, &reg)
+            }
+            Section::QuantifiedOutput => quantified_output(&mut md, block),
+            Section::CostSummary => cost_summary(&mut md, block),
+            Section::Reconciliation => reconciliation(&mut md, block),
+            Section::AgentTypeCosts => agent_type_costs(&mut md, block),
+            Section::Efficiency => efficiency(&mut md, block),
+            Section::WhatThisFunded => what_this_funded(&mut md, block, slot, &reg),
+            Section::UsageProfile => usage_profile(&mut md, block, slot, charts, &mut assets, &reg),
+            Section::MonthOverMonth => month_over_month(&mut md, block),
+        }
     }
-    section(&mut md, "Conclusion", prose.get("closing"), &reg);
 
     debug!("document::render: bytes={} assets={}", md.len(), assets.len());
     Artifact { markdown: md, assets }
@@ -105,7 +108,7 @@ pub(super) fn registry(block: &ContextBlock<'_>) -> FactRegistry {
 /// Obsidian frontmatter. The field set is the contract `report.pmt:222-249` specified, unchanged:
 /// a renamed or dropped key breaks vault ingestion downstream.
 fn frontmatter(md: &mut String, block: &ContextBlock<'_>) {
-    let who = block.persona.name.as_deref().unwrap_or("[anonymous]");
+    let who = block.persona.name.as_deref().unwrap_or(sections::ANONYMOUS);
     let _ = writeln!(md, "---");
     let _ = writeln!(
         md,
@@ -130,9 +133,9 @@ fn frontmatter(md: &mut String, block: &ContextBlock<'_>) {
 /// this layer now enforces by construction.
 fn header(md: &mut String, block: &ContextBlock<'_>) {
     let p = &block.persona;
-    let _ = writeln!(md, "# Claude Enterprise Usage Report");
+    let _ = writeln!(md, "# {}", sections::REPORT_TITLE);
     let _ = writeln!(md);
-    let _ = writeln!(md, "**Author:** {}", p.name.as_deref().unwrap_or("[anonymous]"));
+    let _ = writeln!(md, "**Author:** {}", p.name.as_deref().unwrap_or(sections::ANONYMOUS));
     if let Some(title) = &p.title {
         let _ = writeln!(md, "**Title:** {title}");
     }
@@ -164,26 +167,37 @@ fn header(md: &mut String, block: &ContextBlock<'_>) {
 fn section(md: &mut String, title: &str, prose: Option<&String>, reg: &FactRegistry) {
     let _ = writeln!(md, "## {title}");
     let _ = writeln!(md);
-    let Some(text) = prose.map(String::as_str).filter(|t| !t.trim().is_empty()) else {
-        return;
-    };
+    if let Some(filled) = filled_slot(title, prose, reg) {
+        let _ = writeln!(md, "{}", filled.trim_end());
+        let _ = writeln!(md);
+    }
+}
+
+/// A slot's prose with its `{{fact:key}}` placeholders substituted and re-verified, ready for a
+/// backend to print. `None` for an absent, empty, or unusable slot. Shared by every backend so a
+/// slot is dropped (and logged) for exactly the same reasons in each.
+pub(super) fn filled_slot(title: &str, prose: Option<&String>, reg: &FactRegistry) -> Option<String> {
+    let text = prose.map(String::as_str).filter(|t| !t.trim().is_empty())?;
     match interpolate(text, reg) {
         // The post-interpolation structural re-check: what is about to be written is checked, not
         // just what the model sent.
         Ok(filled) => match super::slots::verify_interpolated(&filled) {
-            Ok(()) => {
-                let _ = writeln!(md, "{}", filled.trim_end());
-                let _ = writeln!(md);
+            Ok(()) => Some(filled),
+            Err(violation) => {
+                log::warn!(
+                    "document::section: dropping slot {title:?} after interpolation: {violation} preview={:?}",
+                    filled.chars().take(120).collect::<String>()
+                );
+                None
             }
-            Err(violation) => log::warn!(
-                "document::section: dropping slot {title:?} after interpolation: {violation} preview={:?}",
-                filled.chars().take(120).collect::<String>()
-            ),
         },
-        Err(unknown) => log::warn!(
-            "document::section: dropping slot {title:?}; unresolved fact keys={unknown:?} preview={:?}",
-            text.chars().take(120).collect::<String>()
-        ),
+        Err(unknown) => {
+            log::warn!(
+                "document::section: dropping slot {title:?}; unresolved fact keys={unknown:?} preview={:?}",
+                text.chars().take(120).collect::<String>()
+            );
+            None
+        }
     }
 }
 
@@ -196,7 +210,7 @@ fn quantified_output(md: &mut String, block: &ContextBlock<'_>) {
         return;
     }
 
-    let _ = writeln!(md, "## Quantified Output");
+    let _ = writeln!(md, "## {}", Section::QuantifiedOutput.title());
     let _ = writeln!(md);
     let _ = writeln!(md, "{}", sections::QUANTIFIED_OUTPUT_LEAD);
     let _ = writeln!(md);
@@ -242,7 +256,7 @@ fn unit_costs(md: &mut String, block: &ContextBlock<'_>) {
 /// Cost Summary: every model in `totals.models`, in the pre-sorted order given, plus the total row
 /// whose `sessions-using` is DISTINCT sessions and deliberately not the column sum.
 fn cost_summary(md: &mut String, block: &ContextBlock<'_>) {
-    let _ = writeln!(md, "## Cost Summary");
+    let _ = writeln!(md, "## {}", Section::CostSummary.title());
     let _ = writeln!(md);
     let _ = writeln!(md, "| Model | Sessions Using | Total Tokens | Spend |");
     let _ = writeln!(md, "|-------|---------------:|-------------:|------:|");
@@ -277,7 +291,7 @@ fn cost_summary(md: &mut String, block: &ContextBlock<'_>) {
 /// every render, and `scope-note` sits immediately beside the figure it explains -- never as a
 /// footnote elsewhere, because the unseen-account-spend figure reads as clyde's error without it.
 fn reconciliation(md: &mut String, block: &ContextBlock<'_>) {
-    let _ = writeln!(md, "## Reconciliation");
+    let _ = writeln!(md, "## {}", Section::Reconciliation.title());
     let _ = writeln!(md);
     let _ = writeln!(md, "{}", block.reconciliation_status);
     let _ = writeln!(md);
@@ -315,7 +329,7 @@ fn agent_type_costs(md: &mut String, block: &ContextBlock<'_>) {
     if rows.is_empty() {
         return;
     }
-    let _ = writeln!(md, "## Agent-Type Cost Attribution");
+    let _ = writeln!(md, "## {}", Section::AgentTypeCosts.title());
     let _ = writeln!(md);
     let _ = writeln!(
         md,
@@ -336,7 +350,7 @@ fn agent_type_costs(md: &mut String, block: &ContextBlock<'_>) {
 /// methodology note in the same breath.
 fn efficiency(md: &mut String, block: &ContextBlock<'_>) {
     let eff = &block.efficiency;
-    let _ = writeln!(md, "## The Efficiency Story");
+    let _ = writeln!(md, "## {}", Section::Efficiency.title());
     let _ = writeln!(md);
     let _ = writeln!(md, "- {}", sections::cache_read_sentence(block));
     if let Some(sentence) = sections::cache_savings_sentence(block) {
@@ -370,7 +384,7 @@ fn workload_table(md: &mut String, label: &str, rows: &[super::WorkloadRow], cov
 /// What This Funded: the slot's narrative, then the per-repo stat lines the binary owns. Tiering is
 /// by org using the pre-sorted `by-org` rows; within a tier the repos keep `by-repo` order.
 fn what_this_funded(md: &mut String, block: &ContextBlock<'_>, prose: Option<&String>, reg: &FactRegistry) {
-    section(md, "What This Funded", prose, reg);
+    section(md, Section::WhatThisFunded.title(), prose, reg);
     for tier in sections::org_tiers(block) {
         let _ = writeln!(md, "### {}", tier.org.org);
         let _ = writeln!(md);
@@ -398,7 +412,7 @@ fn usage_profile(
     assets: &mut Vec<Asset>,
     reg: &FactRegistry,
 ) {
-    section(md, "Usage Profile", prose, reg);
+    section(md, Section::UsageProfile.title(), prose, reg);
 
     if let Some(sentence) = sections::carried_in_sentence(block) {
         let _ = writeln!(md, "{sentence}");
@@ -553,7 +567,7 @@ fn month_over_month(md: &mut String, block: &ContextBlock<'_>) {
     let Some(prior) = &block.prior else {
         return;
     };
-    let _ = writeln!(md, "## Month over Month");
+    let _ = writeln!(md, "## {}", Section::MonthOverMonth.title());
     let _ = writeln!(md);
     if let Some(note) = &prior.predates_fields {
         let _ = writeln!(md, "{note}");

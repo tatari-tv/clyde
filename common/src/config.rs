@@ -47,6 +47,8 @@ pub enum FormatConfig {
     Markdown,
     Pdf,
     MarqueeMarkdown,
+    Html,
+    MarqueeHtml,
 }
 
 /// Default model pin for every LLM job `report` runs (`render.model`).
@@ -80,6 +82,29 @@ pub const DEFAULT_JUDGE_MAX_OUTPUT_TOKENS: u32 = 32_000;
 /// orders of magnitude below the whole-document ceilings above: that gap IS the cost argument for
 /// the inversion.
 pub const DEFAULT_SLOT_MAX_OUTPUT_TOKENS: u32 = 1_500;
+
+/// Default row count a long HTML table shows before folding the rest into a `<details>` expander
+/// (`render.table-top-n`).
+pub const DEFAULT_TABLE_TOP_N: usize = 10;
+
+fn default_table_top_n() -> usize {
+    DEFAULT_TABLE_TOP_N
+}
+
+/// Deserialize `render.table-top-n`, rejecting `0` loudly and by name: a top-0 table shows no rows
+/// at all and hides the whole table behind its expander.
+fn de_table_top_n<'de, D>(deserializer: D) -> std::result::Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = usize::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "render.table-top-n must be greater than 0; a top-0 table shows no rows",
+        ));
+    }
+    Ok(value)
+}
 
 fn default_model() -> String {
     DEFAULT_MODEL.to_string()
@@ -172,6 +197,10 @@ pub struct RenderConfig {
         deserialize_with = "de_slot_max_output_tokens"
     )]
     slot_max_output_tokens: u32,
+    /// Rows a long HTML table shows before the rest fold into a `<details>` expander. Defaults to
+    /// [`DEFAULT_TABLE_TOP_N`]. `0` is rejected loudly.
+    #[serde(default = "default_table_top_n", deserialize_with = "de_table_top_n")]
+    table_top_n: usize,
 }
 
 impl Default for RenderConfig {
@@ -181,6 +210,7 @@ impl Default for RenderConfig {
             model: default_model(),
             judge_max_output_tokens: default_judge_max_output_tokens(),
             slot_max_output_tokens: default_slot_max_output_tokens(),
+            table_top_n: default_table_top_n(),
         }
     }
 }
@@ -690,6 +720,12 @@ impl Config {
     /// unset).
     pub fn render_slot_max_output_tokens(&self) -> u32 {
         self.render.slot_max_output_tokens
+    }
+
+    /// The configured row count a long HTML table shows before its expander
+    /// ([`DEFAULT_TABLE_TOP_N`] when unset).
+    pub fn render_table_top_n(&self) -> usize {
+        self.render.table_top_n
     }
 
     /// The resolved projects root: the configured `projects-dir`, else the platform default

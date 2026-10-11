@@ -22,6 +22,7 @@ use std::process::{Command, Output, Stdio};
 
 mod document;
 pub(crate) mod facts;
+mod html;
 mod reconciliation;
 mod sections;
 mod slots;
@@ -72,8 +73,10 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
 
     let report = load_report(&cfg.input, "report")?;
 
-    let artifact = generate_markdown(cfg, &report, pricing)?;
-    let dest = route_document_artifact(&artifact, &report, cfg)?;
+    let dest = match generate(cfg, &report, pricing)? {
+        Generated::Document(artifact) => route_document_artifact(&artifact, &report, cfg)?,
+        Generated::Page(page) => route_html_page(&page, &report, cfg)?,
+    };
 
     Ok(RunResult {
         sessions_emitted: report.totals.sessions,
@@ -81,12 +84,20 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     })
 }
 
-/// Produce the artifact: the deterministic document, plus whatever prose the slots returned.
+/// One render's output: the markdown document (with sibling assets), or the self-contained page.
+enum Generated {
+    Document(Artifact),
+    Page(String),
+}
+
+/// Produce the artifact: the deterministic document or page, plus whatever prose the slots
+/// returned.
 ///
-/// There is exactly one renderer now. Rust authors every table, number, and chart
-/// (`document::render`); the slots contribute digit-free prose (`slots::generate`) that cannot fail
-/// the render. Nothing here can reject an artifact, because nothing here is authored by a model.
-fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<Artifact> {
+/// Both backends read one view model. Rust authors every table, number, and chart
+/// (`document::render`, `html::render`); the slots contribute digit-free prose (`slots::generate`)
+/// that cannot fail the render. Nothing here can reject an artifact, because nothing here is
+/// authored by a model.
+fn generate(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<Generated> {
     let default_persona = PersonaBlock::default();
     let resolved = persona::whoami();
     let aggregates = aggregate::compute(report, cfg.outliers, pricing);
@@ -103,7 +114,10 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
         },
     )?;
     let prose = slot_prose(cfg, &document::registry(&block));
-    Ok(document::render(&block, &prose, chart_mode(cfg)))
+    if cfg.format.is_html() {
+        return Ok(Generated::Page(html::render(&block, &prose, cfg.table_top_n)?));
+    }
+    Ok(Generated::Document(document::render(&block, &prose, chart_mode(cfg))))
 }
 
 /// Generate the prose slots for this render, or an empty set.
@@ -157,6 +171,9 @@ pub(crate) type SlotProse = document::SlotProse;
 /// second copy here would be two sources for one value.
 pub(crate) struct EvalRender {
     pub(crate) markdown: String,
+    /// The same render through the HTML backend, at the default `render.table-top-n`, so a golden
+    /// does not move with an operator's config.
+    pub(crate) html: String,
     /// The slots' prose BEFORE interpolation, which is the form the digit contract applies to.
     pub(crate) prose: document::SlotProse,
     /// How many slots were attempted, so a caller can report how many degraded.
@@ -198,13 +215,16 @@ pub(crate) fn for_eval(
     // `ChartMode::Table` so a golden is one self-contained file: a golden that referenced sibling
     // SVGs would need those committed and diffed too, and the chart DATA is identical either way.
     let artifact = document::render(&block, &prose, ChartMode::Table);
+    let page = html::render(&block, &prose, common::config::DEFAULT_TABLE_TOP_N)?;
     debug!(
-        "render::for_eval: artifact bytes={} slots filled={}/{attempted}",
+        "render::for_eval: artifact bytes={} html bytes={} slots filled={}/{attempted}",
         artifact.markdown.len(),
+        page.len(),
         prose.len()
     );
     Ok(EvalRender {
         markdown: artifact.markdown,
+        html: page,
         prose,
         attempted,
     })
@@ -235,7 +255,56 @@ fn route_document_artifact(artifact: &Artifact, report: &Report, cfg: &RenderCon
         Format::Markdown => write_local_markdown(artifact, report, cfg),
         Format::Pdf => write_local_pdf(&artifact.markdown, report, cfg),
         Format::MarqueeMarkdown => publish_marquee_markdown(artifact, report, cfg),
+        Format::Html | Format::MarqueeHtml => Err(eyre::eyre!(
+            "the {:?} format renders a page, not a markdown document",
+            cfg.format
+        )),
     }
+}
+
+/// Route the self-contained HTML page: a local file (or stdout), or a marquee publish.
+fn route_html_page(page: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!("render::route_html_page: format={:?} bytes={}", cfg.format, page.len());
+    match cfg.format {
+        Format::Html => write_local_html(page, report, cfg),
+        Format::MarqueeHtml => publish_marquee_html(page, report, cfg),
+        Format::Markdown | Format::Pdf | Format::MarqueeMarkdown => Err(eyre::eyre!(
+            "the {:?} format renders a markdown document, not a page",
+            cfg.format
+        )),
+    }
+}
+
+/// Write the page to `-o <path>`, to stdout (`-o -`), or to the default
+/// `./<YYYY-MM>-claude-report.html`. The page is self-contained, so stdout carries all of it.
+fn write_local_html(page: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    let output = match cfg.output.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => default_output_path(report, Format::Html),
+    };
+    debug!("render::write_local_html: output={}", output.display());
+    if output.as_os_str() == STDOUT_SIGIL {
+        std::io::stdout()
+            .write_all(page.as_bytes())
+            .context("failed to write html to stdout")?;
+        return Ok(OutputDest::Stdout);
+    }
+    if let Some(dir) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
+    }
+    fs::write(&output, page).with_context(|| format!("failed to write html to {}", output.display()))?;
+    Ok(OutputDest::File(output))
+}
+
+/// Write the page as `index.html` in a temp dir and publish it through marquee's HTML lane, which
+/// serves the page as written. Returns the published URL.
+fn publish_marquee_html(page: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!("render::publish_marquee_html: space={:?}", cfg.space);
+    let dir = tempfile::tempdir().context("failed to create temp dir for marquee publish")?;
+    let index = dir.path().join("index.html");
+    fs::write(&index, page).with_context(|| format!("failed to write {}", index.display()))?;
+    let url = marquee_publish(dir.path(), report, cfg)?;
+    Ok(OutputDest::Marquee(url))
 }
 
 /// Write a document artifact's sibling assets into `dir`. Called for every destination that HAS a
@@ -302,7 +371,11 @@ fn write_local_pdf(markdown: &str, report: &Report, cfg: &RenderConfig) -> Resul
 
 pub(crate) fn default_output_path(report: &Report, format: Format) -> std::path::PathBuf {
     let prefix = report.since.format("%Y-%m");
-    let ext = if matches!(format, Format::Pdf) { "pdf" } else { "md" };
+    let ext = match format {
+        Format::Pdf => "pdf",
+        Format::Html | Format::MarqueeHtml => "html",
+        Format::Markdown | Format::MarqueeMarkdown => "md",
+    };
     std::path::PathBuf::from(format!("./{}-claude-report.{}", prefix, ext))
 }
 
@@ -921,9 +994,8 @@ fn publish_marquee_markdown(artifact: &Artifact, report: &Report, cfg: &RenderCo
     Ok(OutputDest::Marquee(url))
 }
 
-/// Publish a prepared directory (containing `index.md` and any sibling assets) to marquee,
-/// ensuring an
-/// authenticated session first. Returns the published URL parsed from marquee's stdout.
+/// Publish a prepared directory (an `index.md` with its sibling assets, or an `index.html`) to
+/// marquee, ensuring an authenticated session first. Returns the published URL parsed from marquee's stdout.
 fn marquee_publish(dir: &Path, report: &Report, cfg: &RenderConfig) -> Result<String> {
     debug!("render::marquee_publish: dir={} space={:?}", dir.display(), cfg.space);
     ensure_marquee_auth()?;
@@ -1011,7 +1083,7 @@ fn marquee_whoami() -> Result<Output> {
 fn marquee_spawn_err(e: std::io::Error) -> eyre::Report {
     if e.kind() == std::io::ErrorKind::NotFound {
         eyre::eyre!(
-            "the `marquee` CLI is required for --format marquee-markdown but was not found on PATH; install it and try again"
+            "the `marquee` CLI is required for --format marquee-markdown and marquee-html but was not found on PATH; install it and try again"
         )
     } else {
         eyre::eyre!("failed to invoke marquee: {}", e)

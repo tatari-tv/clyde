@@ -224,3 +224,30 @@ fn movement_is_a_set_difference_in_both_directions() {
         assert_eq!(orgs_appeared(&orgs[1..], orgs), vec![orgs[0].org.as_str()]);
     });
 }
+
+#[test]
+fn section_order_drops_tradeoffs_unless_included() {
+    let report = medium();
+    let pricing = pricing();
+    let aggregates = aggregate::compute(&report, aggregate::DEFAULT_OUTLIERS, &pricing);
+    let persona = PersonaBlock::default();
+    for include in [false, true] {
+        let opts = ViewOpts {
+            include_tradeoffs: include,
+            ..ViewOpts::default()
+        };
+        let block = build_views(&report, &aggregates, &persona, &pricing, opts).unwrap();
+        let order = section_order(&block);
+        assert_eq!(order.first(), Some(&Section::ExecutiveSummary));
+        assert_eq!(order.last(), Some(&Section::Conclusion));
+        assert_eq!(order.contains(&Section::Tradeoffs), include);
+    }
+}
+
+#[test]
+fn every_slot_section_names_its_slot() {
+    assert_eq!(Section::ExecutiveSummary.slot(), Some("executive-summary"));
+    assert_eq!(Section::Conclusion.slot(), Some("closing"));
+    assert_eq!(Section::CostSummary.slot(), None);
+    assert_eq!(Section::Efficiency.title(), "The Efficiency Story");
+}

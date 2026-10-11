@@ -83,6 +83,10 @@ fn format_flag_parses_all_variants_case_insensitively() {
         ("PDF", Format::Pdf),
         ("marquee-markdown", Format::MarqueeMarkdown),
         ("Marquee-Markdown", Format::MarqueeMarkdown),
+        ("html", Format::Html),
+        ("HTML", Format::Html),
+        ("marquee-html", Format::MarqueeHtml),
+        ("Marquee-HTML", Format::MarqueeHtml),
     ];
     for (input, expected) in cases {
         let cli = TestCli::try_parse_from(["report", "render", "--format", input])
@@ -104,13 +108,19 @@ fn format_flag_rejects_comma_separated_and_unknown_values() {
         TestCli::try_parse_from(["report", "render", "--format", "docx"]).is_err(),
         "unknown format must be rejected by ValueEnum"
     );
-    // The retired html formats must fail as UNKNOWN VALUES, not fall back silently to markdown: a
-    // caller with `--format html` in a script has to learn that clyde no longer emits HTML.
-    for retired in ["html", "marquee-html"] {
-        assert!(
-            TestCli::try_parse_from(["report", "render", "--format", retired]).is_err(),
-            "--format {retired} must be rejected as an unknown value"
-        );
+}
+
+/// The html formats were retired once and are back (design 2026-10-10-report-html-dashboard):
+/// `--format html` / `marquee-html` parse to their variants instead of failing as unknown values.
+#[test]
+fn format_flag_accepts_the_html_formats() {
+    for (input, expected) in [("html", Format::Html), ("marquee-html", Format::MarqueeHtml)] {
+        let cli = TestCli::try_parse_from(["report", "render", "--format", input])
+            .unwrap_or_else(|e| panic!("--format {input} must parse: {e}"));
+        match cli.args.command {
+            Command::Render(args) => assert_eq!(args.format, Some(expected)),
+            _ => panic!("expected Render"),
+        }
     }
 }
 
@@ -120,6 +130,8 @@ fn format_maps_from_every_config_variant() {
     assert_eq!(Format::from(FormatConfig::Markdown), Format::Markdown);
     assert_eq!(Format::from(FormatConfig::Pdf), Format::Pdf);
     assert_eq!(Format::from(FormatConfig::MarqueeMarkdown), Format::MarqueeMarkdown);
+    assert_eq!(Format::from(FormatConfig::Html), Format::Html);
+    assert_eq!(Format::from(FormatConfig::MarqueeHtml), Format::MarqueeHtml);
 }
 
 #[test]
@@ -127,4 +139,15 @@ fn is_marquee_only_true_for_marquee_variants() {
     assert!(!Format::Markdown.is_marquee());
     assert!(!Format::Pdf.is_marquee());
     assert!(Format::MarqueeMarkdown.is_marquee());
+    assert!(!Format::Html.is_marquee());
+    assert!(Format::MarqueeHtml.is_marquee());
+}
+
+#[test]
+fn is_html_only_true_for_the_html_variants() {
+    assert!(!Format::Markdown.is_html());
+    assert!(!Format::Pdf.is_html());
+    assert!(!Format::MarqueeMarkdown.is_html());
+    assert!(Format::Html.is_html());
+    assert!(Format::MarqueeHtml.is_html());
 }
