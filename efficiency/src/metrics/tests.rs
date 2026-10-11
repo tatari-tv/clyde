@@ -435,3 +435,95 @@ fn by_day_is_always_serialized_and_defaults_when_absent() {
     let parsed: RawCounters = serde_json::from_value(old).unwrap();
     assert!(parsed.by_day.is_empty());
 }
+
+/// Call counts survive the catalog round trip as `Some`, and a blob written before call counting
+/// (v15, no `skill-calls` / `mcp-calls` keys) parses as `None`, never as a counted zero.
+///
+/// BITES: derive `Default` again (both fields start `None`) and the round trip reads `None`; drop the
+/// field-level `#[serde(default)]` and the v15 blob fails to parse; add `skip_serializing_if` and
+/// the empty fork scope comes back `None`.
+#[test]
+fn calls_round_trip_some_and_old_blob_none() {
+    let paths = crate::extract::calls_group_paths();
+    let refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
+    let files = crate::extract::extract_group(&refs).unwrap();
+    let session = crate::fold::fold(crate::extract::CALLS_SID, &files);
+
+    let text = serde_json::to_string(&session).unwrap();
+    let parsed: crate::fold::SessionEfficiency = serde_json::from_str(&text).unwrap();
+    assert_eq!(parsed, session);
+    let agg = &parsed.aggregate.raw;
+    assert_eq!(agg.skill_calls.as_ref().map(BTreeMap::len), Some(4));
+    assert_eq!(agg.mcp_calls.as_ref().map(BTreeMap::len), Some(2));
+    let fork = parsed
+        .subagents
+        .iter()
+        .find(|s| s.agent_id == "a6666666666666666")
+        .unwrap();
+    assert_eq!(
+        fork.signals.raw.skill_calls,
+        Some(BTreeMap::new()),
+        "counted-empty stays Some"
+    );
+    let wire: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        wire["subagents"][1]["signals"]["raw"]["mcp-calls"],
+        serde_json::json!({})
+    );
+    assert_eq!(
+        wire["aggregate"]["raw"]["mcp-calls"]["persona__search"]["total-ms"],
+        2500
+    );
+
+    let mut v15 = serde_json::to_value(RawCounters::default()).unwrap();
+    let obj = v15.as_object_mut().unwrap();
+    obj.remove("skill-calls").expect("a fresh blob writes skill-calls");
+    obj.remove("mcp-calls").expect("a fresh blob writes mcp-calls");
+    let old: RawCounters = serde_json::from_value(v15).unwrap();
+    assert_eq!((old.skill_calls, old.mcp_calls), (None, None));
+}
+
+/// `merge` adds call maps key-wise when both sides were counted, and an uncounted side makes the
+/// union uncounted. BITES: treat `None` as empty and the union reads as a whole count.
+#[test]
+fn merge_adds_calls_and_none_absorbs() {
+    let mut a = RawCounters::default();
+    a.add_skill_calls("x", 2);
+    a.mcp_call_mut("s__t").calls = 1;
+    let mut b = RawCounters::default();
+    b.add_skill_calls("x", 1);
+    b.add_skill_calls("y", 1);
+    *b.mcp_call_mut("s__t") = McpCalls {
+        calls: 2,
+        timed: 1,
+        total_ms: 40,
+    };
+    a.merge(&b);
+    assert_eq!(
+        a.skill_calls,
+        Some(BTreeMap::from([("x".to_string(), 3), ("y".to_string(), 1)]))
+    );
+    assert_eq!(
+        a.mcp_calls,
+        Some(BTreeMap::from([(
+            "s__t".to_string(),
+            McpCalls {
+                calls: 3,
+                timed: 1,
+                total_ms: 40
+            }
+        )]))
+    );
+
+    let uncounted = RawCounters {
+        skill_calls: None,
+        mcp_calls: None,
+        ..RawCounters::default()
+    };
+    let mut c = a.clone();
+    c.merge(&uncounted);
+    assert_eq!((c.skill_calls, c.mcp_calls), (None, None));
+    let mut d = uncounted.clone();
+    d.merge(&a);
+    assert_eq!((d.skill_calls, d.mcp_calls), (None, None));
+}

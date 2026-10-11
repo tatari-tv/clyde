@@ -87,6 +87,8 @@ fn fixture_efficiency() -> SessionEfficiency {
         by_mcp_tool: BTreeMap::new(),
         // This fixture's models both price, so there is no pricing gap to disclose.
         unpriced_models: std::collections::BTreeSet::new(),
+        skill_calls: Some(BTreeMap::new()),
+        mcp_calls: Some(BTreeMap::new()),
     };
     let aggregate = finalize(raw);
     SessionEfficiency {

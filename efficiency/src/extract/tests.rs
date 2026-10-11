@@ -467,3 +467,155 @@ fn mcp_cost_keyed_by_server() {
     assert_eq!(raw.by_mcp_tool["atlassian__getJiraIssue"].tokens, 10);
     assert_eq!(raw.by_mcp_tool["_unknown__getJiraIssue"].tokens, 10);
 }
+
+fn mcp(calls: u64, timed: u64, total_ms: u64) -> crate::metrics::McpCalls {
+    crate::metrics::McpCalls { calls, timed, total_ms }
+}
+
+/// Calls are counted from events, deduped group-wide, and slash candidates resolve in `fold`.
+///
+/// - `/handoff` is confirmed on the spot by the next record's "Base directory" marker.
+/// - `/simplify` has no marker but the group spent under `simplify`, so `fold` counts it.
+/// - `/model` has neither, so it is dropped.
+/// - A `tool_result` quoting `<command-name>/bogus</command-name>` is block content, never counted.
+/// - The fork copies the source's `Skill` and MCP calls: each counts once, in the source's scope.
+/// - Two MCP calls share the bare name `search` on different servers: two keys. The persona call's
+///   result is only in the fork's file (a later file), and its 2500ms lands on the source's scope;
+///   the Atlassian call has no result, so it is counted and not timed.
+///
+/// BITES: drop the `call_ids` gate and `rust-ci` / `persona__search` read 2; match block text and
+/// `bogus` appears; widen the candidate rule and `model` appears.
+#[test]
+fn counts_calls_from_events() {
+    let paths = calls_group_paths();
+    let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+    let files = extract_group(&refs).unwrap();
+    let session = crate::fold::fold(CALLS_SID, &files);
+
+    let skill = |pairs: &[(&str, u64)]| -> Option<BTreeMap<String, u64>> {
+        Some(pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect())
+    };
+    let agg = &session.aggregate.raw;
+    assert_eq!(
+        agg.skill_calls,
+        skill(&[("handoff", 1), ("marquee:publish", 1), ("rust-ci", 1), ("simplify", 1)])
+    );
+    assert_eq!(
+        agg.mcp_calls,
+        Some(BTreeMap::from([
+            ("claude_ai_Atlassian__search".to_string(), mcp(1, 0, 0)),
+            ("persona__search".to_string(), mcp(1, 1, 2500)),
+        ]))
+    );
+
+    let scope = |id: &str| {
+        &session
+            .subagents
+            .iter()
+            .find(|s| s.agent_id == id)
+            .unwrap_or_else(|| panic!("subagent {id} missing"))
+            .signals
+            .raw
+    };
+    let source = scope("a5555555555555555");
+    assert_eq!(source.skill_calls, skill(&[("rust-ci", 1)]));
+    assert_eq!(
+        source.mcp_calls,
+        Some(BTreeMap::from([("persona__search".to_string(), mcp(1, 1, 2500))]))
+    );
+    let fork = scope("a6666666666666666");
+    assert_eq!(
+        fork.skill_calls,
+        Some(BTreeMap::new()),
+        "the fork's copies count nothing"
+    );
+    assert_eq!(fork.mcp_calls, Some(BTreeMap::new()));
+
+    // The parent file holds `/simplify` and `/model` as candidates; `fold` kept one of them.
+    assert_eq!(
+        files[0].slash_candidates.get(&Scope::Parent),
+        Some(&BTreeMap::from([("model".to_string(), 1), ("simplify".to_string(), 1)]))
+    );
+}
+
+/// The count-not-time cases on one file: a paired result is timed; a result with no `tool_use_id`, a
+/// call with no timestamp, and a result timestamped before its call count the call and add no time;
+/// a copied call and a second copy of a result change nothing. An `mcp__` name with no tool segment
+/// and a `Skill` with no `input.skill` are not counted.
+#[test]
+fn mcp_time_counts_calls_it_cannot_time() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("t.jsonl");
+    let call = |id: &str, ts: Option<&str>| {
+        let ts = ts.map_or(String::new(), |t| format!(r#""timestamp":"{t}","#));
+        format!(
+            r#"{{"type":"assistant",{ts}"message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{id}","name":"mcp__srv__get","input":{{}}}}]}}}}"#
+        )
+    };
+    let result = |id: Option<&str>, ts: &str| {
+        let id = id.map_or(String::new(), |i| format!(r#","tool_use_id":"{i}""#));
+        format!(
+            r#"{{"type":"user","timestamp":"{ts}","message":{{"role":"user","content":[{{"type":"tool_result"{id}}}]}}}}"#
+        )
+    };
+    let lines = [
+        call("t-ok", Some("2026-10-02T10:00:00Z")),
+        result(Some("t-ok"), "2026-10-02T10:00:01.250Z"),
+        result(Some("t-ok"), "2026-10-02T10:00:09Z"),
+        call("t-ok", Some("2026-10-02T10:00:00Z")),
+        call("t-nots", None),
+        result(Some("t-nots"), "2026-10-02T10:00:02Z"),
+        call("t-neg", Some("2026-10-02T10:00:05Z")),
+        result(Some("t-neg"), "2026-10-02T10:00:04Z"),
+        call("t-noid", Some("2026-10-02T10:00:06Z")),
+        result(None, "2026-10-02T10:00:07Z"),
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t-bad","name":"mcp__nosep","input":{}},{"type":"tool_use","id":"t-sk","name":"Skill","input":{}}]}}"#.to_string(),
+    ];
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    let p = ex(path.to_str().unwrap()).parent;
+    assert_eq!(
+        p.mcp_calls,
+        Some(BTreeMap::from([("srv__get".to_string(), mcp(4, 1, 1250))]))
+    );
+    assert_eq!(p.skill_calls, Some(BTreeMap::new()));
+}
+
+/// A slash command whose record is copied (same `uuid`) counts once; one with no `uuid` counts every
+/// time; a meta record and a slash that ends the file are handled.
+#[test]
+fn slash_dedupes_on_uuid_and_ends_of_file_become_candidates() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("t.jsonl");
+    let slash = |uuid: Option<&str>, name: &str| {
+        let uuid = uuid.map_or(String::new(), |u| format!(r#""uuid":"{u}","#));
+        format!(
+            r#"{{"type":"user",{uuid}"message":{{"role":"user","content":"<command-name>/{name}</command-name>"}}}}"#
+        )
+    };
+    let confirm =
+        r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"Base directory for this skill: /x"}}"#;
+    let meta_slash =
+        r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"<command-name>/metaone</command-name>"}}"#;
+    let lines = [
+        slash(Some("u1"), "a"),
+        confirm.to_string(),
+        slash(Some("u1"), "a"),
+        confirm.to_string(),
+        slash(None, "b"),
+        confirm.to_string(),
+        slash(None, "b"),
+        confirm.to_string(),
+        meta_slash.to_string(),
+        slash(Some("u2"), "tail"),
+    ];
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    let f = ex(path.to_str().unwrap());
+    assert_eq!(
+        f.parent.skill_calls,
+        Some(BTreeMap::from([("a".to_string(), 1), ("b".to_string(), 2)]))
+    );
+    assert_eq!(
+        f.slash_candidates.get(&Scope::Parent),
+        Some(&BTreeMap::from([("tail".to_string(), 1)]))
+    );
+}

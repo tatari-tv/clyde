@@ -238,7 +238,9 @@
                 "cost-usd": 5.02
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9214031816029298,
           "cache-1h-write-fraction": 0.08682480654427643,
@@ -324,7 +326,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9204180016826052,
               "cache-1h-write-fraction": 0.10126140064130557,
@@ -494,7 +498,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9304700301132898,
           "cache-1h-write-fraction": 0.18494333993810808,
@@ -651,7 +657,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9422596590852198,
           "cache-1h-write-fraction": 0.0,
@@ -719,7 +727,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9410156320881227,
               "cache-1h-write-fraction": 0.0,
@@ -787,7 +797,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9477573109799001,
               "cache-1h-write-fraction": 0.0,
@@ -942,7 +954,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9187197649587403,
           "cache-1h-write-fraction": 0.18415233613228682,
@@ -1135,7 +1149,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9203876407882545,
           "cache-1h-write-fraction": 0.06845278115200995,
@@ -1203,7 +1219,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9448978806498812,
               "cache-1h-write-fraction": 0.0,
@@ -1281,7 +1299,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9304700301132898,
               "cache-1h-write-fraction": 0.18494333993810808,
@@ -1352,7 +1372,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9240807405186171,
               "cache-1h-write-fraction": 0.1844844994577615,
@@ -1553,7 +1575,9 @@
                 "cost-usd": 1.78
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9308114828802296,
           "cache-1h-write-fraction": 0.1449191448934236,
@@ -1623,7 +1647,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9386640205885141,
               "cache-1h-write-fraction": 0.0,
@@ -1702,7 +1728,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9382148885424451,
               "cache-1h-write-fraction": 0.18561839788732395,
@@ -1774,7 +1802,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9207571739576397,
               "cache-1h-write-fraction": 0.1842735538458914,
@@ -1920,7 +1950,9 @@
               }
             },
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9117493029546454,
           "cache-1h-write-fraction": 0.0,
@@ -2111,7 +2143,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9038289567213491,
           "cache-1h-write-fraction": 0.1372193735476561,
@@ -2197,7 +2231,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9167276998460819,
               "cache-1h-write-fraction": 0.10114186256900651,
@@ -2435,7 +2471,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9324264870105023,
           "cache-1h-write-fraction": 0.11436169913946431,
@@ -2610,7 +2648,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9038780442898794,
           "cache-1h-write-fraction": 0.0,
@@ -2797,7 +2837,9 @@
               }
             },
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.8999785826615233,
           "cache-1h-write-fraction": 0.14960536882299838,
@@ -2948,7 +2990,9 @@
               }
             },
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9386640205885141,
           "cache-1h-write-fraction": 0.0,
@@ -3118,7 +3162,9 @@
               }
             },
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.92676500551,
           "cache-1h-write-fraction": 0.0,
@@ -3274,7 +3320,9 @@
                 "cost-usd": 2.0
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9253283200646355,
           "cache-1h-write-fraction": 0.0,
@@ -3464,7 +3512,9 @@
               }
             },
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9318573521715491,
           "cache-1h-write-fraction": 0.0,
@@ -3535,7 +3585,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9290865594321306,
               "cache-1h-write-fraction": 0.0,
@@ -3606,7 +3658,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9398179327778574,
               "cache-1h-write-fraction": 0.0,
@@ -3673,7 +3727,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9282891529978635,
               "cache-1h-write-fraction": 0.0,
@@ -3881,7 +3937,9 @@
                 "cost-usd": 9.0
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9263865910115126,
           "cache-1h-write-fraction": 0.04679395564690957,
@@ -3968,7 +4026,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9276143542882529,
               "cache-1h-write-fraction": 0.10152759819444553,
@@ -4145,7 +4205,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9203211318457659,
           "cache-1h-write-fraction": 0.0,
@@ -4342,7 +4404,9 @@
               }
             },
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9249819386946522,
           "cache-1h-write-fraction": 0.0,
@@ -4428,7 +4492,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9299089999932275,
               "cache-1h-write-fraction": 0.0,
@@ -4677,7 +4743,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9292897771081342,
           "cache-1h-write-fraction": 0.0,
@@ -4792,7 +4860,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.93544224266904,
               "cache-1h-write-fraction": 0.0,
@@ -4959,7 +5029,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9177030268105291,
           "cache-1h-write-fraction": 0.12814828162756486,
@@ -5207,7 +5279,9 @@
                 "cost-usd": 4.5
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9245485551624428,
           "cache-1h-write-fraction": 0.07970741039296977,
@@ -5298,7 +5372,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9286524877516731,
               "cache-1h-write-fraction": 0.10157017907126428,
@@ -5394,7 +5470,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9133252130289595,
               "cache-1h-write-fraction": 0.18385758727964052,
@@ -5478,7 +5556,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9325388980209873,
               "cache-1h-write-fraction": 0.0,
@@ -5648,7 +5728,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9247213430419997,
           "cache-1h-write-fraction": 0.04430204140583726,
@@ -5723,7 +5805,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9448978806498812,
               "cache-1h-write-fraction": 0.0,
@@ -5795,7 +5879,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9386640205885141,
               "cache-1h-write-fraction": 0.0,
@@ -5869,7 +5955,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9218275599264317,
               "cache-1h-write-fraction": 0.18433963590356364,
@@ -6074,7 +6162,9 @@
                 "cost-usd": 2.14
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9343782186168491,
           "cache-1h-write-fraction": 0.11350914041598753,
@@ -6143,7 +6233,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9252675401789506,
               "cache-1h-write-fraction": 0.18456412138538508,
@@ -6214,7 +6306,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9448978806498812,
               "cache-1h-write-fraction": 0.0,
@@ -6283,7 +6377,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9252675401789506,
               "cache-1h-write-fraction": 0.18456412138538508,
@@ -6483,7 +6579,9 @@
                 "cost-usd": 4.53
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9364782913643909,
           "cache-1h-write-fraction": 0.0,
@@ -6572,7 +6670,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9325388980209873,
               "cache-1h-write-fraction": 0.0,
@@ -6725,7 +6825,9 @@
               }
             },
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9253283200646355,
           "cache-1h-write-fraction": 0.0,
@@ -6893,7 +6995,9 @@
                 "cost-usd": 2.48
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.93544224266904,
           "cache-1h-write-fraction": 0.0,
@@ -7047,7 +7151,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9233214943452851,
           "cache-1h-write-fraction": 0.0,
@@ -7236,7 +7342,9 @@
                 "cost-usd": 8.06
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9077365979212925,
           "cache-1h-write-fraction": 0.0,
@@ -7372,7 +7480,9 @@
             },
             "by-skill": {},
             "by-mcp-tool": {},
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9197218058918027,
           "cache-1h-write-fraction": 0.18421122418536812,
@@ -7548,7 +7658,9 @@
                 "cost-usd": 4.12
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9277708977746781,
           "cache-1h-write-fraction": 0.0,
@@ -7616,7 +7728,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9410156320881227,
               "cache-1h-write-fraction": 0.0,
@@ -7685,7 +7799,9 @@
                 },
                 "by-skill": {},
                 "by-mcp-tool": {},
-                "unpriced-models": []
+                "unpriced-models": [],
+                "skill-calls": {},
+                "mcp-calls": {}
               },
               "cache-read-share": 0.9275156548114216,
               "cache-1h-write-fraction": 0.0,
@@ -7843,7 +7959,9 @@
                 "cost-usd": 2.72
               }
             },
-            "unpriced-models": []
+            "unpriced-models": [],
+            "skill-calls": {},
+            "mcp-calls": {}
           },
           "cache-read-share": 0.9059926328197984,
           "cache-1h-write-fraction": 0.0,

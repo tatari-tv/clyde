@@ -146,6 +146,12 @@ pub struct FileEfficiency {
     /// keep-blob guard, which compares a blob written under that rule against a figure computed the
     /// same way, so a correct group-wide dedupe (which always sees fewer tokens) never trips it.
     pub tokens_file_local: u64,
+    /// Slash commands this file held that were NOT confirmed as skills on the spot (the next record
+    /// was not a "Base directory for this skill:" meta record), per scope, name -> count. `fold`
+    /// counts a name when the GROUP spent under that skill name (`by_skill`), in the scope that held
+    /// it, and drops it otherwise: that keeps a bundled prompt command such as `/simplify` and drops
+    /// a built-in such as `/model`.
+    pub slash_candidates: BTreeMap<Scope, BTreeMap<String, u64>>,
 }
 
 impl FileEfficiency {
@@ -168,8 +174,12 @@ struct Record {
     rtype: Option<String>,
     subtype: Option<String>,
     /// The record's own id. A fork's inline copy of its source's history keeps it, which is what the
-    /// group-wide gate on the per-record signals (`GroupSeen::record_uuids`) keys on.
+    /// group-wide gate on the per-record signals and slash commands (`GroupSeen::record_uuids`) keys on.
     uuid: Option<String>,
+    /// `isMeta`: a record Claude Code injected (a skill's loaded text, a command's instructions), not
+    /// one the user typed.
+    #[serde(rename = "isMeta")]
+    is_meta: Option<bool>,
     #[serde(rename = "agentId")]
     agent_id: Option<String>,
     #[serde(rename = "sessionId")]
@@ -195,6 +205,31 @@ struct Record {
     /// degrades to the undated path, which still counts the tokens.
     #[serde(default, deserialize_with = "lenient_timestamp")]
     timestamp: Option<DateTime<Utc>>,
+}
+
+impl Record {
+    fn is_meta(&self) -> bool {
+        self.is_meta == Some(true)
+    }
+
+    fn is_user(&self) -> bool {
+        self.rtype.as_deref() == Some("user")
+    }
+
+    /// `message.content` when it is a bare string (a typed or injected user message), never the
+    /// block array a `tool_result` lives in.
+    fn string_content(&self) -> Option<&str> {
+        self.message.as_ref()?.content.as_ref()?.as_str()
+    }
+
+    /// `message.content` as an array of blocks, or an empty slice.
+    fn blocks(&self) -> &[Value] {
+        self.message
+            .as_ref()
+            .and_then(|m| m.content.as_ref())
+            .and_then(Value::as_array)
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 /// Parse an RFC 3339 `timestamp`, mapping any non-string or unparseable value to `None`.
@@ -378,11 +413,35 @@ pub struct GroupSeen {
     /// (`tool_calls`, `tool_errors`, `bash_command_failures`, `interrupts_structured`).
     result_ids: HashSet<String>,
     /// Record `uuid`s already seen: gates the per-record signals (`interrupts_text`, `compactions`,
-    /// `turn_durations_ms`).
+    /// `turn_durations_ms`) and slash commands.
     record_uuids: HashSet<String>,
+    /// `tool_use` block ids already counted as a call (`Skill`, `mcp__*`). Separate from the message
+    /// ids, because one message holds several tool_uses.
+    call_ids: HashSet<String>,
+    /// MCP calls waiting for their result, by `tool_use_id`. Group-wide, so a result in a later file
+    /// still pairs. Pairing removes the entry, so a result is timed at most once per id and a copied
+    /// result finds nothing.
+    pending_mcp: HashMap<String, PendingMcp>,
+}
+
+/// An MCP call waiting for its `tool_result`: where to add the time, and when the call was made.
+#[derive(Debug, Clone)]
+struct PendingMcp {
+    key: String,
+    scope: Scope,
+    called_at: Option<DateTime<Utc>>,
 }
 
 impl GroupSeen {
+    /// Whether this is the group's first copy of `record`, by its `uuid`. A record with no uuid (or an
+    /// empty one) always is: there is nothing to dedupe on.
+    fn first_copy(&mut self, record: &Record) -> bool {
+        match record.uuid.as_deref().filter(|u| !u.is_empty()) {
+            Some(uuid) => self.record_uuids.insert(uuid.to_string()),
+            None => true,
+        }
+    }
+
     /// Apply each buffered message's usage ONCE to its scope's counters, through the same arm a
     /// record with no `message.id` takes ([`apply_usage`]). Call after the group's last file. The
     /// result is a synthetic per-file result holding only that usage; `fold` unions it with the
@@ -438,6 +497,8 @@ pub fn extract(path: &Path, group: &mut GroupSeen) -> Result<FileEfficiency> {
     // The OLD rule's seen-set, scoped to this one file, for [`FileEfficiency::tokens_file_local`]
     // only. The usage that is actually counted is deduped group-wide in `group`.
     let mut file_local_ids: HashSet<String> = HashSet::new();
+    // A slash command seen on the previous record, waiting for the next record to confirm it.
+    let mut slash_pending: Option<(Scope, String)> = None;
 
     for line in reader.lines() {
         line_no += 1;
@@ -501,7 +562,12 @@ pub fn extract(path: &Path, group: &mut GroupSeen) -> Result<FileEfficiency> {
 
         out.tokens_file_local += file_local_tokens(&record, &mut file_local_ids);
 
-        if let Some((model, usage)) = apply_record(&record, &scope, out.counters_mut(&scope), group) {
+        if let Some((slash_scope, name)) = slash_pending.take() {
+            resolve_slash(&record, slash_scope, name, &mut out);
+        }
+
+        let first_copy = group.first_copy(&record);
+        if let Some((model, usage)) = apply_record(&record, &scope, out.counters_mut(&scope), group, first_copy) {
             out.undated
                 .entry(scope.clone())
                 .or_default()
@@ -509,11 +575,22 @@ pub fn extract(path: &Path, group: &mut GroupSeen) -> Result<FileEfficiency> {
                 .or_default()
                 .add(&usage);
         }
+        apply_calls(&record, &scope, &mut out, group);
+
+        if first_copy && let Some(name) = slash_command_name(&record) {
+            trace!("extract: {}:{} slash command /{name}", path.display(), line_no);
+            slash_pending = Some((scope, name));
+        }
+    }
+    if let Some((slash_scope, name)) = slash_pending {
+        trace!("extract: slash command /{name} ends the file, held as a candidate");
+        add_slash_candidate(&mut out, slash_scope, name);
     }
 
     debug!(
         "extract: path={} parent-turns={} subagents={} parent-tool-errors={} parent-compactions={} \
-         undated-scopes={} earliest={:?} tokens-file-local={} group-messages={}",
+         undated-scopes={} earliest={:?} tokens-file-local={} group-messages={} slash-candidate-scopes={} \
+         pending-mcp={}",
         path.display(),
         out.parent.turns,
         out.subagents.len(),
@@ -523,6 +600,8 @@ pub fn extract(path: &Path, group: &mut GroupSeen) -> Result<FileEfficiency> {
         out.earliest,
         out.tokens_file_local,
         group.usage.messages.len(),
+        out.slash_candidates.len(),
+        group.pending_mcp.len(),
     );
     Ok(out)
 }
@@ -545,6 +624,36 @@ pub(crate) fn extract_one(path: &Path) -> Result<FileEfficiency> {
         }
     }
     Ok(out)
+}
+
+/// A session group's files read in the given order through one [`GroupSeen`], with the group's
+/// applied usage appended: exactly the file set `collect` hands to `fold`.
+#[cfg(test)]
+pub(crate) fn extract_group(paths: &[&Path]) -> Result<Vec<FileEfficiency>> {
+    let mut group = GroupSeen::default();
+    let mut files = paths
+        .iter()
+        .map(|p| extract(p, &mut group))
+        .collect::<Result<Vec<_>>>()?;
+    files.push(group.finish());
+    Ok(files)
+}
+
+#[cfg(test)]
+const CALLS_GROUP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/efficiency/calls-group");
+#[cfg(test)]
+pub(crate) const CALLS_SID: &str = "ca11ca11-0000-4000-8000-00000000ca11";
+
+/// The calls-group fixture's files in collect's read order: parent, the source subagent, then its fork.
+#[cfg(test)]
+pub(crate) fn calls_group_paths() -> Vec<std::path::PathBuf> {
+    let root = Path::new(CALLS_GROUP);
+    let subs = root.join(CALLS_SID).join("subagents");
+    vec![
+        root.join(format!("{CALLS_SID}.jsonl")),
+        subs.join("agent-a5555555555555555.jsonl"),
+        subs.join("agent-a6666666666666666.jsonl"),
+    ]
 }
 
 /// This record's tokens under the OLD per-file rule ([`FileEfficiency::tokens_file_local`]): an
@@ -632,7 +741,8 @@ pub(crate) fn name_from_agent_id(agent_id: &str) -> Option<&str> {
 /// The non-usage signals are deduped group-wide too, because a fork of a subagent copies its
 /// source's tool results and system records inline: the per-result ones on the `tool_result`'s
 /// `tool_use_id` ([`apply_tool_results`]), the per-record ones (compaction, turn duration, text
-/// interrupt) on the record's `uuid`. The first holder in file order counts; a copy adds nothing.
+/// interrupt) on the record's `uuid` (`first_copy`, from [`GroupSeen::first_copy`]). The first
+/// holder in file order counts; a copy adds nothing.
 ///
 /// Returns `(model, usage)` for an immediately-applied usage record with NO timestamp: its day is
 /// the session's begin day, which only `fold` can know, and the caller holds it until then.
@@ -641,6 +751,7 @@ fn apply_record(
     scope: &Scope,
     raw: &mut RawCounters,
     group: &mut GroupSeen,
+    first_copy: bool,
 ) -> Option<(String, TokenUsage)> {
     let mut undated = None;
     let group_usage = &mut group.usage;
@@ -655,10 +766,6 @@ fn apply_record(
         }
     }
 
-    let first_copy = match record.uuid.as_deref().filter(|u| !u.is_empty()) {
-        Some(uuid) => group.record_uuids.insert(uuid.to_string()),
-        None => true,
-    };
     if !first_copy {
         trace!("apply_record: scope={scope:?} uuid already seen in the group (per-record signals skipped)");
     }
@@ -780,12 +887,7 @@ fn apply_compaction(record: &Record, scope: &Scope, raw: &mut RawCounters) {
 /// signals follow their blocks: the Bash failure needs a counted errored block, and the structured
 /// interrupt counts unless every id'd `tool_result` on the record is a copy.
 fn apply_tool_results(record: &Record, scope: &Scope, raw: &mut RawCounters, result_ids: &mut HashSet<String>) {
-    let blocks: &[Value] = record
-        .message
-        .as_ref()
-        .and_then(|m| m.content.as_ref())
-        .and_then(Value::as_array)
-        .map_or(&[], Vec::as_slice);
+    let blocks = record.blocks();
 
     let mut record_had_error = false;
     let mut any_id = false;
@@ -842,6 +944,176 @@ fn apply_tool_results(record: &Record, scope: &Scope, raw: &mut RawCounters, res
         raw.bash_command_failures += 1;
         trace!("apply_tool_results: scope={scope:?} bash_command_failure");
     }
+}
+
+/// The marker Claude Code writes at the top of a skill's loaded text, the meta record that follows a
+/// slash command that invoked a skill.
+const SKILL_BASE_DIR_MARKER: &str = "Base directory for this skill:";
+
+/// The `X` of a slash command: a non-meta user record whose content is a STRING that starts with
+/// `<command-` and holds `<command-name>/X</command-name>`. String content only: a `tool_result`
+/// quotes `<command-name>` in grep output and source code, and must never count.
+fn slash_command_name(record: &Record) -> Option<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    if !record.is_user() || record.is_meta() {
+        return None;
+    }
+    let text = record.string_content()?;
+    if !text.starts_with("<command-") {
+        return None;
+    }
+    let re = RE
+        .get_or_init(|| Regex::new(r"<command-name>/([^<]+)</command-name>").expect("slash pattern is a valid regex"));
+    let name = re.captures(text)?.get(1)?.as_str().trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Whether `record` confirms the slash command on the record before it as a skill: a meta user record
+/// whose text (a string, or any text block) contains the skill base-directory marker.
+fn confirms_skill(record: &Record) -> bool {
+    if !record.is_user() || !record.is_meta() {
+        return false;
+    }
+    if let Some(text) = record.string_content() {
+        return text.contains(SKILL_BASE_DIR_MARKER);
+    }
+    record.blocks().iter().any(|b| {
+        b.get("type").and_then(Value::as_str) == Some("text")
+            && b.get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.contains(SKILL_BASE_DIR_MARKER))
+    })
+}
+
+/// Settle the slash command held from the previous record: confirmed (`next` is the skill's loaded
+/// text) counts as a skill call in the slash's scope; anything else is held as a candidate for `fold`.
+/// The window is the next record only: the corpus shows no confirm within records 2-4, and widening
+/// it would only add false `/model` confirms.
+fn resolve_slash(next: &Record, scope: Scope, name: String, out: &mut FileEfficiency) {
+    if confirms_skill(next) {
+        trace!("resolve_slash: scope={scope:?} /{name} confirmed as a skill");
+        out.counters_mut(&scope).add_skill_calls(&name, 1);
+    } else {
+        trace!("resolve_slash: scope={scope:?} /{name} unconfirmed, held as a candidate");
+        add_slash_candidate(out, scope, name);
+    }
+}
+
+fn add_slash_candidate(out: &mut FileEfficiency, scope: Scope, name: String) {
+    *out.slash_candidates.entry(scope).or_default().entry(name).or_default() += 1;
+}
+
+/// Split an `mcp__<server>__<tool>` tool_use name into `(server, tool)`: strip `mcp__`, then split on
+/// the FIRST `__`. `None` when the name is not an MCP name or either segment is empty.
+fn split_mcp_name(name: &str) -> Option<(&str, &str)> {
+    let (server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
+    (!server.is_empty() && !tool.is_empty()).then_some((server, tool))
+}
+
+/// Count this record's calls and time its MCP results, all gated group-wide.
+///
+/// - A `Skill` tool_use counts under `input.skill` verbatim.
+/// - An `mcp__S__T` tool_use counts under `S__T`: the server segment is already Claude Code's
+///   normalized form, the same one [`server_key`] gives the cost side. It arms a pending entry by
+///   its id, so the result pairs even from a later file of the group.
+/// - A `tool_result` whose `tool_use_id` is pending adds the call-to-result gap to that call's scope
+///   (which may be another file's), and leaves the map. Counted but not timed: a call with no result,
+///   a result with no `tool_use_id`, a missing timestamp on either side, and a negative gap.
+///
+/// A call block is deduped on its own `id` ([`GroupSeen::call_ids`]); a block with no id always
+/// counts, and cannot be timed.
+fn apply_calls(record: &Record, scope: &Scope, out: &mut FileEfficiency, group: &mut GroupSeen) {
+    for block in record.blocks() {
+        match block.get("type").and_then(Value::as_str) {
+            Some("tool_use") => count_call(block, record, scope, out, group),
+            Some("tool_result") => time_result(block, record, out, group),
+            _ => {}
+        }
+    }
+}
+
+fn count_call(block: &Value, record: &Record, scope: &Scope, out: &mut FileEfficiency, group: &mut GroupSeen) {
+    let Some(name) = block.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    let is_skill = name == "Skill";
+    if !is_skill && !name.starts_with("mcp__") {
+        return;
+    }
+    let id = block.get("id").and_then(Value::as_str).filter(|id| !id.is_empty());
+    if let Some(id) = id
+        && !group.call_ids.insert(id.to_string())
+    {
+        trace!("count_call: scope={scope:?} {name} id={id} already counted in the group (copy skipped)");
+        return;
+    }
+    if is_skill {
+        match block
+            .get("input")
+            .and_then(|i| i.get("skill"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            Some(skill) => {
+                out.counters_mut(scope).add_skill_calls(skill, 1);
+                trace!("count_call: scope={scope:?} Skill {skill}");
+            }
+            None => warn!("count_call: scope={scope:?} Skill tool_use id={id:?} has no input.skill (not counted)"),
+        }
+        return;
+    }
+    let Some((server, tool)) = split_mcp_name(name) else {
+        warn!("count_call: scope={scope:?} MCP tool_use `{name}` is not mcp__<server>__<tool> (not counted)");
+        return;
+    };
+    let key = format!("{server}__{tool}");
+    out.counters_mut(scope).mcp_call_mut(&key).calls += 1;
+    trace!("count_call: scope={scope:?} MCP {key} id={id:?}");
+    if let Some(id) = id {
+        group.pending_mcp.insert(
+            id.to_string(),
+            PendingMcp {
+                key,
+                scope: scope.clone(),
+                called_at: record.timestamp,
+            },
+        );
+    }
+}
+
+fn time_result(block: &Value, record: &Record, out: &mut FileEfficiency, group: &mut GroupSeen) {
+    let Some(id) = block
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    let Some(call) = group.pending_mcp.remove(id) else {
+        return;
+    };
+    let (Some(called_at), Some(answered_at)) = (call.called_at, record.timestamp) else {
+        debug!(
+            "time_result: scope={:?} {} id={id} missing a timestamp (counted, not timed)",
+            call.scope, call.key
+        );
+        return;
+    };
+    let gap_ms = (answered_at - called_at).num_milliseconds();
+    let Ok(gap_ms) = u64::try_from(gap_ms) else {
+        warn!(
+            "time_result: scope={:?} {} id={id} result is {gap_ms}ms BEFORE its call (counted, not timed)",
+            call.scope, call.key
+        );
+        return;
+    };
+    let entry = out.counters_mut(&call.scope).mcp_call_mut(&call.key);
+    entry.timed += 1;
+    entry.total_ms += gap_ms;
+    trace!(
+        "time_result: scope={:?} {} id={id} gap-ms={gap_ms}",
+        call.scope, call.key
+    );
 }
 
 /// Whether a `message.content` (a bare string OR an array of blocks) is EXACTLY one of the two

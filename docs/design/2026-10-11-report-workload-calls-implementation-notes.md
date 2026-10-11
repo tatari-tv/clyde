@@ -74,3 +74,30 @@
 - The success test calls `apply_usage` with hand-built `MessageUsage` values vs. a new JSONL fixture: it exercises the key path directly without another fixture file.
 ### Open questions
 - None.
+
+## Phase 4: Count calls in efficiency
+### Design decisions
+- MCP timing does not reuse `result_ids`, and it adds no new result set. The group-wide `pending_mcp` map (keyed by `tool_use_id`) is itself the once-per-id gate: pairing removes the entry, so a copied result, or a second result for the same id, finds nothing. Reusing `result_ids` would have meant sharing one freshness bit between `apply_tool_results` and the timing code for no extra correctness. (`efficiency/src/extract.rs:GroupSeen::pending_mcp`, `time_result`)
+- Calls are deduped on a new `call_ids` set (the tool_use block `id`), kept separate from the message ids because one message holds several tool_uses. A block with no id always counts and cannot be timed. (`extract.rs:GroupSeen::call_ids`, `count_call`)
+- Slash records are deduped on the existing `record_uuids` set, not a separate one. It already means "this record's first copy in the group". The uuid check moved out of `apply_record` into `GroupSeen::first_copy`, called once per record in the `extract` loop. Its result feeds `apply_record` (new `first_copy` parameter) and the slash scan, so the per-record signals and slash commands share one insert. A record with no uuid always counts. (`extract.rs:GroupSeen::first_copy`, `extract`)
+- The slash lookahead is per-file state in the `extract` loop (`slash_pending`). The next parsed record settles it: a meta user record whose text (a string, or any text block) contains `Base directory for this skill:` confirms it as a skill call in the slash's scope. Anything else holds it as a candidate. A slash command on the file's last record becomes a candidate. (`extract.rs:resolve_slash`, `confirms_skill`, `slash_command_name`)
+- A paired MCP result adds its time to the CALL's scope, through the result-holding file's `counters_mut(&call.scope)`. `fold` unions by scope, so a result in a fork's file lands on the source subagent's counters. (`extract.rs:time_result`)
+- The MCP call key is the tool_use name after `mcp__`, validated by splitting on the first `__`. Both segments must be non-empty. A malformed `mcp__` name, or a `Skill` with no `input.skill`, is warn-logged and not counted. A negative gap is warn-logged; a missing timestamp is debug-logged. (`extract.rs:split_mcp_name`, `count_call`)
+- `RawCounters::add_skill_calls` / `mcp_call_mut` use `get_or_insert_with`, so counting into a `None` scope makes it counted. Only extract and fold call them, and both work from fresh `Some` accumulators. (`efficiency/src/metrics.rs`)
+- `fold` resolves candidates after the scopes are unioned (so `by_skill` holds the group's applied usage) and before the aggregate is recomputed. The spend lookup is the union of every scope's `by_skill` keys. (`efficiency/src/fold.rs:resolve_slash_candidates`)
+- The test helpers `extract_group` and `calls_group_paths` are `#[cfg(test)] pub(crate)` in `extract.rs`, so the metrics round-trip test reuses the same group read.
+
+### Deviations
+- `FileEfficiency.slash_candidates` is `Scope -> name -> count`, not the spec's `name -> count`. A fixture-layout file can hold more than one scope, and "the scope of the file that held them" needs the record's scope to be exact. In the live layout, where one file is one scope, the effect is the same. Same effect, correct seam.
+- The fixture is a new group, `fixtures/efficiency/calls-group/`, not additions to `fork-group/`. Phase 1's hand-computed totals (tokens, `tool_calls` and the other signals) are pinned on `fork-group/`, and new tool_use and result records would have moved them. The calls group has its own fork, so it covers "a copied call in a fork".
+- "One MCP call with its result in a later file" is a source subagent whose last record is the call, plus a fork whose copy of that history carries the result. No standalone parent-to-subagent result exists in live transcripts, so I used the fork shape.
+- `fixtures/report/*` was regenerated in this phase (`cargo run -p report --bin fixtures -- fixtures/report`), not in Phase 6. The report JSON embeds whole `RawCounters`, and the Data Model's always-serialized `skill-calls` / `mcp-calls` keys broke `the_committed_fixtures_match_the_generator`. The diff adds only the two keys as `{}` (151 places in 4 files). Phase 6 still regenerates for schema v4.
+- Extra tests beyond the two criteria: `mcp_time_counts_calls_it_cannot_time` (the count-not-time cases, plus a copied call and a re-copied result), `slash_dedupes_on_uuid_and_ends_of_file_become_candidates`, and `merge_adds_calls_and_none_absorbs`.
+
+### Tradeoffs
+- Pending map as the result gate vs. a separate `timed_ids` set: one structure, and the map's removal is the dedupe. The cost is that a result for an id the map never armed (an orphan, or the result of a non-MCP call) is ignored silently. That is correct, since there is nothing to time.
+- Lookahead as loop state vs. buffering records: one `Option` per file, no second pass, no buffering.
+- `report::subtract_subagents` clones the aggregate, so a `--no-rollup` parent residual carries the aggregate's call maps unchanged until Phase 6 implements the key-wise subtraction. Nothing renders them before Phase 7.
+
+### Open questions
+- None.

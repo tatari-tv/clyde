@@ -39,6 +39,25 @@ impl WorkloadCost {
     }
 }
 
+/// Invocations of one MCP tool and their call-to-result time. Every field is a count or a sum, so it
+/// adds across scopes and subtracts exactly (no max, no percentile).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct McpCalls {
+    pub calls: u64,
+    /// Calls with a paired, timestamped result; the denominator for Avg.
+    pub timed: u64,
+    pub total_ms: u64,
+}
+
+impl McpCalls {
+    fn merge(&mut self, other: &McpCalls) {
+        self.calls += other.calls;
+        self.timed += other.timed;
+        self.total_ms += other.total_ms;
+    }
+}
+
 /// Which mechanism triggered a context compaction. `auto` = Claude Code ran the context to the wall
 /// and compacted on its own (a signal the session was oversized); `manual` = the user invoked it.
 /// A typed vocabulary, not free strings (house typed-values rule); an unrecognized `trigger` string
@@ -80,7 +99,10 @@ pub struct Compaction {
 /// counters add, the `turn_durations_ms` SAMPLE and the `compactions` list concatenate, and the
 /// attribution maps merge key-wise. The derived metrics ([`EfficiencySignals`]) are NEVER stored
 /// here -- they are recomputed from these counters by [`finalize`], so nothing can diverge.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+///
+/// `Default` is written by hand: a fresh accumulator is "counted" (`skill_calls` / `mcp_calls` are
+/// `Some(empty)`), while a blob parsed from before call counting existed reads `None`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct RawCounters {
     pub input_tokens: u64,
@@ -154,6 +176,52 @@ pub struct RawCounters {
     /// live feed would be named untracked in an artifact that priced it correctly.
     #[serde(default)]
     pub unpriced_models: BTreeSet<String>,
+    /// Invocations per skill, from `Skill` tool_use blocks and slash commands. `None` only when parsed
+    /// from a blob written before call counting existed.
+    ///
+    /// Field-level `#[serde(default)]` gives `Option::default()`, so an absent key parses to `None`,
+    /// while the hand-written [`Default`] starts every accumulator at `Some(empty)`. Deliberately no
+    /// `skip_serializing_if`: a recomputed blob always carries the key, even as `{}`, which is what
+    /// the catalog's v16 predicate reads.
+    #[serde(default)]
+    pub skill_calls: Option<BTreeMap<String, u64>>,
+    /// Invocations and call-to-result time per MCP tool, keyed `server__tool` (the tool_use name's
+    /// already-normalized server segment). `None` exactly as for [`Self::skill_calls`].
+    #[serde(default)]
+    pub mcp_calls: Option<BTreeMap<String, McpCalls>>,
+}
+
+impl Default for RawCounters {
+    fn default() -> Self {
+        Self {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_5m_write_tokens: 0,
+            cache_1h_write_tokens: 0,
+            cost_usd: 0.0,
+            turns: 0,
+            turn_durations_ms: Vec::new(),
+            compactions: Vec::new(),
+            tool_calls: 0,
+            tool_errors: 0,
+            bash_command_failures: 0,
+            interrupts_structured: 0,
+            interrupts_text: 0,
+            web_search_requests: 0,
+            web_fetch_requests: 0,
+            effort_high: 0,
+            effort_xhigh: 0,
+            model_mix: BTreeMap::new(),
+            by_model: BTreeMap::new(),
+            by_day: BTreeMap::new(),
+            by_skill: BTreeMap::new(),
+            by_mcp_tool: BTreeMap::new(),
+            unpriced_models: BTreeSet::new(),
+            skill_calls: Some(BTreeMap::new()),
+            mcp_calls: Some(BTreeMap::new()),
+        }
+    }
 }
 
 /// The pricing source efficiency's catalog reindex path prices against -- ALWAYS
@@ -258,6 +326,23 @@ impl RawCounters {
         }
     }
 
+    /// Count `n` invocations of `skill`. Counting makes the scope "counted" if it was not.
+    pub fn add_skill_calls(&mut self, skill: &str, n: u64) {
+        *self
+            .skill_calls
+            .get_or_insert_with(BTreeMap::new)
+            .entry(skill.to_string())
+            .or_default() += n;
+    }
+
+    /// The MCP tool's call entry, creating it (and making the scope "counted") on first use.
+    pub fn mcp_call_mut(&mut self, key: &str) -> &mut McpCalls {
+        self.mcp_calls
+            .get_or_insert_with(BTreeMap::new)
+            .entry(key.to_string())
+            .or_default()
+    }
+
     /// Phase 2 seam: fold a parsed `claude_pricing::AssistantEntry` (as returned by
     /// `parse_jsonl_file`) into these counters. Delegates to [`add_usage`](Self::add_usage) so token
     /// and cost accumulation has exactly ONE code path shared with Phase 3's per-record extractor,
@@ -308,6 +393,26 @@ impl RawCounters {
         // A set union, which is the additive operation for a set: the aggregate discloses every model
         // ANY scope failed to price, so a gap in a subagent cannot vanish from the whole-session view.
         self.unpriced_models.extend(other.unpriced_models.iter().cloned());
+        // An uncounted side (`None`, an old blob) makes the union uncounted: a partial count must not
+        // pass for a whole one.
+        self.skill_calls = match (self.skill_calls.take(), &other.skill_calls) {
+            (Some(mut mine), Some(theirs)) => {
+                for (skill, n) in theirs {
+                    *mine.entry(skill.clone()).or_default() += n;
+                }
+                Some(mine)
+            }
+            _ => None,
+        };
+        self.mcp_calls = match (self.mcp_calls.take(), &other.mcp_calls) {
+            (Some(mut mine), Some(theirs)) => {
+                for (key, calls) in theirs {
+                    mine.entry(key.clone()).or_default().merge(calls);
+                }
+                Some(mine)
+            }
+            _ => None,
+        };
     }
 }
 
