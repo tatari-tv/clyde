@@ -171,9 +171,9 @@ pub struct RenderArgs {
     #[arg(long)]
     pub include_tradeoffs: bool,
 
-    /// PDF engine to use when `--format pdf` is set (default: `wkhtmltopdf`), passed to pandoc
+    /// PDF engine to use when `--format pdf` is set (default: `weasyprint`), passed to pandoc
     /// as `--pdf-engine`; `pandoc` is the required binary that must be on `PATH`.
-    #[arg(long, default_value = "wkhtmltopdf")]
+    #[arg(long, default_value = "weasyprint")]
     pub pdf_engine: String,
 
     /// Number of top-spend sessions to include in the outlier table.
