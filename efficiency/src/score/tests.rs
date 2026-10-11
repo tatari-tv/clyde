@@ -5,7 +5,7 @@ use std::path::Path;
 use common::EfficiencyConfig;
 
 use super::*;
-use crate::extract::extract;
+use crate::extract::extract_one;
 use crate::fold::fold;
 use crate::metrics::{Compaction, CompactionTrigger, RawCounters, finalize};
 
@@ -240,7 +240,7 @@ fn scored_on_multi_subagent_fixture_proves_gate_end_to_end() {
     // 2325 total tokens (< 20000 gate) so it is INELIGIBLE: cache_read_share (300/2250 = 0.133) is
     // below the floor yet must NOT raise a cache-waste flag. The non-gated flags DO fire: 2/3 tool
     // errors (> 0.05) and the one auto-compaction.
-    let file = extract(Path::new(MULTI_SUBAGENT)).unwrap();
+    let file = extract_one(Path::new(MULTI_SUBAGENT)).unwrap();
     let session = fold("fix00007-e000-4000-a000-000000000007", &[file]);
 
     // Precondition: the aggregate share is genuinely below the floor (so the gate, not the value,

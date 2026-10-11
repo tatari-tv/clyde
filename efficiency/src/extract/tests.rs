@@ -26,7 +26,7 @@ const NAMED_SUBAGENTS: &str = concat!(
 );
 
 fn ex(path: &str) -> FileEfficiency {
-    extract(Path::new(path)).unwrap_or_else(|e| panic!("extract {path} failed: {e}"))
+    extract_one(Path::new(path)).unwrap_or_else(|e| panic!("extract {path} failed: {e}"))
 }
 
 #[test]
@@ -260,8 +260,8 @@ fn attribution_effort_and_web_tool_use_populate_from_multi_subagent_fixture() {
 
 /// One assistant turn is written as MULTIPLE content-block records (thinking / text / tool_use), each
 /// stamped with the SAME message-level `usage`. The fold must count that usage ONCE per `message.id`,
-/// not once per block. BITES: drop the `first_seen_usage` gate in `apply_record` and the 3-block turn
-/// is counted 3x (turns=4, input=310, cost 3x) -- the exact ~2-3x cost inflation this fixes.
+/// not once per block. BITES: apply usage per record instead of buffering it in `GroupUsage` and the
+/// 3-block turn is counted 3x (turns=4, input=310, cost 3x) -- the exact ~2-3x cost inflation this fixes.
 #[test]
 fn message_level_usage_counted_once_per_message_id_not_per_block() {
     let f = ex(concat!(
@@ -301,9 +301,10 @@ fn empty_message_id_is_never_deduped_fails_open() {
     assert_eq!(p.output_tokens, 20, "7 + 13, both applied");
 }
 
-/// Dedupe keeps the FIRST record of a repeated `message.id`, and its day with it: a later block of
-/// the same turn stamped after midnight does not move the turn. BITES: bucket outside the
-/// `first_seen_usage` gate and the turn lands on both days.
+/// Dedupe keeps the FIRST record's attributes for a repeated `message.id`, its day included: a later
+/// block of the same turn stamped after midnight does not move the turn. BITES: take the timestamp
+/// from the later record in `MessageUsage::absorb_max`, or apply usage per record, and the turn
+/// moves or lands on both days.
 #[test]
 fn by_day_dedupe_keeps_the_first_records_timestamp() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -348,4 +349,86 @@ fn by_day_holds_an_undated_turn_back_for_fold() {
     assert!(f.parent.by_day.is_empty(), "no record here carries a timestamp");
     let held = &f.undated[&Scope::Parent]["claude-opus-4-8"];
     assert_eq!(held.total, f.parent.by_model["claude-opus-4-8"].total);
+}
+
+/// A subagent streams one message's usage over several records with a growing `output_tokens`; the
+/// message counts its field-wise max, once, across files of the group, and only after `finish`.
+/// BITES: keep the first record's usage (the old `first_seen_usage` rule) and output reads 3; apply
+/// per record and the turn counts three times.
+#[test]
+fn streamed_usage_takes_the_field_wise_max_across_the_group() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let a = tmp.path().join("a.jsonl");
+    let b = tmp.path().join("b.jsonl");
+    let rec = |agent: &str, out: u64, inp: u64| {
+        format!(
+            r#"{{"type":"assistant","agentId":"{agent}","timestamp":"2026-10-01T10:00:00Z","message":{{"id":"m1","role":"assistant","model":"claude-opus-4-8","usage":{{"input_tokens":{inp},"output_tokens":{out}}}}}}}"#
+        )
+    };
+    std::fs::write(
+        &a,
+        format!(
+            "{}\n{}\n{}\n",
+            rec("src", 3, 10),
+            rec("src", 3, 10),
+            rec("src", 159, 10)
+        ),
+    )
+    .unwrap();
+    // A copy in another file with a larger input and a smaller output: each field takes its own max.
+    std::fs::write(&b, format!("{}\n", rec("fork", 2, 12))).unwrap();
+
+    let mut group = GroupSeen::default();
+    let fa = extract(&a, &mut group).unwrap();
+    let fb = extract(&b, &mut group).unwrap();
+    assert_eq!(
+        fa.subagents.get("src").map_or(0, |s| s.raw.turns),
+        0,
+        "nothing applied before finish"
+    );
+    assert_eq!(fa.tokens_file_local, 13, "old rule: first record of the file only");
+    assert_eq!(fb.tokens_file_local, 14);
+
+    let applied = group.finish();
+    let src = &applied.subagents["src"].raw;
+    assert_eq!((src.turns, src.input_tokens, src.output_tokens), (1, 12, 159));
+    assert!(
+        !applied.subagents.contains_key("fork"),
+        "the first holder's scope keeps the message"
+    );
+}
+
+/// `finish` on a group that saw no message ids is an empty result, not an error.
+#[test]
+fn finish_on_an_empty_group_is_empty() {
+    let applied = GroupSeen::default().finish();
+    assert_eq!(applied, FileEfficiency::default());
+}
+
+/// The group-wide signal gates fail open: a `tool_result` with no `tool_use_id` and a record with no
+/// `uuid` count every time, while a repeated id or uuid counts once. BITES: treat a missing id as a
+/// key (or skip it) and the id-less pair counts once (or never).
+#[test]
+fn signal_gates_dedupe_ids_and_always_count_id_less_records() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("t.jsonl");
+    let with_id = r#"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true}]}}"#;
+    let no_id = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","is_error":true}]}}"#;
+    let duration = r#"{"type":"system","subtype":"turn_duration","uuid":"u2","durationMs":10}"#;
+    let duration_no_uuid = r#"{"type":"system","subtype":"turn_duration","durationMs":20}"#;
+    let body = [
+        with_id,
+        with_id,
+        no_id,
+        no_id,
+        duration,
+        duration,
+        duration_no_uuid,
+        duration_no_uuid,
+    ]
+    .join("\n");
+    std::fs::write(&path, body).unwrap();
+    let p = ex(path.to_str().unwrap()).parent;
+    assert_eq!((p.tool_calls, p.tool_errors), (3, 3), "t1 once + two id-less results");
+    assert_eq!(p.turn_durations_ms, vec![10, 20, 20], "u2 once + two uuid-less records");
 }

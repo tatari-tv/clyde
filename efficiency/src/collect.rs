@@ -11,13 +11,13 @@ use std::time::SystemTime;
 use chrono::{DateTime, Local};
 use common::EfficiencyConfig;
 use common::repo::SharedResolver;
-use common::scan::{SessionFile, find_session_files_with_staged, pricing_files};
+use common::scan::{SessionFile, SessionFileKind, find_session_files_with_staged, pricing_files};
 use eyre::{Context, Result};
 use log::{debug, warn};
 use rayon::prelude::*;
 use sessions::EfficiencyCandidate;
 
-use crate::extract::{self, FileEfficiency};
+use crate::extract::{self, FileEfficiency, GroupSeen};
 use crate::fold::{SessionEfficiency, fold};
 use crate::outcome::{self, Outcomes};
 use crate::score::scored;
@@ -61,7 +61,7 @@ pub fn collect_all(
 
     let sessions: Vec<CollectedSession> = groups
         .par_iter()
-        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None).0)
+        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None).session)
         .collect();
 
     Ok(sessions)
@@ -88,7 +88,7 @@ pub fn collect_matching(
     let matches: Vec<CollectedSession> = groups
         .iter()
         .filter(|(session_id, _)| session_id.starts_with(id))
-        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None).0)
+        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None).session)
         .collect();
     debug!("collect_matching: id={id} matches={}", matches.len());
     Ok(matches)
@@ -183,12 +183,14 @@ pub fn collect_layouts(
     // `with_hosts`, NOT `new`: rule 3 must be able to refuse a work-looking slug that arrived from
     // a non-allowlisted remote, which is the same gate rule 1 applies.
     let slugs = SharedResolver::with_hosts(work_remote_hosts);
-    let built: Vec<(&EfficiencyCandidate, CollectedSession, usize)> = priceable
+    let built: Vec<(&EfficiencyCandidate, BuiltSession)> = priceable
         .par_iter()
         .map(|(candidate, files)| {
             let group_files: Vec<&SessionFile> = files.iter().collect();
-            let (session, failed) = build_session(&candidate.session_id, &group_files, config, Some(&slugs));
-            (*candidate, session, failed)
+            (
+                *candidate,
+                build_session(&candidate.session_id, &group_files, config, Some(&slugs)),
+            )
         })
         .collect();
 
@@ -197,9 +199,24 @@ pub fn collect_layouts(
     // the stored blob accounts for (a staged copy taken before the session ended): the bytes on disk
     // are a truncated view of what the blob already priced. A row with no blob has nothing to keep,
     // so a partial recompute still beats none for it, as before.
+    //
+    // "Fewer" is measured on the BLOB'S OWN basis. A blob without `skill-calls` was priced per file
+    // (copies counted again, first record per id), so it is compared against the recompute's
+    // per-file figure: the group-wide dedupe always sees fewer tokens and must not trip the guard,
+    // while a truncated staged copy still does. A blob with `skill-calls` was priced group-wide, so
+    // it is compared against the deduped total. The guard never compares across rules.
     let mut sessions: Vec<CollectedSession> = Vec::with_capacity(built.len());
-    for (candidate, session, failed) in built {
-        let recomputed = session.efficiency.aggregate.raw.total_tokens();
+    for (candidate, built) in built {
+        let BuiltSession {
+            session,
+            failed,
+            tokens_file_local,
+        } = built;
+        let (recomputed, basis) = if candidate.stored_has_skill_calls {
+            (session.efficiency.aggregate.raw.total_tokens(), "group-wide")
+        } else {
+            (tokens_file_local, "per-file")
+        };
         if failed > 0 && candidate.has_blob() {
             warn!(
                 "{}: {failed} transcript file(s) failed to extract; keeping the stored efficiency blob rather \
@@ -211,8 +228,9 @@ pub fn collect_layouts(
             && recomputed < stored
         {
             warn!(
-                "{}: recompute saw {recomputed} tokens but the stored efficiency blob accounts for {stored}; \
-                 keeping the stored blob rather than overwriting it with less accounting",
+                "{}: recompute saw {recomputed} tokens ({basis} basis, the rule the stored blob was priced under) \
+                 but the stored efficiency blob accounts for {stored}; keeping the stored blob rather than \
+                 overwriting it with less accounting",
                 candidate.session_id
             );
             kept.push(candidate.session_id.clone());
@@ -243,6 +261,126 @@ fn group_by_session(files: &[SessionFile]) -> BTreeMap<String, Vec<&SessionFile>
     groups
 }
 
+/// Where a file sorts in its session group's read order. The ORIGINAL of a copied record must be
+/// read before its copies, because the first holder's scope keeps a shared message (the totals do
+/// not depend on order; see `extract::GroupSeen`): the parent, then the subagents that copy
+/// nothing, then the forks, which copy from one of those.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FileClass {
+    Parent,
+    Subagent,
+    Fork,
+}
+
+/// Is this subagent transcript a fork? Two independent markers, either one suffices:
+/// - its sibling `<agent>.meta.json` has `"isFork": true` (the only marker a fork of a SUBAGENT
+///   carries, since that shape copies its source's history inline);
+/// - its first record is `{"type":"fork-context-ref",...}` (a fork of the MAIN session references
+///   the parent's context instead of copying it). This one survives staging, which before Phase 2
+///   copied no meta files.
+///
+/// An unreadable file or meta is "not a fork": it sorts with the plain subagents, which can shift
+/// only the per-agent split, never the totals.
+fn is_fork(path: &Path) -> bool {
+    let meta = path.with_extension("meta.json");
+    match std::fs::read_to_string(&meta) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) if v.get("isFork").and_then(serde_json::Value::as_bool) == Some(true) => {
+                debug!("collect::is_fork: {} is a fork (meta isFork)", path.display());
+                return true;
+            }
+            Ok(_) => {}
+            Err(e) => warn!(
+                "collect::is_fork: unparseable meta {}: {e} (falling back to the fork-context-ref check)",
+                meta.display()
+            ),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => warn!(
+            "collect::is_fork: failed to read meta {}: {e} (falling back to the fork-context-ref check)",
+            meta.display()
+        ),
+    }
+    let fork = first_record_is_fork_ref(path);
+    debug!("collect::is_fork: {} fork-context-ref={fork}", path.display());
+    fork
+}
+
+/// Whether the file's first non-empty line parses as a record of `type == "fork-context-ref"`.
+fn first_record_is_fork_ref(path: &Path) -> bool {
+    use std::io::BufRead;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let first = std::io::BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+        .find(|l| !l.trim().is_empty());
+    first
+        .and_then(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
+        .is_some_and(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("fork-context-ref"))
+}
+
+fn file_class(file: &SessionFile) -> FileClass {
+    match file.kind {
+        SessionFileKind::Parent => FileClass::Parent,
+        SessionFileKind::Subagent if is_fork(&file.path) => FileClass::Fork,
+        SessionFileKind::Subagent => FileClass::Subagent,
+    }
+}
+
+/// The group's read order: parent, then non-fork subagents, then forks, ties by path (the order the
+/// scan already yields). A fork of a fork therefore sorts by path against its source fork, not by
+/// `spawnDepth`; the totals are unaffected, only which fork's scope keeps a shared turn.
+fn order_group<'a>(group_files: &[&'a SessionFile]) -> Vec<&'a SessionFile> {
+    let mut keyed: Vec<(FileClass, &SessionFile)> = group_files.iter().map(|f| (file_class(f), *f)).collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.path.cmp(&b.1.path)));
+    debug!(
+        "collect::order_group: files={} forks={}",
+        keyed.len(),
+        keyed.iter().filter(|(c, _)| *c == FileClass::Fork).count()
+    );
+    keyed.into_iter().map(|(_, f)| f).collect()
+}
+
+/// A session group's efficiency extraction: the per-file results (plus the group's applied usage as
+/// one more), how many files failed, and the old-rule per-file token sum the keep-blob guard reads.
+struct GroupExtract {
+    files: Vec<FileEfficiency>,
+    failed: usize,
+    tokens_file_local: u64,
+}
+
+/// Extract `ordered` files through ONE [`GroupSeen`], in the given order, then apply the group's
+/// buffered usage once. A file that fails to extract is warn-and-skipped (the rest still count).
+fn extract_ordered(ordered: &[&SessionFile]) -> GroupExtract {
+    let mut group = GroupSeen::default();
+    let mut files: Vec<FileEfficiency> = Vec::with_capacity(ordered.len() + 1);
+    for f in ordered {
+        match extract::extract(&f.path, &mut group) {
+            Ok(fe) => files.push(fe),
+            Err(e) => warn!("collect: extract failed for {}: {e} (file skipped)", f.path.display()),
+        }
+    }
+    let failed = ordered.len() - files.len();
+    let tokens_file_local = files.iter().map(|f| f.tokens_file_local).sum();
+    files.push(group.finish());
+    GroupExtract {
+        files,
+        failed,
+        tokens_file_local,
+    }
+}
+
+/// What [`build_session`] hands back: the session, how many of its files failed to extract (warned
+/// and skipped), and the group's token sum under the OLD per-file rule, so the reindex path can
+/// refuse to overwrite a stored blob with a partial or truncated recompute on the blob's own basis.
+struct BuiltSession {
+    session: CollectedSession,
+    failed: usize,
+    tokens_file_local: u64,
+}
+
 /// `slugs` is BOTH the outcome switch and rule 3's resolver: `Some(resolver)` extracts outcomes
 /// (bucketing edited paths by asking git about each parent directory), `None` skips the second
 /// per-file scan entirely. One parameter rather than a `bool` plus a resolver, so asking for outcomes
@@ -252,24 +390,20 @@ fn group_by_session(files: &[SessionFile]) -> BTreeMap<String, Vec<&SessionFile>
 /// shape at all (Problem 5), so a root is no longer the thing it needs; rule 4 still reads the
 /// configured roots, but rule 4 lives in `common::repo` and never came through here.
 ///
-/// Returns the session and how many of its files failed to extract (warned and skipped), so the
-/// reindex path can refuse to overwrite a stored blob with a partial recompute.
+/// Both passes read the group in [`order_group`]'s order with group-wide seen-state, so a record a
+/// fork copied from its source counts once.
 fn build_session(
     session_id: &str,
     group_files: &[&SessionFile],
     config: &EfficiencyConfig,
     slugs: Option<&SharedResolver>,
-) -> (CollectedSession, usize) {
-    let file_effs: Vec<FileEfficiency> = group_files
-        .iter()
-        .filter_map(|f| match extract::extract(&f.path) {
-            Ok(fe) => Some(fe),
-            Err(e) => {
-                warn!("collect: extract failed for {}: {e} (file skipped)", f.path.display());
-                None
-            }
-        })
-        .collect();
+) -> BuiltSession {
+    let ordered = order_group(group_files);
+    let GroupExtract {
+        files: file_effs,
+        failed,
+        tokens_file_local,
+    } = extract_ordered(&ordered);
 
     // Outcomes are extracted only for the reindex path (`slugs` is `Some`); a per-file
     // scan failure is warn-and-skipped (same robustness contract as efficiency extract) so one bad
@@ -277,9 +411,10 @@ fn build_session(
     // default (a stored, non-NULL `outcome_json` distinct from "not yet reindexed").
     let outcomes = match slugs {
         Some(slugs) => {
-            let file_outcomes: Vec<outcome::FileOutcomes> = group_files
+            let mut seen = outcome::OutcomeSeen::default();
+            let file_outcomes: Vec<outcome::FileOutcomes> = ordered
                 .iter()
-                .filter_map(|f| match outcome::extract(&f.path) {
+                .filter_map(|f| match outcome::extract(&f.path, &mut seen) {
                     Ok(fo) => Some(fo),
                     Err(e) => {
                         warn!(
@@ -304,25 +439,26 @@ fn build_session(
 
     let efficiency = scored(fold(session_id, &file_effs), config);
     debug!(
-        "collect::build_session: session_id={session_id} files={} last_active={last_active} \
-         with_outcomes={} commits={} prs={} repos-touched={}",
+        "collect::build_session: session_id={session_id} files={} failed={failed} last_active={last_active} \
+         with_outcomes={} commits={} prs={} repos-touched={} tokens={} tokens-file-local={tokens_file_local}",
         group_files.len(),
         slugs.is_some(),
         outcomes.commits.len(),
         outcomes.prs.len(),
         outcomes.repos_touched.len(),
+        efficiency.aggregate.raw.total_tokens(),
     );
 
-    let failed = group_files.len() - file_effs.len();
-    (
-        CollectedSession {
+    BuiltSession {
+        session: CollectedSession {
             session_id: session_id.to_string(),
             last_active,
             efficiency,
             outcomes,
         },
         failed,
-    )
+        tokens_file_local,
+    }
 }
 
 #[cfg(test)]

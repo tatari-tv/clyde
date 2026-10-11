@@ -66,6 +66,12 @@ The counts come from call events in the transcripts. They are stored in the cata
 - Net effect of both fixes on the live corpus: 353 session groups change, -32,491,661 tokens (32,855,924,702 -> 32,823,433,041).
 - A fork copy can also carry a different usage than its source (`msg_011Cev8twz3dDx3jBzu3TgtQ`: `output_tokens` 3 in the source, 2185 in the fork). So "first holder wins" would make totals depend on file order. The max rule does not.
 
+**P1c: a fork of a subagent also re-counts the non-usage signals it copies.** Found by the Phase 1 implementer on 2026-10-11:
+
+- The inline copy carries the source's tool results and system records, not only its assistant usage.
+- These counters count the copies again: `tool_calls`, `tool_errors`, `bash_command_failures`, `interrupts_text`, `interrupts_structured`, `compactions`, `turn_durations_ms` (`extract.rs` per-block and per-result arms).
+- Scott's ruling covers it: "we are fixing everything we find. add it to the list."
+
 - **The keep-blob guard would block a fix.** A recompute that "saw FEWER tokens than the stored blob" keeps the old blob (`efficiency/src/collect.rs:210-218`). A correct dedupe always sees fewer tokens.
 
 **P2: the tables carry no volume.** Scott, 2026-10-11, on `marquee ~scott-idler/claude-report-2026-09-5`: "when we show these figures, can we add another column? counts or times or invocations. something that also tracks these values in some charts or graphs similar to the others you have in the report ... the real work is get the clyde report to produce it".
@@ -83,7 +89,7 @@ The counts come from call events in the transcripts. They are stored in the cata
 ### Goals
 
 - G1 (Scott, 2026-10-11, "we are going to handle both the bug and these counts"):
-  - A copied record counts once per session group in every token, cost, attribution and summed-outcome figure.
+  - A copied record counts once per session group in every token, cost, attribution, summed-outcome and efficiency-signal figure (P1c).
   - Each message's usage is its final usage (P1b). Scott, 2026-10-11: "we are fixing everything we find. add it to the list."
 - G2 (Scott, 2026-10-11, "counts or ... invocations"): Calls and Sessions columns on By skill and By MCP tool, in the HTML, Markdown and marquee formats.
 - G3 (Scott, 2026-10-11, "times"): Time (total) and Avg (per call) columns on By MCP tool.
@@ -330,6 +336,7 @@ Every `cargo test ...` criterion below requires the output line `test result: ok
 - `GroupSeen`, plus file ordering in `build_session` (fork detection by meta or ref).
 - `extract(path, &mut GroupSeen)` with `GroupUsage` (field-wise max) replaces the per-file usage set. The usage is applied once per message after the last file.
 - `outcome::extract` gets its own group-wide `tool_use` set and pending map.
+- P1c: the per-result signals (`tool_calls`, `tool_errors`, `bash_command_failures`, `interrupts_structured`) are gated group-wide on the `tool_result`'s `tool_use_id`. The per-record signals (`interrupts_text`, `compactions`, `turn_durations_ms`) are gated group-wide on the record `uuid`. A record or block with no id always counts.
 - Correct the `extract.rs:407-412` comment.
 - `tokens_file_local`, and the guard rewritten as specified above.
 - Fixture `fixtures/efficiency/fork-group/`:
@@ -351,6 +358,7 @@ Every `cargo test ...` criterion below requires the output line `test result: ok
     - an old-shape blob larger than the per-file sum is kept
     - a new-shape blob larger than the deduped sum is kept
   - `cargo test -p efficiency outcome::tests::fork_copy_lines_written_once`.
+  - `cargo test -p efficiency collect::tests::fork_group_counts_signals_once`: in the fork-group fixture, `tool_calls`, `tool_errors`, `bash_command_failures`, both interrupt counts, `compactions` and `turn_durations_ms` equal the parent-plus-source values, with the fork's copies contributing 0, in both file orders.
 
 #### Phase 2: Stage subagent meta files
 **Model:** sonnet

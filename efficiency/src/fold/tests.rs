@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use super::*;
-use crate::extract::extract;
+use crate::extract::extract_one;
 use crate::metrics::{RawCounters, finalize};
 
 const MULTI_SUBAGENT: &str = concat!(
@@ -17,7 +17,7 @@ const NAMED_SUBAGENTS: &str = concat!(
 );
 
 fn ex(path: &str) -> crate::extract::FileEfficiency {
-    extract(Path::new(path)).unwrap_or_else(|e| panic!("extract {path} failed: {e}"))
+    extract_one(Path::new(path)).unwrap_or_else(|e| panic!("extract {path} failed: {e}"))
 }
 
 /// End-to-end recovery: extract the named-subagents fixture, fold it, and assert every tier of the

@@ -462,7 +462,8 @@ impl Db {
     /// drift: an older clyde keeps running on a v15 catalog ([`migrate::migrate`] returns early once
     /// `user_version >= SCHEMA_VERSION`) and can rewrite a blob without `by-day` while the column
     /// still claimed one. Reading the key means the next new-binary reindex simply picks such a row
-    /// up again. [`EfficiencyCandidate::stored_tokens`] tells the caller which kind each row is, because
+    /// up again. [`EfficiencyCandidate::stored_tokens`] tells the caller which kind each row is, and
+    /// [`EfficiencyCandidate::stored_has_skill_calls`] which dedupe rule its blob was priced under, because
     /// the two fail differently: a bucket-less row whose bytes are gone keeps its stored accounting
     /// rather than being counted unrecoverable. `json_valid` guards the extract so one corrupt blob
     /// cannot fail the whole query; such a row is left for `report collect` to reject by name.
@@ -482,7 +483,8 @@ impl Db {
              + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"output-tokens\"'), 0) \
              + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-read-tokens\"'), 0) \
              + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-5m-write-tokens\"'), 0) \
-             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-1h-write-tokens\"'), 0) END \
+             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-1h-write-tokens\"'), 0) END, \
+             json_extract(efficiency_json, '$.aggregate.raw.\"skill-calls\"') IS NOT NULL \
              FROM sessions WHERE efficiency_json IS NULL \
              OR (json_valid(efficiency_json) AND json_extract(efficiency_json, '$.aggregate.raw.\"by-day\"') IS NULL)",
         )?;
@@ -494,6 +496,7 @@ impl Db {
                     project_dir: r.get(2)?,
                     staged_path: r.get::<_, Option<String>>(3)?.map(PathBuf::from),
                     stored_tokens: r.get::<_, Option<i64>>(4)?.map(|t| t.max(0) as u64),
+                    stored_has_skill_calls: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;

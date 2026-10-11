@@ -1083,3 +1083,27 @@ fn candidates_carry_the_stored_blobs_aggregate_token_total() {
         "all five counters"
     );
 }
+
+/// A candidate says whether its stored blob carries `skill-calls` (priced under the group-wide
+/// dedupe), which picks the keep-blob guard's comparison basis. BITES: read the wrong key, or report
+/// `true` for a NULL row, and the guard compares an old blob against the deduped total.
+#[test]
+fn candidates_carry_whether_the_stored_blob_has_skill_calls() {
+    const WITH_CALLS: &str = r#"{"session-id":"x","aggregate":{"raw":{"input-tokens":5,"skill-calls":{}}}}"#;
+    let db = Db::open_memory().unwrap();
+    for id in [UUID_A, UUID_B, UUID_C] {
+        db.upsert_session(&parsed(id, &format!("/tmp/{id}.jsonl")), "desk")
+            .unwrap();
+    }
+    annotate(&db, UUID_B, V14_BLOB);
+    annotate(&db, UUID_C, WITH_CALLS);
+    let by_id: std::collections::BTreeMap<String, bool> = db
+        .sessions_missing_efficiency()
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.session_id, c.stored_has_skill_calls))
+        .collect();
+    assert_eq!(by_id.get(UUID_A), Some(&false), "no blob");
+    assert_eq!(by_id.get(UUID_B), Some(&false), "an old-shape blob");
+    assert_eq!(by_id.get(UUID_C), Some(&true), "an empty map still marks the new shape");
+}

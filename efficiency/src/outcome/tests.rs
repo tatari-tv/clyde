@@ -158,7 +158,7 @@ fn extract_counts_committed_and_cherry_picked_shas_but_never_amended() {
             &commit_line("aaa111", "committed"),
         ],
     );
-    let out = extract(&path).unwrap();
+    let out = extract(&path, &mut OutcomeSeen::default()).unwrap();
     assert_eq!(
         out.commits,
         BTreeSet::from(["aaa111".to_string(), "bbb222".to_string()]),
@@ -183,7 +183,7 @@ fn extract_counts_created_prs_deduped_by_url_and_ignores_pr_link() {
             &pr_link_line(56, "https://github.com/tatari-tv/clyde/pull/56"),
         ],
     );
-    let out = extract(&path).unwrap();
+    let out = extract(&path, &mut OutcomeSeen::default()).unwrap();
     assert_eq!(out.prs.len(), 1, "only the created PR counts, deduped by url");
     assert_eq!(out.prs[0].number, 54);
     assert_eq!(out.prs[0].url, url);
@@ -215,7 +215,7 @@ fn extract_counts_only_success_confirmed_mcp_writes_and_dedupes_edits() {
             &tool_result_line("t6", false),
         ],
     );
-    let out = extract(&path).unwrap();
+    let out = extract(&path, &mut OutcomeSeen::default()).unwrap();
     assert_eq!(out.confluence_writes, 1);
     assert_eq!(out.jira_writes, 0, "an errored write is dropped");
     assert_eq!(out.slack_messages, 1);
@@ -239,7 +239,7 @@ fn extract_skips_unparseable_lines_without_failing_the_file() {
             &commit_line("bbb222", "committed"),
         ],
     );
-    let out = extract(&path).unwrap();
+    let out = extract(&path, &mut OutcomeSeen::default()).unwrap();
     assert_eq!(
         out.commits,
         BTreeSet::from(["aaa111".to_string(), "bbb222".to_string()]),
@@ -251,7 +251,7 @@ fn extract_skips_unparseable_lines_without_failing_the_file() {
 fn extract_no_outcomes_yields_empty_without_error() {
     let dir = TempDir::new().unwrap();
     let path = write_jsonl(&dir, "a.jsonl", &[r#"{"type":"user","message":{"content":"hi"}}"#]);
-    let out = extract(&path).unwrap();
+    let out = extract(&path, &mut OutcomeSeen::default()).unwrap();
     assert!(
         out == FileOutcomes::default(),
         "no outcome records -> empty FileOutcomes"
@@ -370,7 +370,7 @@ fn full_session_extract_then_union_matches_reports_per_session_outcome() {
         ],
     );
 
-    let file_out = extract(&path).unwrap();
+    let file_out = extract(&path, &mut OutcomeSeen::default()).unwrap();
     let session = union(&[file_out], &no_slugs());
 
     let expected = Outcomes {
@@ -463,7 +463,7 @@ fn extract_counts_lines_written_and_replaced_from_edit_and_write_inputs() {
             &tool_result_line("w1", false),
         ],
     );
-    let out = extract(&path).unwrap();
+    let out = extract(&path, &mut OutcomeSeen::default()).unwrap();
     assert_eq!(
         out.lines_written, 39,
         "9 from the edit's new_string + 30 from the write"
@@ -488,7 +488,7 @@ fn extract_counts_no_lines_for_a_failed_edit() {
             &tool_result_line("e1", true),
         ],
     );
-    let out = extract(&path).unwrap();
+    let out = extract(&path, &mut OutcomeSeen::default()).unwrap();
     assert_eq!(
         (out.lines_written, out.lines_replaced, out.files_edited.len()),
         (0, 0, 0),
@@ -511,7 +511,7 @@ fn extract_lines_handles_insertion_and_unconfirmed_calls() {
             &edit_lines_use_line("e2", "/repo/c.rs", 7, 7),
         ],
     );
-    let out = extract(&path).unwrap();
+    let out = extract(&path, &mut OutcomeSeen::default()).unwrap();
     assert_eq!(out.lines_written, 3, "only the confirmed insertion counts");
     assert_eq!(out.lines_replaced, 0, "an empty old_string replaced nothing");
 }
@@ -720,11 +720,85 @@ fn an_unparseable_record_is_warned_with_its_real_line_number() {
     std::fs::write(&path, format!("{good}\n{good}\n{good}\n{bad}\n")).unwrap();
 
     captured_containing("prime");
-    extract(&path).expect("a malformed line is skipped, never fatal");
+    extract(&path, &mut OutcomeSeen::default()).expect("a malformed line is skipped, never fatal");
 
     let lines = captured_containing("marker-9f3a2b.jsonl");
     assert!(
         lines.iter().any(|l| l.contains("marker-9f3a2b.jsonl:4")),
         "the warning must name the REAL line number (4), not 0. captured: {lines:?}"
     );
+}
+
+// ---- group-wide dedupe across a fork group (report-workload-calls Phase 1) ----
+
+/// `fixtures/efficiency/fork-group/`: the subagent `a2222...` makes one successful Edit
+/// (`new_string` 3 lines, `old_string` 1 line), and its fork `a1333...` copies that `tool_use` and its
+/// `tool_result`, ids included. One [`OutcomeSeen`] for the group counts the edit once, in any file
+/// order. BITES: a per-file pending map (one `OutcomeSeen` per file) re-arms the copy and its copied
+/// result confirms it, so the lines count twice (6 and 2).
+#[test]
+fn fork_copy_lines_written_once() {
+    let dir = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fixtures/efficiency/fork-group"
+    ));
+    let sid = "5e55f0e0-0000-4000-8000-00000000f0f0";
+    let subs = dir.join(sid).join("subagents");
+    let files = [
+        dir.join(format!("{sid}.jsonl")),
+        subs.join("agent-a2222222222222222.jsonl"),
+        subs.join("agent-a1111111111111111.jsonl"),
+        subs.join("agent-a1333333333333333.jsonl"),
+    ];
+    let totals = |order: &[&PathBuf], shared: bool| {
+        let mut group = OutcomeSeen::default();
+        let outs: Vec<FileOutcomes> = order
+            .iter()
+            .map(|p| {
+                if shared {
+                    extract(p, &mut group).unwrap()
+                } else {
+                    extract(p, &mut OutcomeSeen::default()).unwrap()
+                }
+            })
+            .collect();
+        let edited: std::collections::BTreeSet<&String> = outs.iter().flat_map(|o| &o.files_edited).collect();
+        (
+            outs.iter().map(|o| o.lines_written).sum::<u64>(),
+            outs.iter().map(|o| o.lines_replaced).sum::<u64>(),
+            edited.len(),
+        )
+    };
+
+    let forward: Vec<&PathBuf> = files.iter().collect();
+    assert_eq!(totals(&forward, true), (3, 1, 1), "the copied edit counts once");
+    let reversed: Vec<&PathBuf> = files.iter().rev().collect();
+    assert_eq!(totals(&reversed, true), (3, 1, 1), "fork first: still once");
+    assert_eq!(
+        totals(&forward, false),
+        (6, 2, 1),
+        "control: per-file seen-state bills the copy again"
+    );
+}
+
+/// An empty `tool_use` id carries no identity, so it is never inserted into the group's seen set and
+/// every empty-id call counts (the efficiency pass's rule). BITES: inserting `""` drops the second
+/// Write, leaving files={/a} and lines_written=1.
+#[test]
+fn empty_tool_use_ids_always_count() {
+    let dir = TempDir::new().unwrap();
+    let path = write_jsonl(
+        &dir,
+        "empty.jsonl",
+        &[
+            &write_content_use_line("", "/a", 1),
+            &tool_result_line("", false),
+            &write_content_use_line("", "/b", 1),
+            &tool_result_line("", false),
+        ],
+    );
+    let out = extract(&path, &mut OutcomeSeen::default()).unwrap();
+    let files: Vec<&str> = out.files_edited.iter().map(String::as_str).collect();
+    assert_eq!(files, vec!["/a", "/b"]);
+    assert_eq!(out.lines_written, 2);
 }

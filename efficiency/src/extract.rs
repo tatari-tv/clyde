@@ -15,12 +15,17 @@
 //! Phase 0 fixture layout (parent + subagent records interleaved in ONE file). `fold` unions the
 //! per-file [`FileEfficiency`] across a session group's files.
 //!
+//! Usage is deduped GROUP-wide, not per file: a forked subagent copies records from the agent it
+//! forked from into its own file, keeping their `message.id`, so a per-file seen-set billed every
+//! copy again. [`extract`] buffers each assistant message's usage in the caller's [`GroupSeen`]
+//! (one per session group) and [`GroupSeen::finish`] applies it once, after the group's last file.
+//!
 //! Field paths are locked by the Phase 0 fixtures + `fixtures/efficiency/README.md`. Notably
 //! `bash_command_failures` keys on the TOP-LEVEL `toolUseResult` string (which collapses to
 //! `"Error: Exit code N"` only on a Bash non-zero exit), NOT `message.content[].content` (which
 //! reads `"Exit code N"` without the `Error:` prefix) -- see the Phase 0 implementation notes.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -107,6 +112,11 @@ pub struct FileEfficiency {
     /// Per-scope tokens from usage records that carried no timestamp, held back because their day
     /// is the SESSION's begin day, which one file cannot know. `fold` buckets them once it does.
     pub undated: BTreeMap<Scope, BTreeMap<String, TokenTotals>>,
+    /// This file's token sum under the OLD per-file rule: the FIRST record per `message.id`, deduped
+    /// with a seen-set local to this file. Never serialized. It exists for one reader, the reindex
+    /// keep-blob guard, which compares a blob written under that rule against a figure computed the
+    /// same way, so a correct group-wide dedupe (which always sees fewer tokens) never trips it.
+    pub tokens_file_local: u64,
 }
 
 impl FileEfficiency {
@@ -128,6 +138,9 @@ struct Record {
     #[serde(rename = "type")]
     rtype: Option<String>,
     subtype: Option<String>,
+    /// The record's own id. A fork's inline copy of its source's history keeps it, which is what the
+    /// group-wide gate on the per-record signals (`GroupSeen::record_uuids`) keys on.
+    uuid: Option<String>,
     #[serde(rename = "agentId")]
     agent_id: Option<String>,
     #[serde(rename = "sessionId")]
@@ -173,9 +186,11 @@ where
 #[derive(Debug, Deserialize)]
 struct Message {
     /// The Anthropic message id (`message.id`). One assistant turn is written to the transcript as
-    /// MULTIPLE JSONL records -- one per content block (thinking / text / tool_use / ...) -- and every
-    /// one of those records carries the SAME message-level `usage`. This id is the dedupe key so a
-    /// turn's usage is counted ONCE, not once per block (see `apply_record`).
+    /// MULTIPLE JSONL records -- one per content block (thinking / text / tool_use / ...) -- each
+    /// carrying a message-level `usage`. In a top-level transcript that usage repeats verbatim; in a
+    /// subagent transcript it is STREAMED (`output_tokens` grows, e.g. `3, 3, 159`), and a fork's copy
+    /// can differ from its source. This id is the key [`GroupUsage`] takes the field-wise max under,
+    /// so a turn's usage is counted ONCE, at its final value.
     id: Option<String>,
     role: Option<String>,
     model: Option<String>,
@@ -246,13 +261,133 @@ impl Usage {
     }
 }
 
+/// One assistant message's usage, buffered group-wide until every file of the group has been read.
+///
+/// The scope and attributes are the FIRST record's, in file order, so the file order
+/// (`collect::order_group`: parent, non-fork subagents, forks) decides which scope keeps a copied
+/// turn. The usage is the field-wise max over every record of the message, which makes the totals
+/// independent of that order.
+#[derive(Debug, Clone)]
+struct MessageUsage {
+    scope: Scope,
+    timestamp: Option<DateTime<Utc>>,
+    model: String,
+    attribution_skill: Option<String>,
+    attribution_mcp_tool: Option<String>,
+    effort: Option<String>,
+    usage: TokenUsage,
+    web_search_requests: u64,
+    web_fetch_requests: u64,
+}
+
+impl MessageUsage {
+    fn from_record(record: &Record, scope: &Scope, message: &Message, usage: &Usage) -> Self {
+        let (web_search_requests, web_fetch_requests) = usage
+            .server_tool_use
+            .as_ref()
+            .map_or((0, 0), |stu| (stu.web_search_requests, stu.web_fetch_requests));
+        Self {
+            scope: scope.clone(),
+            timestamp: record.timestamp,
+            model: message.model.clone().unwrap_or_default(),
+            attribution_skill: record.attribution_skill.clone(),
+            attribution_mcp_tool: record.attribution_mcp_tool.clone(),
+            effort: record.effort.clone(),
+            usage: usage.token_usage(),
+            web_search_requests,
+            web_fetch_requests,
+        }
+    }
+
+    /// Raise every usage field to the max of this and `later`. Attributes stay the first record's.
+    fn absorb_max(&mut self, later: &MessageUsage) {
+        let (u, l) = (&mut self.usage, &later.usage);
+        u.input_tokens = u.input_tokens.max(l.input_tokens);
+        u.output_tokens = u.output_tokens.max(l.output_tokens);
+        u.cache_read_tokens = u.cache_read_tokens.max(l.cache_read_tokens);
+        u.cache_5m_write_tokens = u.cache_5m_write_tokens.max(l.cache_5m_write_tokens);
+        u.cache_1h_write_tokens = u.cache_1h_write_tokens.max(l.cache_1h_write_tokens);
+        self.web_search_requests = self.web_search_requests.max(later.web_search_requests);
+        self.web_fetch_requests = self.web_fetch_requests.max(later.web_fetch_requests);
+    }
+}
+
+/// `message.id` -> [`MessageUsage`] across a whole session group, in first-seen order (so applying
+/// it is deterministic, float cost sums included).
+#[derive(Debug, Default)]
+struct GroupUsage {
+    index: HashMap<String, usize>,
+    messages: Vec<MessageUsage>,
+}
+
+impl GroupUsage {
+    /// Fold one record of message `id` in: the first record opens the entry, every later one (another
+    /// content block, a streamed update, a fork's copy) can only raise its fields.
+    fn observe(&mut self, id: &str, turn: MessageUsage) {
+        match self.index.get(id) {
+            Some(&at) => self.messages[at].absorb_max(&turn),
+            None => {
+                self.index.insert(id.to_string(), self.messages.len());
+                self.messages.push(turn);
+            }
+        }
+    }
+}
+
+/// The seen-state shared by every file of ONE session group, threaded through [`extract`] in file
+/// order. A message id belongs to the whole group, not to one file: a fork copies its source's
+/// records, ids included, into its own file. Every gate below lets a record or block with NO id
+/// through: there is nothing to dedupe on, and dropping it would zero a real signal.
+#[derive(Debug, Default)]
+pub struct GroupSeen {
+    usage: GroupUsage,
+    /// `tool_result` blocks' `tool_use_id`s already counted: gates the per-result signals
+    /// (`tool_calls`, `tool_errors`, `bash_command_failures`, `interrupts_structured`).
+    result_ids: HashSet<String>,
+    /// Record `uuid`s already seen: gates the per-record signals (`interrupts_text`, `compactions`,
+    /// `turn_durations_ms`).
+    record_uuids: HashSet<String>,
+}
+
+impl GroupSeen {
+    /// Apply each buffered message's usage ONCE to its scope's counters, through the same arm a
+    /// record with no `message.id` takes ([`apply_usage`]). Call after the group's last file. The
+    /// result is a synthetic per-file result holding only that usage; `fold` unions it with the
+    /// group's real files by scope, exactly as it unions those.
+    pub fn finish(self) -> FileEfficiency {
+        let mut out = FileEfficiency::default();
+        let messages = self.usage.messages.len();
+        for turn in &self.usage.messages {
+            if let Some((model, usage)) = apply_usage(turn, out.counters_mut(&turn.scope)) {
+                out.undated
+                    .entry(turn.scope.clone())
+                    .or_default()
+                    .entry(model)
+                    .or_default()
+                    .add(&usage);
+            }
+        }
+        debug!(
+            "GroupSeen::finish: messages={messages} parent-turns={} subagents={} undated-scopes={}",
+            out.parent.turns,
+            out.subagents.len(),
+            out.undated.len()
+        );
+        out
+    }
+}
+
 /// Extract per-scope behavioral + token/cost counters from one session-transcript JSONL.
+///
+/// Assistant usage that carries a `message.id` is NOT applied here: it is buffered in `group` and
+/// applied once by [`GroupSeen::finish`] after the group's last file. So the returned counters hold
+/// the per-record signals plus only the usage of records with no (or an empty) `message.id`.
 ///
 /// Fails only when the file cannot be opened; individual unparseable/malformed lines are
 /// WARN-and-skipped (the mandatory `outcome.rs:226-234` guard) so one bad line can never panic the
-/// `par_iter` or corrupt the counts for the rest. A transcript with no behavioral records yields a
-/// [`FileEfficiency`] whose counters are all zero, without error.
-pub fn extract(path: &Path) -> Result<FileEfficiency> {
+/// `par_iter` or corrupt the counts for the rest. A failure leaves `group` untouched. A transcript
+/// with no behavioral records yields a [`FileEfficiency`] whose counters are all zero, without error.
+pub fn extract(path: &Path, group: &mut GroupSeen) -> Result<FileEfficiency> {
     debug!("extract: path={}", path.display());
 
     let file = std::fs::File::open(path).with_context(|| format!("extract: failed to open {}", path.display()))?;
@@ -267,11 +402,9 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
         ..FileEfficiency::default()
     };
     let mut line_no: u64 = 0;
-    // Assistant `message.id`s whose message-level `usage` has already been folded in. One assistant
-    // turn spans N content-block records, each stamped with the SAME `usage`; without this, an
-    // N-block turn's tokens/cost/turns would be counted N times. Keyed globally per file: a message
-    // id belongs to exactly one scope, so a single set is sufficient and unambiguous.
-    let mut seen_usage_msg_ids: HashSet<String> = HashSet::new();
+    // The OLD rule's seen-set, scoped to this one file, for [`FileEfficiency::tokens_file_local`]
+    // only. The usage that is actually counted is deduped group-wide in `group`.
+    let mut file_local_ids: HashSet<String> = HashSet::new();
 
     for line in reader.lines() {
         line_no += 1;
@@ -333,7 +466,9 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
             out.earliest = Some(out.earliest.map_or(ts, |cur| cur.min(ts)));
         }
 
-        if let Some((model, usage)) = apply_record(&record, &scope, out.counters_mut(&scope), &mut seen_usage_msg_ids) {
+        out.tokens_file_local += file_local_tokens(&record, &mut file_local_ids);
+
+        if let Some((model, usage)) = apply_record(&record, &scope, out.counters_mut(&scope), group) {
             out.undated
                 .entry(scope.clone())
                 .or_default()
@@ -345,7 +480,7 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
 
     debug!(
         "extract: path={} parent-turns={} subagents={} parent-tool-errors={} parent-compactions={} \
-         undated-scopes={} earliest={:?}",
+         undated-scopes={} earliest={:?} tokens-file-local={} group-messages={}",
         path.display(),
         out.parent.turns,
         out.subagents.len(),
@@ -353,8 +488,52 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
         out.parent.compactions.len(),
         out.undated.len(),
         out.earliest,
+        out.tokens_file_local,
+        group.usage.messages.len(),
     );
     Ok(out)
+}
+
+/// One file as a whole group: [`extract`] with a fresh [`GroupSeen`], its usage applied and unioned
+/// back in, so a test reads one file's complete counters.
+#[cfg(test)]
+pub(crate) fn extract_one(path: &Path) -> Result<FileEfficiency> {
+    let mut group = GroupSeen::default();
+    let mut out = extract(path, &mut group)?;
+    let usage = group.finish();
+    out.parent.merge(&usage.parent);
+    for (id, sub) in &usage.subagents {
+        out.subagents.entry(id.clone()).or_default().merge(sub);
+    }
+    for (scope, by_model) in usage.undated {
+        let held = out.undated.entry(scope).or_default();
+        for (model, totals) in by_model {
+            held.entry(model).or_default().merge(&totals);
+        }
+    }
+    Ok(out)
+}
+
+/// This record's tokens under the OLD per-file rule ([`FileEfficiency::tokens_file_local`]): an
+/// assistant usage record counts when its `message.id` is new to this file (first record wins) or
+/// when it has no id at all.
+fn file_local_tokens(record: &Record, seen: &mut HashSet<String>) -> u64 {
+    let Some(message) = &record.message else {
+        return 0;
+    };
+    let Some(usage) = &message.usage else {
+        return 0;
+    };
+    if message.role.as_deref() != Some("assistant") {
+        return 0;
+    }
+    if let Some(id) = message.id.as_deref().filter(|id| !id.is_empty())
+        && !seen.insert(id.to_string())
+    {
+        return 0;
+    }
+    let u = usage.token_usage();
+    u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_5m_write_tokens + u.cache_1h_write_tokens
 }
 
 /// Harvest `name` -> `subagent_type` from any NAMED `Agent`/`Task` spawn tool_use on one record.
@@ -405,82 +584,54 @@ pub(crate) fn name_from_agent_id(agent_id: &str) -> Option<&str> {
     re.captures(agent_id).and_then(|c| c.get(1)).map(|m| m.as_str())
 }
 
-/// True the FIRST time this assistant turn's `message.id` is seen, recording it so later
-/// content-block records of the same turn (which repeat the identical message-level `usage`) are
-/// skipped. A record with no `message.id` -- OR an empty one -- is always applied: there is nothing
-/// to dedupe on, and dropping it would silently lose real usage (fail open on the count, never zero
-/// it). An empty id must NOT be inserted into the set, or the second empty-id record would collide
-/// with the first and be wrongly skipped.
-fn first_seen_usage(message: &Message, seen: &mut HashSet<String>) -> bool {
-    match message.id.as_deref().filter(|id| !id.is_empty()) {
-        Some(id) => seen.insert(id.to_string()),
-        None => true,
-    }
-}
-
 /// Apply one parsed record's signals to its scope's counters. Split out so the per-record logic is
 /// unit-testable and the `extract` loop stays a thin read-and-dispatch shell.
 ///
-/// A counted turn is bucketed on its own timestamp's UTC day. A counted turn with NO timestamp is
-/// returned as `(model, usage)` instead: its day is the session's begin day, which only `fold` can
-/// know, and the caller holds it until then. Dedupe has already run, so the turn a repeated
-/// `message.id` keeps is the FIRST record's, timestamp included.
+/// Assistant usage is NOT per-record: the records of one message (one per content block, streamed
+/// updates in a subagent transcript, a fork's copies in another file) all carry a usage, and they
+/// do NOT all repeat the same one. A subagent's `output_tokens` grows across its records (`3, 3,
+/// 159`), and a fork's copy can differ from its source. So a record with a `message.id` goes into
+/// `group_usage`, which keeps the field-wise max per id and is applied once per group. A record with
+/// no `message.id` -- OR an empty one -- is applied here and now: there is nothing to dedupe on, and
+/// dropping it would silently lose real usage (fail open on the count, never zero it). An empty id
+/// must never become a key, or a second empty-id record would merge into the first.
+///
+/// The non-usage signals are deduped group-wide too, because a fork of a subagent copies its
+/// source's tool results and system records inline: the per-result ones on the `tool_result`'s
+/// `tool_use_id` ([`apply_tool_results`]), the per-record ones (compaction, turn duration, text
+/// interrupt) on the record's `uuid`. The first holder in file order counts; a copy adds nothing.
+///
+/// Returns `(model, usage)` for an immediately-applied usage record with NO timestamp: its day is
+/// the session's begin day, which only `fold` can know, and the caller holds it until then.
 fn apply_record(
     record: &Record,
     scope: &Scope,
     raw: &mut RawCounters,
-    seen_usage_msg_ids: &mut HashSet<String>,
+    group: &mut GroupSeen,
 ) -> Option<(String, TokenUsage)> {
     let mut undated = None;
-    // Assistant record: token/cost + model-mix + effort + web tool use + per-workflow attribution.
-    // GATED on `first_seen_usage`: message-level `usage` is folded in ONCE per `message.id`, because
-    // one assistant turn spans N content-block records that all repeat the same `usage`. Everything
-    // below (tokens, cost, turns, model-mix, by_model, web tool use, effort, by-skill/by-mcp) derives
-    // from that message-level usage, so all of it belongs inside this once-per-turn gate. Per-block /
-    // per-result signals (tool_calls, tool_errors, compaction, turn-duration, interrupts) live OUTSIDE
-    // this branch and stay per-record.
+    let group_usage = &mut group.usage;
     if let Some(message) = &record.message
         && let Some(usage) = &message.usage
         && message.role.as_deref() == Some("assistant")
-        && first_seen_usage(message, seen_usage_msg_ids)
     {
-        let token_usage = usage.token_usage();
-        let record_tokens = token_usage.input_tokens
-            + token_usage.output_tokens
-            + token_usage.cache_read_tokens
-            + token_usage.cache_5m_write_tokens
-            + token_usage.cache_1h_write_tokens;
-        let model = message.model.as_deref().unwrap_or("");
-        let cost = raw.add_usage(model, &token_usage);
-        match record.timestamp {
-            Some(ts) => raw.bucket_usage(ts.date_naive(), model, &token_usage),
-            None => undated = Some((model.to_string(), token_usage.clone())),
+        let turn = MessageUsage::from_record(record, scope, message, usage);
+        match message.id.as_deref().filter(|id| !id.is_empty()) {
+            Some(id) => group_usage.observe(id, turn),
+            None => undated = apply_usage(&turn, raw),
         }
+    }
 
-        if let Some(stu) = &usage.server_tool_use {
-            raw.web_search_requests += stu.web_search_requests;
-            raw.web_fetch_requests += stu.web_fetch_requests;
-        }
-        match record.effort.as_deref() {
-            Some("high") => raw.effort_high += 1,
-            Some("xhigh") => raw.effort_xhigh += 1,
-            _ => {}
-        }
-        if let Some(skill) = record.attribution_skill.as_deref().filter(|s| !s.is_empty()) {
-            let wc = raw.by_skill.entry(skill.to_string()).or_default();
-            wc.tokens += record_tokens;
-            wc.cost_usd += cost;
-        }
-        if let Some(tool) = record.attribution_mcp_tool.as_deref().filter(|s| !s.is_empty()) {
-            let wc = raw.by_mcp_tool.entry(tool.to_string()).or_default();
-            wc.tokens += record_tokens;
-            wc.cost_usd += cost;
-        }
-        trace!("apply_record: scope={scope:?} assistant model={model} tokens={record_tokens} cost={cost}");
+    let first_copy = match record.uuid.as_deref().filter(|u| !u.is_empty()) {
+        Some(uuid) => group.record_uuids.insert(uuid.to_string()),
+        None => true,
+    };
+    if !first_copy {
+        trace!("apply_record: scope={scope:?} uuid already seen in the group (per-record signals skipped)");
     }
 
     // System record: compaction boundary or turn-duration sample.
-    if record.rtype.as_deref() == Some("system") {
+    if first_copy && record.rtype.as_deref() == Some("system") {
         match record.subtype.as_deref() {
             Some("compact_boundary") => apply_compaction(record, scope, raw),
             Some("turn_duration") => {
@@ -495,16 +646,65 @@ fn apply_record(
 
     // Tool errors + Bash-failure subset (colocated on the tool_result's own user record) and the
     // structured interrupt (top-level `toolUseResult.interrupted == true`).
-    apply_tool_results(record, scope, raw);
+    apply_tool_results(record, scope, raw, &mut group.result_ids);
 
     // User-text interrupt markers.
-    if record.rtype.as_deref() == Some("user")
+    if first_copy
+        && record.rtype.as_deref() == Some("user")
         && let Some(content) = record.message.as_ref().and_then(|m| m.content.as_ref())
         && content_has_interrupt_marker(content)
     {
         raw.interrupts_text += 1;
         trace!("apply_record: scope={scope:?} interrupts_text marker");
     }
+    undated
+}
+
+/// Apply one assistant message's usage to its scope's counters: tokens, cost, turns, model mix,
+/// `by_model`, `by_day`, web tool use, effort, and the by-skill / by-MCP attribution. Everything here
+/// derives from message-level usage, so it runs ONCE per message: from [`GroupSeen::finish`] for a
+/// message with an id, from [`apply_record`] for one without.
+///
+/// A turn with no timestamp is returned as `(model, usage)` instead of bucketed by day (see
+/// [`apply_record`]).
+fn apply_usage(turn: &MessageUsage, raw: &mut RawCounters) -> Option<(String, TokenUsage)> {
+    let token_usage = &turn.usage;
+    let record_tokens = token_usage.input_tokens
+        + token_usage.output_tokens
+        + token_usage.cache_read_tokens
+        + token_usage.cache_5m_write_tokens
+        + token_usage.cache_1h_write_tokens;
+    let model = turn.model.as_str();
+    let cost = raw.add_usage(model, token_usage);
+    let undated = match turn.timestamp {
+        Some(ts) => {
+            raw.bucket_usage(ts.date_naive(), model, token_usage);
+            None
+        }
+        None => Some((model.to_string(), token_usage.clone())),
+    };
+
+    raw.web_search_requests += turn.web_search_requests;
+    raw.web_fetch_requests += turn.web_fetch_requests;
+    match turn.effort.as_deref() {
+        Some("high") => raw.effort_high += 1,
+        Some("xhigh") => raw.effort_xhigh += 1,
+        _ => {}
+    }
+    if let Some(skill) = turn.attribution_skill.as_deref().filter(|s| !s.is_empty()) {
+        let wc = raw.by_skill.entry(skill.to_string()).or_default();
+        wc.tokens += record_tokens;
+        wc.cost_usd += cost;
+    }
+    if let Some(tool) = turn.attribution_mcp_tool.as_deref().filter(|s| !s.is_empty()) {
+        let wc = raw.by_mcp_tool.entry(tool.to_string()).or_default();
+        wc.tokens += record_tokens;
+        wc.cost_usd += cost;
+    }
+    trace!(
+        "apply_usage: scope={:?} model={model} tokens={record_tokens} cost={cost}",
+        turn.scope
+    );
     undated
 }
 
@@ -540,37 +740,63 @@ fn apply_compaction(record: &Record, scope: &Scope, raw: &mut RawCounters) {
 /// the errored `tool_result` block and the `toolUseResult` field live on the SAME user record, no
 /// `tool_use_id` pending map is needed (unlike `outcome.rs`, which pairs only to recover the tool
 /// NAME) -- the predicate is self-contained on the result record.
-fn apply_tool_results(record: &Record, scope: &Scope, raw: &mut RawCounters) {
-    // Structured interrupt: only when toolUseResult is the OBJECT form carrying `interrupted:true`.
-    if record
-        .tool_use_result
+///
+/// Gated group-wide on each block's `tool_use_id` (`result_ids`): a block whose id was already
+/// counted (a fork's copy) adds nothing, and a block with no id always counts. The record-level
+/// signals follow their blocks: the Bash failure needs a counted errored block, and the structured
+/// interrupt counts unless every id'd `tool_result` on the record is a copy.
+fn apply_tool_results(record: &Record, scope: &Scope, raw: &mut RawCounters, result_ids: &mut HashSet<String>) {
+    let blocks: &[Value] = record
+        .message
         .as_ref()
-        .and_then(|v| v.get("interrupted"))
-        .and_then(Value::as_bool)
-        == Some(true)
+        .and_then(|m| m.content.as_ref())
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+
+    let mut record_had_error = false;
+    let mut any_id = false;
+    let mut any_fresh_id = false;
+    for block in blocks {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let fresh = match block
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            Some(id) => {
+                any_id = true;
+                let fresh = result_ids.insert(id.to_string());
+                any_fresh_id |= fresh;
+                fresh
+            }
+            None => true,
+        };
+        if !fresh {
+            trace!("apply_tool_results: scope={scope:?} tool_result already counted in the group (copy skipped)");
+            continue;
+        }
+        // Every tool_result block is one completed tool call: the tool_error_rate denominator.
+        raw.tool_calls += 1;
+        if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+            raw.tool_errors += 1;
+            record_had_error = true;
+            trace!("apply_tool_results: scope={scope:?} tool_error");
+        }
+    }
+
+    // Structured interrupt: only when toolUseResult is the OBJECT form carrying `interrupted:true`.
+    if (!any_id || any_fresh_id)
+        && record
+            .tool_use_result
+            .as_ref()
+            .and_then(|v| v.get("interrupted"))
+            .and_then(Value::as_bool)
+            == Some(true)
     {
         raw.interrupts_structured += 1;
         trace!("apply_tool_results: scope={scope:?} interrupts_structured");
-    }
-
-    let Some(content) = record.message.as_ref().and_then(|m| m.content.as_ref()) else {
-        return;
-    };
-    let Some(blocks) = content.as_array() else {
-        return;
-    };
-
-    let mut record_had_error = false;
-    for block in blocks {
-        if block.get("type").and_then(Value::as_str) == Some("tool_result") {
-            // Every tool_result block is one completed tool call: the tool_error_rate denominator.
-            raw.tool_calls += 1;
-            if block.get("is_error").and_then(Value::as_bool) == Some(true) {
-                raw.tool_errors += 1;
-                record_had_error = true;
-                trace!("apply_tool_results: scope={scope:?} tool_error");
-            }
-        }
     }
 
     // Bash-failure subset: at most one per record (one `toolUseResult` per result record), and only

@@ -201,6 +201,34 @@ inflate ~2-3x before the fix. `extract` must fold message-level `usage` ONCE per
 `efficiency/src/extract/tests.rs::message_level_usage_counted_once_per_message_id_not_per_block`
 (and, on a real captured transcript, in `clean_session_yields_all_zero_behavioral_counters`).
 
+### `fork-group/` -- group-wide usage and outcome dedupe across forks
+
+One session group (`5e55f0e0-0000-4000-8000-00000000f0f0`) in the live layout: the parent
+`<sid>.jsonl` plus `<sid>/subagents/agent-<id>.jsonl`, each with its `agent-<id>.meta.json`.
+Shapes taken from live forks on 2026-10-11 (`docs/design/2026-10-11-report-workload-calls.md`,
+P1 and P1b); content redacted.
+
+- Parent: `msg_p1`, `msg_p2` (spawns the fork of main), `msg_p3` (spawns the subagent), the
+  spawn's `tool_result`, and a 9000ms `turn_duration`.
+- `a1111111111111111`, fork of the main session: first record `fork-context-ref`, then a copy of
+  the spawning turn `msg_p2`, then its own `msg_f1`. Meta `isFork: true`.
+- `a2222222222222222`, a plain subagent: `msg_s1` streamed over three records with
+  `output_tokens` 3, 3, 159 (the last one holds an `Edit`, 3 lines written, 1 replaced), its
+  `tool_result`, then `msg_s2` (`output_tokens` 7) over two records, the second holding two Bash
+  calls. Then the signal records: an errored Bash result (`Error: Exit code 1`), a structured
+  interrupt result, a `[Request interrupted by user]` text marker, an auto `compact_boundary` and a
+  4000ms `turn_duration`. Meta without `isFork`.
+- `a1333333333333333`, fork of that subagent: its whole history copied inline (no
+  `fork-context-ref`), where the copy of `msg_s2` carries `output_tokens` 2185, then its own
+  `msg_g1`. Meta `isFork: true`, `parentAgentId`. Its path sorts BEFORE its source's, so with the
+  meta files removed it reads first and the per-agent split shifts while the totals do not.
+
+Field-wise max per message id sums to 7776 tokens; the old per-file rule gives 10620. The
+meta-less variant is built by the tests (the `.jsonl` files copied without their meta). Asserted in
+`efficiency/src/collect/tests.rs::{fork_group_counts_copies_once, fork_group_counts_signals_once,
+guard_ignores_dedupe_drop}` and
+`efficiency/src/outcome/tests.rs::fork_copy_lines_written_once`.
+
 ## Verification
 
 `bin/verify-fixtures.sh` (throwaway `jq` script, Phase 0 only) asserts every
