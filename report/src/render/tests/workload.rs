@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use efficiency::{McpCalls, WorkloadCost};
 
 use crate::render::tests::sample_report;
-use crate::render::{WorkloadRow, workload::*};
+use crate::render::{CallRow, workload::*};
 use crate::report::SessionEntry;
 
 /// One session entry carrying `spend` and agent-type buckets `(name, cost_usd)`. Tokens are a
@@ -35,12 +35,12 @@ fn cents_of(parts: &[(String, u64, i64)]) -> Vec<(&str, i64)> {
     parts.iter().map(|(n, _, c)| (n.as_str(), *c)).collect()
 }
 
-fn spends(rows: &[WorkloadRow]) -> Vec<&str> {
+fn spends(rows: &[CallRow]) -> Vec<&str> {
     rows.iter().map(|r| r.spend.as_str()).collect()
 }
 
 /// Sum a set of `$X.XX` display strings back into cents, the way a reader adds a table up.
-fn displayed_cents(rows: &[WorkloadRow]) -> i64 {
+fn displayed_cents(rows: &[CallRow]) -> i64 {
     rows.iter()
         .map(|r| {
             let cleaned = r.spend.replace(['$', ','], "");
@@ -143,6 +143,7 @@ fn the_partition_keeps_display_order_and_is_deterministic() {
                     AgentCents {
                         tokens: 1_000,
                         cents: *c,
+                        ..AgentCents::default()
                     },
                 )
             })
@@ -333,26 +334,257 @@ fn fully_counted_report_has_no_captions() {
     assert_eq!(cell(&eff.by_skill, "c").calls.as_deref(), Some("0"));
 }
 
-/// A `--no-rollup` report (one holding a `<sid>/<agent-id>` subagent row) explains why an inherited
-/// skill tag shows tokens with 0 calls; a rolled-up report does not. BITES: drop the caption, or
-/// show it on every report.
-#[test]
-fn no_rollup_report_explains_inherited_skill_tags() {
-    let inherited =
-        "Under --no-rollup, a subagent that inherited its parent's skill tag shows that skill's tokens with 0 calls";
-    let rolled = build_efficiency_view(&two_sessions(true));
-    assert!(!rolled.call_captions.iter().any(|c| c == inherited));
+const NO_ROLLUP_CAPTION: &str =
+    "Under --no-rollup, a subagent that inherited its parent's skill tag shows that skill's tokens with 0 calls";
 
+fn has_caption(report: &crate::report::Report) -> bool {
+    build_efficiency_view(report)
+        .call_captions
+        .iter()
+        .any(|c| c == NO_ROLLUP_CAPTION)
+}
+
+fn subagent(agent_id: &str) -> efficiency::SubagentEfficiency {
+    efficiency::SubagentEfficiency {
+        agent_id: agent_id.to_string(),
+        agent_type: Some("general-purpose".to_string()),
+        signals: efficiency::EfficiencySignals::default(),
+    }
+}
+
+/// Every session counted, so the only possible caption is the `--no-rollup` one.
+fn counted_rollup_report() -> crate::report::Report {
     let mut report = two_sessions(true);
-    let (sid, entry) = report.sessions.pop_first().unwrap();
-    report.sessions.insert(format!("{sid}/agent-a1"), entry);
-    let exploded = build_efficiency_view(&report);
+    for entry in report.sessions.values_mut() {
+        entry.skill_calls.get_or_insert_with(BTreeMap::new);
+        entry.mcp_calls.get_or_insert_with(BTreeMap::new);
+    }
+    report
+}
+
+/// The `--no-rollup` shape: each session re-keyed `<sid>/<agent-id>` holding that one subagent.
+fn exploded(report: crate::report::Report) -> crate::report::Report {
+    let mut out = report;
+    out.sessions = std::mem::take(&mut out.sessions)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (sid, mut entry))| {
+            let agent_id = format!("agent-a{i}");
+            entry.efficiency.subagents = vec![subagent(&agent_id)];
+            (format!("{sid}/{agent_id}"), entry)
+        })
+        .collect();
+    out
+}
+
+/// Merge two hosts' copies of the same report, through the real `merge_reports` re-keying.
+fn merged(build: impl Fn() -> crate::report::Report) -> crate::report::Report {
+    let a = build();
+    let mut b = build();
+    b.host = "other".to_string();
+    crate::merge::merge_reports(vec![a, b]).unwrap()
+}
+
+/// A merged ROLLUP report re-keys every session `<host>/<sid>`; that `/` is not a `--no-rollup`
+/// row. Inverts the old key-shape test. BITES: go back to `keys().any(contains('/'))`.
+#[test]
+fn merged_rollup_report_has_no_no_rollup_caption() {
+    let report = merged(|| {
+        let mut report = counted_rollup_report();
+        for entry in report.sessions.values_mut() {
+            entry.efficiency.subagents = vec![subagent("agent-a0")];
+        }
+        report
+    });
+    assert!(report.sessions.keys().all(|k| k.contains('/')));
+    assert!(!has_caption(&report));
+}
+
+/// A merged `--no-rollup` report (`<host>/<sid>/<agent-id>`) still prints the caption.
+#[test]
+fn merged_no_rollup_report_keeps_caption() {
+    let report = merged(|| exploded(counted_rollup_report()));
+    assert!(report.sessions.keys().all(|k| k.matches('/').count() == 2));
+    assert!(has_caption(&report));
+}
+
+/// An unmerged `--no-rollup` report prints the caption; the rolled-up one does not. BITES: drop the
+/// caption, or show it on every report.
+#[test]
+fn no_rollup_report_keeps_caption() {
+    assert!(!has_caption(&counted_rollup_report()));
+    assert!(has_caption(&exploded(counted_rollup_report())));
+}
+
+/// A rollup session with exactly one subagent is keyed by its bare session id, so it is not a
+/// subagent row; neither is a slashed key whose suffix is not the subagent's id.
+#[test]
+fn single_subagent_rollup_session_is_not_a_subagent_row() {
+    let mut entry = sample_report().sessions.into_values().next().unwrap();
+    entry.efficiency.subagents = vec![subagent("agent-a0")];
+    assert!(!is_subagent_row("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", &entry));
+    assert!(!is_subagent_row("desk/9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", &entry));
+    assert!(is_subagent_row("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042/agent-a0", &entry));
+    entry.efficiency.subagents.push(subagent("agent-a1"));
+    assert!(!is_subagent_row(
+        "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042/agent-a0",
+        &entry
+    ));
+}
+
+/// A subagent of `agent_type` (`None` = untyped) that spent `tokens` output tokens on opus.
+fn spender(agent_id: &str, agent_type: Option<&str>, tokens: u64) -> efficiency::SubagentEfficiency {
+    let mut signals = efficiency::EfficiencySignals::default();
+    if tokens > 0 {
+        signals.raw.by_model.insert(
+            "claude-opus-4-7".to_string(),
+            common::metrics::TokenTotals {
+                output: tokens,
+                total: tokens,
+                ..Default::default()
+            },
+        );
+    }
+    efficiency::SubagentEfficiency {
+        agent_id: agent_id.to_string(),
+        agent_type: agent_type.map(str::to_string),
+        signals,
+    }
+}
+
+/// The Calls cell of every agent row, by name.
+fn agent_calls(report: &crate::report::Report) -> BTreeMap<String, String> {
+    build_efficiency_view(report)
+        .agent_type_costs
+        .into_iter()
+        .map(|r| (r.name, r.calls.unwrap()))
+        .collect()
+}
+
+fn medium(no_rollup: bool) -> crate::report::Report {
+    let pricing = claude_pricing::Pricing::embedded();
+    let kind = crate::eval::synth::Kind::Medium;
+    if no_rollup {
+        crate::eval::synth::build_no_rollup(kind, &pricing).unwrap()
+    } else {
+        crate::eval::synth::build(kind, &pricing).unwrap()
+    }
+}
+
+/// On synth medium every type's Calls is its count of tokened subagents (counted here from the raw
+/// token split, independent of the render predicate), `(main-session)` is `n/a`, and the rows still
+/// partition `totals.spend` in cents. BITES: count every subagent, or key `None` elsewhere.
+#[test]
+fn agent_calls_equal_subagent_entries() {
+    let report = medium(false);
+    let mut expected: BTreeMap<String, String> = BTreeMap::new();
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    for sub in report.sessions.values().flat_map(|e| &e.efficiency.subagents) {
+        if sub.signals.raw.by_model.values().map(|t| t.total).sum::<u64>() > 0 {
+            let key = sub
+                .agent_type
+                .clone()
+                .unwrap_or_else(|| crate::report::UNKNOWN_AGENT_TYPE.to_string());
+            *counts.entry(key).or_default() += 1;
+        }
+    }
+    assert!(counts.len() > 1, "medium must carry several subagent types: {counts:?}");
+    for (name, n) in &counts {
+        expected.insert(name.clone(), crate::fmt::format_int(*n));
+    }
+    expected.insert(crate::report::MAIN_SESSION_BUCKET.to_string(), "n/a".to_string());
+    assert_eq!(agent_calls(&report), expected);
+
+    let rows = build_efficiency_view(&report).agent_type_costs;
     assert_eq!(
-        exploded.call_captions,
-        [
-            "\u{2020} includes sessions recorded before call counting",
-            inherited,
-            "Calls counted on 1 of 2 sessions"
-        ]
+        displayed_cents(&rows),
+        crate::cents::to_cents(report.totals.spend_usd),
+        "the agent rows still sum to the headline"
     );
+}
+
+/// `--no-rollup` explodes each subagent into its own row, holding that one subagent; the per-type
+/// Calls do not move. BITES: count the residual row's (empty) list, or count per row not per entry.
+#[test]
+fn agent_calls_same_under_no_rollup() {
+    let rollup = agent_calls(&medium(false));
+    let exploded = agent_calls(&medium(true));
+    assert!(rollup.len() > 2, "{rollup:?}");
+    assert_eq!(rollup, exploded);
+}
+
+/// A 0-token untyped subagent spent nothing, so it has no cost bucket and no call: no `unknown`
+/// row. `(main-session)` is not a spawn and shows `n/a`, never `0`. BITES: drop the token filter.
+#[test]
+fn zero_token_subagent_adds_no_call() {
+    let mut report = sample_report();
+    for entry in report.sessions.values_mut() {
+        entry.efficiency.subagents = vec![
+            spender("agent-z", None, 0),
+            spender("agent-g", Some("general-purpose"), 500),
+        ];
+        entry.agent_type_costs = BTreeMap::from([
+            (crate::report::MAIN_SESSION_BUCKET.to_string(), cost(1_000, 0.3)),
+            ("general-purpose".to_string(), cost(500, 0.1)),
+        ]);
+    }
+    let eff = build_efficiency_view(&report);
+    assert!(
+        eff.agent_type_costs
+            .iter()
+            .all(|r| r.name != crate::report::UNKNOWN_AGENT_TYPE),
+        "a 0-token untyped subagent makes no row"
+    );
+    let general = cell(&eff.agent_type_costs, "general-purpose");
+    assert_eq!(general.calls.as_deref(), Some("2"), "one tokened spawn per session");
+    let main = cell(&eff.agent_type_costs, crate::report::MAIN_SESSION_BUCKET);
+    assert_eq!(main.calls.as_deref(), Some("n/a"));
+    assert_eq!(main.per_call.as_deref(), Some("n/a"));
+    assert!(main.counts.is_none(), "no chart draws the residual");
+}
+
+/// Hand-built: two sessions both hold `(main-session)`, one holds `implementer` with two spawns and
+/// exactly $3.00 of cents. Sessions is one per bucket per entry; $/call is DOLLARS over calls, so
+/// `$1.50`, never `$150.00`. BITES: divide raw cents, or key main-session on zero spawns.
+#[test]
+fn agent_sessions_and_per_call_values() {
+    let mut report = sample_report();
+    let mut entries = std::mem::take(&mut report.sessions).into_iter();
+    let (id_a, mut a) = entries.next().unwrap();
+    let (id_b, mut b) = entries.next().unwrap();
+    a.spend_usd = Some(4.0);
+    a.agent_type_costs = BTreeMap::from([
+        (crate::report::MAIN_SESSION_BUCKET.to_string(), cost(1_000, 1.0)),
+        ("implementer".to_string(), cost(2_000, 3.0)),
+    ]);
+    a.efficiency.subagents = vec![
+        spender("agent-1", Some("implementer"), 1_000),
+        spender("agent-2", Some("implementer"), 1_000),
+    ];
+    b.spend_usd = Some(2.0);
+    b.agent_type_costs = BTreeMap::from([(crate::report::MAIN_SESSION_BUCKET.to_string(), cost(500, 2.0))]);
+    b.efficiency.subagents = Vec::new();
+    report.sessions.insert(id_a, a);
+    report.sessions.insert(id_b, b);
+
+    let eff = build_efficiency_view(&report);
+    let implementer = cell(&eff.agent_type_costs, "implementer");
+    assert_eq!(implementer.calls.as_deref(), Some("2"));
+    assert_eq!(implementer.sessions.as_deref(), Some("1"));
+    assert_eq!(implementer.spend, "$3.00");
+    assert_eq!(implementer.per_call.as_deref(), Some("$1.50"));
+    let counts = implementer.counts.unwrap();
+    assert_eq!(
+        (counts.calls, counts.spend, counts.counted_spend),
+        (2, 3.0, 3.0),
+        "dollars, not cents"
+    );
+    assert!(!counts.partial);
+    assert!(implementer.server.is_none() && implementer.time.is_none() && implementer.avg.is_none());
+
+    let main = cell(&eff.agent_type_costs, crate::report::MAIN_SESSION_BUCKET);
+    assert_eq!(main.sessions.as_deref(), Some("2"));
+    assert_eq!(main.calls.as_deref(), Some("n/a"));
+    assert_eq!(main.per_call.as_deref(), Some("n/a"));
+    assert_eq!(main.spend, "$3.00");
 }

@@ -377,7 +377,18 @@ impl Kind {
 /// Build one synthesized window as a schema-v4 [`Report`], through the real
 /// [`crate::report::build_report`]. Deterministic: same `kind`, same bytes.
 pub fn build(kind: Kind, pricing: &Pricing) -> Result<Report> {
-    debug!("synth::build: kind={kind:?} seed={}", kind.seed());
+    build_view(kind, pricing, false)
+}
+
+/// [`build`] with `--no-rollup`: the same seeded sessions, exploded into one row per subagent plus
+/// the residual. Tests compare the two views of one window.
+#[cfg(test)]
+pub(crate) fn build_no_rollup(kind: Kind, pricing: &Pricing) -> Result<Report> {
+    build_view(kind, pricing, true)
+}
+
+fn build_view(kind: Kind, pricing: &Pricing, no_rollup: bool) -> Result<Report> {
+    debug!("synth::build: kind={kind:?} seed={} no-rollup={no_rollup}", kind.seed());
     let mut rng = Rng::new(kind.seed());
     let (since, until, sessions) = match kind {
         Kind::Small => small(&mut rng, pricing),
@@ -385,7 +396,7 @@ pub fn build(kind: Kind, pricing: &Pricing) -> Result<Report> {
         Kind::MediumPrior => medium_prior(&mut rng, pricing),
         Kind::Pathological => pathological(&mut rng, pricing),
     };
-    let mut report = build_report(&sessions, since, until, HOST, pricing, true, false, &[])?;
+    let mut report = build_report(&sessions, since, until, HOST, pricing, true, no_rollup, &[])?;
     // Freeze the clock (see `GENERATED`). Parsing a const is infallible in practice; a broken const
     // would be caught by `tests::generated_const_parses`.
     report.generated = ts(GENERATED);

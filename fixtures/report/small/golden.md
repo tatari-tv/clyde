@@ -94,9 +94,9 @@ No Claude Enterprise Analytics cost export was supplied for this render (--recon
 
 Every dollar of the period's $64.86 spend lands in exactly one row below; `(main-session)` carried the most. The `(main-session)` row is work a session did itself rather than delegating.
 
-| Agent Type | Tokens | Spend |
-|------------|-------:|------:|
-| `(main-session)` | 85.4M | $64.86 |
+| Agent Type | Calls | Sessions | Tokens | Spend | $/call |
+|------------|------:|---------:|-------:|------:|-------:|
+| `(main-session)` | n/a | 9 | 85.4M | $64.86 | n/a |
 
 ## The Efficiency Story
 

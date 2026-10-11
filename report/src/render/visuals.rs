@@ -41,6 +41,8 @@ pub(super) struct Visuals {
     pub(super) skill_calls: Option<Pairs>,
     /// MCP tool calls against spend; `None` when no call was counted.
     pub(super) mcp_calls: Option<Pairs>,
+    /// Agent-type calls against spend, `(main-session)` not drawn; `None` when no row was counted.
+    pub(super) agent_calls: Option<Pairs>,
 }
 
 /// Daily spend as standing columns, one per day, split by model.
@@ -257,16 +259,18 @@ pub(super) fn build(block: &ContextBlock<'_>) -> Visuals {
         cache_share: build_cache_share(block),
         skill_calls: call_pairs(&block.efficiency.by_skill),
         mcp_calls: call_pairs(&block.efficiency.by_mcp),
+        agent_calls: call_pairs(&block.efficiency.agent_type_costs),
     }
 }
 
-/// The calls / spend figure over a tag table's rows. `None` when the table has no call columns
-/// (nothing was counted) or no rows. Shares are of the table's own totals.
+/// The calls / spend figure over a table's rows. `None` when no row has call counts (nothing was
+/// counted) or no rows. A count-less row (the agent table's `(main-session)`) is skipped, and the
+/// shares are of the totals over the rows with counts.
 ///
 /// A partial row's count carries `†`, as its table cell does. A partial row with 0 counted calls
 /// (the table's `n/a`) is left out: its call share is not a measurement, so it has no bar to draw.
 fn call_pairs(rows: &[CallRow]) -> Option<Pairs> {
-    if rows.iter().any(|r| r.counts.is_none()) {
+    if rows.iter().all(|r| r.counts.is_none()) {
         return None;
     }
     let total_calls: u64 = rows.iter().filter_map(|r| r.counts).map(|c| c.calls).sum();
@@ -696,7 +700,10 @@ fn build_calendar(block: &ContextBlock<'_>) -> Option<Calendar> {
 #[cfg(test)]
 pub(super) fn display_strings(v: &Visuals) -> Vec<String> {
     let mut out = Vec::new();
-    for pairs in [&v.orgs, &v.repos, &v.skill_calls, &v.mcp_calls].into_iter().flatten() {
+    for pairs in [&v.orgs, &v.repos, &v.skill_calls, &v.mcp_calls, &v.agent_calls]
+        .into_iter()
+        .flatten()
+    {
         for r in &pairs.rows {
             out.extend([
                 r.label.clone(),

@@ -1561,13 +1561,20 @@ ol.steps {
 <section class="section">
 <h2>Agent-Type Cost Attribution</h2>
 <p class="lead">Every dollar of the period&#39;s $671.26 spend lands in exactly one row below; <code>(main-session)</code> carried the most. The <code>(main-session)</code> row is work a session did itself rather than delegating.</p>
+<figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>Agent types: calls and spend</figcaption><div class="sort" role="group" hidden="" aria-label="Sort rows"><span class="sort-label">Sort by</span><button type="button" data-key="by-spend" aria-pressed="true">% spend</button><button type="button" data-key="by-count" aria-pressed="false">% calls</button><button type="button" data-key="by-per-unit" aria-pressed="false">Spend per call</button></div></div>
+<ol class="pairs">
+<li class="pair" data-by-spend="0" data-by-count="0" data-by-per-unit="0" data-tip="phase-implementer: 11 calls (41%), $79.31 (41%), $7.21 per call"><div class="pair-head"><code class="pair-label">phase-implementer</code><span class="pair-per">$7.21 per call</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:98.4"></span><span class="val"><b>41%</b> 11 calls</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>41%</b> $79.31</span></div></div></li>
+<li class="pair" data-by-spend="1" data-by-count="1" data-by-per-unit="2" data-tip="doc-writer: 9 calls (33%), $61.78 (32%), $6.86 per call"><div class="pair-head"><code class="pair-label">doc-writer</code><span class="pair-per">$6.86 per call</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:80.5"></span><span class="val"><b>33%</b> 9 calls</span></div><div class="track"><span class="bar spend" style="--w:77.9"></span><span class="val"><b>32%</b> $61.78</span></div></div></li>
+<li class="pair" data-by-spend="2" data-by-count="2" data-by-per-unit="1" data-tip="code-reviewer: 7 calls (26%), $50.42 (26%), $7.20 per call"><div class="pair-head"><code class="pair-label">code-reviewer</code><span class="pair-per">$7.20 per call</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:62.6"></span><span class="val"><b>26%</b> 7 calls</span></div><div class="track"><span class="bar spend" style="--w:63.6"></span><span class="val"><b>26%</b> $50.42</span></div></div></li>
+</ol>
+<div class="legend"><span class="key"><i class="swatch sessions"></i>% of calls</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
 <div class="table-wrap"><table>
-<thead><tr><th>Agent Type</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+<thead><tr><th>Agent Type</th><th class="num">Calls</th><th class="num">Sessions</th><th class="num">Tokens</th><th class="num">Spend</th><th class="num">$/call</th></tr></thead>
 <tbody>
-<tr><td><code>(main-session)</code></td><td class="num">639.6M</td><td class="num">$479.75</td></tr>
-<tr><td><code>phase-implementer</code></td><td class="num">133.4M</td><td class="num">$79.31</td></tr>
-<tr><td><code>doc-writer</code></td><td class="num">103.5M</td><td class="num">$61.78</td></tr>
-<tr><td><code>code-reviewer</code></td><td class="num">85.4M</td><td class="num">$50.42</td></tr>
+<tr><td><code>(main-session)</code></td><td class="num">n/a</td><td class="num">44</td><td class="num">639.6M</td><td class="num">$479.75</td><td class="num">n/a</td></tr>
+<tr><td><code>phase-implementer</code></td><td class="num">11</td><td class="num">11</td><td class="num">133.4M</td><td class="num">$79.31</td><td class="num">$7.21</td></tr>
+<tr><td><code>doc-writer</code></td><td class="num">9</td><td class="num">9</td><td class="num">103.5M</td><td class="num">$61.78</td><td class="num">$6.86</td></tr>
+<tr><td><code>code-reviewer</code></td><td class="num">7</td><td class="num">7</td><td class="num">85.4M</td><td class="num">$50.42</td><td class="num">$7.20</td></tr>
 </tbody>
 </table></div>
 </section>

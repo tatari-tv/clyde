@@ -556,8 +556,10 @@ struct EfficiencyView {
     compactions: u64,
     /// HEADLINE: tokens + `$` attributed to each subagent TYPE, pre-sorted by spend descending, plus
     /// the `(main-session)` residual. A true PARTITION of `totals.spend` (Phase 5): same pricing
-    /// basis, every dollar in exactly one row.
-    agent_type_costs: Vec<WorkloadRow>,
+    /// basis, every dollar in exactly one row. `spend` is priced from report's fetched feed, the
+    /// same basis as `totals.spend`. Calls are the type's subagents that spent tokens;
+    /// `(main-session)` is not a spawn, so its Calls and $/call are `n/a`.
+    agent_type_costs: Vec<CallRow>,
     /// Tokens + `$` grouped by skill (`attributionSkill`), pre-sorted by spend descending. An
     /// attribution TAG set, not a partition -- see [`Self::by_skill_coverage`].
     by_skill: Vec<CallRow>,
@@ -576,27 +578,17 @@ struct EfficiencyView {
     call_captions: Vec<String>,
 }
 
-/// One agent-type / skill / mcp-tool attribution row, string-only. `spend` is a display string. On
-/// `agent-type-costs` it is priced from report's fetched feed (the same basis as `totals.spend`); on
-/// `by-skill` / `by-mcp` it is the catalog's embedded-priced figure, which is why those two carry a
-/// coverage string instead of summing to the total.
-#[derive(Serialize)]
-#[serde(rename_all = "kebab-case")]
-struct WorkloadRow {
-    name: String,
-    tokens_human: String,
-    spend: String,
-}
-
-/// One `by-skill` / `by-mcp` row: the attribution spend joined to the call counts on the same key.
-/// Strings only on the wire; [`Self::counts`] is the numeric twin the charts read.
+/// One `by-skill` / `by-mcp` / agent-type row: the attribution spend joined to the call counts on
+/// the same key. Strings only on the wire; [`Self::counts`] is the numeric twin the charts read. On
+/// `by-skill` / `by-mcp` `spend` is the catalog's embedded-priced figure, which is why those two
+/// carry a coverage string instead of summing to the total.
 ///
 /// `calls`, `sessions`, `per-call`, `time` and `avg` are `None` when no session counted calls, so
 /// the table omits those columns instead of printing a column of `n/a`.
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct CallRow {
-    /// The skill name, or the MCP tool without its server segment.
+    /// The skill name, the MCP tool without its server segment, or the agent type.
     name: String,
     /// MCP only: the key's normalized server segment, `_unknown` when the key has none.
     #[serde(skip_serializing_if = "Option::is_none")]

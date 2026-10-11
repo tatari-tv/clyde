@@ -50,7 +50,8 @@ pub const MAIN_SESSION_BUCKET: &str = "(main-session)";
 
 /// Bucket key for a subagent the transcript never typed -- kept as its own row rather than dropped,
 /// so an untyped subagent's spend is visible instead of silently folding into [`MAIN_SESSION_BUCKET`].
-const UNKNOWN_AGENT_TYPE: &str = "unknown";
+/// Public so render counts an untyped subagent's call under the same key as its cost.
+pub const UNKNOWN_AGENT_TYPE: &str = "unknown";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -700,6 +701,13 @@ fn day_buckets(
 /// `$0.00` row in a finance-facing table, whether it is keyed by model or by agent type.
 fn has_tokens(t: &TokenTotals) -> bool {
     t.total != 0
+}
+
+/// A subagent that consumed something under [`has_tokens`]: the rule that decides whether its type
+/// gets a bucket in [`agent_type_costs`], so render counts a call for exactly the subagents that put
+/// cost on a row. A zero-token subagent is no call and no row.
+pub(crate) fn subagent_has_tokens(sub: &SubagentEfficiency) -> bool {
+    sub.signals.raw.by_model.values().any(has_tokens)
 }
 
 /// Price a per-model `TokenTotals` map into `ModelTokens`, returning the priced map, the session's
