@@ -47,3 +47,18 @@
 
 ### Open questions
 - None.
+
+## Phase 2: Stage subagent meta files
+### Design decisions
+- Meta copied inside the subagent loop, derived from each `.jsonl` via `with_extension("meta.json")` — session/src/stage.rs:stage_session — the same derivation `efficiency::collect::is_fork` uses, so the staged layout (`subagents/agent-x.meta.json`) resolves with no change to collect.rs.
+- Meta files count toward `files_total` / `files_copied` — session/src/stage.rs — a copied meta is a real copy; keeps the idempotency count honest. Doc comments updated.
+- A subagent with no meta is silently skipped (no error) — it is the normal case for non-fork agents.
+
+### Deviations
+- None.
+
+### Tradeoffs
+- Counting meta in the totals vs a separate counter — no caller needs the split; avoids widening `Staged`.
+
+### Open questions
+- None.
