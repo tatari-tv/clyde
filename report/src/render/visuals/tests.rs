@@ -484,3 +484,26 @@ fn partial_call_rows_carry_the_dagger_and_na_rows_are_not_drawn() {
 fn a_calls_chart_of_only_na_rows_is_not_drawn() {
     assert!(call_pairs(&[call_row("a", 0, 1.0, true)]).is_none());
 }
+
+/// A count-less row (the agent table's `(main-session)`) is skipped, not fatal; shares are of the
+/// counted rows; a table where every row is count-less draws nothing.
+#[test]
+fn call_pairs_skips_countless_rows_and_none_when_all_are() {
+    let mut countless = call_row("(main-session)", 0, 0.0, false);
+    countless.counts = None;
+    let mut countless_too = call_row("other", 0, 0.0, false);
+    countless_too.counts = None;
+    let mut mixed_countless = call_row("(main-session)", 0, 0.0, false);
+    mixed_countless.counts = None;
+    let mixed = [
+        call_row("a", 3, 6.0, false),
+        mixed_countless,
+        call_row("b", 1, 2.0, false),
+    ];
+    let pairs = call_pairs(&mixed).expect("counted rows draw");
+    let labels: Vec<&str> = pairs.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(labels, ["a", "b"]);
+    assert_eq!(pairs.rows[0].count_share, "75%");
+    assert_eq!(pairs.rows[1].count_share, "25%");
+    assert!(call_pairs(&[countless, countless_too]).is_none());
+}

@@ -419,10 +419,19 @@ fn agent_type_costs(md: &mut String, block: &ContextBlock<'_>) {
         sections::agent_type_lead(block, &format!("`{}`", rows[0].name))
     );
     let _ = writeln!(md);
-    let _ = writeln!(md, "| Agent Type | Tokens | Spend |");
-    let _ = writeln!(md, "|------------|-------:|------:|");
+    let _ = writeln!(md, "| Agent Type | Calls | Sessions | Tokens | Spend | $/call |");
+    let _ = writeln!(md, "|------------|------:|---------:|-------:|------:|-------:|");
     for row in rows {
-        let _ = writeln!(md, "| `{}` | {} | {} |", row.name, row.tokens_human, row.spend);
+        let _ = writeln!(
+            md,
+            "| `{}` | {} | {} | {} | {} | {} |",
+            row.name,
+            row.calls.as_deref().unwrap_or_default(),
+            row.sessions.as_deref().unwrap_or_default(),
+            row.tokens_human,
+            row.spend,
+            row.per_call.as_deref().unwrap_or_default()
+        );
     }
     let _ = writeln!(md);
 }

@@ -120,12 +120,12 @@ This billed figure is the Claude Enterprise Analytics cost report for jordan.riv
 
 Every dollar of the period's $671.26 spend lands in exactly one row below; `(main-session)` carried the most. The `(main-session)` row is work a session did itself rather than delegating.
 
-| Agent Type | Tokens | Spend |
-|------------|-------:|------:|
-| `(main-session)` | 639.6M | $479.75 |
-| `phase-implementer` | 133.4M | $79.31 |
-| `doc-writer` | 103.5M | $61.78 |
-| `code-reviewer` | 85.4M | $50.42 |
+| Agent Type | Calls | Sessions | Tokens | Spend | $/call |
+|------------|------:|---------:|-------:|------:|-------:|
+| `(main-session)` | n/a | 44 | 639.6M | $479.75 | n/a |
+| `phase-implementer` | 11 | 11 | 133.4M | $79.31 | $7.21 |
+| `doc-writer` | 9 | 9 | 103.5M | $61.78 | $6.86 |
+| `code-reviewer` | 7 | 7 | 85.4M | $50.42 | $7.20 |
 
 ## The Efficiency Story
 

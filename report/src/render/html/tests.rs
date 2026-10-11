@@ -153,10 +153,8 @@ fn licensed(block: &ContextBlock<'_>) -> std::collections::BTreeSet<String> {
     // The chart view model's display strings: shares, bucket edges, tooltips. Formatted once in
     // `visuals` from the same block, never by a chart or by this backend.
     strings.extend(visuals::display_strings(&visuals::build(block)));
-    for pairs in [&visuals::build(block).orgs, &visuals::build(block).repos]
-        .into_iter()
-        .flatten()
-    {
+    let view = visuals::build(block);
+    for pairs in [&view.orgs, &view.repos, &view.agent_calls].into_iter().flatten() {
         strings.push(format_int(pairs.rows.len() as u64));
     }
     // "Show all N repositories" under the opened-PR links.
@@ -563,8 +561,8 @@ fn the_page_draws_every_chart_the_data_supports() {
     assert!(html.contains("data-tip=\"2026-04-01: $11.80\""));
     assert_eq!(
         html.matches("<figure class=\"chart pairs-fig\"").count(),
-        4,
-        "by org, by repo, skill calls and MCP tool calls"
+        5,
+        "by org, by repo, skill calls, MCP tool calls and agent calls"
     );
     for marker in [
         "<div class=\"treemap\">",
@@ -1234,6 +1232,62 @@ fn calls_pairs_labels_and_numbers() {
     );
 }
 
+/// The agent figure carries call wording, draws every counted agent type and not `(main-session)`,
+/// and licenses its numbers. BITES: change an agent call share in the VIEW the page draws and the
+/// licensing check refuses the page.
+#[test]
+fn agent_calls_pairs_labels_and_numbers() {
+    let case = medium();
+    with_case(
+        &case,
+        |_| {},
+        |block| {
+            let v = visuals::build(block);
+            let pairs = v.agent_calls.as_ref().unwrap();
+            assert_eq!(pairs.kind, visuals::PairsKind::CALLS);
+            let counted: Vec<&str> = block
+                .efficiency
+                .agent_type_costs
+                .iter()
+                .filter(|r| r.name != crate::report::MAIN_SESSION_BUCKET)
+                .map(|r| r.name.as_str())
+                .collect();
+            assert!(!counted.is_empty());
+            let drawn: Vec<&str> = pairs.rows.iter().map(|r| r.label.as_str()).collect();
+            assert_eq!(drawn, counted);
+            assert!(!drawn.contains(&crate::report::MAIN_SESSION_BUCKET));
+            for row in &pairs.rows {
+                assert!(
+                    row.count.ends_with(" calls") || row.count.ends_with(" call"),
+                    "{}",
+                    row.count
+                );
+                assert!(
+                    row.per_unit == "n/a" || row.per_unit.ends_with(" per call"),
+                    "{}",
+                    row.per_unit
+                );
+            }
+            let html = render(block, &SlotProse::new(), 10).unwrap();
+            assert!(html.contains("Agent types: calls and spend"));
+
+            let licensed = licensed(block);
+            assert_ledger_is_licensed(&build(block, &SlotProse::new(), 10).ledger, &licensed);
+
+            let mut mutated = visuals::build(block);
+            mutated.agent_calls.as_mut().unwrap().rows[0].count_share = "73%".to_string();
+            let page = build_with_view(block, &SlotProse::new(), 10, &mutated);
+            let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert_ledger_is_licensed(&page.ledger, &licensed);
+            }));
+            assert!(
+                refused.is_err(),
+                "an agent call share the display strings never carried must not license"
+            );
+        },
+    );
+}
+
 /// With no counted session the page draws no calls figure and no call columns.
 #[test]
 fn uncounted_report_draws_no_call_figure_or_columns() {
@@ -1243,8 +1297,10 @@ fn uncounted_report_draws_no_call_figure_or_columns() {
         entry.mcp_calls = None;
     }
     let html = page(&case, 10);
-    assert!(!html.contains("calls and spend"));
-    assert!(!html.contains("<th class=\"num\">Calls</th>"));
-    assert!(!html.contains("$/call"));
+    assert!(!html.contains("By skill: calls and spend"));
+    assert!(!html.contains("By MCP tool: calls and spend"));
+    // Agent spawns are always counted, so the agent table alone keeps the call columns.
+    assert_eq!(html.matches("<th class=\"num\">Calls</th>").count(), 1);
+    assert_eq!(html.matches("$/call").count(), 1);
     assert!(html.contains("Calls counted on 0 of"));
 }

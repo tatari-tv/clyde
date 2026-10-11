@@ -166,7 +166,7 @@ fn build_with_view(block: &ContextBlock<'_>, prose: &SlotProse, top_n: usize, v:
             Section::QuantifiedOutput => quantified_output(&mut p, block, top_n),
             Section::CostSummary => cost_summary(&mut p, block, v, top_n),
             Section::Reconciliation => reconciliation(&mut p, block),
-            Section::AgentTypeCosts => agent_type_costs(&mut p, block, top_n),
+            Section::AgentTypeCosts => agent_type_costs(&mut p, block, v, top_n),
             Section::Efficiency => efficiency(&mut p, block, v, top_n),
             Section::WhatThisFunded => what_this_funded(&mut p, block, slot, &reg),
             Section::MonthOverMonth => month_over_month(&mut p, block),
@@ -702,11 +702,20 @@ fn reconciliation(p: &mut Page, block: &ContextBlock<'_>) {
 
 fn workload_rows(rows: &[super::CallRow]) -> Vec<Vec<String>> {
     rows.iter()
-        .map(|r| vec![r.name.clone(), r.tokens_human.clone(), r.spend.clone()])
+        .map(|r| {
+            vec![
+                r.name.clone(),
+                r.calls.clone().unwrap_or_default(),
+                r.sessions.clone().unwrap_or_default(),
+                r.tokens_human.clone(),
+                r.spend.clone(),
+                r.per_call.clone().unwrap_or_default(),
+            ]
+        })
         .collect()
 }
 
-fn agent_type_costs(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
+fn agent_type_costs(p: &mut Page, block: &ContextBlock<'_>, v: &Visuals, top_n: usize) {
     let rows = &block.efficiency.agent_type_costs;
     let Some(top) = rows.first() else {
         return;
@@ -717,10 +726,16 @@ fn agent_type_costs(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
         "<p class=\"lead\">",
         &sections::agent_type_lead(block, &format!("`{}`", top.name)),
     );
+    if v.agent_calls.is_some() {
+        figures::pairs(p, "Agent types: calls and spend", v.agent_calls.as_ref(), true, top_n);
+    }
     let columns = [
         col("Agent Type", Cell::Code),
+        col("Calls", Cell::Num),
+        col("Sessions", Cell::Num),
         col("Tokens", Cell::Num),
         col("Spend", Cell::Num),
+        col("$/call", Cell::Num),
     ];
     table(p, &columns, &workload_rows(rows), None, Some(top_n));
     close_section(p);

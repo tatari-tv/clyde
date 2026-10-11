@@ -35,3 +35,18 @@
 
 ### Open questions
 - None.
+
+## Phase 3: Columns, chart, goldens
+### Design decisions
+- `call_pairs` returns `None` only when every row is count-less; count-less rows are skipped, so `(main-session)` drops out of the agent figure and shares are of the counted rows' totals — render/visuals.rs:call_pairs — keeps the skill/MCP figures unchanged because `call_rows` makes those tables homogeneous.
+- The agent figure sits between the section lead and the table, titled "Agent types: calls and spend" — render/html.rs:agent_type_costs — the section has no subheading, so the figure follows the lead rather than a `subheading`.
+- `Visuals.agent_calls` added and listed in `display_strings` and the licensing row-count loop — render/visuals.rs, render/html/tests.rs.
+- Agent table columns are unconditional (no `counted` gate as in `call_table`) — render/html.rs:workload_rows, render/document.rs:agent_type_costs — every agent row is built with call cells by Phase 2.
+### Deviations
+- None.
+### Tradeoffs
+- Unconditional columns vs. mirroring `call_table`'s counted gate — the gate exists for reports with no counted sessions; agent counts always exist (design: "Spawns are always counted").
+### Open questions
+- None.
+
+Goldens: medium/small/pathological `.md` and `.html` regenerated. The diff touches only the Agent-Type table header and rows (plus, in medium, one new agent calls figure of three rows); no skill or MCP row or figure changed.
