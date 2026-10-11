@@ -224,22 +224,26 @@ fn check_envelope(envelope: Envelope, job: Job<'_>, observations: &str) -> Resul
     // GUARD 3: subtype.
     match envelope.subtype.as_deref() {
         Some("success") => {}
-        other => bail!(
-            "claude -p returned subtype={} (expected \"success\")\n{observations}\n{ESCAPE_HATCH}",
-            other.unwrap_or("<missing>"),
-        ),
+        other => {
+            bail!(
+                "claude -p returned subtype={} (expected \"success\")\n{observations}\n{ESCAPE_HATCH}",
+                other.unwrap_or("<missing>"),
+            );
+        }
     }
 
     // GUARD 4: stop_reason. A non-`end_turn` stop means the artifact is truncated and must not be
     // published.
     match envelope.stop_reason.as_deref() {
         Some("end_turn") => {}
-        other => bail!(
-            "claude -p stopped with stop_reason={} (expected end_turn): the generated artifact was \
+        other => {
+            bail!(
+                "claude -p stopped with stop_reason={} (expected end_turn): the generated artifact was \
              truncated and will not be written. Narrow the window with a shorter --since, or use \
              --format markdown.\n{observations}",
-            other.unwrap_or("<missing>"),
-        ),
+                other.unwrap_or("<missing>"),
+            );
+        }
     }
 
     // GUARD 5: a non-empty result.

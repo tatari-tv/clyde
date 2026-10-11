@@ -285,7 +285,7 @@ fn parse_enrich_json(text: &str) -> Result<EnrichJson> {
     {
         return serde_json::from_str::<EnrichJson>(slice).context("embedded JSON did not match schema");
     }
-    bail!("no JSON object found in model reply")
+    bail!("no JSON object found in model reply");
 }
 
 #[cfg(test)]

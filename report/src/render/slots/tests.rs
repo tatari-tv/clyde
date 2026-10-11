@@ -73,7 +73,7 @@ struct Exploding;
 
 impl Transport for Exploding {
     fn complete(&self, _: Job<'_>, _: &str, _: &str, _: &str) -> eyre::Result<String> {
-        bail!("transport exploded")
+        bail!("transport exploded");
     }
 }
 

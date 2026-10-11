@@ -143,12 +143,14 @@ pub struct Job<'a> {
 pub fn check_stop_reason(stop_reason: Option<&str>) -> Result<()> {
     match stop_reason {
         Some("end_turn") => Ok(()),
-        other => bail!(
-            "claude -p stopped with stop_reason={} (expected end_turn): the generated artifact \
+        other => {
+            bail!(
+                "claude -p stopped with stop_reason={} (expected end_turn): the generated artifact \
              exceeded the model's output ceiling and was truncated. Raise the ceiling named by \
              this job's config key, or narrow the window with a shorter --since, then try again.",
-            other.unwrap_or("<missing>")
-        ),
+                other.unwrap_or("<missing>")
+            );
+        }
     }
 }
 

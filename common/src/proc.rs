@@ -48,11 +48,11 @@ fn wait_bounded(
         Ok(None) => {
             log::warn!("proc::wait_bounded: {label} timed out after {timeout:?}, killing child");
             kill_and_reap(child);
-            bail!("{}", timeout_msg())
+            bail!("{}", timeout_msg());
         }
         Err(e) => {
             kill_and_reap(child);
-            bail!("{label}: failed while waiting: {e}")
+            bail!("{label}: failed while waiting: {e}");
         }
     }
 }
