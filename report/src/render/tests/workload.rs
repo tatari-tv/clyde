@@ -7,12 +7,16 @@ use std::collections::BTreeMap;
 
 use efficiency::WorkloadCost;
 
+use crate::render::tests::sample_report;
 use crate::render::{WorkloadRow, workload::*};
+use crate::report::SessionEntry;
 
-/// Build an agent-type bucket map from `(name, cost_usd)` pairs. Tokens are irrelevant to the
-/// residual allocation, so they are a constant.
-fn buckets(pairs: &[(&str, f64)]) -> BTreeMap<String, WorkloadCost> {
-    pairs
+/// One session entry carrying `spend` and agent-type buckets `(name, cost_usd)`. Tokens are a
+/// constant: they ride along and never weigh the split.
+fn session(spend: Option<f64>, pairs: &[(&str, f64)]) -> SessionEntry {
+    let mut entry = sample_report().sessions.into_values().next().unwrap();
+    entry.spend_usd = spend;
+    entry.agent_type_costs = pairs
         .iter()
         .map(|(name, cost)| {
             (
@@ -23,7 +27,12 @@ fn buckets(pairs: &[(&str, f64)]) -> BTreeMap<String, WorkloadCost> {
                 },
             )
         })
-        .collect()
+        .collect();
+    entry
+}
+
+fn cents_of(parts: &[(String, u64, i64)]) -> Vec<(&str, i64)> {
+    parts.iter().map(|(n, _, c)| (n.as_str(), *c)).collect()
 }
 
 fn spends(rows: &[WorkloadRow]) -> Vec<&str> {
@@ -40,87 +49,108 @@ fn displayed_cents(rows: &[WorkloadRow]) -> i64 {
         .sum()
 }
 
-/// THE defect. Four buckets whose independently-rounded cents sum to $671.27 under a headline of
-/// $671.28, which is the medium fixture's exact shape: the artifact asserted "every dollar landing
-/// in exactly one row and totaling $671.28" above rows that totaled a cent less.
+/// THE defect, now fixed at the source. Four buckets whose independently-rounded cents sum to
+/// $671.27 under a session of $671.28 (the medium fixture's old shape): the session's own cents are
+/// split across its buckets by largest remainder, so the parts ARE the session's cents and the
+/// table built from them cannot miss the headline.
 #[test]
 fn the_agent_type_partition_reconciles_to_the_displayed_headline() {
-    let rows = partition_rows(
-        buckets(&[
+    let entry = session(
+        Some(671.28),
+        &[
             ("(main-session)", 479.7449),
             ("phase-implementer", 79.3312),
             ("doc-writer", 61.7751),
             ("code-reviewer", 50.4266),
-        ]),
-        671.2778,
+        ],
     );
+    let parts = session_agent_cents(&entry);
     assert_eq!(
-        displayed_cents(&rows),
+        parts.iter().map(|p| p.2).sum::<i64>(),
         67128,
-        "the displayed rows must add up to the displayed headline: {:?}",
-        spends(&rows)
+        "the session's cents, exactly"
     );
-    // The residual cent lands on the largest discarded fraction (.66), not on an arbitrary row.
+    // The two residual cents land on the largest discarded fractions (.68 and .65).
     assert_eq!(
-        spends(&rows),
-        vec!["$479.74", "$79.33", "$61.78", "$50.43"],
-        "largest remainder first"
+        cents_of(&parts),
+        vec![
+            ("(main-session)", 47975),
+            ("code-reviewer", 5043),
+            ("doc-writer", 6177),
+            ("phase-implementer", 7933),
+        ]
     );
 }
 
-/// A shortfall is taken back, not handed out: the rows must not exceed the headline either.
+/// A shortfall is taken back, not handed out: the parts must not exceed the session either.
 #[test]
 fn the_partition_takes_a_cent_back_from_the_smallest_remainder() {
-    let rows = partition_rows(buckets(&[("a", 10.009), ("b", 5.001)]), 15.0);
-    assert_eq!(displayed_cents(&rows), 1500, "got {:?}", spends(&rows));
-    assert_eq!(
-        spends(&rows),
-        vec!["$10.00", "$5.00"],
-        "the cent comes off `b`, whose .1 remainder is the smallest"
-    );
+    let parts = session_agent_cents(&session(Some(15.0), &[("a", 10.009), ("b", 5.001)]));
+    assert_eq!(cents_of(&parts), vec![("a", 1000), ("b", 500)]);
 }
 
-/// Allocation is capped at one cent per bucket -- the most flooring can lose. A gap bigger than that
-/// is a genuine disagreement between the buckets and the headline, and smearing it across the rows
-/// would hide a real defect behind a table that adds up. Render the measured figures instead.
+/// Inverted from `a_gap_larger_than_rounding_is_left_visible_not_smeared`. The rows used to be
+/// reallocated against the headline at display time and declined on a gap larger than rounding,
+/// leaving a table that did not sum. Now the session's cents are the authority and its buckets only
+/// say how to divide them, so even buckets that disagree with the session sum to its cents.
 #[test]
-fn a_gap_larger_than_rounding_is_left_visible_not_smeared() {
-    let rows = partition_rows(buckets(&[("implementer", 9.00), ("researcher", 4.50)]), 0.60);
+fn buckets_that_disagree_with_the_session_still_split_exactly_its_cents() {
+    let parts = session_agent_cents(&session(Some(0.60), &[("implementer", 9.00), ("researcher", 4.50)]));
+    assert_eq!(cents_of(&parts), vec![("implementer", 40), ("researcher", 20)]);
+}
+
+/// A session with spend and no buckets puts its cents on `(main-session)`; an unpriced session
+/// with no buckets contributes no row.
+#[test]
+fn spend_with_no_bucket_lands_on_the_main_session_row() {
     assert_eq!(
-        spends(&rows),
-        vec!["$9.00", "$4.50"],
-        "the measured figures survive untouched"
+        cents_of(&session_agent_cents(&session(Some(1.23), &[]))),
+        vec![(crate::report::MAIN_SESSION_BUCKET, 123)]
     );
-    assert_ne!(
-        displayed_cents(&rows),
-        60,
-        "and the rows deliberately do NOT sum to a headline they never supported"
+    assert!(session_agent_cents(&session(None, &[])).is_empty());
+    assert_eq!(
+        cents_of(&session_agent_cents(&session(None, &[("a", 2.0)]))),
+        vec![("a", 0)],
+        "an unpriced session keeps its bucket at zero cents"
     );
 }
 
-/// Display order is spend-descending with a name tiebreak, and the allocation must not disturb it.
+/// Rows are sums of per-session cents, in cents-descending order with a name tiebreak, and
+/// deterministic.
 #[test]
 fn the_partition_keeps_display_order_and_is_deterministic() {
-    let input = [("zulu", 1.005), ("alpha", 1.005), ("big", 90.0)];
-    let first = partition_rows(buckets(&input), 92.01);
-    let second = partition_rows(buckets(&input), 92.01);
+    let map = |pairs: &[(&str, i64)]| -> BTreeMap<String, AgentCents> {
+        pairs
+            .iter()
+            .map(|(n, c)| {
+                (
+                    (*n).to_string(),
+                    AgentCents {
+                        tokens: 1_000,
+                        cents: *c,
+                    },
+                )
+            })
+            .collect()
+    };
+    let input = [("zulu", 101), ("alpha", 101), ("big", 9000)];
+    let first = partition_rows(map(&input));
+    let second = partition_rows(map(&input));
     assert_eq!(
         first.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
         vec!["big", "alpha", "zulu"],
         "spend descending, then name ascending"
     );
     assert_eq!(spends(&first), spends(&second), "same input, same cents, every run");
-    assert_eq!(displayed_cents(&first), 9201);
+    assert_eq!(spends(&first), vec!["$90.00", "$1.01", "$1.01"]);
+    assert_eq!(displayed_cents(&first), 9202);
 }
 
 #[test]
 fn an_empty_partition_renders_no_rows() {
-    assert!(partition_rows(BTreeMap::new(), 0.0).is_empty());
-    assert!(
-        partition_rows(BTreeMap::new(), 12.34).is_empty(),
-        "a total with no buckets to carry it warns, it does not invent a row"
-    );
+    assert!(partition_rows(BTreeMap::new()).is_empty());
 }
+
 /// A zero-spend window renders `0.0%`, never a `NaN` percent -- matching `compute_attribution`'s
 /// precedent for the same divide-by-zero.
 #[test]

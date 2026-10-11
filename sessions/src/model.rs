@@ -229,10 +229,20 @@ pub struct EfficiencyCandidate {
     pub transcript_path: PathBuf,
     pub project_dir: String,
     pub staged_path: Option<PathBuf>,
-    /// `true` when the row already carries an efficiency blob, one that predates per-day buckets.
-    /// Such a row is offered for recompute, but its stored accounting is the fallback: when its bytes
-    /// are gone or a recompute fails, the old blob stays and the row is never counted unrecoverable.
-    pub has_blob: bool,
+    /// The aggregate token total (`input + output + cache read + both cache writes`) the row's stored
+    /// efficiency blob accounts for, or `None` when the row has no blob. A stored blob predates
+    /// per-day buckets; it is offered for recompute, but its accounting is the fallback: when the
+    /// bytes are gone, a file fails to extract, or the recompute sees FEWER tokens than this (a staged
+    /// copy taken before the session ended), the old blob stays and the row is never counted
+    /// unrecoverable.
+    pub stored_tokens: Option<u64>,
+}
+
+impl EfficiencyCandidate {
+    /// `true` when the row already carries an efficiency blob (see [`Self::stored_tokens`]).
+    pub fn has_blob(&self) -> bool {
+        self.stored_tokens.is_some()
+    }
 }
 
 /// Counts from a reindex pass.

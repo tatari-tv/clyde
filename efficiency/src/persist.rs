@@ -41,7 +41,8 @@ pub struct PersistStats {
     /// (catalog v15): the rows a post-upgrade reindex brought up to date.
     pub recomputed: usize,
     /// Candidates whose blob predates per-day buckets and could NOT be recomputed in full (no bytes
-    /// left, or a file failed to extract). Their stored blob and spend stay; a report places them
+    /// left, a file failed to extract, or the recompute saw fewer tokens than the blob accounts
+    /// for). Their stored blob and spend stay; a report places them
     /// on their begin day and says so. `candidates == computed + unrecoverable + kept`.
     pub kept: usize,
     /// Of the computed sessions, those whose aggregate names at least one model the embedded feed
@@ -134,7 +135,7 @@ pub fn reindex_efficiency(db: &Db, config: &EfficiencyConfig, work_remote_hosts:
 
     let had_blob: std::collections::BTreeSet<&str> = candidates
         .iter()
-        .filter(|c| c.has_blob)
+        .filter(|c| c.has_blob())
         .map(|c| c.session_id.as_str())
         .collect();
     let stats = PersistStats {

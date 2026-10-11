@@ -75,6 +75,8 @@ pub(super) struct PairRow {
     pub(super) sessions: String,
     pub(super) spend_share: String,
     pub(super) spend: String,
+    /// `"$17.65 per session"`, printed under the label so the figure reads with JS off.
+    pub(super) per_session: String,
     pub(super) tip: String,
     pub(super) bars: bars::Pair,
     /// Position of this row under each sort key, `0` first.
@@ -249,9 +251,10 @@ fn pairs<'a>(
             let sessions_share = share(*sessions as f64, total_sessions as f64);
             let spend_share = share(*spend_raw, total_spend);
             let sessions_text = sections::plural(*sessions, "session");
-            let per = format_usd(per_session[i]);
+            let per = format!("{} per session", format_usd(per_session[i]));
             PairRow {
-                tip: format!("{label}: {sessions_text} ({sessions_share}), {spend} ({spend_share}), {per} per session"),
+                tip: format!("{label}: {sessions_text} ({sessions_share}), {spend} ({spend_share}), {per}"),
+                per_session: per,
                 label: (*label).to_string(),
                 sessions_share,
                 sessions: sessions_text,
@@ -601,6 +604,7 @@ pub(super) fn display_strings(v: &Visuals) -> Vec<String> {
                 r.sessions.clone(),
                 r.spend_share.clone(),
                 r.spend.clone(),
+                r.per_session.clone(),
                 r.tip.clone(),
             ]);
         }

@@ -5,8 +5,9 @@
 //!
 //! - `agent-type-costs` is a TRUE PARTITION of `totals.spend-usd` (design Phase 5): every dollar
 //!   lands in exactly one row, `(main-session)` carries whatever was not delegated, and both prompt
-//!   templates tell the model to state the total. It therefore goes through [`partition_rows`],
-//!   which allocates the rounding residual so the DISPLAYED rows sum to the DISPLAYED headline.
+//!   templates tell the model to state the total. It is built from the SAME per-session cents the
+//!   headline adds: each session's cents are split across its agent types ([`session_agent_cents`]),
+//!   and the rows sum those integer parts ([`partition_rows`]), so they equal the headline exactly.
 //! - `by-skill` and `by-mcp` are attribution TAGS, not a partition: a dollar can carry no skill tag
 //!   or several, and they keep the catalog's embedded prices. They cannot sum to anything, so they
 //!   go through [`workload_rows`] untouched and carry a [`coverage_note`] instead.
@@ -21,7 +22,7 @@ use log::debug;
 use super::{EfficiencyView, WorkloadRow};
 use crate::cents;
 use crate::fmt::{format_tokens_human, format_usd};
-use crate::report::Report;
+use crate::report::{MAIN_SESSION_BUCKET, Report, SessionEntry};
 
 /// Build the report-wide [`EfficiencyView`] from the collected sessions' curated signals + raw
 /// passthrough (design Phase 5). The two ratios `totals` already carries authoritatively
@@ -39,7 +40,7 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
         report.totals.tool_error_rate
     );
     let mut grand = RawCounters::default();
-    let mut agent: BTreeMap<String, WorkloadCost> = BTreeMap::new();
+    let mut agent: BTreeMap<String, AgentCents> = BTreeMap::new();
     let mut by_skill: BTreeMap<String, WorkloadCost> = BTreeMap::new();
     let mut by_mcp: BTreeMap<String, WorkloadCost> = BTreeMap::new();
     let mut interrupts: u64 = 0;
@@ -48,7 +49,11 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
         grand.merge(&entry.efficiency.aggregate.raw);
         interrupts += entry.interrupts;
         compactions += entry.compactions;
-        merge_workload(&mut agent, &entry.agent_type_costs);
+        for (name, tokens, cents) in session_agent_cents(entry) {
+            let row = agent.entry(name).or_default();
+            row.tokens += tokens;
+            row.cents += cents;
+        }
         merge_workload(&mut by_skill, &entry.by_skill);
         merge_workload(&mut by_mcp, &entry.by_mcp);
     }
@@ -62,7 +67,7 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
         interrupts,
         compactions,
         // The declared partition: its rows must sum to the headline the prose states.
-        agent_type_costs: partition_rows(agent, report.totals.spend_usd),
+        agent_type_costs: partition_rows(agent),
         by_skill: workload_rows(by_skill),
         by_mcp: workload_rows(by_mcp),
         by_skill_coverage: coverage_note(skill_covered, report.totals.spend_usd),
@@ -137,8 +142,8 @@ pub(super) fn workload_rows(map: BTreeMap<String, WorkloadCost>) -> Vec<Workload
 }
 
 /// Sort an accumulated workload map into display order: spend descending, name ascending on a tie.
-/// One definition, so the partition and non-partition paths can never present rows in two orders.
-pub(super) fn sorted_workload(map: BTreeMap<String, WorkloadCost>) -> Vec<(String, WorkloadCost)> {
+/// The agent-type partition sorts the same way on its cents ([`partition_rows`]).
+fn sorted_workload(map: BTreeMap<String, WorkloadCost>) -> Vec<(String, WorkloadCost)> {
     let mut rows: Vec<(String, WorkloadCost)> = map.into_iter().collect();
     rows.sort_by(|a, b| {
         b.1.cost_usd
@@ -149,27 +154,53 @@ pub(super) fn sorted_workload(map: BTreeMap<String, WorkloadCost>) -> Vec<(Strin
     rows
 }
 
+/// One agent type's accumulated tokens and whole cents across the window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct AgentCents {
+    pub(super) tokens: u64,
+    pub(super) cents: i64,
+}
+
+/// Split ONE session's spend cents across its agent-type buckets, by largest remainder in
+/// proportion to each bucket's priced cost ([`cents::apportion`]), so the parts sum to the
+/// session's cents exactly. Buckets come in name order (the map's), which is the tiebreak.
+///
+/// A session with spend but no bucket (a hand-built or merged entry) puts its cents on
+/// [`MAIN_SESSION_BUCKET`]: they must land somewhere, and the residual is what "not delegated"
+/// means. A bucket's tokens ride along unchanged.
+pub(super) fn session_agent_cents(entry: &SessionEntry) -> Vec<(String, u64, i64)> {
+    let total = entry.spend_usd.map_or(0, cents::to_cents);
+    if entry.agent_type_costs.is_empty() {
+        if total == 0 {
+            return Vec::new();
+        }
+        return vec![(MAIN_SESSION_BUCKET.to_string(), 0, total)];
+    }
+    let weights: Vec<f64> = entry.agent_type_costs.values().map(|w| w.cost_usd).collect();
+    entry
+        .agent_type_costs
+        .iter()
+        .zip(cents::apportion(total, &weights))
+        .map(|((name, w), c)| (name.clone(), w.tokens, c))
+        .collect()
+}
+
 /// [`workload_rows`] for `agent-type-costs`, the one workload map the design declares a TRUE
 /// PARTITION of `totals.spend-usd` -- "every dollar landing in exactly one row" -- and which both
 /// prompt templates therefore tell the model to state a total for.
 ///
-/// Rounding each bucket independently does not preserve that, so the residual is allocated before
-/// rendering (see [`crate::cents`] for the algorithm and for when it declines). When it declines,
-/// the measured figures are rendered untouched and the discrepancy stays visible.
-pub(super) fn partition_rows(map: BTreeMap<String, WorkloadCost>, total: f64) -> Vec<WorkloadRow> {
-    let rows = sorted_workload(map);
-    debug!("render::partition_rows: buckets={} total={total:.4}", rows.len());
-    let measured: Vec<f64> = rows.iter().map(|(_, wc)| wc.cost_usd).collect();
-    let allocated = cents::allocate(&measured, total);
+/// Each row is a sum of per-session integer cents ([`session_agent_cents`]), so the rows add up to
+/// the sum of session cents, which IS the headline, with no display-time reallocation. Rows sort by
+/// cents descending, name ascending on a tie.
+pub(super) fn partition_rows(map: BTreeMap<String, AgentCents>) -> Vec<WorkloadRow> {
+    debug!("render::partition_rows: buckets={}", map.len());
+    let mut rows: Vec<(String, AgentCents)> = map.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cents.cmp(&a.1.cents).then_with(|| a.0.cmp(&b.0)));
     rows.into_iter()
-        .enumerate()
-        .map(|(index, (name, wc))| WorkloadRow {
+        .map(|(name, a)| WorkloadRow {
             name,
-            tokens_human: format_tokens_human(wc.tokens),
-            spend: match &allocated {
-                Some(cents) => format_usd(cents::to_dollars(cents[index])),
-                None => format_usd(wc.cost_usd),
-            },
+            tokens_human: format_tokens_human(a.tokens),
+            spend: format_usd(cents::to_dollars(a.cents)),
         })
         .collect()
 }

@@ -1015,7 +1015,7 @@ fn migrate_v15_snapshot_skips_fresh_and_current_catalogs() {
 }
 
 /// Eligibility reads the blob: NULL rows and bucket-less blobs are offered, a bucketed blob is not,
-/// and `has_blob` says which kind each candidate is. A corrupt blob cannot fail the query. BITES: a
+/// and `has_blob()` says which kind each candidate is. A corrupt blob cannot fail the query. BITES: a
 /// `NULL`-only predicate never offers the v14 blob; dropping `json_valid` errors the whole query.
 #[test]
 fn migrate_v15_eligibility_offers_null_and_bucket_less_blobs_only() {
@@ -1029,8 +1029,10 @@ fn migrate_v15_eligibility_offers_null_and_bucket_less_blobs_only() {
     annotate(&db, UUID_D, "{not json");
 
     let candidates = db.sessions_missing_efficiency().unwrap();
-    let by_id: std::collections::BTreeMap<&str, bool> =
-        candidates.iter().map(|c| (c.session_id.as_str(), c.has_blob)).collect();
+    let by_id: std::collections::BTreeMap<&str, bool> = candidates
+        .iter()
+        .map(|c| (c.session_id.as_str(), c.has_blob()))
+        .collect();
     assert_eq!(
         by_id.get(UUID_A),
         Some(&false),
@@ -1051,4 +1053,33 @@ fn migrate_v15_eligibility_offers_null_and_bucket_less_blobs_only() {
     // An older clyde rewriting the row without buckets puts it straight back in the set.
     annotate(&db, UUID_C, V14_BLOB);
     assert!(candidate_ids(&db).contains(&UUID_C.to_string()));
+}
+
+/// A candidate carries the token total its stored blob accounts for (the reindex guard compares a
+/// recompute against it), summed over the five raw counters, absent keys counting zero, and `None`
+/// for a row with no blob. BITES: drop a counter from the sum, or report `Some(0)` for a NULL row,
+/// and the guard compares against the wrong figure.
+#[test]
+fn candidates_carry_the_stored_blobs_aggregate_token_total() {
+    const FULL: &str = r#"{"session-id":"x","aggregate":{"raw":{"input-tokens":5,"output-tokens":7,"cache-read-tokens":11,"cache-5m-write-tokens":13,"cache-1h-write-tokens":17,"cost-usd":1.25}}}"#;
+    let db = Db::open_memory().unwrap();
+    for id in [UUID_A, UUID_B, UUID_C] {
+        db.upsert_session(&parsed(id, &format!("/tmp/{id}.jsonl")), "desk")
+            .unwrap();
+    }
+    annotate(&db, UUID_B, V14_BLOB);
+    annotate(&db, UUID_C, FULL);
+    let by_id: std::collections::BTreeMap<String, Option<u64>> = db
+        .sessions_missing_efficiency()
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.session_id, c.stored_tokens))
+        .collect();
+    assert_eq!(by_id.get(UUID_A), Some(&None), "no blob, no stored total");
+    assert_eq!(by_id.get(UUID_B), Some(&Some(5)), "absent counters count zero");
+    assert_eq!(
+        by_id.get(UUID_C),
+        Some(&Some(5 + 7 + 11 + 13 + 17)),
+        "all five counters"
+    );
 }

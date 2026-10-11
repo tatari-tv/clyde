@@ -401,6 +401,18 @@ ul.repos li:last-child {
   border-bottom: 1px solid var(--hairline);
 }
 
+ul.prs a {
+  color: var(--accent-sessions);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+ul.prs a:hover,
+ul.prs a:focus-visible {
+  text-decoration: underline;
+}
+
 .figures {
   color: var(--muted);
 }
@@ -671,6 +683,19 @@ code.pair-label {
   background: none;
   padding: 0 0 0 4px;
   white-space: normal;
+}
+
+.pair-head {
+  min-width: 0;
+}
+
+.pair-per {
+  display: block;
+  margin-top: 2px;
+  padding-left: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .pair-bars {
@@ -1385,7 +1410,7 @@ ol.steps {
 <p class="lead">Each row compares a share of the period&#39;s sessions with its share of spend. A spend bar longer than its sessions bar is work that cost more than its share of the sessions.</p>
 <figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By repository</figcaption></div>
 <ol class="pairs">
-<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="jrivera/driftwood: 12 sessions (100%), $49.47 (100%), $4.12 per session"><code class="pair-label">jrivera/driftwood</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 12 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $49.47</span></div></div></li>
+<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="jrivera/driftwood: 12 sessions (100%), $49.47 (100%), $4.12 per session"><div class="pair-head"><code class="pair-label">jrivera/driftwood</code><span class="pair-per">$4.12 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 12 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $49.47</span></div></div></li>
 </ol>
 <div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
 </section>

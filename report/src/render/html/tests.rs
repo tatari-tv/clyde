@@ -100,19 +100,30 @@ fn numeric_tokens(text: &str) -> Vec<String> {
     out
 }
 
+/// Chart GEOMETRY in the serialized block: a line chart's `viewbox` (`"0 0 1000 300"`) and `points`
+/// (`"0,287 34,120 ..."`), and every bar scale (`*-percent-of-max`). Coordinates are not figures a
+/// reader reads, so they license nothing: left in, `1000`, `300` and every `x,y` pair would license
+/// a fabricated "$1000" or "300 sessions".
+fn is_geometry_key(key: &str) -> bool {
+    matches!(key, "viewbox" | "points") || key.ends_with("-percent-of-max")
+}
+
 fn collect_scalars(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
         serde_json::Value::String(s) => out.push(s.clone()),
         serde_json::Value::Number(n) => out.push(n.to_string()),
         serde_json::Value::Array(items) => items.iter().for_each(|v| collect_scalars(v, out)),
-        serde_json::Value::Object(map) => map.values().for_each(|v| collect_scalars(v, out)),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .filter(|(k, _)| !is_geometry_key(k))
+            .for_each(|(_, v)| collect_scalars(v, out)),
         _ => {}
     }
 }
 
 /// The licensed numeric TOKENS: every numeric token of every display string the view model
-/// produced (each scalar of the serialized block, each registered fact), plus the row counts of
-/// the lists a `Show all N rows` expander counts.
+/// produced (each non-geometry scalar of the serialized block, each registered fact), plus the row
+/// counts of the lists a `Show all N rows` expander counts.
 ///
 /// Two fixed-wording tokens are licensed by name, because they are words in a binary-owned
 /// sentence rather than figures: the `1` of `the 1h premium` (an efficiency signal label) and the
@@ -140,6 +151,8 @@ fn licensed(block: &ContextBlock<'_>) -> std::collections::BTreeSet<String> {
     {
         strings.push(format_int(pairs.rows.len() as u64));
     }
+    // "Show all N repositories" under the opened-PR links.
+    strings.push(format_int(sections::pr_lists(block).len() as u64));
     strings.iter().flat_map(|s| numeric_tokens(s)).collect()
 }
 
@@ -213,6 +226,61 @@ fn licensing_matches_whole_tokens_only() {
     assert!(licensed.contains("1,234.56"));
     assert!(!licensed.contains("1,234"));
     assert!(!licensed.contains("234.56"));
+}
+
+/// Break-it proof for the licensed SET: `1000` and `300` are the line charts' viewBox
+/// (`"0 0 1000 300"`), so before geometry was excluded a fabricated "$1000" passed. It must fail.
+#[test]
+#[should_panic(expected = "unlicensed numeric token")]
+fn the_licensing_check_rejects_a_dollar_figure_only_chart_geometry_carries() {
+    with_case(
+        &medium(),
+        |_| {},
+        |block| {
+            let viewbox = &block.aggregates.charts.by_day_spend.as_ref().unwrap().viewbox;
+            assert!(viewbox.contains("1000"), "precondition: the geometry carries 1000");
+            let mut page = build(block, &SlotProse::new(), 10);
+            page.raw("<p>").text("That is $1000 of value.").raw("</p>");
+            assert_ledger_is_licensed(&page.ledger, &licensed(block));
+        },
+    );
+}
+
+/// The same for a count: "300 sessions" borrows its number from the viewBox height.
+#[test]
+#[should_panic(expected = "unlicensed numeric token")]
+fn the_licensing_check_rejects_a_session_count_only_chart_geometry_carries() {
+    with_case(
+        &medium(),
+        |_| {},
+        |block| {
+            let viewbox = &block.aggregates.charts.by_day_spend.as_ref().unwrap().viewbox;
+            assert!(viewbox.contains("300"), "precondition: the geometry carries 300");
+            let mut page = build(block, &SlotProse::new(), 10);
+            page.raw("<p>").attr("data-tip", "300 sessions").raw("</p>");
+            assert_ledger_is_licensed(&page.ledger, &licensed(block));
+        },
+    );
+}
+
+/// The licensed set holds no chart coordinate: no viewBox dimension and no `x,y` point pair.
+#[test]
+fn the_licensed_set_excludes_chart_geometry() {
+    with_case(
+        &medium(),
+        |_| {},
+        |block| {
+            let set = licensed(block);
+            let chart = block.aggregates.charts.by_day_spend.as_ref().unwrap();
+            for token in numeric_tokens(&chart.points).iter().filter(|t| t.contains(',')) {
+                assert!(!set.contains(token), "point pair {token:?} is licensed");
+            }
+            assert!(
+                !set.contains("1000") && !set.contains("300"),
+                "viewBox dimensions are licensed"
+            );
+        },
+    );
 }
 
 #[test]
@@ -322,16 +390,101 @@ fn page(case: &Case, top_n: usize) -> String {
     with_case(case, |_| {}, |block| render(block, &SlotProse::new(), top_n).unwrap())
 }
 
+/// No asset form at all (`src=`, `<link`, `url(`, `@import`, `fetch(`), and the only place a URL
+/// may appear is an `<a href="https://...">` link: the opened-PR list. A link is navigation, not a
+/// load, so the page still opens complete over `file://`.
 #[test]
 fn the_page_loads_no_external_asset() {
     for case in cases() {
         let html = page(&case, 10);
-        for banned in ["<link ", "src=", "url(", "@import", "fetch(", "http://", "https://"] {
+        for banned in [
+            "<link", "src=", "url(", "@import", "fetch(", "<img", "<iframe", "srcset",
+        ] {
             assert!(!html.contains(banned), "page carries {banned:?}");
+        }
+        for (at, _) in html.match_indices("://") {
+            let before = html.get(..at).unwrap();
+            assert!(
+                before.ends_with("<a href=\"https"),
+                "a URL outside an https link: {:?}",
+                html.get(at.saturating_sub(40)..at + 20)
+            );
         }
         assert!(html.starts_with("<!doctype html>"));
         assert!(!html.contains("__TITLE__") && !html.contains("__BODY__"));
     }
+}
+
+/// Every distinct opened-PR url in the medium fixture's `report.json` is linked exactly once in the
+/// committed `golden.html` (as an `https` href) and in `golden.md` (as a Markdown link), and nothing
+/// else is linked.
+#[test]
+fn the_medium_goldens_link_each_distinct_pr_url_once() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/report/medium");
+    let report = crate::render::load_report(&root.join("report.json"), "fixture report").unwrap();
+    let urls: std::collections::BTreeSet<String> = report
+        .sessions
+        .values()
+        .filter_map(|e| e.outcomes.as_ref())
+        .flat_map(|o| o.prs.iter().map(|pr| pr.url.clone()))
+        .collect();
+    assert!(urls.len() > 10, "precondition: more PRs than the top-n fold");
+    let html = std::fs::read_to_string(root.join("golden.html")).unwrap();
+    let md = std::fs::read_to_string(root.join("golden.md")).unwrap();
+    for url in &urls {
+        assert!(url.starts_with("https://"), "fixture url {url}");
+        let href = format!("<a href=\"{}\"", page::escape(url));
+        assert_eq!(html.matches(&href).count(), 1, "{url} in golden.html");
+        assert_eq!(md.matches(&format!("]({url})")).count(), 1, "{url} in golden.md");
+    }
+    assert_eq!(html.matches("<a href=").count(), urls.len(), "no other link");
+    assert_eq!(md.matches("](https://").count(), urls.len(), "no other link");
+
+    // Past `table-top-n` repositories the rest fold behind a `<details>`, each link still once.
+    let folded = page(&medium(), 1);
+    assert!(
+        folded.contains("Show all 5 repositories"),
+        "five repositories opened PRs"
+    );
+    for url in &urls {
+        let href = format!("<a href=\"{}\"", page::escape(url));
+        assert_eq!(folded.matches(&href).count(), 1, "{url} with top-n 1");
+    }
+}
+
+/// A PR url that is not `https://` (or carries a character that could end its attribute or link
+/// target) prints as its `#N` label with no link at all; the label and href are escaped. BITES:
+/// accept any scheme and `javascript:` reaches an href.
+#[test]
+fn a_non_https_pr_url_prints_as_text_never_a_link() {
+    assert_eq!(
+        sections::safe_pr_href("https://github.com/a/b/pull/1"),
+        Some("https://github.com/a/b/pull/1")
+    );
+    for bad in [
+        "http://github.com/a/b/pull/1",
+        "javascript:alert(1)",
+        "https://",
+        "https://x/\"onmouseover=\"x",
+        "https://x/a b",
+        "https://x/(y)",
+        "HTTPS://x",
+    ] {
+        assert_eq!(sections::safe_pr_href(bad), None, "{bad}");
+    }
+    let mut case = medium();
+    let entry = case
+        .report
+        .sessions
+        .values_mut()
+        .find(|e| e.outcomes.as_ref().is_some_and(|o| !o.prs.is_empty()))
+        .unwrap();
+    let pr = &mut entry.outcomes.as_mut().unwrap().prs[0];
+    pr.url = "javascript:alert(1)".to_string();
+    let number = pr.number;
+    let html = page(&case, 10);
+    assert!(!html.contains("javascript:"), "the url never reaches the page");
+    assert!(html.contains(&format!("#{number}")), "the label still prints");
 }
 
 #[test]
@@ -858,4 +1011,82 @@ fn daily_spend_by_model_uses_the_cost_summary_model_colors() {
             assert!(daily.legend.len() >= 2);
         },
     );
+}
+
+/// Per-session spend on the paired bars is visible TEXT, not only a `data-tip` the script shows on
+/// hover: with JS off the page still shows every number (design Overview). BITES: drop the
+/// `pair-per` span and the figure lives only in an attribute.
+#[test]
+fn per_session_spend_is_visible_text_not_only_a_tooltip() {
+    let case = medium();
+    let html = page(&case, 10);
+    with_case(
+        &case,
+        |_| {},
+        |block| {
+            let v = visuals::build(block);
+            let rows: Vec<&visuals::PairRow> = [&v.orgs, &v.repos]
+                .into_iter()
+                .flatten()
+                .flat_map(|p| &p.rows)
+                .collect();
+            assert!(!rows.is_empty());
+            for row in rows {
+                assert!(row.per_session.ends_with(" per session"), "{}", row.per_session);
+                let text = format!("<span class=\"pair-per\">{}</span>", page::escape(&row.per_session));
+                assert!(html.contains(&text), "{} is not visible text", row.per_session);
+            }
+        },
+    );
+}
+
+/// Parse a `$1,234.56` display string back to cents, the way a reader adds a column up.
+fn display_cents(spend: &str) -> i64 {
+    let negative = spend.starts_with('-');
+    let cents = (spend.replace(['-', '$', ','], "").parse::<f64>().unwrap() * 100.0).round() as i64;
+    if negative { -cents } else { cents }
+}
+
+/// ONE source for every partition on the page: the header, the repo rows, the org rows and the
+/// agent-type rows all equal the sum of per-session integer cents, on every committed fixture, both
+/// as cents twins and as the strings a reader adds up. BITES: sum repo/org spend as f64 or split
+/// agent types from the f64 bucket costs again and a fixture drifts by a cent.
+#[test]
+fn header_repo_org_and_agent_type_rows_all_sum_the_session_cents_on_every_fixture() {
+    for case in cases().into_iter().take(3) {
+        let session_cents = crate::report::session_cents_total(case.report.sessions.values());
+        assert!(
+            case.report.sessions.values().all(|e| e.repo.is_some()),
+            "precondition: the fixture is fully attributed, so by-repo is a partition"
+        );
+        with_case(
+            &case,
+            |_| {},
+            |block| {
+                let agg = block.aggregates;
+                assert_eq!(display_cents(&block.totals.spend), session_cents, "header");
+                let repo: i64 = agg.by_repo.iter().map(|r| r.spend_cents).sum();
+                let repo_shown: i64 = agg.by_repo.iter().map(|r| display_cents(&r.spend)).sum();
+                let org: i64 = agg.by_org.iter().map(|r| r.spend_cents).sum();
+                let org_shown: i64 = agg.by_org.iter().map(|r| display_cents(&r.spend)).sum();
+                let agent: i64 = block
+                    .efficiency
+                    .agent_type_costs
+                    .iter()
+                    .map(|r| display_cents(&r.spend))
+                    .sum();
+                assert_eq!(
+                    (repo, repo_shown, org, org_shown, agent),
+                    (
+                        session_cents,
+                        session_cents,
+                        session_cents,
+                        session_cents,
+                        session_cents
+                    ),
+                    "repo, repo shown, org, org shown, agent-type"
+                );
+            },
+        );
+    }
 }

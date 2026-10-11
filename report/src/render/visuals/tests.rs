@@ -421,7 +421,7 @@ fn display_strings_cover_every_chart_label() {
                 "39%",
                 "17 sessions",
                 "$10 to $25: 18 sessions",
-                "$3,201.82",
+                "$3,201.81",
                 "2026-04-01: $11.80",
             ] {
                 assert!(strings.iter().any(|s| s == expected), "{expected}");

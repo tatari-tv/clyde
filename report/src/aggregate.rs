@@ -94,8 +94,13 @@ pub struct OrgRow {
     #[serde(skip)]
     pub tokens: u64,
     pub tokens_human: String,
+    /// [`Self::spend_cents`] in dollars, the operand chart geometry scales by. Never serialized.
     #[serde(skip)]
     pub spend_raw: f64,
+    /// The sum of this org's sessions' spend in whole cents, the same per-session cents the header
+    /// adds, so the org rows sum to the headline exactly. Never serialized.
+    #[serde(skip)]
+    pub spend_cents: i64,
     pub spend: String,
     /// Bar-chart geometry (design "Chart truthfulness"): `spend-raw / max(spend-raw across this
     /// series) * 100`, one decimal, `None` (and absent from JSON) when the whole series is $0 - a
@@ -113,8 +118,12 @@ pub struct RepoRow {
     #[serde(skip)]
     pub tokens: u64,
     pub tokens_human: String,
+    /// See [`OrgRow::spend_raw`].
     #[serde(skip)]
     pub spend_raw: f64,
+    /// See [`OrgRow::spend_cents`].
+    #[serde(skip)]
+    pub spend_cents: i64,
     pub spend: String,
     /// See [`OrgRow::spend_percent_of_max`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -329,15 +338,20 @@ pub fn compute(report: &Report, outliers_n: usize, pricing: &Pricing) -> Aggrega
 /// helper so this crate and `efficiency` cannot drift on the same formula/name (design:
 /// `docs/design/2026-07-22-session-efficiency-signals.md`, Phase 2). The helper returns `None`
 /// only on a zero denominator; `report` preserves its own pre-existing convention of rendering
-/// that as `"0.0%"` (never blank), while `efficiency` keeps the `None` and renders `n/a`. The
-/// counterfactual reprices each model as if every cache token (reads AND 5m/1h writes) had been
-/// fresh `input` with the cache fields zeroed, reusing the crate's own >200k tiering via
-/// `Pricing::calculate_usd`, summed across priced models; `cache-savings` is that minus the
-/// report's actual priced spend. If ANY model with nonzero cache tokens is unpriced, BOTH
+/// that as `"0.0%"` (never blank), while `efficiency` keeps the `None` and renders `n/a`.
+///
+/// The counterfactual is priced on the SAME basis as the spend it is compared with: per session,
+/// per model, in whole cents, then summed (see [`session_list_cents`]). Each model's tokens are
+/// repriced as if every cache token (reads AND 5m/1h writes) had been fresh `input` with the cache
+/// fields zeroed. Folding cache into input leaves the model's total input unchanged, so each slice
+/// lands on the long-context tier its own session's spend was priced at, never the tier a month of
+/// union input would pick. `cache-savings` is list cents minus spend cents, so a window that used
+/// no cache saves exactly `$0.00`. If ANY model with nonzero cache tokens is unpriced, BOTH
 /// counterfactual fields are `None` (fail closed: never a `$0` stand-in for an unknown).
 fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
     debug!(
-        "aggregate::compute_cache_stats: models={} actual-spend={}",
+        "aggregate::compute_cache_stats: sessions={} models={} actual-spend={}",
+        report.sessions.len(),
         report.totals.models.len(),
         report.totals.spend_usd
     );
@@ -345,38 +359,19 @@ fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
     let mut total_cache_read: u64 = 0;
     let mut total_cache_5m: u64 = 0;
     let mut total_cache_1h: u64 = 0;
-
-    let mut list_price = 0.0_f64;
-    let mut counterfactual_ok = true;
-
-    for (model, m) in &report.totals.models {
+    for m in report.totals.models.values() {
         total_input += m.input;
         total_cache_read += m.cache_read;
         total_cache_5m += m.cache_5m_write;
         total_cache_1h += m.cache_1h_write;
+    }
 
-        let cache_tokens = m.cache_read + m.cache_5m_write + m.cache_1h_write;
-        // "What if every token were fresh input": fold ALL cache tokens into `input`, zero the
-        // cache fields. Without caching those writes would not exist either.
-        let usage = TokenUsage {
-            input_tokens: m.input + cache_tokens,
-            output_tokens: m.output,
-            cache_5m_write_tokens: 0,
-            cache_1h_write_tokens: 0,
-            cache_read_tokens: 0,
+    let mut list_price_cents: Option<i64> = Some(0);
+    for entry in report.sessions.values() {
+        list_price_cents = match (list_price_cents, session_list_cents(entry, pricing)) {
+            (Some(sum), Some(c)) => Some(sum + c),
+            _ => None,
         };
-        match common::metrics::price(model, &usage, pricing) {
-            Some(cost) => list_price += cost,
-            None if cache_tokens > 0 => {
-                // A cache-bearing model with no price makes the whole counterfactual unknowable.
-                debug!(
-                    "aggregate::compute_cache_stats: unpriced cache-bearing model `{}`; counterfactual absent",
-                    model
-                );
-                counterfactual_ok = false;
-            }
-            None => {}
-        }
     }
 
     let share_pct = common::cache_read_share(total_input, total_cache_read, total_cache_5m, total_cache_1h)
@@ -384,12 +379,15 @@ fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
         .unwrap_or(0.0);
 
     // Whole cents first, then every display string from those cents: savings are the difference of
-    // the two ROUNDED figures, so list price minus savings is the displayed spend exactly.
-    let spend_cents = to_cents(report.totals.spend_usd);
-    let list_price_cents = counterfactual_ok.then(|| to_cents(list_price));
+    // the two cent sums, so list price minus savings is the displayed spend exactly.
+    let spend_cents = crate::report::session_cents_total(report.sessions.values());
     let cache_savings_cents = list_price_cents.map(|list| list - spend_cents);
     let list_price_equivalent = list_price_cents.map(|c| format_usd(cents::to_dollars(c)));
     let cache_savings = cache_savings_cents.map(|c| format_usd(cents::to_dollars(c)));
+    debug!(
+        "aggregate::compute_cache_stats: list-cents={list_price_cents:?} spend-cents={spend_cents} \
+         savings-cents={cache_savings_cents:?}"
+    );
 
     CacheStats {
         cache_read_share: format!("{:.1}%", share_pct),
@@ -403,9 +401,50 @@ fn compute_cache_stats(report: &Report, pricing: &Pricing) -> CacheStats {
     }
 }
 
-/// Dollars to whole cents, the unit every display string rounds to.
-fn to_cents(dollars: f64) -> i64 {
-    (dollars * cents::CENTS_PER_DOLLAR).round() as i64
+/// One session's list price ("every token fresh input") in whole cents: the sum of each model's
+/// counterfactual, each rounded to cents the way that model's spend was ([`ModelTokens::spend_usd`]
+/// is `round_cents` of its price). A model with no cache tokens has a counterfactual identical to
+/// its actual usage, so its list cents ARE its recorded spend cents: no repricing, and no drift if
+/// the feed moved since collect. `None` when a model with cache tokens is unpriced, in the artifact
+/// or in `pricing` (the comparison is unknowable); an unpriced model with no cache tokens adds zero
+/// to both sides.
+///
+/// [`ModelTokens::spend_usd`]: crate::report::ModelTokens::spend_usd
+fn session_list_cents(entry: &SessionEntry, pricing: &Pricing) -> Option<i64> {
+    let mut total: i64 = 0;
+    for (model, m) in &entry.models {
+        let cache_tokens = m.cache_read + m.cache_5m_write + m.cache_1h_write;
+        if cache_tokens == 0 {
+            total += m.spend_usd.map_or(0, cents::to_cents);
+            continue;
+        }
+        if m.spend_usd.is_none() {
+            // The artifact has no actual spend to compare a list price with for this model.
+            debug!(
+                "aggregate::session_list_cents: cache-bearing model `{model}` has no recorded spend; counterfactual absent"
+            );
+            return None;
+        }
+        // "What if every token were fresh input": fold ALL cache tokens into `input`, zero the
+        // cache fields. Without caching those writes would not exist either.
+        let usage = TokenUsage {
+            input_tokens: m.input + cache_tokens,
+            output_tokens: m.output,
+            cache_5m_write_tokens: 0,
+            cache_1h_write_tokens: 0,
+            cache_read_tokens: 0,
+        };
+        let Some(cost) = common::metrics::price(model, &usage, pricing) else {
+            debug!("aggregate::session_list_cents: unpriced cache-bearing model `{model}`; counterfactual absent");
+            return None;
+        };
+        total += cents::to_cents(cents::round_cents(cost));
+    }
+    trace!(
+        "aggregate::session_list_cents: models={} list-cents={total}",
+        entry.models.len()
+    );
+    Some(total)
 }
 
 /// `repo.split_once('/')` first component per the Definitions section; `None` repos (and repos
@@ -429,7 +468,7 @@ struct OrgAcc {
     repos: BTreeSet<String>,
     sessions: usize,
     tokens: u64,
-    spend: f64,
+    cents: i64,
 }
 
 fn compute_by_org(report: &Report) -> Vec<OrgRow> {
@@ -443,7 +482,7 @@ fn compute_by_org(report: &Report) -> Vec<OrgRow> {
         }
         acc.sessions += 1;
         acc.tokens += entry.total_tokens();
-        acc.spend += entry.spend_usd.unwrap_or(0.0);
+        acc.cents += session_cents(entry);
     }
     let mut rows: Vec<OrgRow> = orgs
         .into_iter()
@@ -453,8 +492,9 @@ fn compute_by_org(report: &Report) -> Vec<OrgRow> {
             sessions: acc.sessions,
             tokens: acc.tokens,
             tokens_human: format_tokens_human(acc.tokens),
-            spend_raw: acc.spend,
-            spend: format_usd(acc.spend),
+            spend_raw: cents::to_dollars(acc.cents),
+            spend_cents: acc.cents,
+            spend: format_usd(cents::to_dollars(acc.cents)),
             spend_percent_of_max: None,
         })
         .collect();
@@ -462,19 +502,10 @@ fn compute_by_org(report: &Report) -> Vec<OrgRow> {
     for row in &mut rows {
         row.spend_percent_of_max = percent_of_max(row.spend_raw, max_spend);
     }
-    sort_by_spend_desc(&mut rows, |r| r.spend_raw);
     // ALWAYS a complete partition, unlike `by-repo`: a session with no repo lands in this table's
-    // own `(unattributed)` org bucket rather than being dropped, so the rows always account for the
-    // whole headline and must always sum to it.
-    reconcile_displayed_spend(
-        "by-org",
-        &mut rows,
-        report.totals.spend_usd,
-        |r| r.spend_raw,
-        |r, s| {
-            r.spend = s;
-        },
-    );
+    // own `(unattributed)` org bucket rather than being dropped. Each row adds the same per-session
+    // cents the headline adds, so the rows sum to it exactly with no display-time reallocation.
+    sort_by_spend_desc(&mut rows, |r| r.spend_raw);
     debug!("aggregate::compute_by_org: rows={} max-spend={}", rows.len(), max_spend);
     rows
 }
@@ -483,7 +514,7 @@ fn compute_by_org(report: &Report) -> Vec<OrgRow> {
 struct RepoAcc<'a> {
     sessions: usize,
     tokens: u64,
-    spend: f64,
+    cents: i64,
     models: BTreeSet<String>,
     /// The best (lowest-rank) [`RepoSource`] seen for this repo; see [`RepoRow::repo_source`].
     best_source: Option<RepoSource>,
@@ -518,7 +549,7 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
         let acc = repos.entry(repo.to_string()).or_default();
         acc.sessions += 1;
         acc.tokens += entry.total_tokens();
-        acc.spend += entry.spend_usd.unwrap_or(0.0);
+        acc.cents += session_cents(entry);
         acc.models.extend(entry.models.keys().cloned());
         acc.observe(entry.repo_source.as_deref());
         if let Some(outcomes) = entry.outcomes.as_ref() {
@@ -536,8 +567,9 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
                 sessions: acc.sessions,
                 tokens: acc.tokens,
                 tokens_human: format_tokens_human(acc.tokens),
-                spend_raw: acc.spend,
-                spend: format_usd(acc.spend),
+                spend_raw: cents::to_dollars(acc.cents),
+                spend_cents: acc.cents,
+                spend: format_usd(cents::to_dollars(acc.cents)),
                 spend_percent_of_max: None,
                 outcomes,
                 commits_percent_of_max: None,
@@ -564,28 +596,11 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
             row.prs_percent_of_max = percent_of_max(o.prs_opened as f64, max_prs.unwrap_or(0) as f64);
         }
     }
+    // Each row adds the same per-session cents the headline adds. When every session carries a
+    // repo the rows are a complete partition and sum to the headline exactly; with an unattributed
+    // session they are a genuine subset and sum to less, the `(unattributed)` remainder that
+    // `compute_attribution` states. No display-time cent moves either way.
     sort_by_spend_desc(&mut rows, |r| r.spend_raw);
-    // `by-repo` is a COMPLETE partition of the headline exactly when every session carries a repo:
-    // the rows then account for the whole window and the artifact presents them that way, so the
-    // displayed column must sum to the displayed total. With even one unattributed session the
-    // table is a genuine subset and must NOT be forced to sum -- adding a cent to a repo row would
-    // attribute money no session's own price supports, which is what `compute_attribution`'s
-    // `(unattributed)` bucket exists to avoid.
-    //
-    // Every fixture in the corpus is fully attributed, and each one shipped a table that disagreed
-    // with its own headline: `$64.86` against `$64.85`, `$49.47` against `$49.48`, `$671.26` against
-    // `$671.28`.
-    if !report.sessions.values().any(|e| e.repo.is_none()) {
-        reconcile_displayed_spend(
-            "by-repo",
-            &mut rows,
-            report.totals.spend_usd,
-            |r| r.spend_raw,
-            |r, s| {
-                r.spend = s;
-            },
-        );
-    }
     debug!(
         "aggregate::compute_by_repo: rows={} rows-with-outcomes={} max-spend={} max-commits={:?} max-prs={:?}",
         rows.len(),
@@ -597,37 +612,10 @@ fn compute_by_repo(report: &Report) -> Vec<RepoRow> {
     rows
 }
 
-/// Rewrite each row's DISPLAYED spend string so the column sums to `total` exactly, for a table
-/// that IS a complete partition of the headline. Callers must establish that first; see
-/// [`crate::cents`] for the algorithm and for when it declines to allocate.
-///
-/// Only the display string moves. `spend_raw` keeps its MEASURED value, deliberately, so the bar
-/// geometry (`spend-percent-of-max`) stays proportional to what was actually spent and the sort
-/// order cannot be perturbed by a presentation cent. The two therefore differ by at most a cent on
-/// at most one row, which is why `spend_raw` is `#[serde(skip)]`: it is the raw operand, never a
-/// figure the model sees, so there is no field the artifact can quote them disagreeing through.
-///
-/// `rows` must already be in DISPLAY order: the allocator breaks remainder ties by index, so the
-/// order it receives is what makes the result reproducible.
-fn reconcile_displayed_spend<T>(
-    table: &str,
-    rows: &mut [T],
-    total: f64,
-    raw: impl Fn(&T) -> f64,
-    set: impl Fn(&mut T, String),
-) {
-    let measured: Vec<f64> = rows.iter().map(&raw).collect();
-    let Some(cents) = cents::allocate(&measured, total) else {
-        debug!("aggregate::reconcile_displayed_spend: {table} left as measured");
-        return;
-    };
-    for (row, c) in rows.iter_mut().zip(cents) {
-        set(row, format_usd(cents::to_dollars(c)));
-    }
-    debug!(
-        "aggregate::reconcile_displayed_spend: {table} reconciled {} row(s) to {total:.2}",
-        rows.len()
-    );
+/// One session's spend in whole cents, the unit the headline sums ([`crate::report::session_cents_total`]).
+/// Unpriced sessions add zero.
+fn session_cents(entry: &SessionEntry) -> i64 {
+    entry.spend_usd.map_or(0, cents::to_cents)
 }
 
 /// Fold one repo's attributed sessions into its [`RepoOutcomes`], or `None` when the repo observed

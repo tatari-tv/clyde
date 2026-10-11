@@ -523,163 +523,6 @@ fn compute_on_empty_report_zero_fills_by_day_and_yields_empty_coverage() {
     assert_eq!(aggregates.cache.list_price_equivalent.as_deref(), Some("$0.00"));
 }
 
-/// A single model whose tokens fold cleanly: build a totals rollup with cache tokens, price it
-/// against the embedded feed, and read the rates back via the public `lookup` so the hand-computed
-/// value tracks the feed (never a hardcoded rate) yet still exercises the folding formula
-/// independently of `compute`.
-fn model_tokens(
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_5m: u64,
-    cache_1h: u64,
-    spend: Option<f64>,
-) -> ModelTokens {
-    ModelTokens {
-        input,
-        output,
-        cache_5m_write: cache_5m,
-        cache_1h_write: cache_1h,
-        cache_read,
-        total: input + output + cache_read + cache_5m + cache_1h,
-        spend_usd: spend,
-    }
-}
-
-fn report_with_totals(models: Vec<(&str, ModelTokens)>, actual_spend: f64) -> Report {
-    let mut totals_models = BTreeMap::new();
-    for (name, mt) in models {
-        totals_models.insert(name.to_string(), mt);
-    }
-    Report {
-        schema_version: crate::report::SCHEMA_VERSION,
-        generated: ts("2026-07-01T00:00:00Z"),
-        host: "desk".into(),
-        since: ts("2026-06-01T00:00:00Z"),
-        until: ts("2026-07-01T00:00:00Z"),
-        outcomes_enabled: None,
-        notes: Vec::new(),
-        totals: Totals {
-            sessions: 0,
-            spend_usd: actual_spend,
-            untracked_models: Vec::new(),
-            models: totals_models,
-            outcomes: None,
-            cache_read_share: None,
-            tool_error_rate: None,
-        },
-        sessions: BTreeMap::new(),
-    }
-}
-
-#[test]
-fn cache_counterfactual_equals_hand_computed_value() {
-    let p = pricing();
-    // Token counts chosen small so folded input stays under the 200k long-context tier: the
-    // standard per-mtok rates apply and the hand computation is a plain linear formula.
-    let input = 1_000u64;
-    let output = 500u64;
-    let cache_read = 9_000u64;
-    let cache_5m = 0u64;
-    let cache_1h = 0u64;
-    let actual_spend = 0.12_f64;
-    let report = report_with_totals(
-        vec![(
-            "claude-opus-4-7",
-            model_tokens(input, output, cache_read, cache_5m, cache_1h, Some(actual_spend)),
-        )],
-        actual_spend,
-    );
-
-    let aggregates = compute(&report, DEFAULT_OUTLIERS, &p);
-
-    // cache-read-share = cache_read / (input + cache_read + cache_5m + cache_1h)
-    assert_eq!(aggregates.cache.cache_read_share, "90.0%");
-    assert_eq!(aggregates.cache.input_tokens_human, "1,000");
-    assert_eq!(aggregates.cache.cache_read_tokens_human, "9,000");
-
-    // Hand-compute the counterfactual from the feed's own published rates: ALL cache tokens folded
-    // into input, cache fields zeroed. Rates read via the public API so this tracks the feed.
-    let rates = p
-        .lookup("claude-opus-4-7")
-        .expect("opus-4-7 is priced in the embedded feed");
-    let folded_input = input + cache_read + cache_5m + cache_1h;
-    let expected_list_price =
-        folded_input as f64 * rates.input_per_mtok / 1_000_000.0 + output as f64 * rates.output_per_mtok / 1_000_000.0;
-
-    assert_eq!(
-        aggregates.cache.list_price_equivalent.as_deref(),
-        Some(format_usd(expected_list_price).as_str())
-    );
-    assert_eq!(
-        aggregates.cache.cache_savings.as_deref(),
-        Some(format_usd(expected_list_price - actual_spend).as_str())
-    );
-}
-
-#[test]
-fn cache_counterfactual_absent_when_a_cache_bearing_model_is_unpriced() {
-    let report = report_with_totals(
-        vec![(
-            "claude-does-not-exist-9",
-            // Nonzero cache reads on an unpriced model: the whole counterfactual is unknowable.
-            model_tokens(1_000, 500, 4_000, 0, 0, None),
-        )],
-        0.0,
-    );
-
-    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
-
-    assert_eq!(aggregates.cache.list_price_equivalent, None);
-    assert_eq!(aggregates.cache.cache_savings, None);
-
-    // The Option::is_none skip means the keys are ABSENT from the serialized context, never "$0".
-    let json = serde_json::to_value(&aggregates.cache).unwrap();
-    assert!(json.get("list-price-equivalent").is_none());
-    assert!(json.get("cache-savings").is_none());
-    // The non-pricing fields are still present regardless.
-    assert!(json.get("cache-read-share").is_some());
-}
-
-#[test]
-fn cache_savings_renders_negative_when_actual_spend_exceeds_counterfactual() {
-    let p = pricing();
-    // Write-heavy, low-reuse profile: cache writes are priced above base input, so actual spend
-    // can exceed the "fold everything into fresh input" counterfactual and cache_savings goes
-    // negative. It must render "-$..." (sign before dollar), never a corrupted "$-..." figure the
-    // model copies verbatim into the report.
-    let input = 1_000u64;
-    let output = 500u64;
-    let cache_read = 0u64;
-    let cache_5m = 9_000u64;
-    let cache_1h = 0u64;
-
-    let rates = p
-        .lookup("claude-opus-4-7")
-        .expect("opus-4-7 is priced in the embedded feed");
-    let folded_input = input + cache_read + cache_5m + cache_1h;
-    let list_price =
-        folded_input as f64 * rates.input_per_mtok / 1_000_000.0 + output as f64 * rates.output_per_mtok / 1_000_000.0;
-
-    // Force actual spend above the counterfactual so savings is negative.
-    let actual_spend = list_price + 1.0;
-    let report = report_with_totals(
-        vec![(
-            "claude-opus-4-7",
-            model_tokens(input, output, cache_read, cache_5m, cache_1h, Some(actual_spend)),
-        )],
-        actual_spend,
-    );
-
-    let aggregates = compute(&report, DEFAULT_OUTLIERS, &p);
-    let savings = aggregates.cache.cache_savings.as_deref().unwrap();
-    assert_eq!(savings, format_usd(list_price - actual_spend).as_str());
-    assert!(
-        savings.starts_with("-$"),
-        "negative savings must render sign-before-dollar, got {savings}"
-    );
-}
-
 /// Design "Chart truthfulness" success criterion: a `[200, 100, 50]` spend series must yield
 /// `spend-percent-of-max` `[100.0, 50.0, 25.0]`, one decimal, and the kebab-case JSON key.
 /// One repo per org keeps `by-org` and `by-repo` numerically identical so both series are checked
@@ -824,24 +667,6 @@ fn sessions_percent_of_max_scales_against_max_daily_session_count() {
     // day1 has the higher spend but fewer sessions: spend-percent-of-max must not track sessions.
     assert_eq!(day1.spend_percent_of_max, Some(100.0));
     assert_eq!(day2.spend_percent_of_max, Some(20.0));
-}
-
-#[test]
-fn cache_counterfactual_present_when_unpriced_model_has_no_cache_tokens() {
-    let p = pricing();
-    // A priced cache-bearing model plus an unpriced model with ZERO cache tokens: the latter does
-    // not nullify the counterfactual (only cache-bearing unpriced models do).
-    let report = report_with_totals(
-        vec![
-            ("claude-opus-4-7", model_tokens(1_000, 500, 9_000, 0, 0, Some(0.12))),
-            ("claude-does-not-exist-9", model_tokens(1_000, 0, 0, 0, 0, None)),
-        ],
-        0.12,
-    );
-
-    let aggregates = compute(&report, DEFAULT_OUTLIERS, &p);
-    assert!(aggregates.cache.list_price_equivalent.is_some());
-    assert!(aggregates.cache.cache_savings.is_some());
 }
 
 /// Build an entry with an explicit `repo_source`, for the provenance rollups.
@@ -1371,9 +1196,9 @@ fn displayed_cents(spends: impl IntoIterator<Item = String>) -> i64 {
         .sum()
 }
 
-/// A report whose per-session spends sum to a CENT MORE than the headline -- the shape every
-/// committed fixture has, because `totals.spend-usd` prices the unioned token counts once while each
-/// session is priced on its own.
+/// A report whose headline DISAGREES with its sessions by a cent: the shape every fixture had while
+/// `totals.spend-usd` priced the unioned token counts. Since the headline became the sum of session
+/// cents this cannot be collected, so the rows must follow the sessions, never the headline.
 fn report_a_cent_over(sessions: Vec<(&str, SessionEntry)>, headline: f64) -> Report {
     let mut report = report_with("2026-06-01T00:00:00Z", "2026-06-30T00:00:00Z", sessions);
     report.totals.spend_usd = headline;
@@ -1381,12 +1206,13 @@ fn report_a_cent_over(sessions: Vec<(&str, SessionEntry)>, headline: f64) -> Rep
 }
 
 /// `by-repo` is a complete partition when every session carries a repo, and the artifact presents it
-/// that way -- so the DISPLAYED column must sum to the DISPLAYED headline. Every fixture shipped a
-/// table that did not: `$64.86` against `$64.85`, `$49.47` against `$49.48`, `$671.26` against
-/// `$671.28`.
+/// that way, so the DISPLAYED column must sum to the DISPLAYED headline. Every row is a sum of the
+/// same per-session cents the headline sums, so it does with no reallocation.
 #[test]
 fn by_repo_reconciles_to_the_headline_when_every_session_is_attributed() {
-    let report = report_a_cent_over(
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T00:00:00Z",
         vec![
             (
                 "a",
@@ -1397,21 +1223,23 @@ fn by_repo_reconciles_to_the_headline_when_every_session_is_attributed() {
                 entry_sourced(Some("northwind/halyard"), Some(RepoSource::KnownPath), 24.42),
             ),
         ],
-        64.85,
     );
     let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+    let rows: i64 = aggregates.by_repo.iter().map(|r| r.spend_cents).sum();
+    assert_eq!(rows, crate::report::session_cents_total(report.sessions.values()));
     assert_eq!(
         displayed_cents(aggregates.by_repo.iter().map(|r| r.spend.clone())),
-        6485,
+        6486,
         "rows: {:?}",
         aggregates.by_repo.iter().map(|r| &r.spend).collect::<Vec<_>>()
     );
 }
 
-/// The single-repo case, which is where the contradiction is starkest: one row IS the window, so a
-/// reader sees `$49.47` sitting under a `$49.48` headline with nothing to explain the gap.
+/// Inverted from `a_lone_repo_row_equals_the_headline_exactly`, which forced a lone row onto a
+/// headline its one session did not support. The row is its session's cents: `$49.47`, whatever a
+/// stale headline says.
 #[test]
-fn a_lone_repo_row_equals_the_headline_exactly() {
+fn a_lone_repo_row_is_its_sessions_cents_not_a_disagreeing_headline() {
     let report = report_a_cent_over(
         vec![(
             "a",
@@ -1421,16 +1249,17 @@ fn a_lone_repo_row_equals_the_headline_exactly() {
     );
     let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
     assert_eq!(aggregates.by_repo.len(), 1);
-    assert_eq!(aggregates.by_repo[0].spend, "$49.48");
+    assert_eq!(aggregates.by_repo[0].spend, "$49.47");
+    assert_eq!(aggregates.by_repo[0].spend_cents, 4947);
 }
 
-/// BITES: with even ONE unattributed session the table is a genuine SUBSET, not a partition, and
-/// must NOT be forced to sum. Adding a cent to a repo row would attribute money no session's own
-/// price supports -- which is exactly what `compute_attribution`'s `(unattributed)` bucket exists to
-/// avoid.
+/// With even ONE unattributed session the table is a genuine SUBSET, not a partition: the
+/// attributed repo keeps exactly its own sessions' cents.
 #[test]
 fn by_repo_is_left_alone_when_a_session_is_unattributed() {
-    let report = report_a_cent_over(
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T00:00:00Z",
         vec![
             (
                 "a",
@@ -1438,7 +1267,6 @@ fn by_repo_is_left_alone_when_a_session_is_unattributed() {
             ),
             ("b", entry_sourced(None, None, 24.86)),
         ],
-        64.85,
     );
     let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
     assert_eq!(aggregates.by_repo.len(), 1, "the unattributed session has no row");
@@ -1449,11 +1277,12 @@ fn by_repo_is_left_alone_when_a_session_is_unattributed() {
 }
 
 /// `by-org` is ALWAYS a partition, unlike `by-repo`: an unattributed session lands in this table's
-/// own `(unattributed)` org bucket rather than being dropped, so the rows always account for the
-/// whole headline and must always sum to it.
+/// own `(unattributed)` org bucket rather than being dropped, so the rows sum to the session cents.
 #[test]
 fn by_org_reconciles_to_the_headline_even_with_unattributed_sessions() {
-    let report = report_a_cent_over(
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-30T00:00:00Z",
         vec![
             (
                 "a",
@@ -1461,7 +1290,6 @@ fn by_org_reconciles_to_the_headline_even_with_unattributed_sessions() {
             ),
             ("b", entry_sourced(None, None, 24.86)),
         ],
-        64.85,
     );
     let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
     assert!(
@@ -1470,16 +1298,17 @@ fn by_org_reconciles_to_the_headline_even_with_unattributed_sessions() {
     );
     assert_eq!(
         displayed_cents(aggregates.by_org.iter().map(|r| r.spend.clone())),
-        6485,
+        6486,
         "rows: {:?}",
         aggregates.by_org.iter().map(|r| &r.spend).collect::<Vec<_>>()
     );
 }
 
-/// Geometry stays proportional to what was MEASURED: the allocation moves a display string, never
-/// an operand, so a presentation cent cannot perturb a bar width or the sort order.
+/// Inverted from `reconciliation_moves_the_display_string_and_not_the_operand`: there is no
+/// display-time reallocation left, so the display string, the cents twin and the geometry operand
+/// are one figure.
 #[test]
-fn reconciliation_moves_the_display_string_and_not_the_operand() {
+fn repo_display_cents_and_operand_are_one_figure() {
     let report = report_a_cent_over(
         vec![(
             "a",
@@ -1489,10 +1318,9 @@ fn reconciliation_moves_the_display_string_and_not_the_operand() {
     );
     let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
     let row = &aggregates.by_repo[0];
-    assert_eq!(row.spend, "$49.48", "the DISPLAY reconciles");
-    assert!(
-        (row.spend_raw - 49.47).abs() < 1e-9,
-        "the raw operand stays the measured value: {}",
-        row.spend_raw
-    );
+    assert_eq!(row.spend, "$49.47");
+    assert_eq!(row.spend_cents, 4947);
+    assert!((row.spend_raw - 49.47).abs() < 1e-9, "operand: {}", row.spend_raw);
 }
+
+mod cache;

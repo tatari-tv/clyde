@@ -689,3 +689,72 @@ fn migrate_v15_then_reindex_keeps_the_old_blob_when_a_file_fails_to_extract() {
         Some(before.as_str())
     );
 }
+
+const SID_V14_TRUNCATED: &str = "99999999-9999-4999-8999-999999999901";
+
+/// A recompute that succeeds on FEWER bytes than the blob saw keeps the blob: the only copy left on
+/// disk is a truncated one (a staged copy taken before the session ended), so every file extracts
+/// and the recompute is complete for what remains, yet it accounts for fewer tokens than the stored
+/// blob. It is counted `kept`, never `computed`. BITES: drop the `recomputed < stored` arm in
+/// `collect_layouts` and the blob is overwritten with less accounting.
+#[test]
+fn migrate_v15_then_reindex_keeps_the_old_blob_when_the_recompute_sees_fewer_tokens() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let project = tmp.path().join("projects").join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let truncated = project.join(format!("{SID_V14_TRUNCATED}.jsonl"));
+    let full = std::fs::read_to_string(MULTI_SUBAGENT).unwrap();
+    let head: Vec<&str> = full.lines().take(full.lines().count() / 2).collect();
+    std::fs::write(&truncated, head.join("\n") + "\n").unwrap();
+    let path = tmp.path().join("sessions.db");
+    build_v14_catalog(&path, &project, &[(SID_V14_TRUNCATED, &truncated, None)]);
+    let before = v14_blob(SID_V14_TRUNCATED);
+    let stored: crate::fold::SessionEfficiency = serde_json::from_str(&before).unwrap();
+    let on_disk = fold(SID_V14_TRUNCATED, &[extract(&truncated).unwrap()]);
+    assert!(
+        on_disk.aggregate.raw.total_tokens() < stored.aggregate.raw.total_tokens(),
+        "precondition: the truncated copy holds fewer tokens than the blob"
+    );
+
+    let db = Db::open_at(&path).unwrap();
+    let stats = reindex_efficiency(&db, &config(), &[]).unwrap();
+    assert_eq!(
+        (stats.candidates, stats.computed, stats.kept, stats.written),
+        (1, 0, 1, 0),
+        "{stats:?}"
+    );
+    assert_eq!(stats.candidates, stats.computed + stats.unrecoverable + stats.kept);
+    assert_eq!(
+        db.get_efficiency_json(SID_V14_TRUNCATED).unwrap().as_deref(),
+        Some(before.as_str()),
+        "the stored blob is untouched"
+    );
+}
+
+const SID_V14_SAME: &str = "99999999-9999-4999-8999-999999999902";
+
+/// The guard's other edge: a recompute that sees EXACTLY the tokens the blob accounts for (the same
+/// bytes, now bucketed) replaces the blob. BITES: `recomputed <= stored` keeps every unchanged row
+/// bucket-less forever.
+#[test]
+fn migrate_v15_then_reindex_recomputes_when_the_recompute_matches_the_blob() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let project = tmp.path().join("projects").join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let transcript = project.join(format!("{SID_V14_SAME}.jsonl"));
+    std::fs::copy(MULTI_SUBAGENT, &transcript).unwrap();
+    let path = tmp.path().join("sessions.db");
+    build_v14_catalog(&path, &project, &[(SID_V14_SAME, &transcript, None)]);
+    let stored: crate::fold::SessionEfficiency = serde_json::from_str(&v14_blob(SID_V14_SAME)).unwrap();
+
+    let db = Db::open_at(&path).unwrap();
+    let stats = reindex_efficiency(&db, &config(), &[]).unwrap();
+    assert_eq!((stats.computed, stats.recomputed, stats.kept), (1, 1, 0), "{stats:?}");
+    let written: crate::fold::SessionEfficiency =
+        serde_json::from_str(&db.get_efficiency_json(SID_V14_SAME).unwrap().unwrap()).unwrap();
+    assert_eq!(
+        written.aggregate.raw.total_tokens(),
+        stored.aggregate.raw.total_tokens()
+    );
+    assert!(!written.aggregate.raw.by_day.is_empty(), "now bucketed");
+}

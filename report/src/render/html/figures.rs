@@ -59,7 +59,7 @@ pub(super) fn pairs(p: &mut Page, caption: &str, pairs: Option<&Pairs>, code_lab
         p.geom_int("data-by-spend", row.rank.spend as i64);
         p.geom_int("data-by-sessions", row.rank.sessions as i64);
         p.geom_int("data-by-per-session", row.rank.per_session as i64);
-        p.attr("data-tip", &row.tip).raw(">");
+        p.attr("data-tip", &row.tip).raw("><div class=\"pair-head\">");
         p.raw(if code_labels {
             "<code class=\"pair-label\">"
         } else {
@@ -67,6 +67,10 @@ pub(super) fn pairs(p: &mut Page, caption: &str, pairs: Option<&Pairs>, code_lab
         });
         p.text(&row.label);
         p.raw(if code_labels { "</code>" } else { "</span>" });
+        // Visible text, not only the tooltip: with JS off the page still shows every number.
+        p.raw("<span class=\"pair-per\">")
+            .text(&row.per_session)
+            .raw("</span></div>");
         p.raw("<div class=\"pair-bars\">");
         bar_track(p, "sessions", row.bars.first, &row.sessions_share, &row.sessions);
         bar_track(p, "spend", row.bars.second, &row.spend_share, &row.spend);

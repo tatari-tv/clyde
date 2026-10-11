@@ -231,6 +231,56 @@ pub(super) fn outcome_metric_rows(block: &ContextBlock<'_>) -> Vec<(&'static str
     .collect()
 }
 
+/// The subheading over the opened-PR link list, both backends.
+pub(super) const PRS_HEADING: &str = "Opened pull requests";
+
+/// One repository's opened PRs, ready to print as links.
+pub(super) struct PrList<'a> {
+    pub(super) repository: &'a str,
+    pub(super) links: Vec<PrItem<'a>>,
+}
+
+/// One PR: its `#N` label and, when the url is safe to link, the href.
+pub(super) struct PrItem<'a> {
+    pub(super) label: String,
+    pub(super) href: Option<&'a str>,
+}
+
+/// The opened-PR groups from `outcomes.prs`, in the view's order (largest group first). Empty when
+/// the report carries no outcome rollup or no session opened a PR.
+pub(super) fn pr_lists<'a>(block: &'a ContextBlock<'_>) -> Vec<PrList<'a>> {
+    let Some(outcomes) = &block.outcomes else {
+        return Vec::new();
+    };
+    outcomes
+        .prs
+        .iter()
+        .map(|group| PrList {
+            repository: &group.repository,
+            links: group
+                .prs
+                .iter()
+                .map(|pr| PrItem {
+                    label: format!("#{}", pr.number),
+                    href: safe_pr_href(&pr.url),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// `url` when it may become an `href`: `https://` only (design Security), and nothing that could
+/// end a Markdown link target or an attribute early (whitespace, control characters, quotes, angle
+/// brackets, parentheses). Anything else prints as text with no link.
+pub(super) fn safe_pr_href(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://")?;
+    let clean = !rest.is_empty()
+        && !rest
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | '\\'));
+    clean.then_some(url)
+}
+
 /// One repo's observed-outcome row, every cell already formatted.
 pub(super) struct RepoOutcomeRow<'a> {
     pub(super) repo: &'a str,

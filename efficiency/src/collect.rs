@@ -104,7 +104,8 @@ pub struct Collected {
     /// silent delta.
     pub unrecoverable: Vec<String>,
     /// Candidates that already carry a blob (one without per-day buckets) and could not be
-    /// recomputed in full: no bytes left, or a file failed to extract. Their stored blob stays,
+    /// recomputed in full: no bytes left, a file failed to extract, or the files that remain hold
+    /// fewer tokens than the blob already accounts for. Their stored blob stays,
     /// because a partial or empty recompute would overwrite real accounting with less of it. The
     /// next reindex offers them again.
     pub kept: Vec<String>,
@@ -154,7 +155,7 @@ pub fn collect_layouts(
             Path::new(&candidate.project_dir),
             candidate.staged_path.as_deref(),
         );
-        if files.is_empty() && candidate.has_blob {
+        if files.is_empty() && candidate.has_blob() {
             // A bucket-less blob whose bytes are gone: the stored accounting is all there will ever
             // be, so it stays. Not unrecoverable -- its spend is already in the catalog.
             debug!(
@@ -192,14 +193,26 @@ pub fn collect_layouts(
         .collect();
 
     // A recompute that lost a file keeps the old blob: overwriting it would trade stored accounting
-    // for a partial one. A row with no blob has nothing to keep, so a partial recompute still beats
-    // none for it, as before.
+    // for a partial one. So does a recompute that read every file and still saw FEWER tokens than
+    // the stored blob accounts for (a staged copy taken before the session ended): the bytes on disk
+    // are a truncated view of what the blob already priced. A row with no blob has nothing to keep,
+    // so a partial recompute still beats none for it, as before.
     let mut sessions: Vec<CollectedSession> = Vec::with_capacity(built.len());
     for (candidate, session, failed) in built {
-        if failed > 0 && candidate.has_blob {
+        let recomputed = session.efficiency.aggregate.raw.total_tokens();
+        if failed > 0 && candidate.has_blob() {
             warn!(
                 "{}: {failed} transcript file(s) failed to extract; keeping the stored efficiency blob rather \
                  than overwriting it with a partial recompute",
+                candidate.session_id
+            );
+            kept.push(candidate.session_id.clone());
+        } else if let Some(stored) = candidate.stored_tokens
+            && recomputed < stored
+        {
+            warn!(
+                "{}: recompute saw {recomputed} tokens but the stored efficiency blob accounts for {stored}; \
+                 keeping the stored blob rather than overwriting it with less accounting",
                 candidate.session_id
             );
             kept.push(candidate.session_id.clone());

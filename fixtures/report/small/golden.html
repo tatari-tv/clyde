@@ -401,6 +401,18 @@ ul.repos li:last-child {
   border-bottom: 1px solid var(--hairline);
 }
 
+ul.prs a {
+  color: var(--accent-sessions);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+ul.prs a:hover,
+ul.prs a:focus-visible {
+  text-decoration: underline;
+}
+
 .figures {
   color: var(--muted);
 }
@@ -671,6 +683,19 @@ code.pair-label {
   background: none;
   padding: 0 0 0 4px;
   white-space: normal;
+}
+
+.pair-head {
+  min-width: 0;
+}
+
+.pair-per {
+  display: block;
+  margin-top: 2px;
+  padding-left: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .pair-bars {
@@ -1385,7 +1410,7 @@ ol.steps {
 <p class="lead">Each row compares a share of the period&#39;s sessions with its share of spend. A spend bar longer than its sessions bar is work that cost more than its share of the sessions.</p>
 <figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By repository</figcaption></div>
 <ol class="pairs">
-<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="northwind-media/beacon: 9 sessions (100%), $64.86 (100%), $7.21 per session"><code class="pair-label">northwind-media/beacon</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 9 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $64.86</span></div></div></li>
+<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="northwind-media/beacon: 9 sessions (100%), $64.86 (100%), $7.21 per session"><div class="pair-head"><code class="pair-label">northwind-media/beacon</code><span class="pair-per">$7.21 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 9 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $64.86</span></div></div></li>
 </ol>
 <div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
 </section>
@@ -1410,6 +1435,10 @@ ol.steps {
 <tr><td><code>northwind-media/beacon</code></td><td class="num">$64.86</td><td class="num">26</td><td class="num">12</td><td class="num">108</td></tr>
 </tbody>
 </table></div>
+<h3>Opened pull requests</h3>
+<ul class="facts prs">
+<li><code>northwind-media/beacon</code> <a href="https://github.com/northwind-media/beacon/pull/100" target="_blank" rel="noopener noreferrer">#100</a> <a href="https://github.com/northwind-media/beacon/pull/103" target="_blank" rel="noopener noreferrer">#103</a> <a href="https://github.com/northwind-media/beacon/pull/104" target="_blank" rel="noopener noreferrer">#104</a> <a href="https://github.com/northwind-media/beacon/pull/106" target="_blank" rel="noopener noreferrer">#106</a> <a href="https://github.com/northwind-media/beacon/pull/107" target="_blank" rel="noopener noreferrer">#107</a> <a href="https://github.com/northwind-media/beacon/pull/109" target="_blank" rel="noopener noreferrer">#109</a> <a href="https://github.com/northwind-media/beacon/pull/110" target="_blank" rel="noopener noreferrer">#110</a> <a href="https://github.com/northwind-media/beacon/pull/115" target="_blank" rel="noopener noreferrer">#115</a> <a href="https://github.com/northwind-media/beacon/pull/118" target="_blank" rel="noopener noreferrer">#118</a> <a href="https://github.com/northwind-media/beacon/pull/121" target="_blank" rel="noopener noreferrer">#121</a> <a href="https://github.com/northwind-media/beacon/pull/122" target="_blank" rel="noopener noreferrer">#122</a> <a href="https://github.com/northwind-media/beacon/pull/124" target="_blank" rel="noopener noreferrer">#124</a></li>
+</ul>
 <h3>Unit costs</h3>
 <ul class="facts">
 <li>A ratio of $2.49 of period spend per observed commit.</li>
@@ -1432,9 +1461,9 @@ ol.steps {
 </section>
 <section class="section">
 <h2>The Efficiency Story</h2>
-<figure class="chart waterfall-fig"><figcaption>List price, cache savings, spend</figcaption><ol class="steps"><li class="step list"><span class="step-label">List price</span><div class="track"><span class="bar" style="--x:0;--w:100"></span><span class="val"><b>$320.69</b></span></div></li><li class="step savings"><span class="step-label">Cache savings</span><div class="track"><span class="bar" style="--x:20.2;--w:79.8"></span><span class="val"><b>$255.83</b></span></div></li><li class="step spend"><span class="step-label">Spend</span><div class="track"><span class="bar" style="--x:0;--w:20.2"></span><span class="val"><b>$64.86</b></span></div></li></ol></figure>
+<figure class="chart waterfall-fig"><figcaption>List price, cache savings, spend</figcaption><ol class="steps"><li class="step list"><span class="step-label">List price</span><div class="track"><span class="bar" style="--x:0;--w:100"></span><span class="val"><b>$320.70</b></span></div></li><li class="step savings"><span class="step-label">Cache savings</span><div class="track"><span class="bar" style="--x:20.2;--w:79.8"></span><span class="val"><b>$255.84</b></span></div></li><li class="step spend"><span class="step-label">Spend</span><div class="track"><span class="bar" style="--x:0;--w:20.2"></span><span class="val"><b>$64.86</b></span></div></li></ol></figure>
 <p>Cache read share was 92.3%: most of the context read each turn is re-read from cache at a fraction of the fresh-input rate, which is what makes sustained agentic sessions economical. Fresh input was 1.0M against 78.5M read from cache.</p>
-<p>At full list-price input rates the same tokens would model to $320.69, so cache reuse accounts for $255.83 (computed from published per-token rates).</p>
+<p>At full list-price input rates the same tokens would model to $320.70, so cache reuse accounts for $255.84 (computed from published per-token rates).</p>
 <div class="kpis">
 <div class="kpi"><div class="kpi-value">6.0%</div><div class="kpi-label">Tool error rate</div></div>
 <div class="kpi"><div class="kpi-value">6.7%</div><div class="kpi-label">Share of cache writes paying the 1h premium</div></div>

@@ -30,6 +30,7 @@ fn pairs_view() -> Pairs {
                 sessions: (*sessions).to_string(),
                 spend_share: (*sp).to_string(),
                 spend: (*spend).to_string(),
+                per_session: "$2.50 per session".to_string(),
                 tip: format!("{label}: tip"),
                 bars,
                 rank: Ranks {
@@ -152,8 +153,8 @@ fn paired_bars_chart_golden_markup() {
         got,
         r##"<figure class="chart pairs-fig" data-sortable="" data-top="1"><div class="fig-head"><figcaption>By repository</figcaption><div class="sort" role="group" hidden="" aria-label="Sort rows"><span class="sort-label">Sort by</span><button type="button" data-key="by-spend" aria-pressed="true">% spend</button><button type="button" data-key="by-sessions" aria-pressed="false">% sessions</button><button type="button" data-key="by-per-session" aria-pressed="false">Spend per session</button></div></div>
 <ol class="pairs">
-<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="1" data-tip="acme/api: tip"><code class="pair-label">acme/api</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:80"></span><span class="val"><b>60%</b> 3 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>75%</b> $7.50</span></div></div></li>
-<li class="pair extra" data-by-spend="1" data-by-sessions="1" data-by-per-session="0" data-tip="acme/web: tip"><code class="pair-label">acme/web</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:53.3"></span><span class="val"><b>40%</b> 2 sessions</span></div><div class="track"><span class="bar spend" style="--w:33.3"></span><span class="val"><b>25%</b> $2.50</span></div></div></li>
+<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="1" data-tip="acme/api: tip"><div class="pair-head"><code class="pair-label">acme/api</code><span class="pair-per">$2.50 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:80"></span><span class="val"><b>60%</b> 3 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>75%</b> $7.50</span></div></div></li>
+<li class="pair extra" data-by-spend="1" data-by-sessions="1" data-by-per-session="0" data-tip="acme/web: tip"><div class="pair-head"><code class="pair-label">acme/web</code><span class="pair-per">$2.50 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:53.3"></span><span class="val"><b>40%</b> 2 sessions</span></div><div class="track"><span class="bar spend" style="--w:33.3"></span><span class="val"><b>25%</b> $2.50</span></div></div></li>
 </ol>
 <details class="more pairs-more"><summary><span class="when-closed">Show all 2 rows</span><span class="when-open">Show fewer</span></summary></details>
 <div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>

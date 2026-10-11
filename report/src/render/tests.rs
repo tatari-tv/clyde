@@ -678,14 +678,14 @@ pub(super) fn report_with_efficiency() -> Report {
         "researcher".into(),
         WorkloadCost {
             tokens: 1_000_000,
-            cost_usd: 4.50,
+            cost_usd: 0.20,
         },
     );
     entry.agent_type_costs.insert(
         "implementer".into(),
         WorkloadCost {
             tokens: 500_000,
-            cost_usd: 9.00,
+            cost_usd: 0.30,
         },
     );
     // Tag-set costs stay inside the fixture's $0.60 total so the coverage strings read as a real
@@ -725,10 +725,15 @@ fn build_context_block_surfaces_efficiency_signals_as_strings() {
         .get("agent-type-costs")
         .and_then(|v| v.as_array())
         .expect("agent-type-costs list");
-    assert_eq!(agents.len(), 2);
-    // Pre-sorted by spend descending: implementer ($9.00) before researcher ($4.50).
+    // The opus session's $0.50 splits across its two buckets; the sonnet session has none, so its
+    // $0.10 is `(main-session)` work.
+    assert_eq!(agents.len(), 3);
+    // Pre-sorted by spend descending: implementer ($0.30), researcher ($0.20), (main-session).
     assert_eq!(agents[0].get("name").and_then(|v| v.as_str()), Some("implementer"));
-    assert_eq!(agents[0].get("spend").and_then(|v| v.as_str()), Some("$9.00"));
+    assert_eq!(agents[0].get("spend").and_then(|v| v.as_str()), Some("$0.30"));
+    assert_eq!(agents[1].get("spend").and_then(|v| v.as_str()), Some("$0.20"));
+    assert_eq!(agents[2].get("name").and_then(|v| v.as_str()), Some("(main-session)"));
+    assert_eq!(agents[2].get("spend").and_then(|v| v.as_str()), Some("$0.10"));
     assert!(agents[0].get("tokens-human").and_then(|v| v.as_str()).is_some());
     assert!(
         agents[0].get("tokens").is_none() && agents[0].get("cost-usd").is_none(),

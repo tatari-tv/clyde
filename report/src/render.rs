@@ -14,6 +14,7 @@ use common::proc::run_bounded;
 use eyre::{Context, Result, bail};
 use log::debug;
 use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{IsTerminal, Write};
@@ -590,6 +591,28 @@ struct WorkloadRow {
 #[serde(rename_all = "kebab-case")]
 struct OutcomesView {
     totals: OutcomeTotalsView,
+    /// The window's opened pull requests, deduped by url across every session and grouped by the
+    /// repository each was opened against, largest group first. The Outcomes section prints them
+    /// as links. Absent when no session opened one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    prs: Vec<PrGroup>,
+}
+
+/// One repository's opened pull requests, numbers ascending.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct PrGroup {
+    /// The PR's own `repository`, else the opening session's repo, else
+    /// [`aggregate::UNATTRIBUTED_ORG`].
+    repository: String,
+    prs: Vec<PrLink>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct PrLink {
+    number: u64,
+    url: String,
 }
 
 #[derive(Serialize)]
@@ -936,7 +959,50 @@ fn build_outcomes_view(report: &Report) -> Option<OutcomesView> {
     let totals = report.totals.outcomes.as_ref()?;
     Some(OutcomesView {
         totals: outcome_totals_view(totals),
+        prs: build_pr_groups(report),
     })
+}
+
+/// Every opened PR in the window, deduped by url (the same dedupe `outcomes.prs-opened` counts) and
+/// grouped by repository: largest group first, then by name; numbers ascending within a group. The
+/// first session (in key order) to report a url decides its group.
+fn build_pr_groups(report: &Report) -> Vec<PrGroup> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut groups: BTreeMap<String, Vec<PrLink>> = BTreeMap::new();
+    for entry in report.sessions.values() {
+        let Some(outcomes) = entry.outcomes.as_ref() else {
+            continue;
+        };
+        for pr in &outcomes.prs {
+            if !seen.insert(pr.url.as_str()) {
+                continue;
+            }
+            let repository = pr
+                .repository
+                .clone()
+                .or_else(|| entry.repo.clone())
+                .unwrap_or_else(|| aggregate::UNATTRIBUTED_ORG.to_string());
+            groups.entry(repository).or_default().push(PrLink {
+                number: pr.number,
+                url: pr.url.clone(),
+            });
+        }
+    }
+    let mut out: Vec<PrGroup> = groups
+        .into_iter()
+        .map(|(repository, mut prs)| {
+            prs.sort_by(|a, b| a.number.cmp(&b.number).then_with(|| a.url.cmp(&b.url)));
+            PrGroup { repository, prs }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.prs
+            .len()
+            .cmp(&a.prs.len())
+            .then_with(|| a.repository.cmp(&b.repository))
+    });
+    debug!("render::build_pr_groups: prs={} repositories={}", seen.len(), out.len());
+    out
 }
 
 /// Shared by [`build_outcomes_view`] (the current period) and [`build_prior_view`] (Phase 8): the

@@ -237,7 +237,31 @@ fn quantified_output(md: &mut String, block: &ContextBlock<'_>) {
         let _ = writeln!(md);
     }
 
+    pr_links(md, block);
     unit_costs(md, block);
+}
+
+/// The opened PRs as Markdown links, one line per repository. A url that is not safe to link
+/// (`sections::safe_pr_href`) prints as its `#N` label alone.
+fn pr_links(md: &mut String, block: &ContextBlock<'_>) {
+    let lists = sections::pr_lists(block);
+    if lists.is_empty() {
+        return;
+    }
+    let _ = writeln!(md, "**{}**", sections::PRS_HEADING);
+    let _ = writeln!(md);
+    for list in lists {
+        let links: Vec<String> = list
+            .links
+            .iter()
+            .map(|item| match item.href {
+                Some(href) => format!("[{}]({href})", item.label),
+                None => item.label.clone(),
+            })
+            .collect();
+        let _ = writeln!(md, "- `{}`: {}", list.repository, links.join(", "));
+    }
+    let _ = writeln!(md);
 }
 
 /// The unit-cost ratios, each stated AS a ratio. Never "each commit cost $X": these divide the

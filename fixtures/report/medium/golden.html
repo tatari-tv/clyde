@@ -401,6 +401,18 @@ ul.repos li:last-child {
   border-bottom: 1px solid var(--hairline);
 }
 
+ul.prs a {
+  color: var(--accent-sessions);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+ul.prs a:hover,
+ul.prs a:focus-visible {
+  text-decoration: underline;
+}
+
 .figures {
   color: var(--muted);
 }
@@ -671,6 +683,19 @@ code.pair-label {
   background: none;
   padding: 0 0 0 4px;
   white-space: normal;
+}
+
+.pair-head {
+  min-width: 0;
+}
+
+.pair-per {
+  display: block;
+  margin-top: 2px;
+  padding-left: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .pair-bars {
@@ -1385,20 +1410,20 @@ ol.steps {
 <p class="lead">Each row compares a share of the period&#39;s sessions with its share of spend. A spend bar longer than its sessions bar is work that cost more than its share of the sessions.</p>
 <figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By org</figcaption><div class="sort" role="group" hidden="" aria-label="Sort rows"><span class="sort-label">Sort by</span><button type="button" data-key="by-spend" aria-pressed="true">% spend</button><button type="button" data-key="by-sessions" aria-pressed="false">% sessions</button><button type="button" data-key="by-per-session" aria-pressed="false">Spend per session</button></div></div>
 <ol class="pairs">
-<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="northwind-media: 20 sessions (45%), $353.04 (53%), $17.65 per session"><span class="pair-label">northwind-media</span><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:86.4"></span><span class="val"><b>45%</b> 20 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>53%</b> $353.04</span></div></div></li>
-<li class="pair" data-by-spend="1" data-by-sessions="1" data-by-per-session="1" data-tip="openpipe-oss: 17 sessions (39%), $264.78 (39%), $15.58 per session"><span class="pair-label">openpipe-oss</span><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:73.5"></span><span class="val"><b>39%</b> 17 sessions</span></div><div class="track"><span class="bar spend" style="--w:75"></span><span class="val"><b>39%</b> $264.78</span></div></div></li>
-<li class="pair" data-by-spend="2" data-by-sessions="2" data-by-per-session="2" data-tip="jrivera: 7 sessions (16%), $53.44 (8%), $7.63 per session"><span class="pair-label">jrivera</span><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:30.2"></span><span class="val"><b>16%</b> 7 sessions</span></div><div class="track"><span class="bar spend" style="--w:15.1"></span><span class="val"><b>8%</b> $53.44</span></div></div></li>
+<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="northwind-media: 20 sessions (45%), $353.04 (53%), $17.65 per session"><div class="pair-head"><span class="pair-label">northwind-media</span><span class="pair-per">$17.65 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:86.4"></span><span class="val"><b>45%</b> 20 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>53%</b> $353.04</span></div></div></li>
+<li class="pair" data-by-spend="1" data-by-sessions="1" data-by-per-session="1" data-tip="openpipe-oss: 17 sessions (39%), $264.78 (39%), $15.58 per session"><div class="pair-head"><span class="pair-label">openpipe-oss</span><span class="pair-per">$15.58 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:73.5"></span><span class="val"><b>39%</b> 17 sessions</span></div><div class="track"><span class="bar spend" style="--w:75"></span><span class="val"><b>39%</b> $264.78</span></div></div></li>
+<li class="pair" data-by-spend="2" data-by-sessions="2" data-by-per-session="2" data-tip="jrivera: 7 sessions (16%), $53.44 (8%), $7.63 per session"><div class="pair-head"><span class="pair-label">jrivera</span><span class="pair-per">$7.63 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:30.2"></span><span class="val"><b>16%</b> 7 sessions</span></div><div class="track"><span class="bar spend" style="--w:15.1"></span><span class="val"><b>8%</b> $53.44</span></div></div></li>
 </ol>
 <div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
 <figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By repository</figcaption><div class="sort" role="group" hidden="" aria-label="Sort rows"><span class="sort-label">Sort by</span><button type="button" data-key="by-spend" aria-pressed="true">% spend</button><button type="button" data-key="by-sessions" aria-pressed="false">% sessions</button><button type="button" data-key="by-per-session" aria-pressed="false">Spend per session</button></div></div>
 <ol class="pairs">
-<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="2" data-tip="openpipe-oss/quill: 17 sessions (39%), $264.78 (39%), $15.58 per session"><code class="pair-label">openpipe-oss/quill</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:97.9"></span><span class="val"><b>39%</b> 17 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>39%</b> $264.78</span></div></div></li>
-<li class="pair" data-by-spend="1" data-by-sessions="1" data-by-per-session="0" data-tip="northwind-media/beacon: 7 sessions (16%), $165.84 (25%), $23.69 per session"><code class="pair-label">northwind-media/beacon</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:40.3"></span><span class="val"><b>16%</b> 7 sessions</span></div><div class="track"><span class="bar spend" style="--w:62.6"></span><span class="val"><b>25%</b> $165.84</span></div></div></li>
-<li class="pair" data-by-spend="2" data-by-sessions="4" data-by-per-session="1" data-tip="northwind-media/tideline: 4 sessions (9%), $83.29 (12%), $20.82 per session"><code class="pair-label">northwind-media/tideline</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:23"></span><span class="val"><b>9%</b> 4 sessions</span></div><div class="track"><span class="bar spend" style="--w:31.5"></span><span class="val"><b>12%</b> $83.29</span></div></div></li>
-<li class="pair" data-by-spend="3" data-by-sessions="2" data-by-per-session="5" data-tip="northwind-media/halyard: 6 sessions (14%), $58.42 (9%), $9.74 per session"><code class="pair-label">northwind-media/halyard</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:34.6"></span><span class="val"><b>14%</b> 6 sessions</span></div><div class="track"><span class="bar spend" style="--w:22.1"></span><span class="val"><b>9%</b> $58.42</span></div></div></li>
-<li class="pair" data-by-spend="4" data-by-sessions="3" data-by-per-session="4" data-tip="jrivera/driftwood: 5 sessions (11%), $49.28 (7%), $9.86 per session"><code class="pair-label">jrivera/driftwood</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:28.8"></span><span class="val"><b>11%</b> 5 sessions</span></div><div class="track"><span class="bar spend" style="--w:18.6"></span><span class="val"><b>7%</b> $49.28</span></div></div></li>
-<li class="pair" data-by-spend="5" data-by-sessions="5" data-by-per-session="3" data-tip="northwind-media/almanac: 3 sessions (7%), $45.49 (7%), $15.16 per session"><code class="pair-label">northwind-media/almanac</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:17.3"></span><span class="val"><b>7%</b> 3 sessions</span></div><div class="track"><span class="bar spend" style="--w:17.2"></span><span class="val"><b>7%</b> $45.49</span></div></div></li>
-<li class="pair" data-by-spend="6" data-by-sessions="6" data-by-per-session="6" data-tip="jrivera/sextant: 2 sessions (5%), $4.16 (1%), $2.08 per session"><code class="pair-label">jrivera/sextant</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:11.5"></span><span class="val"><b>5%</b> 2 sessions</span></div><div class="track"><span class="bar spend" style="--w:1.6"></span><span class="val"><b>1%</b> $4.16</span></div></div></li>
+<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="2" data-tip="openpipe-oss/quill: 17 sessions (39%), $264.78 (39%), $15.58 per session"><div class="pair-head"><code class="pair-label">openpipe-oss/quill</code><span class="pair-per">$15.58 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:97.9"></span><span class="val"><b>39%</b> 17 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>39%</b> $264.78</span></div></div></li>
+<li class="pair" data-by-spend="1" data-by-sessions="1" data-by-per-session="0" data-tip="northwind-media/beacon: 7 sessions (16%), $165.84 (25%), $23.69 per session"><div class="pair-head"><code class="pair-label">northwind-media/beacon</code><span class="pair-per">$23.69 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:40.3"></span><span class="val"><b>16%</b> 7 sessions</span></div><div class="track"><span class="bar spend" style="--w:62.6"></span><span class="val"><b>25%</b> $165.84</span></div></div></li>
+<li class="pair" data-by-spend="2" data-by-sessions="4" data-by-per-session="1" data-tip="northwind-media/tideline: 4 sessions (9%), $83.29 (12%), $20.82 per session"><div class="pair-head"><code class="pair-label">northwind-media/tideline</code><span class="pair-per">$20.82 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:23"></span><span class="val"><b>9%</b> 4 sessions</span></div><div class="track"><span class="bar spend" style="--w:31.5"></span><span class="val"><b>12%</b> $83.29</span></div></div></li>
+<li class="pair" data-by-spend="3" data-by-sessions="2" data-by-per-session="5" data-tip="northwind-media/halyard: 6 sessions (14%), $58.42 (9%), $9.74 per session"><div class="pair-head"><code class="pair-label">northwind-media/halyard</code><span class="pair-per">$9.74 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:34.6"></span><span class="val"><b>14%</b> 6 sessions</span></div><div class="track"><span class="bar spend" style="--w:22.1"></span><span class="val"><b>9%</b> $58.42</span></div></div></li>
+<li class="pair" data-by-spend="4" data-by-sessions="3" data-by-per-session="4" data-tip="jrivera/driftwood: 5 sessions (11%), $49.28 (7%), $9.86 per session"><div class="pair-head"><code class="pair-label">jrivera/driftwood</code><span class="pair-per">$9.86 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:28.8"></span><span class="val"><b>11%</b> 5 sessions</span></div><div class="track"><span class="bar spend" style="--w:18.6"></span><span class="val"><b>7%</b> $49.28</span></div></div></li>
+<li class="pair" data-by-spend="5" data-by-sessions="5" data-by-per-session="3" data-tip="northwind-media/almanac: 3 sessions (7%), $45.49 (7%), $15.16 per session"><div class="pair-head"><code class="pair-label">northwind-media/almanac</code><span class="pair-per">$15.16 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:17.3"></span><span class="val"><b>7%</b> 3 sessions</span></div><div class="track"><span class="bar spend" style="--w:17.2"></span><span class="val"><b>7%</b> $45.49</span></div></div></li>
+<li class="pair" data-by-spend="6" data-by-sessions="6" data-by-per-session="6" data-tip="jrivera/sextant: 2 sessions (5%), $4.16 (1%), $2.08 per session"><div class="pair-head"><code class="pair-label">jrivera/sextant</code><span class="pair-per">$2.08 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:11.5"></span><span class="val"><b>5%</b> 2 sessions</span></div><div class="track"><span class="bar spend" style="--w:1.6"></span><span class="val"><b>1%</b> $4.16</span></div></div></li>
 </ol>
 <div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
 <figure class="chart treemap-fig"><figcaption>Spend by org and repository</figcaption><div class="treemap"><svg viewBox="0 0 1000 480" preserveAspectRatio="none" role="img" aria-label="Spend by org and repository"><g class="tm tone-1"><rect class="shade-1" x="0" y="0" width="247.1" height="480" data-tip="northwind-media/beacon: $165.84 (25%)"><title>northwind-media/beacon: $165.84 (25%)</title></rect><rect class="shade-2" x="247.1" y="0" width="278.8" height="213.6" data-tip="northwind-media/tideline: $83.29 (12%)"><title>northwind-media/tideline: $83.29 (12%)</title></rect><rect class="shade-3" x="247.1" y="213.6" width="156.7" height="266.4" data-tip="northwind-media/halyard: $58.42 (9%)"><title>northwind-media/halyard: $58.42 (9%)</title></rect><rect class="shade-4" x="403.8" y="213.6" width="122.1" height="266.4" data-tip="northwind-media/almanac: $45.49 (7%)"><title>northwind-media/almanac: $45.49 (7%)</title></rect><rect class="tm-org" x="0" y="0" width="525.9" height="480"/></g><g class="tm tone-2"><rect class="shade-1" x="525.9" y="0" width="474.1" height="399.4" data-tip="openpipe-oss/quill: $264.78 (39%)"><title>openpipe-oss/quill: $264.78 (39%)</title></rect><rect class="tm-org" x="525.9" y="0" width="474.1" height="399.4"/></g><g class="tm tone-3"><rect class="shade-1" x="525.9" y="399.4" width="437.2" height="80.6" data-tip="jrivera/driftwood: $49.28 (7%)"><title>jrivera/driftwood: $49.28 (7%)</title></rect><rect class="shade-2" x="963.1" y="399.4" width="36.9" height="80.6" data-tip="jrivera/sextant: $4.16 (1%)"><title>jrivera/sextant: $4.16 (1%)</title></rect><rect class="tm-org" x="525.9" y="399.4" width="474.1" height="80.6"/></g></svg><div class="tm-labels" aria-hidden="true"><span class="tm-label" style="--x:0;--y:0;--w:247.1;--h:480"><b>beacon</b><span>$165.84</span></span><span class="tm-label" style="--x:247.1;--y:0;--w:278.8;--h:213.6"><b>tideline</b><span>$83.29</span></span><span class="tm-label wide-only" style="--x:247.1;--y:213.6;--w:156.7;--h:266.4"><b>halyard</b><span>$58.42</span></span><span class="tm-label" style="--x:525.9;--y:0;--w:474.1;--h:399.4"><b>quill</b><span>$264.78</span></span><span class="tm-label" style="--x:525.9;--y:399.4;--w:437.2;--h:80.6"><b>driftwood</b><span>$49.28</span></span></div></div>
@@ -1430,6 +1455,14 @@ ol.steps {
 <tr><td><code>northwind-media/almanac</code></td><td class="num">$45.49</td><td class="num">6</td><td class="num">1</td><td class="num">22</td></tr>
 </tbody>
 </table></div>
+<h3>Opened pull requests</h3>
+<ul class="facts prs">
+<li><code>openpipe-oss/quill</code> <a href="https://github.com/openpipe-oss/quill/pull/112" target="_blank" rel="noopener noreferrer">#112</a> <a href="https://github.com/openpipe-oss/quill/pull/113" target="_blank" rel="noopener noreferrer">#113</a> <a href="https://github.com/openpipe-oss/quill/pull/136" target="_blank" rel="noopener noreferrer">#136</a> <a href="https://github.com/openpipe-oss/quill/pull/137" target="_blank" rel="noopener noreferrer">#137</a> <a href="https://github.com/openpipe-oss/quill/pull/169" target="_blank" rel="noopener noreferrer">#169</a> <a href="https://github.com/openpipe-oss/quill/pull/170" target="_blank" rel="noopener noreferrer">#170</a> <a href="https://github.com/openpipe-oss/quill/pull/217" target="_blank" rel="noopener noreferrer">#217</a> <a href="https://github.com/openpipe-oss/quill/pull/218" target="_blank" rel="noopener noreferrer">#218</a> <a href="https://github.com/openpipe-oss/quill/pull/220" target="_blank" rel="noopener noreferrer">#220</a></li>
+<li><code>northwind-media/halyard</code> <a href="https://github.com/northwind-media/halyard/pull/124" target="_blank" rel="noopener noreferrer">#124</a> <a href="https://github.com/northwind-media/halyard/pull/157" target="_blank" rel="noopener noreferrer">#157</a> <a href="https://github.com/northwind-media/halyard/pull/158" target="_blank" rel="noopener noreferrer">#158</a> <a href="https://github.com/northwind-media/halyard/pull/178" target="_blank" rel="noopener noreferrer">#178</a></li>
+<li><code>northwind-media/tideline</code> <a href="https://github.com/northwind-media/tideline/pull/166" target="_blank" rel="noopener noreferrer">#166</a> <a href="https://github.com/northwind-media/tideline/pull/167" target="_blank" rel="noopener noreferrer">#167</a> <a href="https://github.com/northwind-media/tideline/pull/190" target="_blank" rel="noopener noreferrer">#190</a> <a href="https://github.com/northwind-media/tideline/pull/205" target="_blank" rel="noopener noreferrer">#205</a></li>
+<li><code>northwind-media/beacon</code> <a href="https://github.com/northwind-media/beacon/pull/118" target="_blank" rel="noopener noreferrer">#118</a> <a href="https://github.com/northwind-media/beacon/pull/119" target="_blank" rel="noopener noreferrer">#119</a></li>
+<li><code>northwind-media/almanac</code> <a href="https://github.com/northwind-media/almanac/pull/226" target="_blank" rel="noopener noreferrer">#226</a></li>
+</ul>
 <h3>Unit costs</h3>
 <ul class="facts">
 <li>A ratio of $11.99 of period spend per observed commit.</li>
@@ -1452,9 +1485,9 @@ ol.steps {
 </section>
 <section class="section">
 <h2>The Efficiency Story</h2>
-<figure class="chart waterfall-fig"><figcaption>List price, cache savings, spend</figcaption><ol class="steps"><li class="step list"><span class="step-label">List price</span><div class="track"><span class="bar" style="--x:0;--w:100"></span><span class="val"><b>$3,201.82</b></span></div></li><li class="step savings"><span class="step-label">Cache savings</span><div class="track"><span class="bar" style="--x:21;--w:79"></span><span class="val"><b>$2,530.56</b></span></div></li><li class="step spend"><span class="step-label">Spend</span><div class="track"><span class="bar" style="--x:0;--w:21"></span><span class="val"><b>$671.26</b></span></div></li></ol></figure>
+<figure class="chart waterfall-fig"><figcaption>List price, cache savings, spend</figcaption><ol class="steps"><li class="step list"><span class="step-label">List price</span><div class="track"><span class="bar" style="--x:0;--w:100"></span><span class="val"><b>$3,201.81</b></span></div></li><li class="step savings"><span class="step-label">Cache savings</span><div class="track"><span class="bar" style="--x:21;--w:79"></span><span class="val"><b>$2,530.55</b></span></div></li><li class="step spend"><span class="step-label">Spend</span><div class="track"><span class="bar" style="--x:0;--w:21"></span><span class="val"><b>$671.26</b></span></div></li></ol></figure>
 <p>Cache read share was 92.2%: most of the context read each turn is re-read from cache at a fraction of the fresh-input rate, which is what makes sustained agentic sessions economical. Fresh input was 11.6M against 883.3M read from cache.</p>
-<p>At full list-price input rates the same tokens would model to $3,201.82, so cache reuse accounts for $2,530.56 (computed from published per-token rates).</p>
+<p>At full list-price input rates the same tokens would model to $3,201.81, so cache reuse accounts for $2,530.55 (computed from published per-token rates).</p>
 <div class="kpis">
 <div class="kpi"><div class="kpi-value">4.2%</div><div class="kpi-label">Tool error rate</div></div>
 <div class="kpi"><div class="kpi-value">7.4%</div><div class="kpi-label">Share of cache writes paying the 1h premium</div></div>
@@ -1517,9 +1550,9 @@ ol.steps {
 <div class="table-wrap"><table>
 <thead><tr><th>Agent Type</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
 <tbody>
-<tr><td><code>(main-session)</code></td><td class="num">639.6M</td><td class="num">$479.74</td></tr>
-<tr><td><code>phase-implementer</code></td><td class="num">133.4M</td><td class="num">$79.33</td></tr>
-<tr><td><code>doc-writer</code></td><td class="num">103.5M</td><td class="num">$61.77</td></tr>
+<tr><td><code>(main-session)</code></td><td class="num">639.6M</td><td class="num">$479.75</td></tr>
+<tr><td><code>phase-implementer</code></td><td class="num">133.4M</td><td class="num">$79.31</td></tr>
+<tr><td><code>doc-writer</code></td><td class="num">103.5M</td><td class="num">$61.78</td></tr>
 <tr><td><code>code-reviewer</code></td><td class="num">85.4M</td><td class="num">$50.42</td></tr>
 </tbody>
 </table></div>

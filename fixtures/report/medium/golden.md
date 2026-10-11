@@ -73,6 +73,14 @@ These are observed tool invocations extracted from session transcripts, not esti
 | `jrivera/driftwood` | $49.28 | 3 | 0 | 30 |
 | `northwind-media/almanac` | $45.49 | 6 | 1 | 22 |
 
+**Opened pull requests**
+
+- `openpipe-oss/quill`: [#112](https://github.com/openpipe-oss/quill/pull/112), [#113](https://github.com/openpipe-oss/quill/pull/113), [#136](https://github.com/openpipe-oss/quill/pull/136), [#137](https://github.com/openpipe-oss/quill/pull/137), [#169](https://github.com/openpipe-oss/quill/pull/169), [#170](https://github.com/openpipe-oss/quill/pull/170), [#217](https://github.com/openpipe-oss/quill/pull/217), [#218](https://github.com/openpipe-oss/quill/pull/218), [#220](https://github.com/openpipe-oss/quill/pull/220)
+- `northwind-media/halyard`: [#124](https://github.com/northwind-media/halyard/pull/124), [#157](https://github.com/northwind-media/halyard/pull/157), [#158](https://github.com/northwind-media/halyard/pull/158), [#178](https://github.com/northwind-media/halyard/pull/178)
+- `northwind-media/tideline`: [#166](https://github.com/northwind-media/tideline/pull/166), [#167](https://github.com/northwind-media/tideline/pull/167), [#190](https://github.com/northwind-media/tideline/pull/190), [#205](https://github.com/northwind-media/tideline/pull/205)
+- `northwind-media/beacon`: [#118](https://github.com/northwind-media/beacon/pull/118), [#119](https://github.com/northwind-media/beacon/pull/119)
+- `northwind-media/almanac`: [#226](https://github.com/northwind-media/almanac/pull/226)
+
 A ratio of $11.99 of period spend per observed commit.
 A ratio of $33.56 of period spend per pull request opened.
 A ratio of $25.82 of period spend per active day.
@@ -114,15 +122,15 @@ Every dollar of the period's $671.26 spend lands in exactly one row below; `(mai
 
 | Agent Type | Tokens | Spend |
 |------------|-------:|------:|
-| `(main-session)` | 639.6M | $479.74 |
-| `phase-implementer` | 133.4M | $79.33 |
-| `doc-writer` | 103.5M | $61.77 |
+| `(main-session)` | 639.6M | $479.75 |
+| `phase-implementer` | 133.4M | $79.31 |
+| `doc-writer` | 103.5M | $61.78 |
 | `code-reviewer` | 85.4M | $50.42 |
 
 ## The Efficiency Story
 
 - Cache read share was 92.2%: most of the context read each turn is re-read from cache at a fraction of the fresh-input rate, which is what makes sustained agentic sessions economical. Fresh input was 11.6M against 883.3M read from cache.
-- At full list-price input rates the same tokens would model to $3,201.82, so cache reuse accounts for $2,530.56 (computed from published per-token rates).
+- At full list-price input rates the same tokens would model to $3,201.81, so cache reuse accounts for $2,530.55 (computed from published per-token rates).
 - Tool error rate: 4.2%.
 - Share of cache writes paying the 1h premium: 7.4%.
 - Interrupts observed: 29.

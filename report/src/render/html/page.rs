@@ -5,7 +5,8 @@
 //! - [`Page::raw`] writes structural markup. It takes `&'static str` only, so it can carry tags and
 //!   class names chosen at compile time and never a value read from the report.
 //! - [`Page::text`] writes an escaped text node.
-//! - [`Page::attr`] writes an escaped human-readable attribute (`title`, `aria-label`, `data-tip`).
+//! - [`Page::attr`] writes an escaped human-readable attribute (`title`, `aria-label`, `data-tip`),
+//!   or a link `href` the caller has already restricted to `https://`.
 //! - [`Page::geom`] writes a numeric SVG geometry attribute, and refuses anything that is not
 //!   geometry; [`Page::geom_int`] writes one integer (a coordinate, or a sort rank), and
 //!   [`Page::vars`] writes chart geometry as CSS custom properties.
@@ -48,8 +49,8 @@ impl Page {
         self
     }
 
-    /// ` name="value"`, value escaped. For human-readable attributes only; geometry goes through
-    /// [`Page::geom`].
+    /// ` name="value"`, value escaped. For human-readable attributes and vetted `https://` hrefs;
+    /// geometry goes through [`Page::geom`].
     pub(super) fn attr(&mut self, name: &'static str, value: &str) -> &mut Self {
         self.record(value);
         let _ = write!(self.out, " {name}=\"{}\"", escape(value));

@@ -462,7 +462,7 @@ impl Db {
     /// drift: an older clyde keeps running on a v15 catalog ([`migrate::migrate`] returns early once
     /// `user_version >= SCHEMA_VERSION`) and can rewrite a blob without `by-day` while the column
     /// still claimed one. Reading the key means the next new-binary reindex simply picks such a row
-    /// up again. [`EfficiencyCandidate::has_blob`] tells the caller which kind each row is, because
+    /// up again. [`EfficiencyCandidate::stored_tokens`] tells the caller which kind each row is, because
     /// the two fail differently: a bucket-less row whose bytes are gone keeps its stored accounting
     /// rather than being counted unrecoverable. `json_valid` guards the extract so one corrupt blob
     /// cannot fail the whole query; such a row is left for `report collect` to reject by name.
@@ -476,7 +476,13 @@ impl Db {
     pub fn sessions_missing_efficiency(&self) -> Result<Vec<EfficiencyCandidate>> {
         debug!("Db::sessions_missing_efficiency");
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, transcript_path, project_dir, staged_path, efficiency_json IS NOT NULL \
+            "SELECT session_id, transcript_path, project_dir, staged_path, \
+             CASE WHEN efficiency_json IS NULL THEN NULL ELSE \
+               coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"input-tokens\"'), 0) \
+             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"output-tokens\"'), 0) \
+             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-read-tokens\"'), 0) \
+             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-5m-write-tokens\"'), 0) \
+             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-1h-write-tokens\"'), 0) END \
              FROM sessions WHERE efficiency_json IS NULL \
              OR (json_valid(efficiency_json) AND json_extract(efficiency_json, '$.aggregate.raw.\"by-day\"') IS NULL)",
         )?;
@@ -487,14 +493,14 @@ impl Db {
                     transcript_path: r.get::<_, String>(1)?.into(),
                     project_dir: r.get(2)?,
                     staged_path: r.get::<_, Option<String>>(3)?.map(PathBuf::from),
-                    has_blob: r.get(4)?,
+                    stored_tokens: r.get::<_, Option<i64>>(4)?.map(|t| t.max(0) as u64),
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
         debug!(
             "Db::sessions_missing_efficiency: count={} bucket-less-blobs={}",
             candidates.len(),
-            candidates.iter().filter(|c| c.has_blob).count()
+            candidates.iter().filter(|c| c.has_blob()).count()
         );
         Ok(candidates)
     }

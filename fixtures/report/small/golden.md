@@ -68,6 +68,10 @@ These are observed tool invocations extracted from session transcripts, not esti
 |------|------:|--------:|-----------:|-------------:|
 | `northwind-media/beacon` | $64.86 | 26 | 12 | 108 |
 
+**Opened pull requests**
+
+- `northwind-media/beacon`: [#100](https://github.com/northwind-media/beacon/pull/100), [#103](https://github.com/northwind-media/beacon/pull/103), [#104](https://github.com/northwind-media/beacon/pull/104), [#106](https://github.com/northwind-media/beacon/pull/106), [#107](https://github.com/northwind-media/beacon/pull/107), [#109](https://github.com/northwind-media/beacon/pull/109), [#110](https://github.com/northwind-media/beacon/pull/110), [#115](https://github.com/northwind-media/beacon/pull/115), [#118](https://github.com/northwind-media/beacon/pull/118), [#121](https://github.com/northwind-media/beacon/pull/121), [#122](https://github.com/northwind-media/beacon/pull/122), [#124](https://github.com/northwind-media/beacon/pull/124)
+
 A ratio of $2.49 of period spend per observed commit.
 A ratio of $5.41 of period spend per pull request opened.
 A ratio of $10.81 of period spend per active day.
@@ -97,7 +101,7 @@ Every dollar of the period's $64.86 spend lands in exactly one row below; `(main
 ## The Efficiency Story
 
 - Cache read share was 92.3%: most of the context read each turn is re-read from cache at a fraction of the fresh-input rate, which is what makes sustained agentic sessions economical. Fresh input was 1.0M against 78.5M read from cache.
-- At full list-price input rates the same tokens would model to $320.69, so cache reuse accounts for $255.83 (computed from published per-token rates).
+- At full list-price input rates the same tokens would model to $320.70, so cache reuse accounts for $255.84 (computed from published per-token rates).
 - Tool error rate: 6.0%.
 - Share of cache writes paying the 1h premium: 6.7%.
 - Interrupts observed: 4.

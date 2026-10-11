@@ -158,7 +158,7 @@ fn build(block: &ContextBlock<'_>, prose: &SlotProse, top_n: usize) -> Page {
             }
             Section::Bands => bands(&mut p, block, &v),
             Section::UnobservedSpend => unobserved_spend(&mut p, block, top_n),
-            Section::QuantifiedOutput => quantified_output(&mut p, block),
+            Section::QuantifiedOutput => quantified_output(&mut p, block, top_n),
             Section::CostSummary => cost_summary(&mut p, block, &v, top_n),
             Section::Reconciliation => reconciliation(&mut p, block),
             Section::AgentTypeCosts => agent_type_costs(&mut p, block, top_n),
@@ -521,7 +521,7 @@ fn unobserved_spend(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
     close_section(p);
 }
 
-fn quantified_output(p: &mut Page, block: &ContextBlock<'_>) {
+fn quantified_output(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
     let rows = sections::outcome_metric_rows(block);
     if rows.is_empty() {
         return;
@@ -552,6 +552,7 @@ fn quantified_output(p: &mut Page, block: &ContextBlock<'_>) {
         ];
         table(p, &columns, &by_repo, None, None);
     }
+    pr_links(p, block, top_n);
     let lines = sections::unit_cost_lines(block);
     if !lines.is_empty() {
         subheading(p, "Unit costs");
@@ -562,6 +563,51 @@ fn quantified_output(p: &mut Page, block: &ContextBlock<'_>) {
         p.raw("</ul>\n");
     }
     close_section(p);
+}
+
+/// The opened PRs as links, one row per repository: the top `top_n` repositories, the rest behind
+/// a `<details>`. The label goes through `text()`, the href through `attr()`, and only a url
+/// `sections::safe_pr_href` accepts (`https://`) becomes a link; any other prints as text.
+fn pr_links(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
+    let lists = sections::pr_lists(block);
+    if lists.is_empty() {
+        return;
+    }
+    subheading(p, sections::PRS_HEADING);
+    let (shown, rest) = lists.split_at(top_n.min(lists.len()));
+    pr_list(p, shown);
+    if !rest.is_empty() {
+        p.raw("<details class=\"more\"><summary>");
+        p.text(&format!("Show all {} repositories", format_int(lists.len() as u64)));
+        p.raw("</summary>");
+        pr_list(p, rest);
+        p.raw("</details>\n");
+    }
+}
+
+fn pr_list(p: &mut Page, lists: &[sections::PrList<'_>]) {
+    p.raw("<ul class=\"facts prs\">\n");
+    for list in lists {
+        p.raw("<li><code>").text(list.repository).raw("</code> ");
+        for (i, item) in list.links.iter().enumerate() {
+            if i > 0 {
+                p.raw(" ");
+            }
+            match item.href {
+                Some(href) => {
+                    p.raw("<a")
+                        .attr("href", href)
+                        .raw(" target=\"_blank\" rel=\"noopener noreferrer\">");
+                    p.text(&item.label).raw("</a>");
+                }
+                None => {
+                    p.text(&item.label);
+                }
+            }
+        }
+        p.raw("</li>\n");
+    }
+    p.raw("</ul>\n");
 }
 
 fn cost_summary(p: &mut Page, block: &ContextBlock<'_>, v: &Visuals, top_n: usize) {

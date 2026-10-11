@@ -393,6 +393,18 @@ ul.repos li:last-child {
   border-bottom: 1px solid var(--hairline);
 }
 
+ul.prs a {
+  color: var(--accent-sessions);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+ul.prs a:hover,
+ul.prs a:focus-visible {
+  text-decoration: underline;
+}
+
 .figures {
   color: var(--muted);
 }
@@ -663,6 +675,19 @@ code.pair-label {
   background: none;
   padding: 0 0 0 4px;
   white-space: normal;
+}
+
+.pair-head {
+  min-width: 0;
+}
+
+.pair-per {
+  display: block;
+  margin-top: 2px;
+  padding-left: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .pair-bars {
