@@ -454,6 +454,35 @@ fn resolver_caches_repeated_lookups() {
     assert!(r.cache.contains_key(&real));
 }
 
+/// `prewarm` probes only cwds the memo lacks: an unseen cwd gets its probed answer, and a cwd
+/// already in the memo keeps the answer it had, even when a fresh probe would say something else.
+#[test]
+fn prewarm_probes_only_uncached_cwds() {
+    let tmp = TempDir::new().unwrap();
+    let unseen = tmp.path().join("unseen");
+    let cached = tmp.path().join("cached");
+    std::fs::create_dir_all(&unseen).unwrap();
+    std::fs::create_dir_all(&cached).unwrap();
+    let (unseen, cached) = (unseen.canonicalize().unwrap(), cached.canonicalize().unwrap());
+    git_init(&unseen);
+    add_origin(&unseen, "git@github.com:foo/unseen.git");
+    git_init(&cached);
+    add_origin(&cached, "git@github.com:foo/cached.git");
+
+    let mut r = Resolver::new();
+    let stale = Resolver::new().probe(&unseen);
+    r.cache.insert(cached.clone(), stale.clone());
+
+    r.prewarm([unseen.as_path(), cached.as_path()]);
+
+    assert_eq!(r.cache.get(&unseen), Some(&Resolver::new().probe(&unseen)));
+    assert_eq!(
+        r.cache.get(&cached),
+        Some(&stale),
+        "a memoized cwd must not be re-probed"
+    );
+}
+
 // ---- provenance ---------------------------------------------------------------------------------
 
 /// The rank ordering IS the catalog's write rule, so it is pinned here rather than left implicit:
