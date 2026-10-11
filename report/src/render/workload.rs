@@ -79,8 +79,7 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
         call_captions: Vec::new(),
     };
     let mut view = view;
-    // Only `--no-rollup` emits `<sid>/<agent-id>` rows; session ids never hold a `/`.
-    let subagent_rows = report.sessions.keys().any(|k| k.contains('/'));
+    let subagent_rows = report.sessions.iter().any(|(key, entry)| is_subagent_row(key, entry));
     view.call_captions = call_captions(&view, counted, total, subagent_rows);
     debug!(
         "render::build_efficiency_view: calls-counted={counted}/{total} agent-types={} skills={} mcp-tools={} interrupts={} compactions={} skill-coverage={} mcp-coverage={}",
@@ -93,6 +92,20 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
         view.by_mcp_coverage
     );
     view
+}
+
+/// Whether this session row is a `--no-rollup` subagent row: keyed `<sid>/<agent-id>` (or
+/// `<host>/<sid>/<agent-id>` once merged) and holding exactly one subagent whose `agent_id` is the
+/// key's last `/` segment. The key shape alone cannot say: `report merge` re-keys every rollup
+/// session `<host>/<sid>`, which also holds a `/`.
+///
+/// Contract limit: an agent id equal to a session id, or one containing `/`, would fool this (a
+/// false or missing `--no-rollup` caption). None exists in the corpus.
+pub(super) fn is_subagent_row(key: &str, entry: &SessionEntry) -> bool {
+    match entry.efficiency.subagents.as_slice() {
+        [only] => key.rsplit_once('/').is_some_and(|(_, last)| last == only.agent_id),
+        _ => false,
+    }
 }
 
 /// Everything the call join accumulates for one tag key across the report's sessions.

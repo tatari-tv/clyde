@@ -333,26 +333,100 @@ fn fully_counted_report_has_no_captions() {
     assert_eq!(cell(&eff.by_skill, "c").calls.as_deref(), Some("0"));
 }
 
-/// A `--no-rollup` report (one holding a `<sid>/<agent-id>` subagent row) explains why an inherited
-/// skill tag shows tokens with 0 calls; a rolled-up report does not. BITES: drop the caption, or
-/// show it on every report.
-#[test]
-fn no_rollup_report_explains_inherited_skill_tags() {
-    let inherited =
-        "Under --no-rollup, a subagent that inherited its parent's skill tag shows that skill's tokens with 0 calls";
-    let rolled = build_efficiency_view(&two_sessions(true));
-    assert!(!rolled.call_captions.iter().any(|c| c == inherited));
+const NO_ROLLUP_CAPTION: &str =
+    "Under --no-rollup, a subagent that inherited its parent's skill tag shows that skill's tokens with 0 calls";
 
+fn has_caption(report: &crate::report::Report) -> bool {
+    build_efficiency_view(report)
+        .call_captions
+        .iter()
+        .any(|c| c == NO_ROLLUP_CAPTION)
+}
+
+fn subagent(agent_id: &str) -> efficiency::SubagentEfficiency {
+    efficiency::SubagentEfficiency {
+        agent_id: agent_id.to_string(),
+        agent_type: Some("general-purpose".to_string()),
+        signals: efficiency::EfficiencySignals::default(),
+    }
+}
+
+/// Every session counted, so the only possible caption is the `--no-rollup` one.
+fn counted_rollup_report() -> crate::report::Report {
     let mut report = two_sessions(true);
-    let (sid, entry) = report.sessions.pop_first().unwrap();
-    report.sessions.insert(format!("{sid}/agent-a1"), entry);
-    let exploded = build_efficiency_view(&report);
-    assert_eq!(
-        exploded.call_captions,
-        [
-            "\u{2020} includes sessions recorded before call counting",
-            inherited,
-            "Calls counted on 1 of 2 sessions"
-        ]
-    );
+    for entry in report.sessions.values_mut() {
+        entry.skill_calls.get_or_insert_with(BTreeMap::new);
+        entry.mcp_calls.get_or_insert_with(BTreeMap::new);
+    }
+    report
+}
+
+/// The `--no-rollup` shape: each session re-keyed `<sid>/<agent-id>` holding that one subagent.
+fn exploded(report: crate::report::Report) -> crate::report::Report {
+    let mut out = report;
+    out.sessions = std::mem::take(&mut out.sessions)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (sid, mut entry))| {
+            let agent_id = format!("agent-a{i}");
+            entry.efficiency.subagents = vec![subagent(&agent_id)];
+            (format!("{sid}/{agent_id}"), entry)
+        })
+        .collect();
+    out
+}
+
+/// Merge two hosts' copies of the same report, through the real `merge_reports` re-keying.
+fn merged(build: impl Fn() -> crate::report::Report) -> crate::report::Report {
+    let a = build();
+    let mut b = build();
+    b.host = "other".to_string();
+    crate::merge::merge_reports(vec![a, b]).unwrap()
+}
+
+/// A merged ROLLUP report re-keys every session `<host>/<sid>`; that `/` is not a `--no-rollup`
+/// row. Inverts the old key-shape test. BITES: go back to `keys().any(contains('/'))`.
+#[test]
+fn merged_rollup_report_has_no_no_rollup_caption() {
+    let report = merged(|| {
+        let mut report = counted_rollup_report();
+        for entry in report.sessions.values_mut() {
+            entry.efficiency.subagents = vec![subagent("agent-a0")];
+        }
+        report
+    });
+    assert!(report.sessions.keys().all(|k| k.contains('/')));
+    assert!(!has_caption(&report));
+}
+
+/// A merged `--no-rollup` report (`<host>/<sid>/<agent-id>`) still prints the caption.
+#[test]
+fn merged_no_rollup_report_keeps_caption() {
+    let report = merged(|| exploded(counted_rollup_report()));
+    assert!(report.sessions.keys().all(|k| k.matches('/').count() == 2));
+    assert!(has_caption(&report));
+}
+
+/// An unmerged `--no-rollup` report prints the caption; the rolled-up one does not. BITES: drop the
+/// caption, or show it on every report.
+#[test]
+fn no_rollup_report_keeps_caption() {
+    assert!(!has_caption(&counted_rollup_report()));
+    assert!(has_caption(&exploded(counted_rollup_report())));
+}
+
+/// A rollup session with exactly one subagent is keyed by its bare session id, so it is not a
+/// subagent row; neither is a slashed key whose suffix is not the subagent's id.
+#[test]
+fn single_subagent_rollup_session_is_not_a_subagent_row() {
+    let mut entry = sample_report().sessions.into_values().next().unwrap();
+    entry.efficiency.subagents = vec![subagent("agent-a0")];
+    assert!(!is_subagent_row("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", &entry));
+    assert!(!is_subagent_row("desk/9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042", &entry));
+    assert!(is_subagent_row("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042/agent-a0", &entry));
+    entry.efficiency.subagents.push(subagent("agent-a1"));
+    assert!(!is_subagent_row(
+        "9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f042/agent-a0",
+        &entry
+    ));
 }

@@ -137,7 +137,7 @@ fn read_reports(inputs: &[PathBuf]) -> std::result::Result<Vec<Report>, MergeErr
 /// timestamp, original `host`/`since`/`until`/`totals`. So a 1-input merge round-trips byte-for-
 /// byte. Re-keying, re-summing, and a fresh `generated` only make sense when actually combining
 /// two or more reports (the keep-both collision handling exists for that case alone).
-fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError> {
+pub(crate) fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError> {
     log::debug!("merge::merge_reports: inputs={}", reports.len());
 
     // Every input, the lone one included, must be the current schema. `read_reports` already
