@@ -3,13 +3,16 @@
 **Author:** Scott Idler
 **Date:** 2026-10-11
 **Status:** In Review
-**Review Passes Completed:** 5/5 (panel round 1 folded in)
+**Review Passes Completed:** 5/5 (panel rounds 1-2 folded in)
 
 ## Summary
 
 This doc covers two pieces of work that share one seam, the way a session group's files are read.
 
-- **Fix:** forked subagents copy parent records into their own transcript file, and clyde bills the copies a second time. Usage, outcomes and attribution get deduped across the whole session group instead of per file.
+- **Fix:** two token-accounting bugs in the same seam.
+  - Forked subagents copy parent records into their own transcript file, and clyde bills the copies a second time.
+  - Subagent transcripts stream usage, so the first record of a message holds a partial `output_tokens`, which clyde keeps.
+  - Usage is taken once per `message.id` across the whole session group, as the field-wise max over all its records.
 - **Feature:**
   - By skill and By MCP tool gain Calls and Sessions. By MCP tool also gains Time and Avg.
   - Both tables gain $/call, plus a paired-bar chart: % of calls vs % of spend.
@@ -54,6 +57,15 @@ The counts come from call events in the transcripts. They are stored in the cata
   - The panel's staff seat counted 68.9M with staged copies included.
   - 14 of the affected groups were modified in September.
 - **Staged archives lose the fork marker.** `session::stage::stage_session` copies `*.jsonl` only (`session/src/stage.rs:65`). Measured: 0 `*.meta.json` among 3,046 staged subagent files.
+**P1b: subagent output tokens are undercounted.** Panel round 2 found it; I re-measured on 2026-10-11:
+
+- In a subagent transcript, the records of one assistant message carry growing `output_tokens` (e.g. `3, 3, 159`). The other usage fields stay constant.
+- Measured: 35,060 of 62,363 multi-record subagent messages differ. In 35,059 of them the last value is the max and the sequence never decreases. Top-level transcripts: 0 of 68,844 differ.
+- clyde keeps the FIRST record's usage (`first_seen_usage`, `extract.rs:414-419`). The comment at `extract.rs:407-412` ("repeat the identical message-level usage") is false for subagents.
+- 36,600,974 output tokens are undercounted corpus-wide.
+- Net effect of both fixes on the live corpus: 353 session groups change, -32,491,661 tokens (32,855,924,702 -> 32,823,433,041).
+- A fork copy can also carry a different usage than its source (`msg_011Cev8twz3dDx3jBzu3TgtQ`: `output_tokens` 3 in the source, 2185 in the fork). So "first holder wins" would make totals depend on file order. The max rule does not.
+
 - **The keep-blob guard would block a fix.** A recompute that "saw FEWER tokens than the stored blob" keeps the old blob (`efficiency/src/collect.rs:210-218`). A correct dedupe always sees fewer tokens.
 
 **P2: the tables carry no volume.** Scott, 2026-10-11, on `marquee ~scott-idler/claude-report-2026-09-5`: "when we show these figures, can we add another column? counts or times or invocations. something that also tracks these values in some charts or graphs similar to the others you have in the report ... the real work is get the clyde report to produce it".
@@ -70,7 +82,9 @@ The counts come from call events in the transcripts. They are stored in the cata
 
 ### Goals
 
-- G1 (Scott, 2026-10-11, "we are going to handle both the bug and these counts"): a copied record counts once per session group in every token, cost, attribution and summed-outcome figure.
+- G1 (Scott, 2026-10-11, "we are going to handle both the bug and these counts"):
+  - A copied record counts once per session group in every token, cost, attribution and summed-outcome figure.
+  - Each message's usage is its final usage (P1b). This is the same dedupe rule, so it rides with G1. Recorded under Resolved Decisions for Scott to veto.
 - G2 (Scott, 2026-10-11, "counts or ... invocations"): Calls and Sessions columns on By skill and By MCP tool, in the HTML, Markdown and marquee formats.
 - G3 (Scott, 2026-10-11, "times"): Time (total) and Avg (per call) columns on By MCP tool.
 - G4 (Scott, 2026-10-11, "charts or graphs similar to the others"):
@@ -123,7 +137,14 @@ render: join calls and cost on the same key -> columns, row coverage marker, pai
 
 **Group-wide dedupe (P1).**
 
-- `build_session` already reads a group's files sequentially (`collect.rs:263-275` uses `.iter()`, not `par_iter`). One `GroupSeen` is threaded through those calls, so no subtraction step or event list is needed.
+- `build_session` already reads a group's files sequentially (`collect.rs:263-275` uses `.iter()`, not `par_iter`). One `GroupSeen` is threaded through those calls.
+- **Usage is buffered per message, not applied per record:**
+  - `GroupUsage: message.id -> MessageUsage` holds:
+    - the scope and the first record's attributes (timestamp, model, `attributionSkill`, `attributionMcpServer` + `attributionMcpTool`, `effort`)
+    - the usage: the field-wise max of `TokenUsage` and `server_tool_use` over every record of that id in the group
+  - After the last file, `build_session` applies each `MessageUsage` once to its scope's counters, through today's `apply_record` usage arm.
+  - Max is commutative, so **totals do not depend on file order.** Order only picks which scope and attributes a shared message keeps.
+  - A record with no `message.id`, or an empty one, applies immediately, as today (`extract.rs:414-419`).
 - **File order decides which scope keeps a shared record.** The original must come before its copies:
   1. the parent, `<sid>.jsonl`
   2. non-fork subagents
@@ -133,18 +154,22 @@ render: join calls and cost on the same key -> columns, row coverage marker, pai
 - **One gap: a staged fork-of-subagent written before Phase 2.**
   - It has neither marker: no meta was staged, and that shape carries no ref. So it sorts as a non-fork.
   - Its copies may then land on the fork's scope instead of the source's.
-  - **Totals are still right**, because the record counts once either way. Only the per-agent split can shift.
+  - Totals are unaffected, because the max rule is order-free. Only the per-agent split can shift.
   - Live count: 2 files.
 - **What each seen-set gates:**
-  - **Usage:** the assistant `message.id`. This replaces the per-file set, with the same semantics: an empty id is never inserted and always counts (`extract.rs:414-419`).
+  - **Usage:** `GroupUsage`, above. It replaces the per-file set.
   - **Calls:** the `tool_use` block `id`. Kept separate from the message set, because one message holds several tool_uses.
   - **Results:** the `tool_result`'s `tool_use_id`, so a copied result is not timed twice.
   - **Slash:** the user record's `uuid`. A record with no uuid always counts.
-- **Outcomes:** `outcome::extract` gets the same `tool_use` id set, so `lines_written`, `slack_messages` and the MCP outcome counts drop copies. The sha and url sets stay as they are.
+- **Outcomes:**
+  - The outcome pass runs after the efficiency pass (`collect.rs:278-290`), so it cannot reuse the efficiency pass's consumed sets.
+  - It gets its own group-wide `tool_use` id set and its own group-wide pending map, replacing the per-file one at `outcome.rs:270`. Files are read in the same order.
+  - So `lines_written`, `slack_messages` and the MCP outcome counts drop copies. The sha and url sets stay as they are.
 - **Guard (`collect.rs:210-218`):**
-  - `FileEfficiency` also reports `tokens_file_local`, the token sum under the old per-file rule. It costs one extra `u64` add per turn and is never serialized.
+  - `FileEfficiency` also reports `tokens_file_local`, the token sum under the old rule: the first record per `message.id`, deduped with a per-file seen set. It is never serialized.
   - For a blob without `skill-calls` (old rule), the guard compares `stored_tokens` against the sum of `tokens_file_local`. A staged copy taken mid-session still trips it; the dedupe alone never does.
   - For a blob with `skill-calls`, the guard compares against the deduped total. That way it never compares across rules.
+  - `EfficiencyCandidate` today carries only `stored_tokens`. It gains `stored_has_skill_calls`, read in the same query (`db.rs:478-488`) as `json_extract(...,'$.aggregate.raw."skill-calls"') IS NOT NULL`.
 - **Staging:** `session::stage::stage_session` also copies `<agent>.meta.json` beside each `<agent>.jsonl` (`session/src/stage.rs:65`), so newly staged forks keep their marker.
 
 **Call counting (P2).**
@@ -164,10 +189,12 @@ render: join calls and cost on the same key -> columns, row coverage marker, pai
   - An assistant `tool_use` whose name starts with `mcp__` counts.
   - Split rule: strip `mcp__`, then split on the FIRST `__` into server and tool. Measured: no live name has a second `__`.
 - **MCP key (G6):**
-  - `server_key(s)` replaces every character outside `[A-Za-z0-9]` with `_`.
-  - Calls are keyed `server_key(S) + "__" + T`, from the tool_use name.
+  - `server_key` is Claude Code's own normalization, copied exactly from the 2.1.296 binary's `In(e)`:
+    - replace `[^a-zA-Z0-9_-]` with `_`
+    - if the name starts with `claude.ai `, collapse runs of `_` and trim a leading or trailing `_`
+  - Calls are keyed by the tool_use name's server segment verbatim (it is already `In()`-normalized) + `"__"` + T.
   - Cost is keyed `server_key(attributionMcpServer) + "__" + attributionMcpTool`.
-  - Measured: the two forms differ only by punctuation, for example `claude_ai_Atlassian` vs `claude.ai Atlassian`. `server_key` maps both to one key, and `hindsight-work` maps the same on both sides.
+  - So `claude.ai Atlassian` -> `claude_ai_Atlassian`, which matches the tool_use name. `hindsight-work` stays distinct from `hindsight_work`, and `claude.ai Foo (Bar)` lands on one key.
   - A cost record with a tool but no server is keyed `_unknown__<tool>`. Live count: 0.
   - The Server column shows `attributionMcpServer` as written.
 - **MCP time:**
@@ -279,7 +306,8 @@ struct CallRow {
 - **Sort toggle:**
   - `Ranks` and the figure's attributes become `data-by-count` / `data-by-per-unit` (`figures.rs:59-61`).
   - `app.js:18` already reads the key from the button.
-  - The existing session/spend figure changes in those attribute names only. The Phase 7 criterion pins exactly that diff.
+  - The button `data-key` values (`figures.rs:111-112`), which `app.js:18` reads, rename in step: `sessions` -> `count`, `per-session` -> `per-unit`.
+  - The existing session/spend figure changes in those attribute and key names only. The Phase 7 criterion pins exactly that diff.
 - **Columns:**
   - By skill: `Skill | Calls | Sessions | Tokens | Spend | $/call`
   - By MCP tool: `Server | MCP Tool | Calls | Sessions | Time | Avg | Tokens | Spend | $/call`
@@ -298,26 +326,37 @@ Every `cargo test ...` criterion below requires the output line `test result: ok
 #### Phase 1: Group-wide dedupe of usage and summed outcomes
 **Model:** opus
 - `GroupSeen`, plus file ordering in `build_session` (fork detection by meta or ref).
-- `extract(path, &mut GroupSeen)` replaces the per-file usage set. `outcome::extract` shares the `tool_use` set.
+- `extract(path, &mut GroupSeen)` with `GroupUsage` (field-wise max) replaces the per-file usage set. The usage is applied once per message after the last file.
+- `outcome::extract` gets its own group-wide `tool_use` set and pending map.
+- Correct the `extract.rs:407-412` comment.
 - `tokens_file_local`, and the guard rewritten as specified above.
 - Fixture `fixtures/efficiency/fork-group/`:
   - a parent
   - a fork of the main session: the ref plus one copied spawning turn
   - a non-fork subagent
   - a fork of that subagent copying its whole history
+  - a subagent message streamed over 3 records with `output_tokens` 3, 3, 159
+  - a fork copy whose usage differs from its source
   - meta files for all of the above, plus the same group with the meta files removed
 - **Success criteria:**
   - `cargo test -p efficiency collect::tests::fork_group_counts_copies_once`:
-    - aggregate tokens equal the hand-computed deduped sum
+    - aggregate tokens equal the hand-computed field-wise-max sum, and the streamed message counts 159 output tokens
+    - reversing the file order leaves the totals unchanged
     - with meta present, the copied turns land on the source scope
     - with meta removed, the totals are unchanged
-  - `cargo test -p efficiency collect::tests::guard_ignores_dedupe_drop`: an old-shape stored blob equal to the per-file sum is recomputed; a stored blob larger than the per-file sum is kept.
+  - `cargo test -p efficiency collect::tests::guard_ignores_dedupe_drop`:
+    - an old-shape stored blob equal to the per-file sum is recomputed
+    - an old-shape blob larger than the per-file sum is kept
+    - a new-shape blob larger than the deduped sum is kept
   - `cargo test -p efficiency outcome::tests::fork_copy_lines_written_once`.
 
 #### Phase 2: Stage subagent meta files
 **Model:** sonnet
 - `stage_session` copies `<agent>.meta.json` next to each subagent `.jsonl`. Both the live and staged layouts read it.
-- **Success criteria:** `cargo test -p session stage::tests::stages_subagent_meta`.
+- **Success criteria:** `cargo test -p session stage::tests::stages_subagent_meta` asserts:
+  - the staged dir holds `subagents/agent-x.meta.json` byte-identical to the source
+  - a subagent with no meta stages without error
+  - a re-run copies 0 files
 
 #### Phase 3: MCP keyed by server and tool
 **Model:** sonnet
@@ -325,7 +364,7 @@ Every `cargo test ...` criterion below requires the output line `test result: ok
 - Change the fixture's full-form `attributionMcpTool` to the live shape (bare tool plus server), and update `extract/tests.rs:252`.
 - **Success criteria:** `cargo test -p efficiency extract::tests::mcp_cost_keyed_by_server`:
   - `claude.ai Atlassian` + `getJiraIssue` and `atlassian` + `getJiraIssue` land on two different keys
-  - `server_key("claude.ai Atlassian") == "claude_ai_Atlassian"`
+  - `server_key("claude.ai Atlassian") == "claude_ai_Atlassian"`, `server_key("hindsight-work") == "hindsight-work"`, and `server_key("claude.ai Foo (Bar)") == "claude_ai_Foo_Bar"`
 
 #### Phase 4: Count calls in efficiency
 **Model:** opus
@@ -376,7 +415,7 @@ Every `cargo test ...` criterion below requires the output line `test result: ok
   - `cargo test -p report render::tests::workload::partial_row_marks_and_never_zero`.
   - `cargo test -p report render::tests::workload::no_counted_sessions_omits_call_columns`.
   - `cargo test -p report render::html::tests::calls_pairs_labels_and_numbers`: it asserts the labels. Mutating a call share in the view (not in `display_strings`) fails the licensing test.
-  - `git diff` of `golden.html` touches no agent-type row. Inside the existing session/spend figure it changes only `data-by-sessions` -> `data-by-count` and `data-by-per-session` -> `data-by-per-unit`.
+  - `git diff` of `golden.html` touches no agent-type row. Inside the existing session/spend figure it changes only `data-by-sessions` -> `data-by-count`, `data-by-per-session` -> `data-by-per-unit`, and the matching button `data-key` values.
 
 #### Phase 8: Docs
 **Model:** sonnet
@@ -394,14 +433,14 @@ Run these against the installed build after `clyde session reindex` on desk and 
 
 - [ ] Fork dedupe in the catalog:
   - Command: `sqlite3 ~/.local/share/clyde/sessions.db "select session_id, json_extract(efficiency_json,'$.aggregate.raw.\"input-tokens\"')+json_extract(efficiency_json,'$.aggregate.raw.\"output-tokens\"')+json_extract(efficiency_json,'$.aggregate.raw.\"cache-read-tokens\"')+json_extract(efficiency_json,'$.aggregate.raw.\"cache-5m-write-tokens\"')+json_extract(efficiency_json,'$.aggregate.raw.\"cache-1h-write-tokens\"') from sessions where session_id in ('b07f7004-b258-4f52-b5a8-93e759ef0047','16181e66-ab66-41ff-af67-6e2836b01e19')"`
-  - Expected: `147038922` and `139531910`.
+  - Expected: `147039969` and `139815892`, the group-wide field-wise-max sums.
   - Observed on main:
     - b07f7004: `149552273`, the sum of its stored raw fields.
     - 16181e66: stored with its per-file sum `181093200`, per the probe.
 - [ ] Uncounted sessions in the collect:
-  - Command: `jq '[.sessions[] | select(.efficiency != null) | ."skill-calls" == null] | map(select(.)) | length' 2026-09-report.json`
-  - Expected: no more than the number of September rows the reindex reports as `kept`.
-  - Observed on main: every session, because the key is absent.
+  - Command: `jq -r '.sessions | to_entries[] | select(.value."skill-calls" == null) | .key' 2026-09-report.json`
+  - Expected: every id it prints appears in the reindex output's keep-blob warnings (`keeping the stored efficiency blob` / `no bytes left`). Any other id fails.
+  - Observed on main: 1297 ids, every September session, because the key is absent. An equality against a catalog `activity_at` count was tried and rejected: on main it gives 1292 vs 1297, because collect's session set is not the same as the `activity_at` window.
 - [ ] HTML table headers:
   - Command: `rg -U -o --multiline-dotall '>By (skill|MCP tool)<.*?</thead>' report.html | rg -o '<th[^>]*>[^<]*</th>' | sed 's/<th[^>]*>//g;s/<\/th>/|/g' | tr -d '\n'`
   - Expected: `Skill|Calls|Sessions|Tokens|Spend|$/call|Server|MCP Tool|Calls|Sessions|Time|Avg|Tokens|Spend|$/call|`
@@ -411,9 +450,9 @@ Run these against the installed build after `clyde session reindex` on desk and 
   - Expected: `4`, the two existing session/spend figures plus one new chart per table.
   - Observed on main: `2` (lines; one figure per line). The first draft's pattern `<figure class="pairs` matched 0 on main and was wrong.
 - [ ] Catalog coverage and version:
-  - Command: `sqlite3 ~/.local/share/clyde/sessions.db "select (select count(*) from sessions where json_extract(efficiency_json,'$.aggregate.raw.\"skill-calls\"') is not null) + K = (select count(*) from sessions where efficiency_json is not null)"`, where K is the `kept` count from the reindex output.
-  - Expected: `1`, and `pragma user_version` prints `16`.
-  - Observed on main: user_version `15`; the not-null count is `0` of `4684`.
+  - Commands: `sqlite3 ~/.local/share/clyde/sessions.db 'pragma user_version'`; `sqlite3 ~/.local/share/clyde/sessions.db "select count(*) from sessions where efficiency_json is not null and json_extract(efficiency_json,'$.aggregate.raw.\"skill-calls\"') is null"`
+  - Expected: `16`, and the second count equals the `kept` figure the reindex prints.
+  - Observed on main: `15`, and `4684` (every row with a blob).
 - [ ] Markdown table headers:
   - Command: `rg -n '^\| (Skill|Server) ' report.md`
   - Expected: `| Skill | Calls | Sessions | Tokens | Spend | $/call |` and `| Server | MCP Tool | Calls | Sessions | Time | Avg | Tokens | Spend | $/call |`
@@ -425,6 +464,8 @@ Run these against the installed build after `clyde session reindex` on desk and 
 - 2026-10-11, author, from transcript probes and panel round 1:
   - Count events, not tags.
   - Dedupe group-wide by reading the files in order with shared seen-sets, not count-then-subtract. This answers the panel's "a set of ids cannot undo a count".
+  - Usage per message is the field-wise max across the group, which also fixes P1b. Panel round 2 flagged P1b as a scope call for Scott. I folded it in because it is the same rule in the same function, and the max rule is what makes fork totals order-free. Scott can veto it.
+  - `server_key` copies Claude Code's `In()` exactly; it is not a rule invented here.
   - The slash confirm window is the next record only.
   - Unconfirmed slash commands count only when the group spends under that skill name.
   - Time is sum plus count, which keeps it additive.
