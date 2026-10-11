@@ -50,3 +50,14 @@
 - None.
 
 Goldens: medium/small/pathological `.md` and `.html` regenerated. The diff touches only the Agent-Type table header and rows (plus, in medium, one new agent calls figure of three rows); no skill or MCP row or figure changed.
+
+## Phase 4: Docs
+### Design decisions
+- New "Agent-type calls" section placed after the fork-dedupe list and before the closing line about skill and MCP cost — report/README.md — keeps the agent table beside its sibling tables' wording (Calls, Sessions, $/call).
+- The design doc's Status line flipped to Implemented in this commit, as the final-phase step — docs/design/2026-10-11-report-agent-calls.md.
+### Deviations
+- None.
+### Tradeoffs
+- A separate section vs. extending the skill/MCP bullet list: the agent table has its own definition of a call (subagent with tokens) and its own `n/a` rule, so a section reads cleaner than more bullets on a list about invocations.
+### Open questions
+- None.

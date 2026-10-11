@@ -135,6 +135,24 @@ more than one file. Within a session group:
   `tool_use_id` or record `uuid`
 - Skill and MCP calls are counted once per tool_use `id`
 
+### Agent-type calls
+
+The "Agent-Type Cost Attribution" table reads `Agent Type | Calls | Sessions | Tokens | Spend | $/call`,
+with a calls/spend chart above it in the HTML page:
+
+- **Calls**: how many subagents of that type ran. An agent call is a subagent recorded in the
+  session with tokens. A resumed agent (SendMessage, a teammate continuation) counts once, because it
+  keeps one `agentId`. A fork is an ordinary type with its own row
+- **Sessions**: sessions that held a subagent of that type
+- **$/call**: the type's spend divided by its calls
+- Failed spawns are not calls. An `Agent` tool_use that errored never ran and carries no spend
+- A subagent with no tokens is not a call and makes no row, the same rule the Spend column uses
+- A teammate runs as its own top-level session, not as a subagent of the spawner. Its spend sits under
+  that session's `(main-session)` row, and it adds no call
+- `(main-session)` is the spend that no subagent accounts for. It shows `n/a` for Calls and $/call,
+  because it is not a spawn, and it is left off the chart
+- Under `--no-rollup` each subagent is its own row, so a type's Sessions equals its Calls
+
 Cost per skill and per MCP tool moved with it, so figures from an older binary will not match.
 
 ### After upgrading: reindex, then re-collect
