@@ -81,7 +81,7 @@ render ── build_views ──> ContextBlock + raw twins (the view model)
 | `report/src/chart/` | geometry: `line.rs` (today's `chart.rs`), `bars.rs` (paired), `stack.rs` (stacked bar, stacked daily), `treemap.rs` (squarified), `waterfall.rs`, `histogram.rs`, `calendar.rs` | `chart.rs` split |
 | `report/src/bands.rs` | outcome bands + waste rollup | new |
 | `efficiency/src/{extract,metrics}.rs` | per-day per-model `TokenTotals` | changed |
-| `sessions/src/db/migrate.rs` | v15: NULL `efficiency_json` to force recompute | changed |
+| `sessions/src/db/migrate.rs` | v15: `snapshot_before_v15` only; eligibility is read from the blob, no row is rewritten | changed |
 
 - Every new module has a sibling `tests.rs`. `render.rs` (1,021 lines) and `document.rs` (1,004) are near the 1,500-line bloat cap (`.otto.yml:7`), so the HTML backend and charts are new files, never additions to those two.
 - `#![deny(dead_code)]` (`report/src/lib.rs:3`): every phase lands wired up.
@@ -112,7 +112,7 @@ render ── build_views ──> ContextBlock + raw twins (the view model)
 - `RawCounters` gains `by_day: BTreeMap<NaiveDate, BTreeMap<String /*model*/, TokenTotals>>`, merged in `metrics.rs` `merge` (:238). Day is the turn's UTC date, matching `compute_by_day` today (`entry.begin.date_naive()` on a `DateTime<Utc>`, `report/src/aggregate.rs:642`). Days are whole UTC days; a sub-day `--since`/`--until` still windows sessions as today and the daily chart says it shows whole UTC days.
 - `subtract_subagents` (`report/src/report.rs`, ~716-745) subtracts `by_day` like every other additive map, so `--no-rollup` does not double-count. Test: rolled-up buckets equal main-session plus exploded subagent buckets.
 - **Recompute without losing stored accounting.** Catalog v15 does NOT blanket-NULL `efficiency_json`: a NULLed row whose transcript bytes are gone drops out of every report with only a note (`report/src/lib.rs:255-268`).
-  - No version column. Whether a row has buckets is read from the blob itself: backfill eligibility becomes `efficiency_json IS NULL OR (json_extract(efficiency_json, '$.aggregate.raw.by_day') IS NULL AND bytes recoverable)`. A separate version column would drift: an older clyde (migrations return early once `user_version >= SCHEMA_VERSION`, `sessions/src/db.rs:62`, so it keeps running on a v15 catalog) can rewrite a blob without `by_day` and leave the column claiming it has one.
+  - No version column. Whether a row has buckets is read from the blob itself: backfill eligibility becomes `efficiency_json IS NULL OR (json_extract(efficiency_json, '$.aggregate.raw."by-day"') IS NULL AND bytes recoverable)`. A separate version column would drift: an older clyde (migrations return early once `user_version >= SCHEMA_VERSION`, `sessions/src/db.rs:62`, so it keeps running on a v15 catalog) can rewrite a blob without `by_day` and leave the column claiming it has one.
   - A recompute that fails keeps the old blob. An interrupted `clyde session reindex` leaves unprocessed rows bucket-less and the next run resumes them; `PersistStats` reports recomputed and unrecoverable counts.
   - v15 itself is the `snapshot_before_v15` step plus the eligibility change; it rewrites no rows.
   - `snapshot_before_v15` and its wiring follow v10-v14 (`sessions/src/db/migrate.rs:25-469`, `sessions/src/db.rs:319`), with trigger suppression as those do.

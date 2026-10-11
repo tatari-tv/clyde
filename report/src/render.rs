@@ -1027,22 +1027,47 @@ fn publish_marquee_markdown(artifact: &Artifact, report: &Report, cfg: &RenderCo
     Ok(OutputDest::Marquee(url))
 }
 
+/// One plain line for the Slack unfurl card, built from the same display strings the report shows.
+/// Passed explicitly because marquee's fallback reads the entry document, and for the Markdown
+/// format that is the raw YAML frontmatter.
+fn marquee_description(report: &Report) -> String {
+    let totals = build_totals_view(report);
+    let plural = |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
+    format!(
+        "Claude Code usage, {} to {}: {} across {} {} in {} {}",
+        report.since.format("%Y-%m-%d"),
+        report.until.format("%Y-%m-%d"),
+        totals.spend,
+        totals.sessions,
+        plural(totals.sessions, "session", "sessions"),
+        totals.repo_count,
+        plural(totals.repo_count, "repository", "repositories"),
+    )
+}
+
+/// The `marquee publish` invocation, split from the spawn so a test can read its argv.
+fn marquee_publish_command(dir: &Path, report: &Report, space: Option<&str>) -> Command {
+    let mut cmd = Command::new("marquee");
+    cmd.arg("publish")
+        .arg(dir)
+        .arg("--title")
+        .arg(marquee_title(report))
+        .arg("--description")
+        .arg(marquee_description(report))
+        .arg("--output")
+        .arg("url");
+    if let Some(space) = space {
+        cmd.arg("--space").arg(space);
+    }
+    cmd
+}
+
 /// Publish a prepared directory (an `index.md` with its sibling assets, or an `index.html`) to
 /// marquee, ensuring an authenticated session first. Returns the published URL parsed from marquee's stdout.
 fn marquee_publish(dir: &Path, report: &Report, cfg: &RenderConfig) -> Result<String> {
     debug!("render::marquee_publish: dir={} space={:?}", dir.display(), cfg.space);
     ensure_marquee_auth()?;
-    let title = marquee_title(report);
-    let mut cmd = Command::new("marquee");
-    cmd.arg("publish")
-        .arg(dir)
-        .arg("--title")
-        .arg(&title)
-        .arg("--output")
-        .arg("url");
-    if let Some(space) = &cfg.space {
-        cmd.arg("--space").arg(space);
-    }
+    let mut cmd = marquee_publish_command(dir, report, cfg.space.as_deref());
     let output = run_bounded("marquee publish", &mut cmd, marquee_spawn_err)?;
     if !output.status.success() {
         bail!(

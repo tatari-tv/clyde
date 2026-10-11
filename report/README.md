@@ -71,19 +71,47 @@ actually billed), not `list_amount`.
 
 ## Render output formats
 
-`report render` turns a collected JSON report into one of three output formats, selected with
-`--format` (case-insensitive). All three share ONE source: Rust deterministically authors the
-Markdown document -- every table, every figure, every chart -- and the LLM fills a small fixed set of
-prose slots inside it. Pandoc is only ever invoked for `pdf`.
+`report render` turns a collected JSON report into one of five output formats, selected with
+`--format` (case-insensitive). Rust authors every number, table and chart; the LLM fills a small
+fixed set of prose slots. Two document shapes: Markdown (`markdown`, `pdf`, `marquee-markdown`) and
+a self-contained HTML dashboard (`html`, `marquee-html`). Pandoc is only ever invoked for `pdf`.
 
 | `--format`         | what it does                                                             | `-o`     | pandoc |
 |--------------------|---------------------------------------------------------------------------|----------|--------|
 | `markdown` (default) | writes Markdown to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.md` | yes | no |
 | `pdf`              | converts the Markdown to PDF via pandoc (`--pdf-engine`, default `wkhtmltopdf`) | yes | **yes** |
+| `html`             | writes one self-contained HTML page (inline CSS, JS and SVG; no external requests) to `-o <path>`, to stdout (`-o -`), or to `./<YYYY-MM>-claude-report.html` | yes | no |
 | `marquee-markdown` | publishes the Markdown as `index.md` to [marquee](https://github.com/tatari-tv/marquee); marquee applies its house style | rejected | no |
+| `marquee-html`     | publishes the same page as `index.html`; marquee serves it as written | rejected | no |
 
-There is no HTML format and no HTML authorship anywhere in clyde: markdown to HTML is marquee's job.
-`pdf` requires `pandoc` on `PATH`; `marquee-markdown` requires the `marquee` CLI with an
+### Why clyde writes HTML now
+
+This reverses the old rule that clyde has no HTML format and no HTML authorship
+(`docs/design/2026-07-29-render-inversion.md`). That rule existed because the 2026-07 HTML path
+had the model write the markup. Render inversion changed who authors the page: Rust now writes
+every number and every chart, and the model only fills the prose slots. A Rust-owned HTML template
+adds no model-authored surface. Slot text is escaped and sanitized, and a test fails the build if
+a figure on the page is not one the binary computed. See
+`docs/design/2026-10-10-report-html-dashboard.md`.
+
+Render knobs live under `render:` in `clyde.yml` (see `clyde.yml.example`): `format`,
+`table-top-n` (rows shown before a table folds), `waste.heavy-models` and
+`waste.short-session-turns` (the rules behind the "Unobserved and Flagged Spend" section).
+
+### After upgrading: reindex, then re-collect
+
+The report JSON is schema v3 (per-day per-model buckets). A v2 report is rejected by `render` and
+`merge` with a message naming the schema. On each host:
+
+```bash
+clyde session reindex    # backfills per-day buckets into the catalog; check recomputed / kept / unrecoverable
+clyde report collect ... # write a fresh v3 report
+```
+
+`reindex` keeps stored accounting for any session whose transcript bytes are gone (`kept`); it
+never overwrites real numbers with a partial recompute.
+
+`pdf` requires `pandoc` on `PATH`; the marquee formats require the `marquee` CLI with an
 authenticated session.
 
 An LLM transport is **optional**. With none available the data sections render in full and the prose

@@ -1015,3 +1015,35 @@ fn render_schema_v2_artifact_is_refused_naming_v2_and_v3() {
         "{msg}"
     );
 }
+
+#[test]
+fn marquee_publish_argv_carries_title_and_a_one_line_description() {
+    let report = sample_report();
+    let cmd = marquee_publish_command(Path::new("/tmp/bundle"), &report, Some("eng"));
+    let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+    let value_after = |flag: &str| {
+        let at = args
+            .iter()
+            .position(|a| a == flag)
+            .unwrap_or_else(|| panic!("{flag} missing: {args:?}"));
+        args[at + 1].clone()
+    };
+    assert_eq!(value_after("--space"), "eng");
+    assert_eq!(value_after("--title"), marquee_title(&report));
+    let description = value_after("--description");
+    assert!(!description.contains('\n'), "{description:?}");
+    assert!(!description.contains("title:"), "{description:?}");
+    assert!(description.starts_with("Claude Code usage, "), "{description:?}");
+    assert!(
+        description.contains(&format_usd(report.totals.spend_usd)),
+        "{description:?}"
+    );
+}
+
+#[test]
+fn marquee_description_uses_singular_nouns_for_one() {
+    let mut report = report_with_n_sessions(1);
+    report.totals.sessions = 1;
+    let description = marquee_description(&report);
+    assert!(description.contains(" 1 session in "), "{description:?}");
+}

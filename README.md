@@ -25,7 +25,7 @@ pricing/    was claude-pricing     : pricing data, JSONL parsing, cost math (lib
 ```
 clyde session  <search|ls|resume|tag|reindex|stage|enrich|doctor>        # catalog
 clyde mcp      <serve|register|unregister|status|bundle>                 # session-catalog MCP server
-clyde report   <collect|render>                                          # was `cr`
+clyde report   <collect|render>                                          # was `cr`; render: markdown|pdf|html|marquee-html|marquee-markdown
 clyde cost     <today|yesterday|daily|weekly|monthly|session|statusline|pricing>   # was `ccu`
 clyde permit   <log|audit|suggest|report|clean|check|install|apply>      # was `claude-permit`
 clyde bootstrap                                                          # migrate + repoint integrations
@@ -41,6 +41,13 @@ install status, in a `REQUIRED TOOLS` block at the end of their `--help`: `clyde
 pandoc, marquee, git, jq), `clyde session resume` (claude), `clyde permit apply` (rkvr), and
 `clyde bootstrap` (systemctl). The probes run only when that specific `--help` is requested, never
 on a normal invocation. Rendering lives in `common::tools`.
+
+## Report formats
+
+`clyde report render --format` takes `markdown` (default), `pdf`, `html`, `marquee-markdown` or
+`marquee-html`. `html` is one self-contained dashboard page; `marquee-html` publishes it. After
+upgrading, run `clyde session reindex` and re-collect: schema-v2 report JSON is rejected. Details
+in `report/README.md`.
 
 ## Log paths
 

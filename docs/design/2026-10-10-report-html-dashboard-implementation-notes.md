@@ -157,3 +157,21 @@
 - Operator step (not a plan bullet, not run): `clyde session reindex` on desk and lappy, check `recomputed` / `kept` / `unrecoverable`, then re-collect. Nothing here touched `~/.local/share/clyde`; every test uses a temp catalog.
 - Screenshots (session scratch, not committed): `/tmp/claude-1000/claude-1000/-tmp/1adb2bfa-fbc3-44c0-ae51-0629c8100bc3/scratchpad/p5/{medium,patho}-{desk,phone,dark}.png` (full) and `crop-desk-2.png`, `crop-dark-1.png`, `crop-patho.png`, `ph-top.png`, `ph-strip.png` (Spend Over Time crops).
 - Mutation run on the gated files this phase touched (`cargo mutants --workspace --timeout 300 -f sessions/src/db/migrate.rs -f report/src/chart.rs -f report/src/chart/line.rs -f report/src/chart/stack.rs --jobs 8`): 197 mutants, 141 caught, 56 unviable, 0 missed, 0 timeouts. Full `otto mutants` was not rerun end to end (the `common/src/repo.rs` prewarm survivor is being fixed on its own branch).
+
+## Phase 6: Docs and plugin
+### Design decisions
+- Marquee publish argv is built by `marquee_publish_command(dir, report, space)` and spawned by `marquee_publish` - `report/src/render.rs` - split so a test reads the argv without a marquee binary; both marquee formats go through it.
+- The unfurl description is one line from display strings: "Claude Code usage, <since> to <until>: <spend> across N session(s) in M repositor(y|ies)" - `render.rs:marquee_description`, reusing `build_totals_view` so it shows the same spend and repo count as the page.
+- Docs: `report/README.md` format table now five rows plus the reversal and its reason, and the operator step (`clyde session reindex`, then re-collect; v2 JSON rejected); root README, `clyde.yml.example` (format, `table-top-n`, `waste.heavy-models`, `waste.short-session-turns`, defaults checked against `common/src/config.rs`), `plugin/skills/cost/SKILL.md`, `fixtures/report/README.md`; superseding line in the render-inversion header.
+- Design doc fixes: Architecture row for `migrate.rs` now says snapshot only, blob-based eligibility, no row rewritten; eligibility path is `'$.aggregate.raw."by-day"'`.
+
+### Deviations
+- Orchestrator-directed code fix (not a plan bullet): the owner saw the unfurl Description on `~scott-idler/claude-report-2026-09-4` as raw YAML frontmatter. `--title` was already passed for both formats; the missing piece was `--description`, now passed for both. Tests: `marquee_publish_argv_carries_title_and_a_one_line_description` (no newline, no `title:`), `marquee_description_uses_singular_nouns_for_one`.
+- The README quotes the reversed rule in paraphrase, not verbatim, because the success criterion greps for the exact phrase and must exit 1.
+
+### Tradeoffs
+- Description from the report's totals vs from the rendered page - totals: no parsing of output, same figures as the page.
+
+### Open questions
+- The operator reindex on desk and lappy is documented, not run (system-mutating).
+- Not verified against a live marquee: whether the server now shows the curated description on the card (no publish was done).
