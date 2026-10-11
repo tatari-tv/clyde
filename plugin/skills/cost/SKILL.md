@@ -43,5 +43,7 @@ clyde report merge      # merge two or more collected JSON reports into one
 - `render` can publish straight to a marquee post (`--format marquee-html` /
   `marquee-markdown`); PDF rendering needs `pandoc`, and the marquee formats need
   the `marquee` CLI - `clyde report` reports which required tools are present.
+- `html` writes one self-contained dashboard page (inline CSS, JS, SVG); `marquee-html` publishes it.
+  After a clyde upgrade run `clyde session reindex` and re-collect; v2 report JSON is rejected.
 - Typical flow: `collect` (produce the JSON) -> `render` (turn it into the
   output format you want); `merge` combines multiple collected reports first.

@@ -77,7 +77,14 @@ use crate::model::{
 ///    stored `repo_host` was observed with, so a checkout re-pointed at another repo on the same host
 ///    stops inheriting the old slug's authority). Column-add only, no backfill. See
 ///    [`migrate::migrate_v14_scope_policy`] and `docs/design/2026-09-27-reposlugs-ptns-from-config.md`.
-const SCHEMA_VERSION: i64 = 14;
+/// v15 added NO columns and rewrites NO rows: the efficiency blob grew per-day per-model buckets
+///    (`efficiency::RawCounters::by_day`), and instead of blanket-NULLing every blob (which would drop
+///    a row whose transcript bytes are gone out of every report), the backfill predicate itself
+///    widened to read the blob ([`Db::sessions_missing_efficiency`]): a row whose blob lacks
+///    `by-day` is offered for recompute, and keeps its old blob when no recompute can succeed. The
+///    version bump exists for `snapshot_before_v15`, the pre-change copy. See
+///    `docs/design/2026-10-10-report-html-dashboard.md`.
+const SCHEMA_VERSION: i64 = 15;
 /// Per-connection busy timeout: wait rather than instantly erroring on a concurrent writer.
 const BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default cap on `search` results when the caller does not specify one.
@@ -317,6 +324,7 @@ impl Db {
             migrate::snapshot_before_v12(&conn, path).context("failed to snapshot the DB before the v12 migration")?;
             migrate::snapshot_before_v13(&conn, path).context("failed to snapshot the DB before the v13 migration")?;
             migrate::snapshot_before_v14(&conn, path).context("failed to snapshot the DB before the v14 migration")?;
+            migrate::snapshot_before_v15(&conn, path).context("failed to snapshot the DB before the v15 migration")?;
         }
         migrate::migrate(&conn).context("failed to migrate schema")?;
         Ok(Self { conn })
@@ -441,25 +449,42 @@ impl Db {
         Ok(outcome)
     }
 
-    /// Un-annotated rows (`efficiency_json IS NULL`), archived or not, each with the path fields the
-    /// pricing resolver needs.
+    /// Rows the efficiency backfill should compute, archived or not, each with the path fields the
+    /// pricing resolver needs: un-annotated rows (`efficiency_json IS NULL`), plus annotated rows whose
+    /// blob predates per-day buckets (no `$.aggregate.raw."by-day"` key, schema v15).
     ///
     /// This is the backfill/reindex predicate: `upsert_session` skips rows whose transcript mtime is
     /// unchanged, so a bare v6 migration leaves every EXISTING session's efficiency `NULL` forever --
     /// this query is how the `efficiency` crate finds those un-annotated sessions independent of the
     /// mtime skip-key.
     ///
+    /// Whether a row has buckets is read from the BLOB, not from a version column. A column would
+    /// drift: an older clyde keeps running on a v15 catalog ([`migrate::migrate`] returns early once
+    /// `user_version >= SCHEMA_VERSION`) and can rewrite a blob without `by-day` while the column
+    /// still claimed one. Reading the key means the next new-binary reindex simply picks such a row
+    /// up again. [`EfficiencyCandidate::stored_tokens`] tells the caller which kind each row is, because
+    /// the two fail differently: a bucket-less row whose bytes are gone keeps its stored accounting
+    /// rather than being counted unrecoverable. `json_valid` guards the extract so one corrupt blob
+    /// cannot fail the whole query; such a row is left for `report collect` to reject by name.
+    ///
     /// The `archived = 0` clause is deliberately GONE. `archived` is set by [`Self::reconcile_archived`]
     /// when `transcript_path` no longer exists on disk, so it records transcript AVAILABILITY, never
     /// whether the session happened or what it cost. Filtering on it here meant an archived row could
     /// never be priced even though clyde holds a durable staged copy of its transcript, which is what
     /// staging is for. Callers resolve each candidate's bytes through `common::scan::pricing_files`
-    /// (live layout first, staged second) and treat an empty result as unrecoverable.
+    /// (live and staged layouts unioned) and treat an empty result as unrecoverable.
     pub fn sessions_missing_efficiency(&self) -> Result<Vec<EfficiencyCandidate>> {
         debug!("Db::sessions_missing_efficiency");
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, transcript_path, project_dir, staged_path \
-             FROM sessions WHERE efficiency_json IS NULL",
+            "SELECT session_id, transcript_path, project_dir, staged_path, \
+             CASE WHEN efficiency_json IS NULL THEN NULL ELSE \
+               coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"input-tokens\"'), 0) \
+             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"output-tokens\"'), 0) \
+             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-read-tokens\"'), 0) \
+             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-5m-write-tokens\"'), 0) \
+             + coalesce(json_extract(efficiency_json, '$.aggregate.raw.\"cache-1h-write-tokens\"'), 0) END \
+             FROM sessions WHERE efficiency_json IS NULL \
+             OR (json_valid(efficiency_json) AND json_extract(efficiency_json, '$.aggregate.raw.\"by-day\"') IS NULL)",
         )?;
         let candidates: Vec<EfficiencyCandidate> = stmt
             .query_map([], |r| {
@@ -468,10 +493,15 @@ impl Db {
                     transcript_path: r.get::<_, String>(1)?.into(),
                     project_dir: r.get(2)?,
                     staged_path: r.get::<_, Option<String>>(3)?.map(PathBuf::from),
+                    stored_tokens: r.get::<_, Option<i64>>(4)?.map(|t| t.max(0) as u64),
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
-        debug!("Db::sessions_missing_efficiency: count={}", candidates.len());
+        debug!(
+            "Db::sessions_missing_efficiency: count={} bucket-less-blobs={}",
+            candidates.len(),
+            candidates.iter().filter(|c| c.has_blob()).count()
+        );
         Ok(candidates)
     }
 

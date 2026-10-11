@@ -20,10 +20,14 @@
 
 # Defaults for `report render`. Every field defaults; a missing section is all-defaults.
 # render:
-#   format: markdown                   # default --format when the flag is omitted (markdown | pdf | marquee-markdown)
+#   format: markdown                   # default --format when the flag is omitted (markdown | pdf | html | marquee-html | marquee-markdown)
 #   model: claude-opus-4-8              # model pin for the prose slots AND the eval judge
 #   slot-max-output-tokens: 1500        # output ceiling for ONE prose slot; 0 is rejected at load
 #   judge-max-output-tokens: 32000      # output ceiling for the eval judge; 0 is rejected at load
+#   table-top-n: 10                     # HTML only (default 10; 0 rejected): rows a table shows before the rest fold behind a toggle
+#   waste:                              # rules for the "Unobserved and Flagged Spend" section
+#     heavy-models: [opus, fable]          # case-insensitive substrings; a session on one of these models may be flagged heavy-on-short (blank entry rejected at load)
+#     short-session-turns: 3            # a session with at most this many turns counts as short
 
 # --- efficiency (clyde efficiency thresholds) -----------------------------------
 

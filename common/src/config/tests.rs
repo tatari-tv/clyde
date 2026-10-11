@@ -66,21 +66,45 @@ fn load_from_reads_render_format() {
     assert_eq!(load_from(&path).unwrap().render_format(), FormatConfig::MarqueeMarkdown);
 }
 
-/// The retired html formats must be REJECTED by name rather than tolerated. `deny_unknown_fields`
-/// does not cover an enum VALUE, so this is the assertion that a stale `format: html` fails loudly
-/// instead of silently resolving to markdown.
+/// The html formats were retired once and are back (design 2026-10-10-report-html-dashboard): a
+/// `format: html` / `format: marquee-html` in `clyde.yml` now resolves to its variant instead of
+/// failing load.
 #[test]
-fn load_from_rejects_the_retired_html_formats() {
-    for value in ["html", "marquee-html"] {
+fn load_from_reads_the_html_formats() {
+    for (value, expected) in [
+        ("html", FormatConfig::Html),
+        ("marquee-html", FormatConfig::MarqueeHtml),
+    ] {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("clyde.yml");
         std::fs::write(&path, format!("render:\n  format: {value}\n")).unwrap();
-        let err = load_from(&path).unwrap_err();
-        assert!(
-            format!("{err:#}").contains(value),
-            "a retired format must be named in the error: {err:#}"
+        assert_eq!(
+            load_from(&path).unwrap().render_format(),
+            expected,
+            "for format: {value}"
         );
     }
+}
+
+#[test]
+fn render_table_top_n_defaults_and_reads_the_key() {
+    assert_eq!(Config::default().render_table_top_n(), DEFAULT_TABLE_TOP_N);
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  table-top-n: 4\n").unwrap();
+    assert_eq!(load_from(&path).unwrap().render_table_top_n(), 4);
+}
+
+#[test]
+fn render_table_top_n_rejects_zero_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  table-top-n: 0\n").unwrap();
+    let err = load_from(&path).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("render.table-top-n"),
+        "a zero top-n must name its key: {err:#}"
+    );
 }
 
 #[test]
@@ -867,4 +891,45 @@ fn every_supported_key_is_documented_in_the_readme_and_the_example() {
         assert!(readme.contains(key), "README.md is missing `{key}`");
         assert!(example.contains(key), "clyde.yml.example is missing `{key}`");
     }
+}
+
+#[test]
+fn render_waste_defaults_and_reads_both_keys() {
+    let defaults = Config::default();
+    assert_eq!(defaults.render_waste_heavy_models(), ["opus", "fable"]);
+    assert_eq!(defaults.render_waste_short_session_turns(), DEFAULT_SHORT_SESSION_TURNS);
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(
+        &path,
+        "render:\n  waste:\n    heavy-models: [sonnet]\n    short-session-turns: 7\n",
+    )
+    .unwrap();
+    let cfg = load_from(&path).unwrap();
+    assert_eq!(cfg.render_waste_heavy_models(), ["sonnet"]);
+    assert_eq!(cfg.render_waste_short_session_turns(), 7);
+}
+
+#[test]
+fn render_waste_rejects_an_unknown_key_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  waste:\n    heavy-modles: [opus]\n").unwrap();
+    let err = load_from(&path).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("heavy-modles"),
+        "an unknown render.waste key must be named: {err:#}"
+    );
+}
+
+#[test]
+fn render_waste_rejects_a_blank_heavy_model_by_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("clyde.yml");
+    std::fs::write(&path, "render:\n  waste:\n    heavy-models: [\"\"]\n").unwrap();
+    let err = load_from(&path).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("render.waste.heavy-models"),
+        "a blank heavy model must name its key: {err:#}"
+    );
 }

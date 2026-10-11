@@ -334,11 +334,18 @@ pub fn layout_files(session_id: &str, parent: &Path, subagents_dir: &Path) -> Ve
     files
 }
 
-/// THE recoverability predicate for pricing: every readable JSONL for one session, live layout
-/// first, staged layout second, EMPTY when there are no bytes anywhere.
+/// THE recoverability predicate for pricing: every readable JSONL for one session, the UNION of the
+/// live and staged layouts, EMPTY when there are no bytes anywhere.
 ///
 /// Both the efficiency backfill and `report collect` branch on `is_empty()`, so "unrecoverable"
 /// means one thing in both rather than each answering differently.
+///
+/// A union, not live-else-staged. Staging copies a session's files as they go dormant, and the live
+/// reaper removes them one by one, so a session can be partly live and partly staged: a parent still
+/// live with a subagent already reaped, or the reverse. Taking the live layout alone whenever ANY
+/// live file existed priced that session from part of its bytes and dropped the rest. Each file is
+/// keyed by its role (parent, or the subagent file name); where both roots hold the same file the
+/// live copy wins, because a live transcript can only have grown since it was staged.
 ///
 /// Deliberately NOT `sessions::transcript::transcript_layout_parts`: that resolver requires a
 /// regular parent `.jsonl` because it answers "where is this session's BODY" for enrich/export/FTS,
@@ -361,31 +368,42 @@ pub fn pricing_files(
 
     let live_subagents = live_project_dir.join(session_id).join("subagents");
     let live = layout_files(session_id, live_parent, &live_subagents);
-    if !live.is_empty() {
-        debug!(
-            "scan::pricing_files: session_id={} resolved live ({} files)",
+    let staged = match staged_dir {
+        Some(staged) => layout_files(
             session_id,
-            live.len()
-        );
-        return live;
-    }
-
-    let Some(staged) = staged_dir else {
-        warn!("scan::pricing_files: session_id={session_id} has no live bytes and no staged path");
-        return Vec::new();
+            &staged.join(format!("{session_id}.jsonl")),
+            &staged.join("subagents"),
+        ),
+        None => Vec::new(),
     };
 
-    let staged_parent = staged.join(format!("{session_id}.jsonl"));
-    let staged_subagents = staged.join("subagents");
-    let files = layout_files(session_id, &staged_parent, &staged_subagents);
+    let live_roles: BTreeSet<(bool, std::ffi::OsString)> = live.iter().map(file_role).collect();
+    let staged_only: Vec<SessionFile> = staged
+        .into_iter()
+        .filter(|f| !live_roles.contains(&file_role(f)))
+        .collect();
+    let (live_count, staged_count) = (live.len(), staged_only.len());
+    let mut files = live;
+    files.extend(staged_only);
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
     if files.is_empty() {
-        warn!(
-            "scan::pricing_files: session_id={} has no readable bytes live or staged ({})",
-            session_id,
-            staged.display()
-        );
+        warn!("scan::pricing_files: session_id={session_id} has no readable bytes live or staged ({staged_dir:?})");
     }
+    debug!("scan::pricing_files: session_id={session_id} resolved live={live_count} staged-only={staged_count}");
     files
+}
+
+/// A file's role inside its session layout: parent or subagent, plus the file name. Two roots
+/// holding the same role hold copies of the same transcript.
+fn file_role(file: &SessionFile) -> (bool, std::ffi::OsString) {
+    (
+        file.kind == SessionFileKind::Parent,
+        file.path
+            .file_name()
+            .map(std::ffi::OsStr::to_os_string)
+            .unwrap_or_default(),
+    )
 }
 
 /// The live scan, plus every staged session whose id is absent from it.

@@ -179,8 +179,7 @@ fn fold_unions_parent_scope_across_multiple_files() {
             tool_errors: 1,
             ..RawCounters::default()
         },
-        subagents: Default::default(),
-        spawn_types: Default::default(),
+        ..Default::default()
     };
     let mut subagents = std::collections::BTreeMap::new();
     subagents.insert(
@@ -201,7 +200,7 @@ fn fold_unions_parent_scope_across_multiple_files() {
             ..RawCounters::default()
         },
         subagents,
-        spawn_types: Default::default(),
+        ..Default::default()
     };
 
     let session = fold("s", &[parent_file, subagent_file]);
@@ -212,4 +211,175 @@ fn fold_unions_parent_scope_across_multiple_files() {
     assert_eq!(session.subagents.len(), 1);
     assert_eq!(session.subagents[0].agent_id, "agentX");
     assert_eq!(session.subagents[0].signals.raw.input_tokens, 5);
+}
+
+/// Every model's day buckets, summed over days.
+fn day_sums(raw: &RawCounters) -> std::collections::BTreeMap<String, common::metrics::TokenTotals> {
+    let mut out: std::collections::BTreeMap<String, common::metrics::TokenTotals> = Default::default();
+    for by_model in raw.by_day.values() {
+        for (model, t) in by_model {
+            out.entry(model.clone()).or_default().merge(t);
+        }
+    }
+    out
+}
+
+/// The bucket invariant over every efficiency fixture: per scope and at the aggregate, the day
+/// buckets summed over days equal the per-model split, model for model. Half the fixture usage
+/// records carry no timestamp, so this holds only if the undated path lands them somewhere.
+#[test]
+fn by_day_buckets_sum_to_the_session_aggregate_for_every_model() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/efficiency");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let session = fold("s", &[ex(path.to_str().unwrap())]);
+        let agg = &session.aggregate.raw;
+        let want: std::collections::BTreeMap<_, _> = agg
+            .by_model
+            .iter()
+            .filter(|(_, t)| t.total > 0)
+            .map(|(m, t)| (m.clone(), t.clone()))
+            .collect();
+        let got: std::collections::BTreeMap<_, _> = day_sums(agg).into_iter().filter(|(_, t)| t.total > 0).collect();
+        assert_eq!(got, want, "{}: day buckets must sum to by_model", path.display());
+        for sub in &session.subagents {
+            let want: std::collections::BTreeMap<_, _> = sub
+                .signals
+                .raw
+                .by_model
+                .iter()
+                .filter(|(_, t)| t.total > 0)
+                .map(|(m, t)| (m.clone(), t.clone()))
+                .collect();
+            let got: std::collections::BTreeMap<_, _> = day_sums(&sub.signals.raw)
+                .into_iter()
+                .filter(|(_, t)| t.total > 0)
+                .collect();
+            assert_eq!(got, want, "{} subagent {}", path.display(), sub.agent_id);
+        }
+        checked += 1;
+    }
+    assert!(checked >= 10, "every fixture is checked, saw {checked}");
+}
+
+/// A turn with no timestamp lands on the session's begin day: the earliest timestamp any file
+/// carries, here a different file's, in the scope that spent it.
+#[test]
+fn by_day_places_a_timestamp_less_turn_on_the_session_begin_day() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let parent = tmp.path().join("parent.jsonl");
+    std::fs::write(
+        &parent,
+        concat!(
+            r#"{"type":"user","timestamp":"2026-04-02T23:50:00Z","message":{"role":"user","content":"go"}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-04-03T01:00:00Z","message":{"id":"m1","role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let sub = tmp.path().join("agent.jsonl");
+    std::fs::write(
+        &sub,
+        concat!(
+            r#"{"type":"assistant","agentId":"aw-0123456789abcdef","message":{"id":"m2","role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":7,"output_tokens":2}}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"not a time","message":{"id":"m3","role":"assistant","model":"claude-haiku-4-5","usage":{"input_tokens":3,"output_tokens":0}}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let session = fold("s", &[ex(parent.to_str().unwrap()), ex(sub.to_str().unwrap())]);
+    let begin = chrono::NaiveDate::from_ymd_opt(2026, 4, 2).unwrap();
+    let next = chrono::NaiveDate::from_ymd_opt(2026, 4, 3).unwrap();
+    let agg = &session.aggregate.raw;
+    assert_eq!(agg.by_day.keys().copied().collect::<Vec<_>>(), vec![begin, next]);
+    assert_eq!(
+        agg.by_day[&next]["claude-opus-4-8"].input, 10,
+        "a dated turn lands on its own day"
+    );
+    assert_eq!(
+        agg.by_day[&begin]["claude-opus-4-8"].input, 7,
+        "undated subagent turn -> begin day"
+    );
+    assert_eq!(
+        agg.by_day[&begin]["claude-haiku-4-5"].input, 3,
+        "an unparseable timestamp keeps its usage, on the begin day"
+    );
+    let subagent = &session.subagents[0].signals.raw;
+    assert_eq!(
+        subagent.by_day[&begin]["claude-opus-4-8"].input, 7,
+        "in the scope that spent it"
+    );
+    assert_eq!(agg.input_tokens, 20, "nothing dropped");
+}
+
+/// The fold invariant holds per day: the aggregate's buckets are the parent's own buckets plus every
+/// subagent's, which is what lets report's `--no-rollup` explode a session into rows that sum back.
+#[test]
+fn by_day_aggregate_equals_parent_plus_subagent_buckets() {
+    let session = fold("s", &[ex(MULTI_SUBAGENT)]);
+    let mut exploded = ex(MULTI_SUBAGENT).parent;
+    for sub in &session.subagents {
+        exploded.merge(&sub.signals.raw);
+    }
+    assert!(!session.aggregate.raw.by_day.is_empty());
+    assert_eq!(session.aggregate.raw.by_day, exploded.by_day);
+}
+
+/// With no record timestamp anywhere, the begin day is the latest file mtime (the catalog's
+/// `modified` fallback), and the epoch only for a hand-built set carrying neither.
+#[test]
+fn by_day_begin_falls_back_to_the_latest_mtime_then_the_epoch() {
+    let mut undated: std::collections::BTreeMap<crate::extract::Scope, _> = Default::default();
+    let mut by_model: std::collections::BTreeMap<String, common::metrics::TokenTotals> = Default::default();
+    by_model.insert(
+        "m".to_string(),
+        common::metrics::TokenTotals {
+            input: 4,
+            total: 4,
+            ..Default::default()
+        },
+    );
+    undated.insert(crate::extract::Scope::Parent, by_model);
+    let at = |s: &str| {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        )
+    };
+    let older = crate::extract::FileEfficiency {
+        mtime: at("2026-05-01T10:00:00Z"),
+        undated: undated.clone(),
+        ..Default::default()
+    };
+    let newer = crate::extract::FileEfficiency {
+        mtime: at("2026-05-04T10:00:00Z"),
+        ..Default::default()
+    };
+    let session = fold("s", &[older.clone(), newer]);
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+    assert_eq!(session.aggregate.raw.by_day[&day]["m"].input, 4);
+
+    let bare = crate::extract::FileEfficiency {
+        undated,
+        ..Default::default()
+    };
+    let session = fold("s", &[bare]);
+    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    assert_eq!(session.aggregate.raw.by_day[&epoch]["m"].input, 4);
+
+    let mut dated = older;
+    dated.earliest = at("2026-04-30T23:00:00Z");
+    let session = fold("s", &[dated]);
+    let first = chrono::NaiveDate::from_ymd_opt(2026, 4, 30).unwrap();
+    assert_eq!(
+        session.aggregate.raw.by_day[&first]["m"].input, 4,
+        "a timestamp beats any mtime"
+    );
 }

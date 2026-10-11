@@ -14,6 +14,7 @@ use common::proc::run_bounded;
 use eyre::{Context, Result, bail};
 use log::debug;
 use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{IsTerminal, Write};
@@ -22,8 +23,11 @@ use std::process::{Command, Output, Stdio};
 
 mod document;
 pub(crate) mod facts;
+mod html;
 mod reconciliation;
+mod sections;
 mod slots;
+mod visuals;
 use reconciliation::{build_reconciliation_view, no_reconcile_warning};
 mod workload;
 use document::{Artifact, ChartMode, PriorView};
@@ -35,10 +39,27 @@ use workload::build_efficiency_view;
 /// [`document::build_views`] and its callers cannot transpose four same-shaped optionals.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ViewOpts<'a> {
+    pub(crate) waste: WasteOpts<'a>,
     pub(crate) include_tradeoffs: bool,
     pub(crate) prior: Option<&'a Path>,
     pub(crate) reconcile: Option<&'a Path>,
     pub(crate) reconcile_user: Option<&'a str>,
+}
+
+/// The two `render.waste.*` thresholds the unobserved-and-flagged section reads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WasteOpts<'a> {
+    pub(crate) heavy_models: &'a [&'a str],
+    pub(crate) short_session_turns: u64,
+}
+
+impl Default for WasteOpts<'_> {
+    fn default() -> Self {
+        Self {
+            heavy_models: &common::config::DEFAULT_HEAVY_MODELS,
+            short_session_turns: common::config::DEFAULT_SHORT_SESSION_TURNS,
+        }
+    }
 }
 
 const STDOUT_SIGIL: &str = "-";
@@ -71,8 +92,10 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
 
     let report = load_report(&cfg.input, "report")?;
 
-    let artifact = generate_markdown(cfg, &report, pricing)?;
-    let dest = route_document_artifact(&artifact, &report, cfg)?;
+    let dest = match generate(cfg, &report, pricing)? {
+        Generated::Document(artifact) => route_document_artifact(&artifact, &report, cfg)?,
+        Generated::Page(page) => route_html_page(&page, &report, cfg)?,
+    };
 
     Ok(RunResult {
         sessions_emitted: report.totals.sessions,
@@ -80,21 +103,34 @@ pub fn run(cfg: &RenderConfig, pricing: &Pricing) -> Result<RunResult> {
     })
 }
 
-/// Produce the artifact: the deterministic document, plus whatever prose the slots returned.
+/// One render's output: the markdown document (with sibling assets), or the self-contained page.
+enum Generated {
+    Document(Artifact),
+    Page(String),
+}
+
+/// Produce the artifact: the deterministic document or page, plus whatever prose the slots
+/// returned.
 ///
-/// There is exactly one renderer now. Rust authors every table, number, and chart
-/// (`document::render`); the slots contribute digit-free prose (`slots::generate`) that cannot fail
-/// the render. Nothing here can reject an artifact, because nothing here is authored by a model.
-fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<Artifact> {
+/// Both backends read one view model. Rust authors every table, number, and chart
+/// (`document::render`, `html::render`); the slots contribute digit-free prose (`slots::generate`)
+/// that cannot fail the render. Nothing here can reject an artifact, because nothing here is
+/// authored by a model.
+fn generate(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> Result<Generated> {
     let default_persona = PersonaBlock::default();
     let resolved = persona::whoami();
     let aggregates = aggregate::compute(report, cfg.outliers, pricing);
+    let heavy_models: Vec<&str> = cfg.heavy_models.iter().map(String::as_str).collect();
     let block = document::build_views(
         report,
         &aggregates,
         resolved.as_ref().unwrap_or(&default_persona),
         pricing,
         ViewOpts {
+            waste: WasteOpts {
+                heavy_models: &heavy_models,
+                short_session_turns: cfg.short_session_turns,
+            },
             include_tradeoffs: cfg.include_tradeoffs,
             prior: cfg.prior.as_deref(),
             reconcile: cfg.reconcile.as_deref(),
@@ -102,7 +138,10 @@ fn generate_markdown(cfg: &RenderConfig, report: &Report, pricing: &Pricing) -> 
         },
     )?;
     let prose = slot_prose(cfg, &document::registry(&block));
-    Ok(document::render(&block, &prose, chart_mode(cfg)))
+    if cfg.format.is_html() {
+        return Ok(Generated::Page(html::render(&block, &prose, cfg.table_top_n)?));
+    }
+    Ok(Generated::Document(document::render(&block, &prose, chart_mode(cfg))))
 }
 
 /// Generate the prose slots for this render, or an empty set.
@@ -156,6 +195,9 @@ pub(crate) type SlotProse = document::SlotProse;
 /// second copy here would be two sources for one value.
 pub(crate) struct EvalRender {
     pub(crate) markdown: String,
+    /// The same render through the HTML backend, at the default `render.table-top-n`, so a golden
+    /// does not move with an operator's config.
+    pub(crate) html: String,
     /// The slots' prose BEFORE interpolation, which is the form the digit contract applies to.
     pub(crate) prose: document::SlotProse,
     /// How many slots were attempted, so a caller can report how many degraded.
@@ -197,13 +239,16 @@ pub(crate) fn for_eval(
     // `ChartMode::Table` so a golden is one self-contained file: a golden that referenced sibling
     // SVGs would need those committed and diffed too, and the chart DATA is identical either way.
     let artifact = document::render(&block, &prose, ChartMode::Table);
+    let page = html::render(&block, &prose, common::config::DEFAULT_TABLE_TOP_N)?;
     debug!(
-        "render::for_eval: artifact bytes={} slots filled={}/{attempted}",
+        "render::for_eval: artifact bytes={} html bytes={} slots filled={}/{attempted}",
         artifact.markdown.len(),
+        page.len(),
         prose.len()
     );
     Ok(EvalRender {
         markdown: artifact.markdown,
+        html: page,
         prose,
         attempted,
     })
@@ -234,7 +279,56 @@ fn route_document_artifact(artifact: &Artifact, report: &Report, cfg: &RenderCon
         Format::Markdown => write_local_markdown(artifact, report, cfg),
         Format::Pdf => write_local_pdf(&artifact.markdown, report, cfg),
         Format::MarqueeMarkdown => publish_marquee_markdown(artifact, report, cfg),
+        Format::Html | Format::MarqueeHtml => Err(eyre::eyre!(
+            "the {:?} format renders a page, not a markdown document",
+            cfg.format
+        )),
     }
+}
+
+/// Route the self-contained HTML page: a local file (or stdout), or a marquee publish.
+fn route_html_page(page: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!("render::route_html_page: format={:?} bytes={}", cfg.format, page.len());
+    match cfg.format {
+        Format::Html => write_local_html(page, report, cfg),
+        Format::MarqueeHtml => publish_marquee_html(page, report, cfg),
+        Format::Markdown | Format::Pdf | Format::MarqueeMarkdown => Err(eyre::eyre!(
+            "the {:?} format renders a markdown document, not a page",
+            cfg.format
+        )),
+    }
+}
+
+/// Write the page to `-o <path>`, to stdout (`-o -`), or to the default
+/// `./<YYYY-MM>-claude-report.html`. The page is self-contained, so stdout carries all of it.
+fn write_local_html(page: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    let output = match cfg.output.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => default_output_path(report, Format::Html),
+    };
+    debug!("render::write_local_html: output={}", output.display());
+    if output.as_os_str() == STDOUT_SIGIL {
+        std::io::stdout()
+            .write_all(page.as_bytes())
+            .context("failed to write html to stdout")?;
+        return Ok(OutputDest::Stdout);
+    }
+    if let Some(dir) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(dir).with_context(|| format!("failed to create output dir {}", dir.display()))?;
+    }
+    fs::write(&output, page).with_context(|| format!("failed to write html to {}", output.display()))?;
+    Ok(OutputDest::File(output))
+}
+
+/// Write the page as `index.html` in a temp dir and publish it through marquee's HTML lane, which
+/// serves the page as written. Returns the published URL.
+fn publish_marquee_html(page: &str, report: &Report, cfg: &RenderConfig) -> Result<OutputDest> {
+    debug!("render::publish_marquee_html: space={:?}", cfg.space);
+    let dir = tempfile::tempdir().context("failed to create temp dir for marquee publish")?;
+    let index = dir.path().join("index.html");
+    fs::write(&index, page).with_context(|| format!("failed to write {}", index.display()))?;
+    let url = marquee_publish(dir.path(), report, cfg)?;
+    Ok(OutputDest::Marquee(url))
 }
 
 /// Write a document artifact's sibling assets into `dir`. Called for every destination that HAS a
@@ -301,7 +395,11 @@ fn write_local_pdf(markdown: &str, report: &Report, cfg: &RenderConfig) -> Resul
 
 pub(crate) fn default_output_path(report: &Report, format: Format) -> std::path::PathBuf {
     let prefix = report.since.format("%Y-%m");
-    let ext = if matches!(format, Format::Pdf) { "pdf" } else { "md" };
+    let ext = match format {
+        Format::Pdf => "pdf",
+        Format::Html | Format::MarqueeHtml => "html",
+        Format::Markdown | Format::MarqueeMarkdown => "md",
+    };
     std::path::PathBuf::from(format!("./{}-claude-report.{}", prefix, ext))
 }
 
@@ -426,6 +524,10 @@ struct ContextBlock<'a> {
     /// Quantified Output section when this key is missing.
     #[serde(skip_serializing_if = "Option::is_none")]
     outcomes: Option<OutcomesView>,
+    /// What the money produced (outcome bands), heavy-model-on-short-session spend, and the
+    /// efficiency-flag rollup (design Phase 4). `bands.bands` is absent when outcomes were not
+    /// collected.
+    bands: crate::bands::BandsView,
     sessions: Vec<SessionView<'a>>,
     /// The prior period's aggregates (design Phase 8, gap 7): lights up the Month over Month
     /// section both templates already document but had no backing field for. Absent entirely
@@ -489,6 +591,28 @@ struct WorkloadRow {
 #[serde(rename_all = "kebab-case")]
 struct OutcomesView {
     totals: OutcomeTotalsView,
+    /// The window's opened pull requests, deduped by url across every session and grouped by the
+    /// repository each was opened against, largest group first. The Outcomes section prints them
+    /// as links. Absent when no session opened one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    prs: Vec<PrGroup>,
+}
+
+/// One repository's opened pull requests, numbers ascending.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct PrGroup {
+    /// The PR's own `repository`, else the opening session's repo, else
+    /// [`aggregate::UNATTRIBUTED_ORG`].
+    repository: String,
+    prs: Vec<PrLink>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct PrLink {
+    number: u64,
+    url: String,
 }
 
 #[derive(Serialize)]
@@ -665,6 +789,10 @@ struct SessionView<'a> {
     end: DateTime<Utc>,
     tokens_human: String,
     spend_display: String,
+    /// Raw twin of [`Self::spend_display`] (the session-cost histogram buckets it); `None` for an
+    /// unpriced session. Never serialized.
+    #[serde(skip)]
+    spend_raw: Option<f64>,
     models: Vec<&'a str>,
     /// The session's observed outcomes (commit shas, PR refs, write counts), absent when
     /// extraction ran and found nothing or never ran; theme/citation material only, per the
@@ -703,6 +831,7 @@ pub(crate) fn build_context_block(
     let opts = ViewOpts {
         include_tradeoffs,
         prior: prior_path,
+        waste: WasteOpts::default(),
         reconcile: reconcile_path,
         reconcile_user,
     };
@@ -830,7 +959,50 @@ fn build_outcomes_view(report: &Report) -> Option<OutcomesView> {
     let totals = report.totals.outcomes.as_ref()?;
     Some(OutcomesView {
         totals: outcome_totals_view(totals),
+        prs: build_pr_groups(report),
     })
+}
+
+/// Every opened PR in the window, deduped by url (the same dedupe `outcomes.prs-opened` counts) and
+/// grouped by repository: largest group first, then by name; numbers ascending within a group. The
+/// first session (in key order) to report a url decides its group.
+fn build_pr_groups(report: &Report) -> Vec<PrGroup> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut groups: BTreeMap<String, Vec<PrLink>> = BTreeMap::new();
+    for entry in report.sessions.values() {
+        let Some(outcomes) = entry.outcomes.as_ref() else {
+            continue;
+        };
+        for pr in &outcomes.prs {
+            if !seen.insert(pr.url.as_str()) {
+                continue;
+            }
+            let repository = pr
+                .repository
+                .clone()
+                .or_else(|| entry.repo.clone())
+                .unwrap_or_else(|| aggregate::UNATTRIBUTED_ORG.to_string());
+            groups.entry(repository).or_default().push(PrLink {
+                number: pr.number,
+                url: pr.url.clone(),
+            });
+        }
+    }
+    let mut out: Vec<PrGroup> = groups
+        .into_iter()
+        .map(|(repository, mut prs)| {
+            prs.sort_by(|a, b| a.number.cmp(&b.number).then_with(|| a.url.cmp(&b.url)));
+            PrGroup { repository, prs }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.prs
+            .len()
+            .cmp(&a.prs.len())
+            .then_with(|| a.repository.cmp(&b.repository))
+    });
+    debug!("render::build_pr_groups: prs={} repositories={}", seen.len(), out.len());
+    out
 }
 
 /// Shared by [`build_outcomes_view`] (the current period) and [`build_prior_view`] (Phase 8): the
@@ -862,6 +1034,7 @@ fn build_session_view<'a>(sid: &str, entry: &'a SessionEntry) -> SessionView<'a>
         end: entry.end,
         tokens_human: format_tokens_human(entry.total_tokens()),
         spend_display: format_optional_usd(entry.spend_usd),
+        spend_raw: entry.spend_usd,
         models: entry.models.keys().map(String::as_str).collect(),
         outcomes: entry.outcomes.as_ref(),
     }
@@ -920,23 +1093,47 @@ fn publish_marquee_markdown(artifact: &Artifact, report: &Report, cfg: &RenderCo
     Ok(OutputDest::Marquee(url))
 }
 
-/// Publish a prepared directory (containing `index.md` and any sibling assets) to marquee,
-/// ensuring an
-/// authenticated session first. Returns the published URL parsed from marquee's stdout.
-fn marquee_publish(dir: &Path, report: &Report, cfg: &RenderConfig) -> Result<String> {
-    debug!("render::marquee_publish: dir={} space={:?}", dir.display(), cfg.space);
-    ensure_marquee_auth()?;
-    let title = marquee_title(report);
+/// One plain line for the Slack unfurl card, built from the same display strings the report shows.
+/// Passed explicitly because marquee's fallback reads the entry document, and for the Markdown
+/// format that is the raw YAML frontmatter.
+fn marquee_description(report: &Report) -> String {
+    let totals = build_totals_view(report);
+    let plural = |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
+    format!(
+        "Claude Code usage, {} to {}: {} across {} {} in {} {}",
+        report.since.format("%Y-%m-%d"),
+        report.until.format("%Y-%m-%d"),
+        totals.spend,
+        totals.sessions,
+        plural(totals.sessions, "session", "sessions"),
+        totals.repo_count,
+        plural(totals.repo_count, "repository", "repositories"),
+    )
+}
+
+/// The `marquee publish` invocation, split from the spawn so a test can read its argv.
+fn marquee_publish_command(dir: &Path, report: &Report, space: Option<&str>) -> Command {
     let mut cmd = Command::new("marquee");
     cmd.arg("publish")
         .arg(dir)
         .arg("--title")
-        .arg(&title)
+        .arg(marquee_title(report))
+        .arg("--description")
+        .arg(marquee_description(report))
         .arg("--output")
         .arg("url");
-    if let Some(space) = &cfg.space {
+    if let Some(space) = space {
         cmd.arg("--space").arg(space);
     }
+    cmd
+}
+
+/// Publish a prepared directory (an `index.md` with its sibling assets, or an `index.html`) to
+/// marquee, ensuring an authenticated session first. Returns the published URL parsed from marquee's stdout.
+fn marquee_publish(dir: &Path, report: &Report, cfg: &RenderConfig) -> Result<String> {
+    debug!("render::marquee_publish: dir={} space={:?}", dir.display(), cfg.space);
+    ensure_marquee_auth()?;
+    let mut cmd = marquee_publish_command(dir, report, cfg.space.as_deref());
     let output = run_bounded("marquee publish", &mut cmd, marquee_spawn_err)?;
     if !output.status.success() {
         bail!(
@@ -1010,7 +1207,7 @@ fn marquee_whoami() -> Result<Output> {
 fn marquee_spawn_err(e: std::io::Error) -> eyre::Report {
     if e.kind() == std::io::ErrorKind::NotFound {
         eyre::eyre!(
-            "the `marquee` CLI is required for --format marquee-markdown but was not found on PATH; install it and try again"
+            "the `marquee` CLI is required for --format marquee-markdown and marquee-html but was not found on PATH; install it and try again"
         )
     } else {
         eyre::eyre!("failed to invoke marquee: {}", e)

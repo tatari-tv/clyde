@@ -300,3 +300,52 @@ fn empty_message_id_is_never_deduped_fails_open() {
     assert_eq!(p.input_tokens, 16, "5 + 11, both applied");
     assert_eq!(p.output_tokens, 20, "7 + 13, both applied");
 }
+
+/// Dedupe keeps the FIRST record of a repeated `message.id`, and its day with it: a later block of
+/// the same turn stamped after midnight does not move the turn. BITES: bucket outside the
+/// `first_seen_usage` gate and the turn lands on both days.
+#[test]
+fn by_day_dedupe_keeps_the_first_records_timestamp() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("t.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            r#"{"type":"assistant","timestamp":"2026-04-02T23:59:59Z","message":{"id":"m1","role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-04-03T00:00:01Z","message":{"id":"m1","role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let f = ex(path.to_str().unwrap());
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 4, 2).unwrap();
+    assert_eq!(f.parent.by_day.keys().copied().collect::<Vec<_>>(), vec![day]);
+    assert_eq!(f.parent.by_day[&day]["claude-opus-4-8"].input, 10);
+    assert!(f.undated.is_empty());
+    assert_eq!(
+        f.earliest,
+        Some(
+            chrono::DateTime::parse_from_rfc3339("2026-04-02T23:59:59Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        )
+    );
+    assert!(
+        f.mtime.is_some(),
+        "extract records the file mtime for the begin fallback"
+    );
+}
+
+/// A usage record with no timestamp is held back for `fold`, never bucketed on a guessed day and
+/// never dropped. 12 of the fixture corpus's usage records take this path.
+#[test]
+fn by_day_holds_an_undated_turn_back_for_fold() {
+    let f = ex(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fixtures/efficiency/multiblock-turn.jsonl"
+    ));
+    assert!(f.parent.by_day.is_empty(), "no record here carries a timestamp");
+    let held = &f.undated[&Scope::Parent]["claude-opus-4-8"];
+    assert_eq!(held.total, f.parent.by_model["claude-opus-4-8"].total);
+}

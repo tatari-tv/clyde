@@ -1,5 +1,6 @@
-//! The report artifact (`schema-version: 2`) and the builder that shapes it from catalog-sourced
-//! sessions (Phase 4, `docs/design/2026-07-24-report-collect-once-render-from-data.md`).
+//! The report artifact (`schema-version: 3`) and the builder that shapes it from catalog-sourced
+//! sessions (Phase 4, `docs/design/2026-07-24-report-collect-once-render-from-data.md`; v3 adds
+//! per-day per-model buckets, `docs/design/2026-10-10-report-html-dashboard.md`).
 //!
 //! Collect no longer scans JSONL. It reads a window from `sessions.db` (session rows + the RAW
 //! `efficiency_json` / `outcome_json` blobs), parses the blobs with `efficiency`'s own types, and
@@ -12,15 +13,15 @@
 //! differs from a pre-Phase-4 report for a boundary-straddling session reads as expected; the shift
 //! is stated in [`Report::notes`].
 
-use crate::cents::round_cents;
+use crate::cents::{self, round_cents, to_cents};
 use crate::outcome::{self, OutcomeTotals, Outcomes};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use claude_pricing::Pricing;
 use common::metrics::{TokenTotals, price};
 use common::repo::RepoSource;
 use efficiency::{RawCounters, SessionEfficiency, SubagentEfficiency, WorkloadCost, finalize};
 use eyre::{Context, Result, bail};
-use log::debug;
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -28,8 +29,10 @@ use std::path::{Path, PathBuf};
 
 /// Report artifact schema version. v1 (pre-Phase-4) sourced tokens/cost from a JSONL scan and
 /// carried no efficiency/agent-type signals; v2 sources everything from the catalog and carries the
-/// curated efficiency signal set plus the full per-session efficiency object as passthrough.
-pub const SCHEMA_VERSION: u32 = 2;
+/// curated efficiency signal set plus the full per-session efficiency object as passthrough; v3
+/// adds each session's per-day per-model buckets ([`SessionEntry::by_day`]), whose cents sum to the
+/// session's own, so daily spend lands on the day it was spent.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// A short line stating the M2 window redefinition, recorded in every v2 report's [`Report::notes`]
 /// so a differing count for a boundary session reads as expected (design Phase 4).
@@ -71,6 +74,9 @@ pub struct Report {
 #[serde(rename_all = "kebab-case")]
 pub struct Totals {
     pub sessions: usize,
+    /// The sum of every session's spend, in whole cents. ONE source for every total a reader sees:
+    /// the header, the outcome bands, the repo/org/model tables and the daily series all add the
+    /// same per-session cents, so no two totals on a page can disagree by a rounding cent.
     pub spend_usd: f64,
     #[serde(default)]
     pub untracked_models: Vec<String>,
@@ -121,6 +127,16 @@ pub struct SessionEntry {
     #[serde(default)]
     pub jsonl_paths: Vec<PathBuf>,
     pub models: BTreeMap<String, ModelTokens>,
+    /// The session's tokens and spend by the UTC day they were spent, per model (schema v3). Each
+    /// model's cents are its [`ModelTokens::spend_usd`] split across its days by largest remainder,
+    /// weighted by what each day's tokens cost at the session's own long-context tier, so a
+    /// session's daily cents sum EXACTLY to its spend. Days outside the report window are kept: the
+    /// daily chart states them as the out-of-window remainder.
+    ///
+    /// `None` when the catalog blob carries no buckets (its transcript was gone when the catalog
+    /// learned to bucket); such a session is placed on its begin day and the chart says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_day: Option<BTreeMap<NaiveDate, BTreeMap<String, DayModel>>>,
     /// Present only when at least one outcome was observed for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcomes: Option<Outcomes>,
@@ -199,6 +215,25 @@ impl ModelTokens {
             total: t.total,
             spend_usd,
         }
+    }
+}
+
+/// One model's tokens and allocated spend on one day of one session.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct DayModel {
+    pub input: u64,
+    pub output: u64,
+    pub cache_5m_write: u64,
+    pub cache_1h_write: u64,
+    pub cache_read: u64,
+    /// This day's share of the model's session spend, whole cents. Zero for an unpriced model.
+    pub spend_cents: i64,
+}
+
+impl DayModel {
+    pub fn total(&self) -> u64 {
+        self.input + self.output + self.cache_5m_write + self.cache_1h_write + self.cache_read
     }
 }
 
@@ -373,13 +408,30 @@ pub fn build_report(
     // sum, never a sum of priced values -- the Aggregation invariant applied to money). Zero-token
     // models are dropped here too ([`has_tokens`]), so a model absent from every session's `models`
     // never resurfaces in the report-wide union either.
+    // Totals.models: tokens from the unioned per-model `TokenTotals`, spend as the SUM of each
+    // session's own per-model cents. Pricing the window-wide union would select the long-context
+    // tier on a month's worth of input, a figure no session ever saw, and the model rows would then
+    // disagree with the session rows they summarize. Zero-token models are dropped here too
+    // ([`has_tokens`]), so a model absent from every session's `models` never resurfaces.
+    let mut model_cents: BTreeMap<&str, i64> = BTreeMap::new();
+    for entry in entries.values() {
+        for (model, mt) in &entry.models {
+            if let Some(spend) = mt.spend_usd {
+                *model_cents.entry(model.as_str()).or_default() += to_cents(spend);
+            }
+        }
+    }
     let totals_model_entries: BTreeMap<String, ModelTokens> = grand
         .by_model
         .iter()
         .filter(|(_, t)| has_tokens(t))
-        .map(|(m, t)| (m.clone(), ModelTokens::from_totals(m, t, pricing)))
+        .map(|(m, t)| {
+            let mut row = ModelTokens::from_totals(m, t, pricing);
+            row.spend_usd = model_cents.get(m.as_str()).map(|c| cents::to_dollars(*c));
+            (m.clone(), row)
+        })
         .collect();
-    let totals_spend: f64 = totals_model_entries.values().filter_map(|m| m.spend_usd).sum();
+    let totals_spend = cents::to_dollars(session_cents_total(entries.values()));
 
     // Report-wide derived ratios: RECOMPUTE from the unioned counters (ratio-of-sums), never average
     // the per-session shares.
@@ -418,6 +470,11 @@ pub fn build_report(
         totals,
         sessions: entries,
     })
+}
+
+/// The sum of the given entries' spend in whole cents: THE headline. Unpriced entries add zero.
+pub(crate) fn session_cents_total<'a>(entries: impl Iterator<Item = &'a SessionEntry>) -> i64 {
+    entries.map(|e| e.spend_usd.map_or(0, to_cents)).sum()
 }
 
 /// Expand one collected session into the `(key, SessionEntry)` rows it contributes to the report.
@@ -498,6 +555,7 @@ fn entry_from_scope(
     pricing: &Pricing,
 ) -> Result<SessionEntry> {
     let (models, spend_usd, untracked_models) = price_models(&raw.by_model, pricing);
+    let by_day = day_buckets(&efficiency.session_id, raw, &models, s.begin, pricing);
     let agent_type_costs = agent_type_costs(&s.session_id, raw, &efficiency.subagents, pricing)?;
     let signals = &efficiency.aggregate;
     Ok(SessionEntry {
@@ -512,6 +570,7 @@ fn entry_from_scope(
         untracked_models,
         jsonl_paths: s.jsonl_paths.clone(),
         models,
+        by_day,
         outcomes,
         agent_type_costs,
         cache_read_share: signals.cache_read_share,
@@ -523,6 +582,97 @@ fn entry_from_scope(
         by_mcp: raw.by_mcp_tool.clone(),
         efficiency,
     })
+}
+
+/// A scope's per-day per-model buckets with its spend allocated across them ([`SessionEntry::by_day`]),
+/// or `None` when the blob carries no buckets for tokens it does have.
+///
+/// Per model, the session's cents (`models[m].spend-usd`) are split over the model's days by
+/// [`cents::apportion`], weighted by each day's tokens costed at the SESSION's tier: the long-context
+/// decision belongs to the whole model total, and costing a day alone at its own (smaller) tier
+/// would weigh days by a price nobody paid. A model priced but missing from every day (a blob that
+/// broke the bucket invariant) puts its cents on the begin day, so the cents still sum.
+fn day_buckets(
+    scope_id: &str,
+    raw: &RawCounters,
+    models: &BTreeMap<String, ModelTokens>,
+    begin: DateTime<Utc>,
+    pricing: &Pricing,
+) -> Option<BTreeMap<NaiveDate, BTreeMap<String, DayModel>>> {
+    if raw.by_day.is_empty() && raw.total_tokens() > 0 {
+        debug!("report::day_buckets: scope={scope_id} has tokens and no buckets (pre-v15 blob)");
+        return None;
+    }
+    let begin_day = begin.date_naive();
+    let mut out: BTreeMap<NaiveDate, BTreeMap<String, DayModel>> = BTreeMap::new();
+    for (day, by_model) in &raw.by_day {
+        for (model, t) in by_model.iter().filter(|(_, t)| has_tokens(t)) {
+            out.entry(*day).or_default().insert(
+                model.clone(),
+                DayModel {
+                    input: t.input,
+                    output: t.output,
+                    cache_5m_write: t.cache_5m_write,
+                    cache_1h_write: t.cache_1h_write,
+                    cache_read: t.cache_read,
+                    spend_cents: 0,
+                },
+            );
+        }
+    }
+    for (model, mt) in models {
+        let cents = mt.spend_usd.map_or(0, to_cents);
+        if cents == 0 {
+            continue;
+        }
+        let days: Vec<NaiveDate> = out
+            .iter()
+            .filter(|(_, by_model)| by_model.contains_key(model))
+            .map(|(day, _)| *day)
+            .collect();
+        if days.is_empty() {
+            warn!(
+                "report::day_buckets: scope={scope_id} model `{model}` has spend but no day bucket; \
+                 placing its cents on the begin day {begin_day}"
+            );
+            out.entry(begin_day)
+                .or_default()
+                .entry(model.clone())
+                .or_default()
+                .spend_cents += cents;
+            continue;
+        }
+        let tier_input = mt.input + mt.cache_5m_write + mt.cache_1h_write + mt.cache_read;
+        let rates = pricing.lookup(model);
+        let weights: Vec<f64> = days
+            .iter()
+            .map(|day| {
+                let bucket = &out[day][model];
+                let usage = claude_pricing::TokenUsage {
+                    input_tokens: bucket.input,
+                    output_tokens: bucket.output,
+                    cache_5m_write_tokens: bucket.cache_5m_write,
+                    cache_1h_write_tokens: bucket.cache_1h_write,
+                    cache_read_tokens: bucket.cache_read,
+                };
+                match rates {
+                    Some(r) => claude_pricing::calculate_cost_at_tier(r, &usage, tier_input),
+                    None => bucket.total() as f64,
+                }
+            })
+            .collect();
+        for (day, share) in days.iter().zip(cents::apportion(cents, &weights)) {
+            if let Some(bucket) = out.get_mut(day).and_then(|m| m.get_mut(model)) {
+                bucket.spend_cents = share;
+            }
+        }
+    }
+    debug!(
+        "report::day_buckets: scope={scope_id} days={} models={}",
+        out.len(),
+        models.len()
+    );
+    Some(out)
 }
 
 /// A model carries no tokens in any field (`<synthetic>`, an internal Claude Code artifact, is the
@@ -739,6 +889,14 @@ fn subtract_subagents(aggregate: &RawCounters, subs: &[SubagentEfficiency]) -> R
         r.effort_xhigh = r.effort_xhigh.saturating_sub(o.effort_xhigh);
         subtract_counts(&mut r.model_mix, &o.model_mix);
         subtract_token_totals(&mut r.by_model, &o.by_model);
+        for (day, by_model) in &o.by_day {
+            if let Some(base) = r.by_day.get_mut(day) {
+                subtract_token_totals(base, by_model);
+                if base.is_empty() {
+                    r.by_day.remove(day);
+                }
+            }
+        }
         subtract_workload(&mut r.by_skill, &o.by_skill);
         subtract_workload(&mut r.by_mcp_tool, &o.by_mcp_tool);
     }

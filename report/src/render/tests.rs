@@ -71,6 +71,7 @@ fn session_entry(
         untracked_models: Vec::new(),
         jsonl_paths: Vec::new(),
         models,
+        by_day: None,
         outcomes,
         agent_type_costs: BTreeMap::new(),
         cache_read_share: None,
@@ -158,7 +159,7 @@ pub(super) fn sample_report() -> Report {
     totals_models.insert("claude-sonnet-4-6".into(), sonnet_tokens());
 
     Report {
-        schema_version: 2,
+        schema_version: crate::report::SCHEMA_VERSION,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
@@ -468,7 +469,7 @@ fn report_with_n_sessions(n: usize) -> Report {
         );
     }
     Report {
-        schema_version: 2,
+        schema_version: crate::report::SCHEMA_VERSION,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
@@ -677,14 +678,14 @@ pub(super) fn report_with_efficiency() -> Report {
         "researcher".into(),
         WorkloadCost {
             tokens: 1_000_000,
-            cost_usd: 4.50,
+            cost_usd: 0.20,
         },
     );
     entry.agent_type_costs.insert(
         "implementer".into(),
         WorkloadCost {
             tokens: 500_000,
-            cost_usd: 9.00,
+            cost_usd: 0.30,
         },
     );
     // Tag-set costs stay inside the fixture's $0.60 total so the coverage strings read as a real
@@ -724,10 +725,15 @@ fn build_context_block_surfaces_efficiency_signals_as_strings() {
         .get("agent-type-costs")
         .and_then(|v| v.as_array())
         .expect("agent-type-costs list");
-    assert_eq!(agents.len(), 2);
-    // Pre-sorted by spend descending: implementer ($9.00) before researcher ($4.50).
+    // The opus session's $0.50 splits across its two buckets; the sonnet session has none, so its
+    // $0.10 is `(main-session)` work.
+    assert_eq!(agents.len(), 3);
+    // Pre-sorted by spend descending: implementer ($0.30), researcher ($0.20), (main-session).
     assert_eq!(agents[0].get("name").and_then(|v| v.as_str()), Some("implementer"));
-    assert_eq!(agents[0].get("spend").and_then(|v| v.as_str()), Some("$9.00"));
+    assert_eq!(agents[0].get("spend").and_then(|v| v.as_str()), Some("$0.30"));
+    assert_eq!(agents[1].get("spend").and_then(|v| v.as_str()), Some("$0.20"));
+    assert_eq!(agents[2].get("name").and_then(|v| v.as_str()), Some("(main-session)"));
+    assert_eq!(agents[2].get("spend").and_then(|v| v.as_str()), Some("$0.10"));
     assert!(agents[0].get("tokens-human").and_then(|v| v.as_str()).is_some());
     assert!(
         agents[0].get("tokens").is_none() && agents[0].get("cost-usd").is_none(),
@@ -788,7 +794,7 @@ fn render_rejects_v1_artifact_by_version_not_serde_error() {
         "the error must name the artifact's version: {msg}"
     );
     assert!(
-        msg.contains("schema v2"),
+        msg.contains("schema v3"),
         "the error must name the expected version: {msg}"
     );
     assert!(
@@ -800,9 +806,9 @@ fn render_rejects_v1_artifact_by_version_not_serde_error() {
         "the version gate must fire BEFORE serde reports an internal field: {msg}"
     );
 
-    // A current v2 envelope passes the gate.
-    let v2 = r#"{"schema-version": 2}"#;
-    check_schema_version(v2, Path::new("./claude-report.json")).expect("a v2 artifact must pass the gate");
+    // A current v3 envelope passes the gate.
+    let v3 = r#"{"schema-version": 3}"#;
+    check_schema_version(v3, Path::new("./claude-report.json")).expect("a v3 artifact must pass the gate");
 
     // Something that is not a clyde report at all is named as such, not as a version mismatch.
     let junk = r#"{"hello": "world"}"#;
@@ -852,6 +858,12 @@ fn render_run_rejects_yaml_input_extension() {
             model: "claude-opus-4-8".into(),
             judge_max_output_tokens: common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
+            table_top_n: common::config::DEFAULT_TABLE_TOP_N,
+            heavy_models: common::config::DEFAULT_HEAVY_MODELS
+                .iter()
+                .map(|m| (*m).to_string())
+                .collect(),
+            short_session_turns: common::config::DEFAULT_SHORT_SESSION_TURNS,
             input: yml,
             output: None,
             format: crate::cli::Format::Markdown,
@@ -913,6 +925,9 @@ fn render_run_gates_on_schema_version_before_touching_the_api() {
         model: "claude-opus-4-8".into(),
         judge_max_output_tokens: common::config::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         slot_max_output_tokens: common::config::DEFAULT_SLOT_MAX_OUTPUT_TOKENS,
+        table_top_n: common::config::DEFAULT_TABLE_TOP_N,
+        heavy_models: vec!["opus".to_string()],
+        short_session_turns: common::config::DEFAULT_SHORT_SESSION_TURNS,
         input: input.clone(),
         output: Some(tmp.path().join("out.md")),
         format: crate::cli::Format::Markdown,
@@ -988,3 +1003,52 @@ mod prior;
 #[cfg(test)]
 mod reconcile;
 mod workload;
+
+/// Schema v3 is the per-day-bucket break: a v2 artifact has no `by-day`, so render refuses it by
+/// name, both versions stated, before any serde error about a field.
+#[test]
+fn render_schema_v2_artifact_is_refused_naming_v2_and_v3() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("claude-report.json");
+    let report = crate::eval::synth::build(crate::eval::synth::Kind::Small, &pricing()).unwrap();
+    let mut json = serde_json::to_value(&report).unwrap();
+    json["schema-version"] = serde_json::json!(2);
+    fs::write(&input, json.to_string()).unwrap();
+    let msg = format!("{:#}", load_report(&input, "report").unwrap_err());
+    assert!(
+        msg.contains("schema v2") && msg.contains("schema v3") && msg.contains("report collect"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn marquee_publish_argv_carries_title_and_a_one_line_description() {
+    let report = sample_report();
+    let cmd = marquee_publish_command(Path::new("/tmp/bundle"), &report, Some("eng"));
+    let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+    let value_after = |flag: &str| {
+        let at = args
+            .iter()
+            .position(|a| a == flag)
+            .unwrap_or_else(|| panic!("{flag} missing: {args:?}"));
+        args[at + 1].clone()
+    };
+    assert_eq!(value_after("--space"), "eng");
+    assert_eq!(value_after("--title"), marquee_title(&report));
+    let description = value_after("--description");
+    assert!(!description.contains('\n'), "{description:?}");
+    assert!(!description.contains("title:"), "{description:?}");
+    assert!(description.starts_with("Claude Code usage, "), "{description:?}");
+    assert!(
+        description.contains(&format_usd(report.totals.spend_usd)),
+        "{description:?}"
+    );
+}
+
+#[test]
+fn marquee_description_uses_singular_nouns_for_one() {
+    let mut report = report_with_n_sessions(1);
+    report.totals.sessions = 1;
+    let description = marquee_description(&report);
+    assert!(description.contains(" 1 session in "), "{description:?}");
+}

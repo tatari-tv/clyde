@@ -265,3 +265,22 @@ fn calculate_usd_known_model() {
     let cost = calculate_usd("claude-opus-4-7", &usage).unwrap();
     assert!(cost > 0.0);
 }
+
+#[test]
+fn cost_at_tier_prices_a_small_slice_at_the_tier_its_whole_selected() {
+    // 50k input alone is below the threshold, but as a day's slice of a 250k-input session it must be
+    // costed at the session's premium tier, or the slices would not be proportional to the whole.
+    let pricing = tiered_pricing();
+    let slice = TokenUsage {
+        input_tokens: 50_000,
+        output_tokens: 0,
+        cache_5m_write_tokens: 0,
+        cache_1h_write_tokens: 0,
+        cache_read_tokens: 0,
+    };
+    let premium = calculate_cost_at_tier(&pricing, &slice, 250_000);
+    assert!((premium - 50_000.0 * 10.0 / 1_000_000.0).abs() < 1e-9);
+    let standard = calculate_cost_at_tier(&pricing, &slice, 50_000);
+    assert!((standard - 50_000.0 * 5.0 / 1_000_000.0).abs() < 1e-9);
+    assert_eq!(standard, calculate_cost(&pricing, &slice), "own tier is calculate_cost");
+}

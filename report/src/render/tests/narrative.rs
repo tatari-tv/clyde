@@ -52,7 +52,7 @@ fn build_context_block_carries_summary_and_tags_when_enriched() {
 #[test]
 fn build_enrichment_coverage_on_an_empty_report_names_zero_of_zero() {
     let report = Report {
-        schema_version: 2,
+        schema_version: crate::report::SCHEMA_VERSION,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),

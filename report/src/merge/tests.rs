@@ -83,6 +83,7 @@ fn entry_with_outcomes(model: &str, mt: ModelTokens, outcomes: Option<Outcomes>)
         untracked_models: untracked,
         jsonl_paths: vec![],
         models,
+        by_day: None,
         outcomes,
         agent_type_costs: BTreeMap::new(),
         cache_read_share: efficiency.aggregate.cache_read_share,
@@ -205,9 +206,12 @@ fn merge_distinct_sessions_sums_without_overlap() {
     assert_eq!(merged.totals.models.len(), 2);
 }
 
+/// Inverts `schema_version_mismatch_is_typed_error_naming_both`: inputs no longer merely have to
+/// agree with each other, each must be the CURRENT schema (v3, per-day buckets). A v2 input is
+/// refused by name with both versions, whatever the others are.
 #[test]
-fn schema_version_mismatch_is_typed_error_naming_both() {
-    let mut r1 = report(
+fn schema_v2_input_is_refused_naming_v2_and_v3() {
+    let r1 = report(
         "desk",
         SID_SHARED,
         "2026-04-01T00:00:00Z",
@@ -215,7 +219,6 @@ fn schema_version_mismatch_is_typed_error_naming_both() {
         "claude-opus-4-7",
         model_tokens(100, Some(1.00)),
     );
-    r1.schema_version = 1;
     let mut r2 = report(
         "laptop",
         SID_UNIQUE,
@@ -226,15 +229,58 @@ fn schema_version_mismatch_is_typed_error_naming_both() {
     );
     r2.schema_version = 2;
 
-    // Typed error: match on the variant naming both versions, not a Display-string substring.
     let err = merge_reports(vec![r1, r2]).unwrap_err();
-    match err {
-        MergeError::SchemaMismatch { expected, found } => {
-            assert_eq!(expected, 1);
-            assert_eq!(found, 2);
+    match &err {
+        MergeError::UnsupportedSchema { input, found, expected } => {
+            assert_eq!((*found, *expected), (2, 3));
+            assert!(input.contains("laptop"), "names which input: {input}");
         }
-        other => panic!("expected SchemaMismatch, got {other:?}"),
+        other => panic!("expected UnsupportedSchema, got {other:?}"),
     }
+    let message = err.to_string();
+    assert!(message.contains("v2") && message.contains("v3"), "{message}");
+}
+
+/// The single-input path used to return its input without any version check, so a lone v2 file
+/// "merged" cleanly into an artifact render then refused. Now it is refused here, by path.
+#[test]
+fn schema_v2_single_input_is_refused_by_path() {
+    let tmp = TempDir::new().unwrap();
+    let mut r = report(
+        "desk",
+        SID_SHARED,
+        "2026-04-01T00:00:00Z",
+        "2026-04-20T00:00:00Z",
+        "claude-opus-4-7",
+        model_tokens(100, Some(1.00)),
+    );
+    r.schema_version = 2;
+    let path = tmp.path().join("old.json");
+    std::fs::write(&path, serde_json::to_string(&r).unwrap()).unwrap();
+
+    let err = read_reports(std::slice::from_ref(&path)).unwrap_err();
+    let message = err.to_string();
+    assert!(
+        matches!(
+            err,
+            MergeError::UnsupportedSchema {
+                found: 2,
+                expected: 3,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(
+        message.contains("old.json") && message.contains("v2") && message.contains("v3"),
+        "{message}"
+    );
+
+    let direct = merge_reports(vec![r]).unwrap_err();
+    assert!(
+        matches!(direct, MergeError::UnsupportedSchema { found: 2, .. }),
+        "{direct:?}"
+    );
 }
 
 #[test]

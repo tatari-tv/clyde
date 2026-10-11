@@ -15,7 +15,9 @@ pub use feed::{CURRENT_SCHEMA_VERSION, DEFAULT_FEED_URL, Pricing, Source, StaleF
 #[cfg(feature = "fetch")]
 pub use fetch::stale_marker;
 pub use parse::{AssistantEntry, ParseResult, TokenUsage, parse_jsonl_file};
-pub use pricing::{ModelPricing, calculate_cost, calculate_usd, default_pricing, normalize_model_id};
+pub use pricing::{
+    ModelPricing, calculate_cost, calculate_cost_at_tier, calculate_usd, default_pricing, normalize_model_id,
+};
 
 /// ONE process-wide lock for every test in this crate that reads or mutates the process
 /// environment. Deliberately crate-level rather than per-module, for the reason

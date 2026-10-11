@@ -3,7 +3,7 @@
 //! A fixture directory holds:
 //!
 //! ```text
-//! report.json    the collected schema-v2 artifact  (REQUIRED)
+//! report.json    the collected schema-v3 artifact  (REQUIRED)
 //! eval.yml       this module's `Spec`              (optional; defaults apply)
 //! prior.json     a prior-period artifact           (optional; lights up Month over Month)
 //! analytics.json an Analytics cost export          (optional; lights up Reconciliation)
@@ -36,6 +36,7 @@ const SPEC_FILE: &str = "eval.yml";
 const PRIOR_FILE: &str = "prior.json";
 const ANALYTICS_FILE: &str = "analytics.json";
 const GOLDEN_MARKDOWN: &str = "golden.md";
+const GOLDEN_HTML: &str = "golden.html";
 
 /// A citation shape a fixture's golden must actually exercise. These are the two false positives a
 /// narrowed quotable-facts whitelist causes first (design Phase 10's success criterion 3), so at
@@ -157,6 +158,8 @@ pub struct Fixture {
     pub analytics: Option<PathBuf>,
     /// The committed golden, when the directory carries one.
     pub golden_markdown: Option<String>,
+    /// The committed HTML golden, when the directory carries one.
+    pub golden_html: Option<String>,
 }
 
 impl Fixture {
@@ -192,13 +195,15 @@ impl Fixture {
             prior: optional(dir, PRIOR_FILE),
             analytics: optional(dir, ANALYTICS_FILE),
             golden_markdown: read_optional(dir, GOLDEN_MARKDOWN)?,
+            golden_html: read_optional(dir, GOLDEN_HTML)?,
         };
         debug!(
-            "fixture::load: name={} prior={} analytics={} golden={}",
+            "fixture::load: name={} prior={} analytics={} golden={} golden-html={}",
             fixture.name,
             fixture.prior.is_some(),
             fixture.analytics.is_some(),
-            fixture.golden_markdown.is_some()
+            fixture.golden_markdown.is_some(),
+            fixture.golden_html.is_some()
         );
         Ok(fixture)
     }
@@ -211,6 +216,11 @@ impl Fixture {
     /// is what makes a golden byte-stable and its comparison free.
     pub fn golden_path(&self) -> PathBuf {
         self.dir.join(GOLDEN_MARKDOWN)
+    }
+
+    /// Where the HTML golden is written, beside [`Self::golden_path`] and by the same run.
+    pub fn golden_html_path(&self) -> PathBuf {
+        self.dir.join(GOLDEN_HTML)
     }
 }
 

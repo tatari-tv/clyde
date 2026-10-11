@@ -18,7 +18,7 @@ tags:
 **Title:** Staff Software Engineer
 **Team:** Platform Tooling
 **Period:** 2026-03-02 - 2026-03-08
-**Total Spend:** $64.85
+**Total Spend:** $64.86
 **Pricing Basis:** Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.
 **Sessions:** 9 across 1 repository
 **Active Days:** 6 of 7
@@ -28,6 +28,25 @@ tags:
 ---
 
 ## Executive Summary
+
+## What the Money Produced
+
+Every session falls in exactly one band, and the first rule that matches wins. Names say what was observed in the transcript, not what the session achieved.
+
+| Band | Sessions | Spend | Share of Spend |
+|------|---------:|------:|---------------:|
+| `committed` | 9 | $64.86 | 100% |
+| `edited` | 0 | $0.00 | 0% |
+| `wrote-records` | 0 | $0.00 | 0% |
+| `no-observed-outcome` | 0 | $0.00 | 0% |
+| **Total** | 9 | $64.86 | |
+
+- `committed`: at least one commit or opened pull request
+- `edited`: files edited, no commit or pull request
+- `wrote-records`: a Confluence, Jira or Slack write, no file edit
+- `no-observed-outcome`: none of the above
+
+`no-observed-outcome` is not "no result": a sample shows it is mostly `claude -p` hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to `outcome::extract`.
 
 ## Quantified Output
 
@@ -47,10 +66,14 @@ These are observed tool invocations extracted from session transcripts, not esti
 
 | Repo | Spend | Commits | PRs Opened | Files Edited |
 |------|------:|--------:|-----------:|-------------:|
-| `northwind-media/beacon` | $64.85 | 26 | 12 | 108 |
+| `northwind-media/beacon` | $64.86 | 26 | 12 | 108 |
+
+**Opened pull requests**
+
+- `northwind-media/beacon`: [#100](https://github.com/northwind-media/beacon/pull/100), [#103](https://github.com/northwind-media/beacon/pull/103), [#104](https://github.com/northwind-media/beacon/pull/104), [#106](https://github.com/northwind-media/beacon/pull/106), [#107](https://github.com/northwind-media/beacon/pull/107), [#109](https://github.com/northwind-media/beacon/pull/109), [#110](https://github.com/northwind-media/beacon/pull/110), [#115](https://github.com/northwind-media/beacon/pull/115), [#118](https://github.com/northwind-media/beacon/pull/118), [#121](https://github.com/northwind-media/beacon/pull/121), [#122](https://github.com/northwind-media/beacon/pull/122), [#124](https://github.com/northwind-media/beacon/pull/124)
 
 A ratio of $2.49 of period spend per observed commit.
-A ratio of $5.40 of period spend per pull request opened.
+A ratio of $5.41 of period spend per pull request opened.
 A ratio of $10.81 of period spend per active day.
 A ratio of $7.21 of period spend per session (the mean).
 Median session spend was $6.39; the 90th percentile was $11.59.
@@ -59,9 +82,9 @@ Median session spend was $6.39; the 90th percentile was $11.59.
 
 | Model | Sessions Using | Total Tokens | Spend |
 |-------|---------------:|-------------:|------:|
-| `claude-sonnet-4-6` | 6 | 55.4M | $34.56 |
+| `claude-sonnet-4-6` | 6 | 55.4M | $34.57 |
 | `claude-opus-4-7` | 3 | 30.0M | $30.29 |
-| **Total** | 9 | 85.4M | $64.85 |
+| **Total** | 9 | 85.4M | $64.86 |
 
 ## Reconciliation
 
@@ -69,16 +92,16 @@ No Claude Enterprise Analytics cost export was supplied for this render (--recon
 
 ## Agent-Type Cost Attribution
 
-Every dollar of the period's $64.85 spend lands in exactly one row below; `(main-session)` carried the most. The `(main-session)` row is work a session did itself rather than delegating.
+Every dollar of the period's $64.86 spend lands in exactly one row below; `(main-session)` carried the most. The `(main-session)` row is work a session did itself rather than delegating.
 
 | Agent Type | Tokens | Spend |
 |------------|-------:|------:|
-| `(main-session)` | 85.4M | $64.85 |
+| `(main-session)` | 85.4M | $64.86 |
 
 ## The Efficiency Story
 
 - Cache read share was 92.3%: most of the context read each turn is re-read from cache at a fraction of the fresh-input rate, which is what makes sustained agentic sessions economical. Fresh input was 1.0M against 78.5M read from cache.
-- At full list-price input rates the same tokens would model to $320.69, so cache reuse accounts for $255.84 (computed from published per-token rates).
+- At full list-price input rates the same tokens would model to $320.70, so cache reuse accounts for $255.84 (computed from published per-token rates).
 - Tool error rate: 6.0%.
 - Share of cache writes paying the 1h premium: 6.7%.
 - Interrupts observed: 4.
@@ -89,23 +112,36 @@ Every dollar of the period's $64.85 spend lands in exactly one row below; `(main
 | `release-notes` | 1.1M | $2.09 |
 | `schema-review` | 1.1M | $1.97 |
 
-Coverage: $4.06 of $64.85 (6.3%), embedded-price basis
+Coverage: $4.06 of $64.86 (6.3%), embedded-price basis
 
 | MCP Tool | Tokens | Spend |
 |---|-------:|------:|
 | `wiki-write` | 3.9M | $7.24 |
 
-Coverage: $7.24 of $64.85 (11.2%), embedded-price basis
+Coverage: $7.24 of $64.86 (11.2%), embedded-price basis
+
+## Unobserved and Flagged Spend
+
+Spend worth a second look. These rows overlap and are not a partition of the total.
+
+- Sessions in `no-observed-outcome`: 0, spending $0.00 (0% of session spend).
+- Heavy model on a short session: 0 sessions, $0.00. Heavy means a model name containing `opus`, `fable`; short means at most 3 turns.
+
+What `no-observed-outcome` does and does not mean is noted under the band table above.
+
+No session carries an efficiency flag.
 
 ## What This Funded
 
 ### northwind-media
 
-9 sessions across 1 repository, 85.4M tokens, $64.85.
+9 sessions across 1 repository, 85.4M tokens, $64.86.
 
-- `northwind-media/beacon` (9 sessions, 85.4M tokens, $64.85 spend): 26 commits, 12 PRs opened, 108 files edited
+- `northwind-media/beacon` (9 sessions, 85.4M tokens, $64.86 spend): 26 commits, 12 PRs opened, 108 files edited
 
 ## Usage Profile
+
+Daily figures are whole UTC days: each session's spend sits on the days its turns ran, not the day it began. The daily series accounts for all $64.86 of the period's spend.
 
 **Daily spend**
 
@@ -119,7 +155,7 @@ Coverage: $7.24 of $64.85 (11.2%), embedded-price basis
 | 2026-03-07 | $4.30 |
 | 2026-03-08 | $0.00 |
 
-**Daily sessions**
+**Daily active sessions**
 
 | Day | Sessions |
 |-----|------:|

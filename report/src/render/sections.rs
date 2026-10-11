@@ -1,0 +1,642 @@
+//! Section data shared by every document backend: row lists and fixed sentences, as data.
+//!
+//! Each function here reads the [`ContextBlock`] (or one of its rows) and returns plain values with
+//! no markup: strings, tuples, small structs. A backend decides how to draw them (a markdown table
+//! row, an HTML `<tr>`). Code-span styling is the one thing a backend supplies, passed in where a
+//! sentence embeds a name, so no backend's syntax leaks into this module. Section order and every
+//! fixed sentence live here, which is what stops two backends disagreeing on a number or a sentence.
+
+use super::{ContextBlock, PriorView};
+use crate::aggregate::{DayRow, OrgRow, OutlierRow, RepoRow};
+use crate::fmt::format_int;
+use crate::reconcile::Reconciliation;
+
+/// One titled section of the report body, in the order every backend emits them. The header (and
+/// the markdown frontmatter) always precede these and are not listed: they are not sections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Section {
+    ExecutiveSummary,
+    Bands,
+    QuantifiedOutput,
+    CostSummary,
+    Reconciliation,
+    AgentTypeCosts,
+    Efficiency,
+    UnobservedSpend,
+    WhatThisFunded,
+    UsageProfile,
+    MonthOverMonth,
+    Tradeoffs,
+    Conclusion,
+}
+
+impl Section {
+    /// The section heading, identical in every backend.
+    pub(super) fn title(self) -> &'static str {
+        match self {
+            Section::ExecutiveSummary => "Executive Summary",
+            Section::Bands => "What the Money Produced",
+            Section::UnobservedSpend => "Unobserved and Flagged Spend",
+            Section::QuantifiedOutput => "Quantified Output",
+            Section::CostSummary => "Cost Summary",
+            Section::Reconciliation => "Reconciliation",
+            Section::AgentTypeCosts => "Agent-Type Cost Attribution",
+            Section::Efficiency => "The Efficiency Story",
+            Section::WhatThisFunded => "What This Funded",
+            Section::UsageProfile => "Usage Profile",
+            Section::MonthOverMonth => "Month over Month",
+            Section::Tradeoffs => "Tradeoffs",
+            Section::Conclusion => "Conclusion",
+        }
+    }
+
+    /// The prose slot that opens this section, when it has one.
+    pub(super) fn slot(self) -> Option<&'static str> {
+        match self {
+            Section::ExecutiveSummary => Some("executive-summary"),
+            Section::WhatThisFunded => Some("what-this-funded"),
+            Section::UsageProfile => Some("usage-profile"),
+            Section::Tradeoffs => Some("tradeoffs"),
+            Section::Conclusion => Some("closing"),
+            Section::Bands
+            | Section::UnobservedSpend
+            | Section::QuantifiedOutput
+            | Section::CostSummary
+            | Section::Reconciliation
+            | Section::AgentTypeCosts
+            | Section::Efficiency
+            | Section::MonthOverMonth => None,
+        }
+    }
+}
+
+/// The body sections this render emits, in order. Tradeoffs is the one section the options filter
+/// out; every other section decides its own emptiness from its data.
+pub(super) fn section_order(block: &ContextBlock<'_>) -> Vec<Section> {
+    [
+        Section::ExecutiveSummary,
+        Section::Bands,
+        Section::QuantifiedOutput,
+        Section::CostSummary,
+        Section::Reconciliation,
+        Section::AgentTypeCosts,
+        Section::Efficiency,
+        Section::UnobservedSpend,
+        Section::WhatThisFunded,
+        Section::UsageProfile,
+        Section::MonthOverMonth,
+        Section::Tradeoffs,
+        Section::Conclusion,
+    ]
+    .into_iter()
+    .filter(|s| *s != Section::Tradeoffs || block.options.include_tradeoffs)
+    .collect()
+}
+
+/// The report's title line.
+pub(super) const REPORT_TITLE: &str = "Claude Enterprise Usage Report";
+
+/// The operator name when persona resolved none.
+pub(super) const ANONYMOUS: &str = "[anonymous]";
+
+/// Lead-in to the Quantified Output tables.
+pub(super) const QUANTIFIED_OUTPUT_LEAD: &str =
+    "These are observed tool invocations extracted from session transcripts, not estimates.";
+
+/// What the bands section says when outcomes were not extracted: every session would otherwise
+/// fall into `no-observed-outcome`, which would read as a finding.
+pub(super) const BANDS_NOT_COLLECTED: &str = "Outcomes were not collected for this report (it was collected \
+     with --no-outcomes, or merged from reports that did not collect them), so spend cannot be split by \
+     what it produced.";
+
+/// The caveat on what `no-observed-outcome` does and does not mean, printed verbatim ONCE, under the
+/// band table.
+pub(super) const NO_OBSERVED_CAVEAT: &str = "`no-observed-outcome` is not \"no result\": a sample shows it is mostly \
+     `claude -p` hook sessions that answered a question, and files written through Bash heredocs or \
+     commits made by subprocesses are invisible to `outcome::extract`.";
+
+/// The Unobserved section's pointer back to [`NO_OBSERVED_CAVEAT`] instead of a second copy of it.
+pub(super) const NO_OBSERVED_SEE_ABOVE: &str = "What `no-observed-outcome` does and does not mean is noted \
+     under the band table above.";
+
+/// Lead under "What the Money Produced".
+pub(super) const BANDS_LEAD: &str = "Every session falls in exactly one band, and the first rule that matches \
+     wins. Names say what was observed in the transcript, not what the session achieved.";
+
+/// Lead under "Unobserved and Flagged Spend": these rows are signals to look at, not verdicts.
+pub(super) const UNOBSERVED_LEAD: &str = "Spend worth a second look. These rows overlap and are not a \
+     partition of the total.";
+
+/// Shown in place of the flag table when no session carries an efficiency flag.
+pub(super) const NO_FLAGS: &str = "No session carries an efficiency flag.";
+
+/// One band's table row `(name, rule, sessions, spend, share)`.
+pub(super) fn band_rows(table: &crate::bands::BandTable) -> Vec<[String; 4]> {
+    table
+        .rows
+        .iter()
+        .map(|r| [r.name.to_string(), r.sessions.clone(), r.spend.clone(), r.share.clone()])
+        .collect()
+}
+
+/// The no-observed-outcome line of the unobserved section, `None` when outcomes were not collected.
+pub(super) fn no_observed_line(block: &ContextBlock<'_>) -> Option<String> {
+    let table = block.bands.bands.as_ref()?;
+    let row = table
+        .rows
+        .iter()
+        .find(|r| r.band == crate::bands::Band::NoObservedOutcome)?;
+    Some(format!(
+        "Sessions in `no-observed-outcome`: {}, spending {} ({} of session spend).",
+        row.sessions, row.spend, row.share
+    ))
+}
+
+/// The heavy-model-on-a-short-session line, with the configured thresholds spelled out.
+pub(super) fn heavy_on_short_line(block: &ContextBlock<'_>) -> String {
+    let h = &block.bands.heavy_on_short;
+    let models = if h.models.is_empty() {
+        "no model".to_string()
+    } else {
+        h.models.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", ")
+    };
+    format!(
+        "Heavy model on a short session: {} {}, {}. Heavy means a model name containing {models}; short \
+         means at most {} turns.",
+        h.sessions,
+        if h.sessions == "1" { "session" } else { "sessions" },
+        h.spend,
+        h.max_turns
+    )
+}
+
+/// The efficiency-flag rows `(label, sessions, spend)`.
+pub(super) fn flag_rows(block: &ContextBlock<'_>) -> Vec<[String; 3]> {
+    block
+        .bands
+        .flags
+        .iter()
+        .map(|f| [f.label.to_string(), f.sessions.clone(), f.spend.clone()])
+        .collect()
+}
+
+/// `N thing` / `N things`, with the count formatted by the same helper every table uses.
+pub(super) fn plural(n: usize, noun: &str) -> String {
+    let s = if n == 1 { "" } else { "s" };
+    format!("{} {noun}{s}", format_int(n as u64))
+}
+
+/// `N thing` / `N things` for an IRREGULAR plural (`repository` -> `repositories`). Separate from
+/// [`plural`] rather than a special case inside it: an English-pluralization rule engine in a report
+/// renderer is exactly the kind of cleverness that goes wrong silently.
+pub(super) fn quantity(n: usize, one: &str, many: &str) -> String {
+    let noun = if n == 1 { one } else { many };
+    format!("{} {noun}", format_int(n as u64))
+}
+
+/// The header's `Sessions` figure: `N across M repositories`.
+pub(super) fn sessions_across(block: &ContextBlock<'_>) -> String {
+    format!(
+        "{} across {}",
+        format_int(block.totals.sessions as u64),
+        quantity(block.totals.repo_count, "repository", "repositories")
+    )
+}
+
+/// The header's `Active Days` figure: `N of M`.
+pub(super) fn active_days(block: &ContextBlock<'_>) -> String {
+    format!("{} of {}", block.period.active_days, block.period.days)
+}
+
+/// Observed-outcome metric rows `(label, formatted count)`. Empty when the report carries no
+/// outcome rollup, or the rollup measured none of these: an absent rollup is not a rollup of zeros.
+pub(super) fn outcome_metric_rows(block: &ContextBlock<'_>) -> Vec<(&'static str, String)> {
+    let Some(outcomes) = &block.outcomes else {
+        return Vec::new();
+    };
+    let t = &outcomes.totals;
+    [
+        ("Sessions producing commits", t.sessions_with_commits),
+        ("Commits", t.commits),
+        ("Pull requests opened", t.prs_opened),
+        ("Confluence pages written or updated", t.confluence_writes),
+        ("Jira issues written or updated", t.jira_writes),
+        ("Slack messages sent", t.slack_messages),
+        ("Files edited", t.files_edited),
+        ("Lines of file content written", t.lines_written),
+        ("Lines of file content replaced", t.lines_replaced),
+    ]
+    .into_iter()
+    .filter_map(|(label, v)| v.map(|v| (label, format_int(v))))
+    .collect()
+}
+
+/// The subheading over the opened-PR link list, both backends.
+pub(super) const PRS_HEADING: &str = "Opened pull requests";
+
+/// One repository's opened PRs, ready to print as links.
+pub(super) struct PrList<'a> {
+    pub(super) repository: &'a str,
+    pub(super) links: Vec<PrItem<'a>>,
+}
+
+/// One PR: its `#N` label and, when the url is safe to link, the href.
+pub(super) struct PrItem<'a> {
+    pub(super) label: String,
+    pub(super) href: Option<&'a str>,
+}
+
+/// The opened-PR groups from `outcomes.prs`, in the view's order (largest group first). Empty when
+/// the report carries no outcome rollup or no session opened a PR.
+pub(super) fn pr_lists<'a>(block: &'a ContextBlock<'_>) -> Vec<PrList<'a>> {
+    let Some(outcomes) = &block.outcomes else {
+        return Vec::new();
+    };
+    outcomes
+        .prs
+        .iter()
+        .map(|group| PrList {
+            repository: &group.repository,
+            links: group
+                .prs
+                .iter()
+                .map(|pr| PrItem {
+                    label: format!("#{}", pr.number),
+                    href: safe_pr_href(&pr.url),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// `url` when it may become an `href`: `https://` only (design Security), and nothing that could
+/// end a Markdown link target or an attribute early (whitespace, control characters, quotes, angle
+/// brackets, parentheses). Anything else prints as text with no link.
+pub(super) fn safe_pr_href(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://")?;
+    let clean = !rest.is_empty()
+        && !rest
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | '\\'));
+    clean.then_some(url)
+}
+
+/// One repo's observed-outcome row, every cell already formatted.
+pub(super) struct RepoOutcomeRow<'a> {
+    pub(super) repo: &'a str,
+    pub(super) spend: &'a str,
+    pub(super) commits: String,
+    pub(super) prs_opened: String,
+    pub(super) files_edited: String,
+}
+
+/// The per-repo outcome rows: only repos whose row carries outcomes, in `by-repo` order.
+pub(super) fn repo_outcome_rows<'a>(block: &'a ContextBlock<'_>) -> Vec<RepoOutcomeRow<'a>> {
+    block
+        .aggregates
+        .by_repo
+        .iter()
+        .filter_map(|row| {
+            let o = row.outcomes.as_ref()?;
+            Some(RepoOutcomeRow {
+                repo: &row.repo,
+                spend: &row.spend,
+                commits: format_int(o.commits),
+                prs_opened: format_int(o.prs_opened),
+                files_edited: format_int(o.files_edited),
+            })
+        })
+        .collect()
+}
+
+/// The unit-cost ratios, each stated AS a ratio. Never "each commit cost $X": these divide the
+/// whole period's spend (including the sessions that produced nothing) by a count, so a price-tag
+/// framing is false. The wording is fixed here, which is stronger than a prompt rule: a model could
+/// paraphrase its way past that rule; this layer cannot.
+pub(super) fn unit_cost_lines(block: &ContextBlock<'_>) -> Vec<String> {
+    let u = &block.unit_costs;
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(v) = &u.per_commit {
+        lines.push(format!("A ratio of {v} of period spend per observed commit."));
+    }
+    if let Some(v) = &u.per_pr {
+        lines.push(format!("A ratio of {v} of period spend per pull request opened."));
+    }
+    if let Some(v) = &u.per_active_day {
+        lines.push(format!("A ratio of {v} of period spend per active day."));
+    }
+    if let Some(v) = &u.per_session {
+        lines.push(format!("A ratio of {v} of period spend per session (the mean)."));
+    }
+    lines.extend(session_spend_percentiles(block));
+    lines
+}
+
+/// The median and 90th-percentile session spend, as one sentence, when either is known.
+pub(super) fn session_spend_percentiles(block: &ContextBlock<'_>) -> Option<String> {
+    let u = &block.unit_costs;
+    match (&u.session_spend_p50, &u.session_spend_p90) {
+        (Some(p50), Some(p90)) => Some(format!(
+            "Median session spend was {p50}; the 90th percentile was {p90}."
+        )),
+        (Some(p50), None) => Some(format!("Median session spend was {p50}.")),
+        (None, Some(p90)) => Some(format!("The 90th percentile of session spend was {p90}.")),
+        (None, None) => None,
+    }
+}
+
+/// The pricing-gap warning. `names` is the backend's styled list of the unpriced models.
+pub(super) fn untracked_models_note(names: &str) -> String {
+    format!(
+        "Note: spend for the following models was not computed because they are not in this \
+         binary's pricing table: {names}. The total above understates actual spend. Update \
+         clyde's pricing data to include them."
+    )
+}
+
+/// The sentence beside the reconciliation figures. `scope-note` is printed beside it by the backend.
+pub(super) fn unseen_spend_sentence(r: &Reconciliation) -> String {
+    format!(
+        "Unseen account spend is {}, from {} for {} over {}.",
+        r.delta, r.source, r.operator, r.window
+    )
+}
+
+/// Lead-in to the agent-type partition. `top` is the backend's styled name of the largest row;
+/// the sentence copies `totals.spend` rather than summing the rows, which are already allocated to
+/// sum to exactly that displayed figure.
+pub(super) fn agent_type_lead(block: &ContextBlock<'_>, top: &str) -> String {
+    format!(
+        "Every dollar of the period's {} spend lands in exactly one row below; {top} carried the \
+         most. The `(main-session)` row is work a session did itself rather than delegating.",
+        block.totals.spend
+    )
+}
+
+/// The cache-read-share finding.
+pub(super) fn cache_read_sentence(block: &ContextBlock<'_>) -> String {
+    let cache = &block.aggregates.cache;
+    format!(
+        "Cache read share was {}: most of the context read each turn is re-read from cache at a \
+         fraction of the fresh-input rate, which is what makes sustained agentic sessions \
+         economical. Fresh input was {} against {} read from cache.",
+        cache.cache_read_share, cache.input_tokens_human, cache.cache_read_tokens_human
+    )
+}
+
+/// The cache-savings counterfactual: the one permitted in the document, carrying its methodology
+/// note in the same breath. `None` unless both figures were computed.
+pub(super) fn cache_savings_sentence(block: &ContextBlock<'_>) -> Option<String> {
+    let cache = &block.aggregates.cache;
+    let (Some(list), Some(saved)) = (&cache.list_price_equivalent, &cache.cache_savings) else {
+        return None;
+    };
+    Some(format!(
+        "At full list-price input rates the same tokens would model to {list}, so cache reuse \
+         accounts for {saved} (computed from published per-token rates)."
+    ))
+}
+
+/// The efficiency signal lines as `(label, value)`: the two rates when measured (`n/a` is dropped),
+/// then the interrupt and compaction counts when nonzero.
+pub(super) fn efficiency_signals(block: &ContextBlock<'_>) -> Vec<(&'static str, String)> {
+    let eff = &block.efficiency;
+    let mut out = Vec::new();
+    for (label, value) in [
+        ("Tool error rate", &eff.tool_error_rate),
+        (
+            "Share of cache writes paying the 1h premium",
+            &eff.cache_1h_write_fraction,
+        ),
+    ] {
+        if value != "n/a" {
+            out.push((label, value.clone()));
+        }
+    }
+    if eff.interrupts > 0 {
+        out.push(("Interrupts observed", format_int(eff.interrupts)));
+    }
+    if eff.compactions > 0 {
+        out.push(("Context compactions observed", format_int(eff.compactions)));
+    }
+    out
+}
+
+/// A workload table's coverage statement, beside its rows.
+pub(super) fn coverage_line(coverage: &str) -> String {
+    format!("Coverage: {coverage}")
+}
+
+/// One org with its repos, tiered by the pre-sorted `by-org` order; repos keep `by-repo` order.
+pub(super) struct OrgTier<'a> {
+    pub(super) org: &'a OrgRow,
+    pub(super) repos: Vec<&'a RepoRow>,
+}
+
+/// The org tiers of What This Funded. An org with no repo rows is skipped.
+pub(super) fn org_tiers<'a>(block: &'a ContextBlock<'_>) -> Vec<OrgTier<'a>> {
+    block
+        .aggregates
+        .by_org
+        .iter()
+        .filter_map(|org| {
+            let repos: Vec<&RepoRow> = block.aggregates.by_repo.iter().filter(|r| r.org == org.org).collect();
+            (!repos.is_empty()).then_some(OrgTier { org, repos })
+        })
+        .collect()
+}
+
+/// An org's summary sentence.
+pub(super) fn org_summary(org: &OrgRow) -> String {
+    format!(
+        "{} across {}, {} tokens, {}.",
+        plural(org.sessions, "session"),
+        quantity(org.repos, "repository", "repositories"),
+        org.tokens_human,
+        org.spend
+    )
+}
+
+/// The `(N sessions, X tokens, Y spend)` figures on a per-repo line.
+pub(super) fn repo_figures(row: &RepoRow) -> String {
+    format!(
+        "({}, {} tokens, {} spend)",
+        plural(row.sessions, "session"),
+        row.tokens_human,
+        row.spend
+    )
+}
+
+/// The observed-output tail on a per-repo line, e.g. `: 12 commits, 3 PRs opened`. Empty when the
+/// row carries no outcomes, so the line ends at the figures rather than at a bare colon.
+pub(super) fn repo_outcome_tail(row: &RepoRow) -> String {
+    let Some(o) = &row.outcomes else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    if o.commits > 0 {
+        parts.push(plural(o.commits as usize, "commit"));
+    }
+    if o.prs_opened > 0 {
+        parts.push(format!("{} opened", plural(o.prs_opened as usize, "PR")));
+    }
+    if o.files_edited > 0 {
+        parts.push(format!("{} edited", plural(o.files_edited as usize, "file")));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!(": {}", parts.join(", "))
+}
+
+/// What a day means on every daily figure: a whole UTC day, carrying the spend of the turns that
+/// ran on it. A sub-day `--since`/`--until` still windows sessions, never days.
+pub(super) const DAY_BASIS: &str = "Daily figures are whole UTC days: each session's spend sits on \
+     the days its turns ran, not the day it began.";
+
+/// How the daily series reconciles with the headline, in one line: its sum, plus whatever the
+/// window's sessions spent on days outside it, is the period's spend to the cent.
+pub(super) fn day_coverage_sentence(block: &ContextBlock<'_>) -> String {
+    let c = &block.aggregates.day_coverage;
+    if c.out_of_window_cents == 0 {
+        return format!(
+            "The daily series accounts for all {} of the period's spend.",
+            block.totals.spend
+        );
+    }
+    format!(
+        "The daily series shows {} of the period's {} spend; the other {} was spent on days outside \
+         the window by {} the window includes.",
+        c.in_window,
+        block.totals.spend,
+        c.out_of_window,
+        plural(c.out_of_window_sessions, "session"),
+    )
+}
+
+/// The footnote for sessions placed on their begin day because they carry no per-day buckets.
+/// `None` when every session is bucketed.
+pub(super) fn unbucketed_sentence(block: &ContextBlock<'_>) -> Option<String> {
+    let c = &block.aggregates.day_coverage;
+    if c.unbucketed_sessions == 0 {
+        return None;
+    }
+    let (has, rest) = if c.unbucketed_sessions == 1 {
+        ("has", "its spend sits whole on the day it began")
+    } else {
+        ("have", "their spend sits whole on the day each began")
+    };
+    Some(format!(
+        "{} {has} no per-day breakdown (the transcript was gone when the catalog was rebuilt), so \
+         {rest}: {}.",
+        plural(c.unbucketed_sessions, "session"),
+        c.unbucketed_spend,
+    ))
+}
+
+/// One by-day chart-table row `(date, value)`: spend, or the formatted session count.
+pub(super) fn day_rows(rows: &[DayRow], is_spend: bool) -> Vec<(String, String)> {
+    rows.iter()
+        .map(|row| {
+            let value = if is_spend {
+                row.spend.clone()
+            } else {
+                format_int(row.sessions as u64)
+            };
+            (row.date.clone(), value)
+        })
+        .collect()
+}
+
+/// The `What it produced` cell: observed outcome counts, or `(no recorded output)`. Never a guess
+/// about how long the work would otherwise have taken.
+pub(super) fn produced(row: &OutlierRow) -> String {
+    let Some(o) = &row.outcomes else {
+        return NO_RECORDED_OUTPUT.to_string();
+    };
+    let mut parts = Vec::new();
+    if !o.commits.is_empty() {
+        parts.push(plural(o.commits.len(), "commit"));
+    }
+    if !o.prs.is_empty() {
+        parts.push(format!("{} opened", plural(o.prs.len(), "PR")));
+    }
+    if o.files_edited > 0 {
+        parts.push(format!("{} edited", plural(o.files_edited as usize, "file")));
+    }
+    if parts.is_empty() {
+        return NO_RECORDED_OUTPUT.to_string();
+    }
+    parts.join(", ")
+}
+
+const NO_RECORDED_OUTPUT: &str = "(no recorded output)";
+
+/// The label an outlier row is identified by: its title, else the short id.
+pub(super) fn outlier_label(row: &OutlierRow) -> &str {
+    row.title.as_deref().unwrap_or(&row.short_id)
+}
+
+/// The repo an outlier row names, or `(no repo)`.
+pub(super) fn outlier_repo(row: &OutlierRow) -> &str {
+    row.repo.as_deref().unwrap_or("(no repo)")
+}
+
+/// Sentence shown when the prior period has a different length from this one.
+pub(super) fn period_length_mismatch_sentence(prior_days: i64, period_days: i64) -> String {
+    format!(
+        "The two periods are different lengths: the prior period covers {prior_days} days against this \
+         period's {period_days}. The figures below are not an apples-to-apples comparison."
+    )
+}
+
+/// Side-by-side Month over Month rows `(label, prior, current)`. Both periods' numbers are printed
+/// as formatted; nothing is subtracted (that stays parked).
+pub(super) fn month_over_month_rows(
+    block: &ContextBlock<'_>,
+    prior: &PriorView,
+) -> Vec<(&'static str, String, String)> {
+    vec![
+        ("Spend", prior.totals.spend.clone(), block.totals.spend.clone()),
+        (
+            "Sessions",
+            prior.totals.sessions.to_string(),
+            block.totals.sessions.to_string(),
+        ),
+        (
+            "Total tokens",
+            prior.totals.tokens_human.clone(),
+            block.totals.tokens_human.clone(),
+        ),
+    ]
+}
+
+/// Which repos appeared and which wound down between two periods.
+pub(super) struct RepoMovement<'a> {
+    pub(super) appeared: Vec<&'a str>,
+    pub(super) wound_down: Vec<&'a str>,
+}
+
+/// Which repos appeared and which wound down, as a set difference over the two periods' repo
+/// lists. A set difference is not arithmetic on the figures: no number is subtracted.
+pub(super) fn repo_movement<'a>(prior: &'a [RepoRow], current: &'a [RepoRow]) -> RepoMovement<'a> {
+    let before: Vec<&str> = prior.iter().map(|r| r.repo.as_str()).collect();
+    let now: Vec<&str> = current.iter().map(|r| r.repo.as_str()).collect();
+    RepoMovement {
+        appeared: now.iter().copied().filter(|r| !before.contains(r)).collect(),
+        wound_down: before.iter().copied().filter(|r| !now.contains(r)).collect(),
+    }
+}
+
+/// The orgs present now and absent from the prior period.
+pub(super) fn orgs_appeared<'a>(prior: &'a [OrgRow], current: &'a [OrgRow]) -> Vec<&'a str> {
+    let before: Vec<&str> = prior.iter().map(|r| r.org.as_str()).collect();
+    current
+        .iter()
+        .map(|r| r.org.as_str())
+        .filter(|o| !before.contains(o))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests;

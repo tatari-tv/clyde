@@ -42,6 +42,17 @@ pub fn format_usd(n: f64) -> String {
     format!("{}${}.{:02}", sign, with_commas, frac)
 }
 
+/// A whole-cent axis edge, short: whole dollars drop their cents (`250_00` cents -> `"$250"`,
+/// `100_000` -> `"$1,000"`), anything else keeps them (`250` -> `"$2.50"`, `10` -> `"$0.10"`).
+pub fn format_usd_edge(cents: i64) -> String {
+    if cents % 100 == 0 {
+        let sign = if cents < 0 { "-" } else { "" };
+        format!("{sign}${}", format_int((cents / 100).unsigned_abs()))
+    } else {
+        format_usd(cents as f64 / 100.0)
+    }
+}
+
 /// `format_usd`, but `None` (an untracked/unpriced model) renders as `"(untracked)"` instead of
 /// fabricating a `$0.00`.
 pub fn format_optional_usd(n: Option<f64>) -> String {

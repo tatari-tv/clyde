@@ -4,6 +4,7 @@
 **Date:** 2026-07-29
 **Status:** Implemented
 **Review Passes Completed:** 5/5
+**Superseded in part:** the "HTML formats die" decision is reversed by `2026-10-10-report-html-dashboard.md` (Rust now authors every number and chart, so a Rust-owned HTML template adds no model-authored surface).
 **Implemented:** 2026-07-29, five phases on branch `render-inversion`. Notes:
 `2026-07-29-render-inversion-implementation-notes.md`.
 

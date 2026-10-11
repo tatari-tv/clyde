@@ -46,7 +46,7 @@ tasks:
           ;;
       esac
       echo ""
-      echo "=== Deny em dash in Rust source and slot templates ==="
+      echo "=== Deny em dash in Rust source, slot templates and HTML assets ==="
       # `grep`, NOT `rg`: ripgrep is NOT installed on the CI runner, and the first version of this
       # lint used it. `rg: command not found` exits 127, which an `if rg ...; then` reads as
       # "no match", so the lint printed its success line having scanned NOTHING. It was a no-op in
@@ -63,24 +63,26 @@ tasks:
       # `*.pmt` is scanned alongside `*.rs` because the 5 slot templates
       # (`report/templates/slots/*.pmt`) are compiled in via `include_str!` and sent verbatim to a
       # model, so an em dash in one reaches the same place an em dash in a Rust string literal would.
-      # `--include='*.rs'` alone cannot see them. `report/src/render/slots/tests.rs` also asserts
+      # `--include='*.rs'` alone cannot see them. `*.html`, `*.css` and `*.js` are scanned for the
+      # same reason: the HTML backend's template, stylesheet and script (`report/src/render/html/`)
+      # are compiled in and land in every rendered page, as do the committed `golden.html` files. `report/src/render/slots/tests.rs` also asserts
       # `!prompt.contains('\u{2014}')` per slot: prompts that go to a model get both checks.
       #
       # Status is checked EXPLICITLY, never via `if grep ...`. grep exits 0 on a match, 1 on no
       # match, and 2+ on an error (and 127 if the binary is missing). A bare `if` treats every
       # non-zero as "clean", which is the fail-open this comment exists to document.
       em_status=0
-      grep -rn --include='*.rs' --include='*.pmt' --exclude-dir=target -P '\x{2014}' . || em_status=$?
+      grep -rn --include='*.rs' --include='*.pmt' --include='*.html' --include='*.css' --include='*.js' --exclude-dir=target -P '\x{2014}' . || em_status=$?
       case "$em_status" in
         0)
           echo ""
-          echo "❌ Found em dash in Rust source or slot template."
+          echo "❌ Found em dash in Rust source, slot template, or HTML asset."
           echo "   Use --, a colon, parens, or split the sentence (rules/voice.md)."
           echo "   To assert an em dash is ABSENT, write '\\u{2014}' rather than the literal."
           exit 1
           ;;
         1)
-          echo "✅ No em dashes in Rust source or slot templates"
+          echo "✅ No em dashes in Rust source, slot templates or HTML assets"
           ;;
         *)
           echo ""
@@ -243,6 +245,15 @@ tasks:
         -f "sessions/src/db/enrich.rs" \
         -f "efficiency/src/outcome.rs" \
         -f "sessions/src/db/migrate.rs" \
+        -f "report/src/bands.rs" \
+        -f "report/src/chart.rs" \
+        -f "report/src/chart/line.rs" \
+        -f "report/src/chart/bars.rs" \
+        -f "report/src/chart/stack.rs" \
+        -f "report/src/chart/treemap.rs" \
+        -f "report/src/chart/waterfall.rs" \
+        -f "report/src/chart/histogram.rs" \
+        -f "report/src/chart/calendar.rs" \
         --jobs "$MUTANT_JOBS"
 
   eval:

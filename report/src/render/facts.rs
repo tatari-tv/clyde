@@ -162,10 +162,18 @@ pub(super) fn build(block: &ContextBlock<'_>) -> FactRegistry {
     reg.insert("efficiency.interrupts", crate::fmt::format_int(eff.interrupts));
     reg.insert("efficiency.compactions", crate::fmt::format_int(eff.compactions));
 
-    let carried = &block.aggregates.carried_in;
-    reg.insert("carried-in.sessions", carried.sessions.to_string());
-    reg.insert("carried-in.tokens-human", &carried.tokens_human);
-    reg.insert("carried-in.spend", &carried.spend);
+    let coverage = &block.aggregates.day_coverage;
+    reg.insert("day-coverage.in-window", &coverage.in_window);
+    reg.insert("day-coverage.out-of-window", &coverage.out_of_window);
+    reg.insert(
+        "day-coverage.out-of-window-sessions",
+        coverage.out_of_window_sessions.to_string(),
+    );
+    reg.insert(
+        "day-coverage.unbucketed-sessions",
+        coverage.unbucketed_sessions.to_string(),
+    );
+    reg.insert("day-coverage.unbucketed-spend", &coverage.unbucketed_spend);
 
     let unit = &block.unit_costs;
     reg.insert_opt("unit-costs.per-commit", unit.per_commit.as_deref());

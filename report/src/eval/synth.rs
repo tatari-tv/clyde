@@ -19,7 +19,7 @@
 
 use crate::outcome::{Outcomes, PrRef};
 use crate::report::{CollectedSession, Report, build_report};
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use claude_pricing::Pricing;
 use common::metrics::{TokenTotals, price};
 use common::repo::RepoSource;
@@ -341,8 +341,8 @@ pub enum Kind {
     Medium,
     /// [`Kind::Medium`]'s prior period, same length so `prior.comparable` is `true`.
     MediumPrior,
-    /// Zero outcomes, one unpriced NONZERO-token model, a multi-day gap, carried-in sessions, and an
-    /// all-`path-guess` attribution.
+    /// Zero outcomes, one unpriced NONZERO-token model, a multi-day gap, sessions straddling `since`
+    /// (one with no per-day buckets), and an all-`path-guess` attribution.
     Pathological,
 }
 
@@ -370,7 +370,7 @@ impl Kind {
     }
 }
 
-/// Build one synthesized window as a schema-v2 [`Report`], through the real
+/// Build one synthesized window as a schema-v3 [`Report`], through the real
 /// [`crate::report::build_report`]. Deterministic: same `kind`, same bytes.
 pub fn build(kind: Kind, pricing: &Pricing) -> Result<Report> {
     debug!("synth::build: kind={kind:?} seed={}", kind.seed());
@@ -470,8 +470,8 @@ struct Spec<'a> {
     title: Option<&'a str>,
     summary: Option<&'a str>,
     tags: &'a [&'a str],
-    /// Whole days from the window's `since`. NEGATIVE makes a carried-in session (its `begin`
-    /// predates the window, so `by-day` excludes it and `aggregates.carried-in` reports it).
+    /// Whole days from the window's `since`. NEGATIVE makes a session that began before the window
+    /// (its pre-`since` days land in `aggregates.day-coverage.out-of-window`).
     day_offset: i64,
     /// Hours the session ran.
     hours: i64,
@@ -501,12 +501,14 @@ fn session(spec: Spec<'_>, since: DateTime<Utc>, rng: &mut Rng, pricing: &Pricin
     let mut parent = counters(spec.models, rng);
     parent.by_skill = tagged(SKILLS, spec.index, &parent, rng);
     parent.by_mcp_tool = tagged(MCP_TOOLS, spec.index + 1, &parent, rng);
+    parent.by_day = spread(&parent.by_model, begin, end);
 
     let mut subagents: Vec<SubagentEfficiency> = Vec::new();
     let mut aggregate = parent.clone();
     for (i, (agent_type, scale)) in spec.subagents.iter().enumerate() {
         let sub_models: Vec<(&str, u64)> = spec.models.iter().map(|(m, _)| (*m, *scale)).collect();
-        let raw = counters(&sub_models, rng);
+        let mut raw = counters(&sub_models, rng);
+        raw.by_day = spread(&raw.by_model, begin, end);
         aggregate.merge(&raw);
         subagents.push(SubagentEfficiency {
             agent_id: format!("agent_{}", rng.hex(10)),
@@ -536,6 +538,66 @@ fn session(spec: Spec<'_>, since: DateTime<Utc>, rng: &mut Rng, pricing: &Pricin
         },
         outcomes: spec.outcomes,
     }
+}
+
+/// A scope's per-model tokens bucketed across the UTC days `[begin, end]` touches, in proportion to
+/// the seconds of the session on each day, so a session running past midnight spends on both days
+/// as a real one would. Every field splits exactly (the last day takes the floor remainder), so the
+/// buckets sum to `by_model`, the invariant `efficiency::fold` guarantees. No rng draw, so adding
+/// buckets moved nothing else in a fixture.
+fn spread(
+    by_model: &BTreeMap<String, TokenTotals>,
+    begin: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> BTreeMap<NaiveDate, BTreeMap<String, TokenTotals>> {
+    let mut days: Vec<(NaiveDate, i64)> = Vec::new();
+    let mut at = begin;
+    while at < end {
+        let next_midnight = Utc.from_utc_datetime(
+            &(at.date_naive() + chrono::Duration::days(1))
+                .and_hms_opt(0, 0, 0)
+                .unwrap_or_default(),
+        );
+        let stop = next_midnight.min(end);
+        days.push((at.date_naive(), (stop - at).num_seconds()));
+        at = stop;
+    }
+    if days.is_empty() {
+        days.push((begin.date_naive(), 1));
+    }
+    let whole: i64 = days.iter().map(|(_, secs)| secs).sum();
+    let split = |v: u64| -> Vec<u64> {
+        let mut parts: Vec<u64> = days.iter().map(|(_, secs)| v * (*secs as u64) / whole as u64).collect();
+        let short = v - parts.iter().sum::<u64>();
+        if let Some(last) = parts.last_mut() {
+            *last += short;
+        }
+        parts
+    };
+    let mut out: BTreeMap<NaiveDate, BTreeMap<String, TokenTotals>> = BTreeMap::new();
+    for (model, t) in by_model {
+        let fields = [
+            split(t.input),
+            split(t.output),
+            split(t.cache_5m_write),
+            split(t.cache_1h_write),
+            split(t.cache_read),
+        ];
+        for (i, (day, _)) in days.iter().enumerate() {
+            let part = TokenTotals {
+                input: fields[0][i],
+                output: fields[1][i],
+                cache_5m_write: fields[2][i],
+                cache_1h_write: fields[3][i],
+                cache_read: fields[4][i],
+                total: fields.iter().map(|f| f[i]).sum(),
+            };
+            if part.total > 0 {
+                out.entry(*day).or_default().insert(model.clone(), part);
+            }
+        }
+    }
+    out
 }
 
 /// One scope's raw counters for a `(model, scale)` list. The token shape is cache-heavy, which is
@@ -650,6 +712,54 @@ fn outcomes(repo: &str, index: usize, rng: &mut Rng) -> Outcomes {
     }
 }
 
+/// The medium fixture's outcome mix. `outcomes` always yields a committed session; every fourth
+/// session with outcomes is reshaped to `edited` (files, no commit or PR) and every seventh to
+/// `wrote-records` (Jira and Confluence writes, no file edit), so all four bands appear. Reshaping
+/// after the draw keeps the rng sequence, and so every other figure, where it was.
+fn medium_outcomes(mut o: Outcomes, index: usize) -> Outcomes {
+    if index % 7 == 3 {
+        o.commits.clear();
+        o.prs.clear();
+        o.files_edited = 0;
+        o.lines_written = 0;
+        o.lines_replaced = 0;
+        o.repos_touched.clear();
+        o.jira_writes = o.jira_writes.max(1);
+        o.confluence_writes = o.confluence_writes.max(1);
+    } else if index % 4 == 1 {
+        o.commits.clear();
+        o.prs.clear();
+    }
+    o
+}
+
+/// Make every ninth session a two-turn one, so the heavy-model-on-a-short-session rollup has rows,
+/// and flag a few sessions the way `efficiency::score` would, so the flag rollup has rows. The flag
+/// values are invented with the rest of the fixture; nothing re-scores them.
+fn medium_signals(session: &mut CollectedSession, index: usize) {
+    if index % 9 == 5 {
+        session.efficiency.aggregate.raw.turns = 2;
+    }
+    if index % 8 == 3 {
+        session
+            .efficiency
+            .flags
+            .push(efficiency::EfficiencyFlag::HighToolErrorRate {
+                observed: 0.12,
+                ceiling: 0.1,
+            });
+    }
+    if index % 10 == 7 {
+        session
+            .efficiency
+            .flags
+            .push(efficiency::EfficiencyFlag::LowCacheReadShare {
+                observed: 0.41,
+                floor: 0.6,
+            });
+    }
+}
+
 /// SMALL: one repo, no subagents, every session attributed by `git-origin`, a short window. The
 /// baseline shape -- if a check fails here it is not the fixture's complexity that broke it.
 fn small(rng: &mut Rng, pricing: &Pricing) -> (DateTime<Utc>, DateTime<Utc>, Vec<CollectedSession>) {
@@ -741,7 +851,7 @@ fn medium_sessions(since: DateTime<Utc>, count: usize, rng: &mut Rng, pricing: &
         } else {
             Vec::new()
         };
-        sessions.push(session(
+        let mut built = session(
             Spec {
                 index,
                 repo: work.repo,
@@ -752,15 +862,21 @@ fn medium_sessions(since: DateTime<Utc>, count: usize, rng: &mut Rng, pricing: &
                 summary: rng.chance(65).then_some(task.1),
                 tags: work.tags,
                 day_offset: rng.range(0, 28) as i64,
-                hours: rng.range(1, 6) as i64,
+                // Every sixth session runs past midnight into the next day or two, the multi-day
+                // shape that put half of a real month's spend on the wrong day before buckets.
+                hours: rng.range(1, 6) as i64 + if index % 6 == 2 { 20 + (index % 4) as i64 * 6 } else { 0 },
                 models: &models,
                 subagents: &subagents,
-                outcomes: rng.chance(70).then(|| outcomes(work.repo, index, rng)),
+                outcomes: rng
+                    .chance(70)
+                    .then(|| medium_outcomes(outcomes(work.repo, index, rng), index)),
             },
             since,
             rng,
             pricing,
-        ));
+        );
+        medium_signals(&mut built, index);
+        sessions.push(built);
     }
     sessions
 }
@@ -804,10 +920,13 @@ fn pathological(rng: &mut Rng, pricing: &Pricing) -> (DateTime<Utc>, DateTime<Ut
             pricing,
         ));
     }
-    // Carried in: `begin` predates `since`, `end` lands inside the window, so the M2 session-level
-    // window pulls them in whole and `aggregates.carried-in` is the only place they appear.
+    // Straddling the window's start: `begin` predates `since`, `end` lands inside it, so the M2
+    // session-level window pulls them in whole. Their buckets put the pre-`since` days in the
+    // out-of-window remainder and the rest on their days. The middle one has NO buckets (a blob
+    // written before buckets existed, its transcript since reaped), so it sits on its begin day
+    // and the chart footnote names it.
     for index in 0..3usize {
-        sessions.push(session(
+        let mut built = session(
             Spec {
                 index: 100 + index,
                 repo: work.repo,
@@ -824,7 +943,11 @@ fn pathological(rng: &mut Rng, pricing: &Pricing) -> (DateTime<Utc>, DateTime<Ut
             since,
             rng,
             pricing,
-        ));
+        );
+        if index == 1 {
+            built.efficiency.aggregate.raw.by_day.clear();
+        }
+        sessions.push(built);
     }
     (since, until, sessions)
 }

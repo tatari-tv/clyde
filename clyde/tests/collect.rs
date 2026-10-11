@@ -105,9 +105,9 @@ fn stdout_mode_streams_valid_json_and_message_to_stderr() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
 
-    // stdout is pure JSON: it must parse, be schema v2, expose the session, and NOT carry the note.
+    // stdout is pure JSON: it must parse, be schema v3, expose the session, and NOT carry the note.
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("stdout must be valid report JSON");
-    assert_eq!(value["schema-version"], 2);
+    assert_eq!(value["schema-version"], 3);
     assert_eq!(value["totals"]["sessions"], 1);
     assert!(value["sessions"].get(SID_A).is_some());
 

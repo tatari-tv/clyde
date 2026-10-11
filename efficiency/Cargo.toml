@@ -13,7 +13,7 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
-chrono.workspace = true
+chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
 claude-pricing = { version = "2.0.0", path = "../pricing" }
 common = { path = "../common" }
@@ -29,5 +29,6 @@ sessions = { path = "../sessions" }
 [dev-dependencies]
 common = { path = "../common", features = ["testkit"] }
 log = { workspace = true, features = ["std"] }
+rusqlite = { workspace = true, features = ["bundled"] }
 session = { path = "../session" }
 tempfile.workspace = true

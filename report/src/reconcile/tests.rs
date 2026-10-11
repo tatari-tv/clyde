@@ -36,7 +36,7 @@ fn report_with(since: &str, until: &str, spend_usd: f64, models: Vec<(&str, Opti
         totals_models.insert(name.to_string(), model_tokens(spend));
     }
     Report {
-        schema_version: 2,
+        schema_version: crate::report::SCHEMA_VERSION,
         generated: ts("2026-07-26T00:00:00Z"),
         host: "desk".into(),
         since: ts(since),

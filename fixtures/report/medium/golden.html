@@ -1,0 +1,1756 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Claude Enterprise Usage Report: Jordan Rivera, 2026-04-01 to 2026-04-30</title>
+<style>
+:root {
+  --bg: #fafaf7;
+  --surface: #ffffff;
+  --fg: #1f1f1c;
+  --muted: #66655e;
+  --faint: #8f8d84;
+  --border: #e3e1d9;
+  --hairline: #ecebe5;
+  --hover: #f3f2ec;
+  --code-fg: #3a3934;
+  --code-bg: #f0efe8;
+  --note-bg: #f3f2ec;
+  --warn-bg: #fbf0e6;
+  --warn-fg: #8a4513;
+  --accent-sessions: #2f6fe4;
+  --accent-spend: #e8643b;
+  --accent-cache: #0f8b8d;
+  --cat-1: #2f6fe4;
+  --cat-2: #e8643b;
+  --cat-3: #1e9e74;
+  --cat-4: #d8a01a;
+  --cat-5: #8b5cf6;
+  --cat-6: #a29f95;
+  --on-cat: #ffffff;
+  --track: #efeee8;
+  --serif: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161614;
+    --surface: #1e1e1b;
+    --fg: #ecebe5;
+    --muted: #a6a49b;
+    --faint: #7d7b73;
+    --border: #36352f;
+    --hairline: #2a2a26;
+    --hover: #24241f;
+    --code-fg: #dedcd3;
+    --code-bg: #2a2a25;
+    --note-bg: #1f1f1c;
+    --warn-bg: #2d2118;
+    --warn-fg: #f1b98a;
+    --accent-sessions: #6d9dff;
+    --accent-spend: #ff8a5e;
+    --accent-cache: #47c2c4;
+    --cat-1: #6d9dff;
+    --cat-2: #ff8a5e;
+    --cat-3: #3fc497;
+    --cat-4: #f0bd42;
+    --cat-5: #a98bfa;
+    --cat-6: #8a877e;
+    --on-cat: #121210;
+    --track: #262622;
+    color-scheme: dark;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 64px 24px 96px;
+}
+
+/* Masthead */
+
+h1 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 34px;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+
+.byline {
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+
+.strip {
+  display: grid;
+  grid-template-columns: 1.25fr 2fr 1fr 0.8fr 0.8fr 1fr;
+  gap: 1px;
+  margin: 24px 0 0;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.strip .cell {
+  background: var(--surface);
+  padding: 14px 16px 15px;
+  min-width: 0;
+}
+
+.strip dt {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 3px;
+}
+
+.strip dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.basis {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 14px 0 0;
+  max-width: none;
+}
+
+.note {
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  background: var(--note-bg);
+  border-left: 3px solid var(--border);
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Sections */
+
+.section {
+  margin-top: 72px;
+}
+
+h2 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 27px;
+  line-height: 1.2;
+  letter-spacing: -0.005em;
+  margin: 0 0 18px;
+}
+
+h3 {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+  margin: 36px 0 8px;
+}
+
+p {
+  margin: 0 0 14px;
+  max-width: 70ch;
+}
+
+.lead {
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.caption {
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.prose p {
+  font-size: 16.5px;
+  line-height: 1.7;
+}
+
+.prose ul,
+.prose ol {
+  max-width: 70ch;
+  padding-left: 22px;
+}
+
+.empty {
+  color: var(--faint);
+  font-size: 14px;
+  font-style: italic;
+}
+
+.warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  max-width: none;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  color: var(--code-fg);
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+td code,
+.repos code {
+  background: none;
+  padding: 0;
+}
+
+td code,
+p code,
+li code {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+/* Figure tiles */
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: 12px;
+  margin: 18px 0 18px;
+}
+
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px 13px;
+}
+
+.kpi-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-label {
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+/* Tables */
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 8px 0 10px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  text-align: left;
+}
+
+th {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+}
+
+th:first-child,
+td:first-child {
+  padding-left: 0;
+}
+
+th:last-child,
+td:last-child {
+  padding-right: 0;
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+tbody tr:hover td {
+  background: var(--hover);
+}
+
+tfoot td {
+  font-weight: 600;
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+}
+
+details.more {
+  margin: 0 0 10px;
+}
+
+details.more > summary {
+  display: block;
+  width: max-content;
+  margin-left: auto;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 12px;
+}
+
+details.more > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.more > summary:hover {
+  background: var(--hover);
+}
+
+details.more > summary:focus-visible {
+  outline: 2px solid var(--accent-sessions);
+  outline-offset: 2px;
+}
+
+.when-open {
+  display: none;
+}
+
+details[open] .when-open {
+  display: inline;
+}
+
+details[open] .when-closed {
+  display: none;
+}
+
+.topn:has(+ details[open]) {
+  display: none;
+}
+
+/* Lists */
+
+ul.facts,
+ul.repos {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  max-width: none;
+}
+
+ul.facts li,
+ul.repos li {
+  padding: 9px 0;
+  border-top: 1px solid var(--hairline);
+  font-size: 14.5px;
+}
+
+ul.facts li:last-child,
+ul.repos li:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+
+ul.prs a {
+  color: var(--accent-sessions);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+ul.prs a:hover,
+ul.prs a:focus-visible {
+  text-decoration: underline;
+}
+
+.figures {
+  color: var(--muted);
+}
+
+.org h3 {
+  margin-bottom: 2px;
+}
+
+.org .lead {
+  margin-bottom: 8px;
+}
+
+/* Charts */
+
+.chart {
+  margin: 32px 0 8px;
+}
+
+.chart.tone-spend {
+  --c: var(--accent-spend);
+}
+
+.chart.tone-sessions {
+  --c: var(--accent-sessions);
+}
+
+.chart.tone-cache {
+  --c: var(--accent-cache);
+}
+
+.chart figcaption {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0 0 12px;
+}
+
+.plot {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  column-gap: 12px;
+}
+
+.y-axis {
+  position: relative;
+  height: 200px;
+  font-size: 11.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.y-axis span {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.y-axis .y-top {
+  top: 3.3%;
+}
+
+.y-axis .y-mid {
+  top: 50%;
+}
+
+.y-axis .y-low {
+  top: 96.7%;
+}
+
+.plot svg {
+  display: block;
+  width: 100%;
+  height: 200px;
+  overflow: visible;
+}
+
+.grid line {
+  stroke: var(--hairline);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.grid line:last-child {
+  stroke: var(--border);
+}
+
+.area {
+  fill: var(--c);
+  fill-opacity: 0.1;
+}
+
+.line {
+  fill: none;
+  stroke: var(--c);
+  stroke-width: 1.75;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.hits rect {
+  fill: transparent;
+}
+
+.hits rect:hover {
+  fill: var(--c);
+  fill-opacity: 0.09;
+}
+
+.x-axis {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.x-axis span {
+  flex: 0 0 0;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.x-axis span:first-child,
+.x-axis span:last-child {
+  flex: 0 0 auto;
+}
+
+.chart-empty {
+  color: var(--faint);
+  font-size: 14px;
+  padding: 28px 0;
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  text-align: center;
+  max-width: none;
+}
+
+.tip {
+  position: fixed;
+  z-index: 10;
+  pointer-events: none;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 12.5px;
+  line-height: 1.3;
+  padding: 6px 9px;
+  border-radius: 6px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+}
+
+.tip[hidden] {
+  display: none;
+}
+
+/* Dashboard charts */
+
+/* Categorical order leads with blue, green and violet so the first categories never read as the
+   sessions / spend accents, which are blue and orange. */
+.tone-1 { --c: var(--cat-1); }
+.tone-2 { --c: var(--cat-3); }
+.tone-3 { --c: var(--cat-5); }
+.tone-4 { --c: var(--cat-4); }
+.tone-5 { --c: var(--cat-2); }
+.tone-6 { --c: var(--cat-6); }
+
+.fig-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+
+.fig-head figcaption {
+  margin: 0;
+}
+
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
+.sort[hidden] {
+  display: none;
+}
+
+.sort-label {
+  color: var(--muted);
+  padding: 0 6px 0 8px;
+}
+
+.sort button {
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.sort button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.sort button[aria-pressed="true"] {
+  color: var(--fg);
+  background: var(--code-bg);
+  font-weight: 600;
+}
+
+.sort button:focus-visible {
+  outline: 2px solid var(--accent-sessions);
+  outline-offset: 1px;
+}
+
+ol.pairs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-width: none;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  column-gap: 20px;
+  align-items: center;
+  padding: 7px 0;
+  border-radius: 6px;
+}
+
+.pair:hover {
+  background: var(--hover);
+}
+
+.pair.extra {
+  display: none;
+}
+
+.pairs-fig:has(details[open]) .pair.extra {
+  display: grid;
+}
+
+.pair-label {
+  font-size: 13.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  padding-left: 4px;
+}
+
+code.pair-label {
+  background: none;
+  padding: 0 0 0 4px;
+  white-space: normal;
+}
+
+.pair-head {
+  min-width: 0;
+}
+
+.pair-per {
+  display: block;
+  margin-top: 2px;
+  padding-left: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pair-bars {
+  display: grid;
+  row-gap: 3px;
+}
+
+.track {
+  --room: 8.5rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 15px;
+  font-size: 12px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar {
+  display: block;
+  flex: none;
+  height: 12px;
+  width: calc((100% - var(--room)) * var(--w) / 100);
+  border-radius: 3px;
+  background: var(--c, var(--fg));
+}
+
+.bar.sessions {
+  background: var(--accent-sessions);
+}
+
+.bar.spend {
+  background: var(--accent-spend);
+}
+
+.val {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.val b {
+  color: var(--fg);
+  font-weight: 650;
+  margin-right: 2px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  list-style: none;
+  padding: 0;
+  margin: 14px 0 0;
+  max-width: none;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.legend .key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.swatch.sessions {
+  background: var(--accent-sessions);
+}
+
+.swatch.spend {
+  background: var(--accent-spend);
+}
+
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.legend code {
+  background: none;
+  padding: 0;
+  color: var(--fg);
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--c);
+}
+
+details.pairs-more {
+  margin: 8px 0 0;
+}
+
+/* Treemap */
+
+.treemap {
+  position: relative;
+  aspect-ratio: 1000 / 480;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.treemap svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.tm rect {
+  fill: var(--c);
+  stroke: var(--bg);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.tm .shade-1 { fill-opacity: 1; }
+.tm .shade-2 { fill-opacity: 0.8; }
+.tm .shade-3 { fill-opacity: 0.64; }
+.tm .shade-4 { fill-opacity: 0.5; }
+
+.tm rect:hover {
+  fill-opacity: 0.9;
+  filter: brightness(1.08);
+}
+
+.tm rect.tm-org {
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 4;
+  pointer-events: none;
+}
+
+.tm-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tm-label {
+  position: absolute;
+  left: calc(var(--x) * 0.1%);
+  top: calc(var(--y) * 100% / 480);
+  width: calc(var(--w) * 0.1%);
+  height: calc(var(--h) * 100% / 480);
+  padding: 8px 10px;
+  overflow: hidden;
+  color: var(--on-cat);
+  font-size: 12.5px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+.tm-label b,
+.tm-label span {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tm-label b {
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.tm-label span {
+  opacity: 0.85;
+}
+
+/* Stacked bar */
+
+.stackbar {
+  position: relative;
+  height: 28px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--track);
+}
+
+.seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--x) * 1%);
+  width: calc(var(--w) * 1%);
+  background: var(--c);
+  border-right: 2px solid var(--bg);
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  color: var(--on-cat);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.seg:last-child {
+  border-right: 0;
+}
+
+.seg:hover {
+  filter: brightness(1.08);
+}
+
+/* Outcome bands */
+
+.band-fig .stackbar {
+  height: 14px;
+}
+
+.band-fig .seg {
+  padding: 0;
+  font-size: 0;
+}
+
+table.bands .rule {
+  display: block;
+  margin: 2px 0 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+table.bands td:first-child {
+  white-space: normal;
+}
+
+/* Waterfall */
+
+ol.steps {
+  list-style: none;
+  margin: 0 0 24px;
+  padding: 0;
+  max-width: none;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 13.5px;
+}
+
+.step .track {
+  --room: 6.5rem;
+  gap: 0;
+}
+
+.step .bar {
+  height: 22px;
+  margin-left: calc((100% - var(--room)) * var(--x) / 100);
+  margin-right: 10px;
+}
+
+.step.list .bar {
+  background: var(--cat-6);
+}
+
+.step.savings .bar {
+  background: var(--cat-3);
+}
+
+.step.premium .bar {
+  background: var(--warn-fg);
+}
+
+.step.spend .bar {
+  background: var(--accent-spend);
+}
+
+.step .val {
+  font-size: 13px;
+}
+
+.step-label {
+  color: var(--muted);
+}
+
+/* Histogram */
+
+.histo {
+  --plot: 180px;
+  position: relative;
+  max-width: calc(var(--n) * 84px);
+}
+
+.cols {
+  display: grid;
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+  column-gap: 6px;
+  align-items: end;
+  height: var(--plot);
+  border-bottom: 1px solid var(--border);
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  height: 100%;
+}
+
+.col:hover .colbar {
+  filter: brightness(1.1);
+}
+
+.count {
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 4px;
+}
+
+.colbar {
+  display: block;
+  height: calc((var(--plot) - 24px) * var(--h) / 100);
+  background: var(--accent-spend);
+  opacity: 0.9;
+  border-radius: 3px 3px 0 0;
+}
+
+.edges {
+  position: relative;
+  height: 20px;
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.edges span {
+  position: absolute;
+  left: calc(var(--i) / var(--n) * 100%);
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.edges span:first-child {
+  transform: none;
+}
+
+.edges span:last-child:not(:first-child) {
+  transform: translateX(-100%);
+}
+
+.marks {
+  display: grid;
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+  column-gap: 6px;
+  font-size: 11.5px;
+  color: var(--fg);
+  font-weight: 600;
+  text-align: center;
+}
+
+.marks span {
+  white-space: nowrap;
+}
+
+/* Daily spend by model: standing columns on the tallest day's scale. Their plot runs edge to
+   edge (no top margin), so the axis labels sit on the edges too. */
+
+.plot.columns .y-top {
+  top: 0;
+}
+
+.plot.columns .y-low {
+  top: 100%;
+}
+
+.daily-fig .blk {
+  fill: var(--c);
+}
+
+.daily-fig .hit {
+  fill: transparent;
+}
+
+.daily-fig .day:hover .hit {
+  fill: var(--fg);
+  fill-opacity: 0.05;
+}
+
+.daily-fig .day:hover .blk {
+  fill-opacity: 0.85;
+}
+
+.daily-fig .stack-legend {
+  margin-top: 12px;
+}
+
+.duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 36px;
+  align-items: start;
+}
+
+/* Half-width charts have room for the period's first and last dates only; the full-width chart
+   above them carries the in-between ones. The hidden labels keep their slots. */
+.duo .x-axis span:not(:first-child):not(:last-child) {
+  visibility: hidden;
+}
+
+/* Calendar */
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 232px;
+  column-gap: 36px;
+  align-items: start;
+}
+
+.cal-fig {
+  min-width: 0;
+}
+
+.cal {
+  max-width: 260px;
+}
+
+.cal-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  column-gap: calc(100% * 2 / 82);
+  font-size: 10.5px;
+  color: var(--faint);
+  text-align: center;
+  margin: 0 0 4px;
+}
+
+.cal svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.cal rect,
+.cal-legend i {
+  fill: var(--accent-spend);
+  background: var(--accent-spend);
+}
+
+.cal .l0,
+.cal-legend .l0 {
+  fill: var(--track);
+  background: var(--track);
+}
+
+.cal .l1 { fill-opacity: 0.3; }
+.cal .l2 { fill-opacity: 0.5; }
+.cal .l3 { fill-opacity: 0.75; }
+
+.cal-legend .l1 { opacity: 0.3; }
+.cal-legend .l2 { opacity: 0.5; }
+.cal-legend .l3 { opacity: 0.75; }
+
+.cal rect:hover {
+  stroke: var(--fg);
+  stroke-width: 0.6;
+}
+
+.cal-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.cal-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.cal-legend span:first-child {
+  margin-right: 4px;
+}
+
+.cal-legend span:last-child {
+  margin-left: 4px;
+}
+
+/* Footer */
+
+.colophon {
+  margin-top: 80px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+.colophon p {
+  max-width: none;
+}
+
+/* Narrow screens */
+
+@media (max-width: 720px) {
+  .strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  table {
+    font-size: 13.5px;
+  }
+
+  th,
+  td {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+
+@media (max-width: 600px) {
+  table.bands .rule {
+    display: none;
+  }
+
+  table.bands td,
+  table.bands th {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  table.bands {
+    table-layout: fixed;
+  }
+
+  table.bands th:nth-child(2) {
+    width: 21%;
+  }
+
+  table.bands th:nth-child(3) {
+    width: 22%;
+  }
+
+  table.bands th:nth-child(4) {
+    width: 16%;
+  }
+
+  table.bands code {
+    font-size: 11px;
+    padding: 1px 2px;
+    white-space: normal;
+  }
+
+
+  .page {
+    padding: 36px 16px 64px;
+  }
+
+  h1 {
+    font-size: 28px;
+  }
+
+  h2 {
+    font-size: 23px;
+  }
+
+  .section {
+    margin-top: 56px;
+  }
+
+  .strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .strip .cell:nth-child(-n + 2) {
+    grid-column: span 2;
+  }
+
+  th {
+    white-space: normal;
+    vertical-align: bottom;
+  }
+
+  td code {
+    font-size: 0.82em;
+  }
+
+  td:not(.num) {
+    min-width: 9.5em;
+  }
+
+  .strip .cell {
+    padding: 12px 14px;
+  }
+
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .kpi-value {
+    font-size: 19px;
+  }
+
+  .plot {
+    grid-template-columns: 56px minmax(0, 1fr);
+    column-gap: 8px;
+  }
+
+  .y-axis,
+  .plot svg {
+    height: 160px;
+  }
+
+  .pair {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 5px;
+  }
+
+  .track {
+    --room: 7.5rem;
+  }
+
+  .split,
+  .duo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cal {
+    max-width: 240px;
+  }
+
+  .treemap {
+    aspect-ratio: 1000 / 860;
+  }
+
+  .tm-label.wide-only {
+    display: none;
+  }
+
+  .step {
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    column-gap: 10px;
+  }
+
+  .cols,
+  .marks {
+    column-gap: 3px;
+  }
+
+  .edges span:nth-child(even):not(:last-child) {
+    visibility: hidden;
+  }
+
+  .x-axis span:nth-child(2),
+  .x-axis span:nth-child(4),
+  .x-axis span:nth-child(5) {
+    visibility: hidden;
+  }
+}
+
+</style>
+</head>
+<body>
+<main class="page">
+<header class="masthead">
+<h1>Claude Enterprise Usage Report</h1>
+<p class="byline">Staff Software Engineer · Platform Tooling</p>
+<dl class="strip">
+<div class="cell"><dt>Operator</dt><dd>Jordan Rivera</dd></div>
+<div class="cell"><dt>Period</dt><dd>2026-04-01 to 2026-04-30</dd></div>
+<div class="cell"><dt>Spend</dt><dd>$671.26</dd></div>
+<div class="cell"><dt>Sessions</dt><dd>44</dd></div>
+<div class="cell"><dt>Repos</dt><dd>7</dd></div>
+<div class="cell"><dt>Active days</dt><dd>26 of 30</dd></div>
+</dl>
+<p class="basis">Pricing basis: Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.</p>
+<aside class="note">window is session-level (M2): whole sessions whose catalog <code>modified</code> falls in [since, until]; not per-record like pre-v2 reports, so a boundary-straddling session&#39;s numbers can differ from a v1 report.</aside>
+</header>
+<section class="section">
+<h2>Executive Summary</h2>
+<p class="empty">No narrative was generated for this render.</p>
+</section>
+<section class="section">
+<h2>What the Money Produced</h2>
+<p class="lead">Every session falls in exactly one band, and the first rule that matches wins. Names say what was observed in the transcript, not what the session achieved.</p>
+<figure class="chart stack-fig band-fig"><figcaption>Session spend by what it produced</figcaption><div class="stackbar"><span class="seg tone-1" style="--x:0;--w:61" data-tip="committed: $409.66 (61%, 22 sessions)"><span>61%</span></span><span class="seg tone-5" style="--x:61;--w:13.8" data-tip="edited: $92.23 (14%, 8 sessions)"><span>14%</span></span><span class="seg tone-2" style="--x:74.8;--w:6" data-tip="wrote-records: $40.42 (6%, 5 sessions)"></span><span class="seg tone-6" style="--x:80.8;--w:19.2" data-tip="no-observed-outcome: $128.95 (19%, 9 sessions)"><span>19%</span></span></div></figure>
+<div class="table-wrap"><table class="bands">
+<thead><tr><th>Band</th><th class="num">Sessions</th><th class="num">Spend</th><th class="num">Share</th></tr></thead>
+<tbody>
+<tr><td><i class="swatch tone-1"></i> <code>committed</code><span class="rule">at least one commit or opened pull request</span></td><td class="num">22</td><td class="num">$409.66</td><td class="num">61%</td></tr>
+<tr><td><i class="swatch tone-5"></i> <code>edited</code><span class="rule">files edited, no commit or pull request</span></td><td class="num">8</td><td class="num">$92.23</td><td class="num">14%</td></tr>
+<tr><td><i class="swatch tone-2"></i> <code>wrote-records</code><span class="rule">a Confluence, Jira or Slack write, no file edit</span></td><td class="num">5</td><td class="num">$40.42</td><td class="num">6%</td></tr>
+<tr><td><i class="swatch tone-6"></i> <code>no-observed-outcome</code><span class="rule">none of the above</span></td><td class="num">9</td><td class="num">$128.95</td><td class="num">19%</td></tr>
+</tbody>
+<tfoot><tr><td>Total</td><td class="num">44</td><td class="num">$671.26</td><td></td></tr></tfoot>
+</table></div>
+<p class="caption"><code>no-observed-outcome</code> is not &quot;no result&quot;: a sample shows it is mostly <code>claude -p</code> hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to <code>outcome::extract</code>.</p>
+</section>
+<section class="section">
+<h2>Where It Went</h2>
+<p class="lead">Each row compares a share of the period&#39;s sessions with its share of spend. A spend bar longer than its sessions bar is work that cost more than its share of the sessions.</p>
+<figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By org</figcaption><div class="sort" role="group" hidden="" aria-label="Sort rows"><span class="sort-label">Sort by</span><button type="button" data-key="by-spend" aria-pressed="true">% spend</button><button type="button" data-key="by-sessions" aria-pressed="false">% sessions</button><button type="button" data-key="by-per-session" aria-pressed="false">Spend per session</button></div></div>
+<ol class="pairs">
+<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="northwind-media: 20 sessions (45%), $353.04 (53%), $17.65 per session"><div class="pair-head"><span class="pair-label">northwind-media</span><span class="pair-per">$17.65 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:86.4"></span><span class="val"><b>45%</b> 20 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>53%</b> $353.04</span></div></div></li>
+<li class="pair" data-by-spend="1" data-by-sessions="1" data-by-per-session="1" data-tip="openpipe-oss: 17 sessions (39%), $264.78 (39%), $15.58 per session"><div class="pair-head"><span class="pair-label">openpipe-oss</span><span class="pair-per">$15.58 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:73.5"></span><span class="val"><b>39%</b> 17 sessions</span></div><div class="track"><span class="bar spend" style="--w:75"></span><span class="val"><b>39%</b> $264.78</span></div></div></li>
+<li class="pair" data-by-spend="2" data-by-sessions="2" data-by-per-session="2" data-tip="jrivera: 7 sessions (16%), $53.44 (8%), $7.63 per session"><div class="pair-head"><span class="pair-label">jrivera</span><span class="pair-per">$7.63 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:30.2"></span><span class="val"><b>16%</b> 7 sessions</span></div><div class="track"><span class="bar spend" style="--w:15.1"></span><span class="val"><b>8%</b> $53.44</span></div></div></li>
+</ol>
+<div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
+<figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By repository</figcaption><div class="sort" role="group" hidden="" aria-label="Sort rows"><span class="sort-label">Sort by</span><button type="button" data-key="by-spend" aria-pressed="true">% spend</button><button type="button" data-key="by-sessions" aria-pressed="false">% sessions</button><button type="button" data-key="by-per-session" aria-pressed="false">Spend per session</button></div></div>
+<ol class="pairs">
+<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="2" data-tip="openpipe-oss/quill: 17 sessions (39%), $264.78 (39%), $15.58 per session"><div class="pair-head"><code class="pair-label">openpipe-oss/quill</code><span class="pair-per">$15.58 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:97.9"></span><span class="val"><b>39%</b> 17 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>39%</b> $264.78</span></div></div></li>
+<li class="pair" data-by-spend="1" data-by-sessions="1" data-by-per-session="0" data-tip="northwind-media/beacon: 7 sessions (16%), $165.84 (25%), $23.69 per session"><div class="pair-head"><code class="pair-label">northwind-media/beacon</code><span class="pair-per">$23.69 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:40.3"></span><span class="val"><b>16%</b> 7 sessions</span></div><div class="track"><span class="bar spend" style="--w:62.6"></span><span class="val"><b>25%</b> $165.84</span></div></div></li>
+<li class="pair" data-by-spend="2" data-by-sessions="4" data-by-per-session="1" data-tip="northwind-media/tideline: 4 sessions (9%), $83.29 (12%), $20.82 per session"><div class="pair-head"><code class="pair-label">northwind-media/tideline</code><span class="pair-per">$20.82 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:23"></span><span class="val"><b>9%</b> 4 sessions</span></div><div class="track"><span class="bar spend" style="--w:31.5"></span><span class="val"><b>12%</b> $83.29</span></div></div></li>
+<li class="pair" data-by-spend="3" data-by-sessions="2" data-by-per-session="5" data-tip="northwind-media/halyard: 6 sessions (14%), $58.42 (9%), $9.74 per session"><div class="pair-head"><code class="pair-label">northwind-media/halyard</code><span class="pair-per">$9.74 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:34.6"></span><span class="val"><b>14%</b> 6 sessions</span></div><div class="track"><span class="bar spend" style="--w:22.1"></span><span class="val"><b>9%</b> $58.42</span></div></div></li>
+<li class="pair" data-by-spend="4" data-by-sessions="3" data-by-per-session="4" data-tip="jrivera/driftwood: 5 sessions (11%), $49.28 (7%), $9.86 per session"><div class="pair-head"><code class="pair-label">jrivera/driftwood</code><span class="pair-per">$9.86 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:28.8"></span><span class="val"><b>11%</b> 5 sessions</span></div><div class="track"><span class="bar spend" style="--w:18.6"></span><span class="val"><b>7%</b> $49.28</span></div></div></li>
+<li class="pair" data-by-spend="5" data-by-sessions="5" data-by-per-session="3" data-tip="northwind-media/almanac: 3 sessions (7%), $45.49 (7%), $15.16 per session"><div class="pair-head"><code class="pair-label">northwind-media/almanac</code><span class="pair-per">$15.16 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:17.3"></span><span class="val"><b>7%</b> 3 sessions</span></div><div class="track"><span class="bar spend" style="--w:17.2"></span><span class="val"><b>7%</b> $45.49</span></div></div></li>
+<li class="pair" data-by-spend="6" data-by-sessions="6" data-by-per-session="6" data-tip="jrivera/sextant: 2 sessions (5%), $4.16 (1%), $2.08 per session"><div class="pair-head"><code class="pair-label">jrivera/sextant</code><span class="pair-per">$2.08 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:11.5"></span><span class="val"><b>5%</b> 2 sessions</span></div><div class="track"><span class="bar spend" style="--w:1.6"></span><span class="val"><b>1%</b> $4.16</span></div></div></li>
+</ol>
+<div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
+<figure class="chart treemap-fig"><figcaption>Spend by org and repository</figcaption><div class="treemap"><svg viewBox="0 0 1000 480" preserveAspectRatio="none" role="img" aria-label="Spend by org and repository"><g class="tm tone-1"><rect class="shade-1" x="0" y="0" width="247.1" height="480" data-tip="northwind-media/beacon: $165.84 (25%)"><title>northwind-media/beacon: $165.84 (25%)</title></rect><rect class="shade-2" x="247.1" y="0" width="278.8" height="213.6" data-tip="northwind-media/tideline: $83.29 (12%)"><title>northwind-media/tideline: $83.29 (12%)</title></rect><rect class="shade-3" x="247.1" y="213.6" width="156.7" height="266.4" data-tip="northwind-media/halyard: $58.42 (9%)"><title>northwind-media/halyard: $58.42 (9%)</title></rect><rect class="shade-4" x="403.8" y="213.6" width="122.1" height="266.4" data-tip="northwind-media/almanac: $45.49 (7%)"><title>northwind-media/almanac: $45.49 (7%)</title></rect><rect class="tm-org" x="0" y="0" width="525.9" height="480"/></g><g class="tm tone-2"><rect class="shade-1" x="525.9" y="0" width="474.1" height="399.4" data-tip="openpipe-oss/quill: $264.78 (39%)"><title>openpipe-oss/quill: $264.78 (39%)</title></rect><rect class="tm-org" x="525.9" y="0" width="474.1" height="399.4"/></g><g class="tm tone-3"><rect class="shade-1" x="525.9" y="399.4" width="437.2" height="80.6" data-tip="jrivera/driftwood: $49.28 (7%)"><title>jrivera/driftwood: $49.28 (7%)</title></rect><rect class="shade-2" x="963.1" y="399.4" width="36.9" height="80.6" data-tip="jrivera/sextant: $4.16 (1%)"><title>jrivera/sextant: $4.16 (1%)</title></rect><rect class="tm-org" x="525.9" y="399.4" width="474.1" height="80.6"/></g></svg><div class="tm-labels" aria-hidden="true"><span class="tm-label" style="--x:0;--y:0;--w:247.1;--h:480"><b>beacon</b><span>$165.84</span></span><span class="tm-label" style="--x:247.1;--y:0;--w:278.8;--h:213.6"><b>tideline</b><span>$83.29</span></span><span class="tm-label wide-only" style="--x:247.1;--y:213.6;--w:156.7;--h:266.4"><b>halyard</b><span>$58.42</span></span><span class="tm-label" style="--x:525.9;--y:0;--w:474.1;--h:399.4"><b>quill</b><span>$264.78</span></span><span class="tm-label" style="--x:525.9;--y:399.4;--w:437.2;--h:80.6"><b>driftwood</b><span>$49.28</span></span></div></div>
+<ul class="legend tm-legend"><li><i class="swatch tone-1"></i><code>northwind-media</code> <span class="figures">$353.04 · 53%</span></li><li><i class="swatch tone-2"></i><code>openpipe-oss</code> <span class="figures">$264.78 · 39%</span></li><li><i class="swatch tone-3"></i><code>jrivera</code> <span class="figures">$53.44 · 8%</span></li></ul></figure>
+</section>
+<section class="section">
+<h2>Quantified Output</h2>
+<p class="lead">These are observed tool invocations extracted from session transcripts, not estimates.</p>
+<div class="kpis">
+<div class="kpi"><div class="kpi-value">22</div><div class="kpi-label">Sessions producing commits</div></div>
+<div class="kpi"><div class="kpi-value">56</div><div class="kpi-label">Commits</div></div>
+<div class="kpi"><div class="kpi-value">20</div><div class="kpi-label">Pull requests opened</div></div>
+<div class="kpi"><div class="kpi-value">11</div><div class="kpi-label">Confluence pages written or updated</div></div>
+<div class="kpi"><div class="kpi-value">14</div><div class="kpi-label">Jira issues written or updated</div></div>
+<div class="kpi"><div class="kpi-value">20</div><div class="kpi-label">Slack messages sent</div></div>
+<div class="kpi"><div class="kpi-value">374</div><div class="kpi-label">Files edited</div></div>
+<div class="kpi"><div class="kpi-value">28,321</div><div class="kpi-label">Lines of file content written</div></div>
+<div class="kpi"><div class="kpi-value">7,500</div><div class="kpi-label">Lines of file content replaced</div></div>
+</div>
+<h3>By repository</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Repo</th><th class="num">Spend</th><th class="num">Commits</th><th class="num">PRs Opened</th><th class="num">Files Edited</th></tr></thead>
+<tbody>
+<tr><td><code>openpipe-oss/quill</code></td><td class="num">$264.78</td><td class="num">20</td><td class="num">9</td><td class="num">146</td></tr>
+<tr><td><code>northwind-media/beacon</code></td><td class="num">$165.84</td><td class="num">12</td><td class="num">2</td><td class="num">49</td></tr>
+<tr><td><code>northwind-media/tideline</code></td><td class="num">$83.29</td><td class="num">8</td><td class="num">4</td><td class="num">56</td></tr>
+<tr><td><code>northwind-media/halyard</code></td><td class="num">$58.42</td><td class="num">7</td><td class="num">4</td><td class="num">71</td></tr>
+<tr><td><code>jrivera/driftwood</code></td><td class="num">$49.28</td><td class="num">3</td><td class="num">0</td><td class="num">30</td></tr>
+<tr><td><code>northwind-media/almanac</code></td><td class="num">$45.49</td><td class="num">6</td><td class="num">1</td><td class="num">22</td></tr>
+</tbody>
+</table></div>
+<h3>Opened pull requests</h3>
+<ul class="facts prs">
+<li><code>openpipe-oss/quill</code> <a href="https://github.com/openpipe-oss/quill/pull/112" target="_blank" rel="noopener noreferrer">#112</a> <a href="https://github.com/openpipe-oss/quill/pull/113" target="_blank" rel="noopener noreferrer">#113</a> <a href="https://github.com/openpipe-oss/quill/pull/136" target="_blank" rel="noopener noreferrer">#136</a> <a href="https://github.com/openpipe-oss/quill/pull/137" target="_blank" rel="noopener noreferrer">#137</a> <a href="https://github.com/openpipe-oss/quill/pull/169" target="_blank" rel="noopener noreferrer">#169</a> <a href="https://github.com/openpipe-oss/quill/pull/170" target="_blank" rel="noopener noreferrer">#170</a> <a href="https://github.com/openpipe-oss/quill/pull/217" target="_blank" rel="noopener noreferrer">#217</a> <a href="https://github.com/openpipe-oss/quill/pull/218" target="_blank" rel="noopener noreferrer">#218</a> <a href="https://github.com/openpipe-oss/quill/pull/220" target="_blank" rel="noopener noreferrer">#220</a></li>
+<li><code>northwind-media/halyard</code> <a href="https://github.com/northwind-media/halyard/pull/124" target="_blank" rel="noopener noreferrer">#124</a> <a href="https://github.com/northwind-media/halyard/pull/157" target="_blank" rel="noopener noreferrer">#157</a> <a href="https://github.com/northwind-media/halyard/pull/158" target="_blank" rel="noopener noreferrer">#158</a> <a href="https://github.com/northwind-media/halyard/pull/178" target="_blank" rel="noopener noreferrer">#178</a></li>
+<li><code>northwind-media/tideline</code> <a href="https://github.com/northwind-media/tideline/pull/166" target="_blank" rel="noopener noreferrer">#166</a> <a href="https://github.com/northwind-media/tideline/pull/167" target="_blank" rel="noopener noreferrer">#167</a> <a href="https://github.com/northwind-media/tideline/pull/190" target="_blank" rel="noopener noreferrer">#190</a> <a href="https://github.com/northwind-media/tideline/pull/205" target="_blank" rel="noopener noreferrer">#205</a></li>
+<li><code>northwind-media/beacon</code> <a href="https://github.com/northwind-media/beacon/pull/118" target="_blank" rel="noopener noreferrer">#118</a> <a href="https://github.com/northwind-media/beacon/pull/119" target="_blank" rel="noopener noreferrer">#119</a></li>
+<li><code>northwind-media/almanac</code> <a href="https://github.com/northwind-media/almanac/pull/226" target="_blank" rel="noopener noreferrer">#226</a></li>
+</ul>
+<h3>Unit costs</h3>
+<ul class="facts">
+<li>A ratio of $11.99 of period spend per observed commit.</li>
+<li>A ratio of $33.56 of period spend per pull request opened.</li>
+<li>A ratio of $25.82 of period spend per active day.</li>
+<li>A ratio of $15.26 of period spend per session (the mean).</li>
+<li>Median session spend was $12.71; the 90th percentile was $28.43.</li>
+</ul>
+</section>
+<section class="section">
+<h2>Spend Over Time</h2>
+<p class="lead">Daily figures are whole UTC days: each session&#39;s spend sits on the days its turns ran, not the day it began.</p>
+<div class="split"><figure class="chart daily-fig"><figcaption>Daily spend by model</figcaption><div class="plot columns"><div class="y-axis" aria-hidden="true"><span class="y-top">$78.84</span><span class="y-mid">$39.42</span><span class="y-low">$0.00</span></div><svg viewBox="0 0 1000 1000" preserveAspectRatio="none" role="img" aria-label="Daily spend by model"><g class="grid"><line x1="0" x2="1000" y1="0" y2="0"/><line x1="0" x2="1000" y1="500" y2="500"/><line x1="0" x2="1000" y1="1000" y2="1000"/></g><g class="day" data-tip="2026-04-01: $11.80 (claude-opus-4-7 $6.64, claude-sonnet-4-6 $5.16)"><title>2026-04-01: $11.80 (claude-opus-4-7 $6.64, claude-sonnet-4-6 $5.16)</title><rect class="hit" x="4" y="0" width="25" height="1000"/><rect class="blk tone-1" x="4" y="916" width="25" height="84"/><rect class="blk tone-2" x="4" y="850" width="25" height="66"/></g><g class="day" data-tip="2026-04-02: $34.25 (claude-opus-4-7 $6.63, claude-sonnet-4-6 $24.72, claude-haiku-4-5 $2.90)"><title>2026-04-02: $34.25 (claude-opus-4-7 $6.63, claude-sonnet-4-6 $24.72, claude-haiku-4-5 $2.90)</title><rect class="hit" x="37" y="0" width="26" height="1000"/><rect class="blk tone-1" x="37" y="916" width="26" height="84"/><rect class="blk tone-2" x="37" y="602" width="26" height="314"/><rect class="blk tone-3" x="37" y="566" width="26" height="36"/></g><g class="day" data-tip="2026-04-03: $6.08 (claude-sonnet-4-6 $4.69, claude-haiku-4-5 $1.39)"><title>2026-04-03: $6.08 (claude-sonnet-4-6 $4.69, claude-haiku-4-5 $1.39)</title><rect class="hit" x="71" y="0" width="25" height="1000"/><rect class="blk tone-2" x="71" y="941" width="25" height="59"/><rect class="blk tone-3" x="71" y="923" width="25" height="18"/></g><g class="day" data-tip="2026-04-04: $50.94 (claude-opus-4-7 $40.49, claude-sonnet-4-6 $10.45)"><title>2026-04-04: $50.94 (claude-opus-4-7 $40.49, claude-sonnet-4-6 $10.45)</title><rect class="hit" x="104" y="0" width="25" height="1000"/><rect class="blk tone-1" x="104" y="486" width="25" height="514"/><rect class="blk tone-2" x="104" y="354" width="25" height="132"/></g><g class="day" data-tip="2026-04-05: $15.37 (claude-sonnet-4-6 $15.37)"><title>2026-04-05: $15.37 (claude-sonnet-4-6 $15.37)</title><rect class="hit" x="137" y="0" width="26" height="1000"/><rect class="blk tone-2" x="137" y="805" width="26" height="195"/></g><g class="day" data-tip="2026-04-06: $42.73 (claude-opus-4-7 $32.53, claude-sonnet-4-6 $8.59, claude-haiku-4-5 $1.61)"><title>2026-04-06: $42.73 (claude-opus-4-7 $32.53, claude-sonnet-4-6 $8.59, claude-haiku-4-5 $1.61)</title><rect class="hit" x="171" y="0" width="25" height="1000"/><rect class="blk tone-1" x="171" y="587" width="25" height="413"/><rect class="blk tone-2" x="171" y="478" width="25" height="109"/><rect class="blk tone-3" x="171" y="458" width="25" height="20"/></g><g class="day" data-tip="2026-04-07: $17.51 (claude-opus-4-7 $7.57, claude-sonnet-4-6 $8.52, claude-haiku-4-5 $1.42)"><title>2026-04-07: $17.51 (claude-opus-4-7 $7.57, claude-sonnet-4-6 $8.52, claude-haiku-4-5 $1.42)</title><rect class="hit" x="204" y="0" width="25" height="1000"/><rect class="blk tone-1" x="204" y="904" width="25" height="96"/><rect class="blk tone-2" x="204" y="796" width="25" height="108"/><rect class="blk tone-3" x="204" y="778" width="25" height="18"/></g><g class="day" data-tip="2026-04-08: $10.69 (claude-opus-4-7 $7.57, claude-sonnet-4-6 $1.74, claude-haiku-4-5 $1.38)"><title>2026-04-08: $10.69 (claude-opus-4-7 $7.57, claude-sonnet-4-6 $1.74, claude-haiku-4-5 $1.38)</title><rect class="hit" x="237" y="0" width="26" height="1000"/><rect class="blk tone-1" x="237" y="904" width="26" height="96"/><rect class="blk tone-2" x="237" y="882" width="26" height="22"/><rect class="blk tone-3" x="237" y="864" width="26" height="18"/></g><g class="day" data-tip="2026-04-09: $17.04 (claude-opus-4-7 $15.88, claude-haiku-4-5 $1.16)"><title>2026-04-09: $17.04 (claude-opus-4-7 $15.88, claude-haiku-4-5 $1.16)</title><rect class="hit" x="271" y="0" width="25" height="1000"/><rect class="blk tone-1" x="271" y="799" width="25" height="201"/><rect class="blk tone-3" x="271" y="784" width="25" height="15"/></g><g class="day" data-tip="2026-04-10: $0.00"><title>2026-04-10: $0.00</title><rect class="hit" x="304" y="0" width="25" height="1000"/></g><g class="day" data-tip="2026-04-11: $20.98 (claude-sonnet-4-6 $20.98)"><title>2026-04-11: $20.98 (claude-sonnet-4-6 $20.98)</title><rect class="hit" x="337" y="0" width="26" height="1000"/><rect class="blk tone-2" x="337" y="734" width="26" height="266"/></g><g class="day" data-tip="2026-04-12: $15.94 (claude-opus-4-7 $11.78, claude-sonnet-4-6 $4.16)"><title>2026-04-12: $15.94 (claude-opus-4-7 $11.78, claude-sonnet-4-6 $4.16)</title><rect class="hit" x="371" y="0" width="25" height="1000"/><rect class="blk tone-1" x="371" y="851" width="25" height="149"/><rect class="blk tone-2" x="371" y="798" width="25" height="53"/></g><g class="day" data-tip="2026-04-13: $0.00"><title>2026-04-13: $0.00</title><rect class="hit" x="404" y="0" width="25" height="1000"/></g><g class="day" data-tip="2026-04-14: $4.07 (claude-haiku-4-5 $4.07)"><title>2026-04-14: $4.07 (claude-haiku-4-5 $4.07)</title><rect class="hit" x="437" y="0" width="26" height="1000"/><rect class="blk tone-3" x="437" y="948" width="26" height="52"/></g><g class="day" data-tip="2026-04-15: $1.26 (claude-haiku-4-5 $1.26)"><title>2026-04-15: $1.26 (claude-haiku-4-5 $1.26)</title><rect class="hit" x="471" y="0" width="25" height="1000"/><rect class="blk tone-3" x="471" y="984" width="25" height="16"/></g><g class="day" data-tip="2026-04-16: $32.27 (claude-opus-4-7 $32.27)"><title>2026-04-16: $32.27 (claude-opus-4-7 $32.27)</title><rect class="hit" x="504" y="0" width="25" height="1000"/><rect class="blk tone-1" x="504" y="591" width="25" height="409"/></g><g class="day" data-tip="2026-04-17: $44.28 (claude-opus-4-7 $20.87, claude-sonnet-4-6 $18.24, claude-haiku-4-5 $5.17)"><title>2026-04-17: $44.28 (claude-opus-4-7 $20.87, claude-sonnet-4-6 $18.24, claude-haiku-4-5 $5.17)</title><rect class="hit" x="537" y="0" width="26" height="1000"/><rect class="blk tone-1" x="537" y="735" width="26" height="265"/><rect class="blk tone-2" x="537" y="504" width="26" height="231"/><rect class="blk tone-3" x="537" y="438" width="26" height="66"/></g><g class="day" data-tip="2026-04-18: $44.68 (claude-opus-4-7 $34.04, claude-sonnet-4-6 $7.96, claude-haiku-4-5 $2.68)"><title>2026-04-18: $44.68 (claude-opus-4-7 $34.04, claude-sonnet-4-6 $7.96, claude-haiku-4-5 $2.68)</title><rect class="hit" x="571" y="0" width="25" height="1000"/><rect class="blk tone-1" x="571" y="568" width="25" height="432"/><rect class="blk tone-2" x="571" y="467" width="25" height="101"/><rect class="blk tone-3" x="571" y="433" width="25" height="34"/></g><g class="day" data-tip="2026-04-19: $12.12 (claude-sonnet-4-6 $12.12)"><title>2026-04-19: $12.12 (claude-sonnet-4-6 $12.12)</title><rect class="hit" x="604" y="0" width="25" height="1000"/><rect class="blk tone-2" x="604" y="846" width="25" height="154"/></g><g class="day" data-tip="2026-04-20: $15.90 (claude-sonnet-4-6 $14.47, claude-haiku-4-5 $1.43)"><title>2026-04-20: $15.90 (claude-sonnet-4-6 $14.47, claude-haiku-4-5 $1.43)</title><rect class="hit" x="637" y="0" width="26" height="1000"/><rect class="blk tone-2" x="637" y="816" width="26" height="184"/><rect class="blk tone-3" x="637" y="798" width="26" height="18"/></g><g class="day" data-tip="2026-04-21: $26.74 (claude-opus-4-7 $26.74)"><title>2026-04-21: $26.74 (claude-opus-4-7 $26.74)</title><rect class="hit" x="671" y="0" width="25" height="1000"/><rect class="blk tone-1" x="671" y="661" width="25" height="339"/></g><g class="day" data-tip="2026-04-22: $19.99 (claude-sonnet-4-6 $13.92, claude-haiku-4-5 $6.07)"><title>2026-04-22: $19.99 (claude-sonnet-4-6 $13.92, claude-haiku-4-5 $6.07)</title><rect class="hit" x="704" y="0" width="25" height="1000"/><rect class="blk tone-2" x="704" y="823" width="25" height="177"/><rect class="blk tone-3" x="704" y="746" width="25" height="77"/></g><g class="day" data-tip="2026-04-23: $78.84 (claude-opus-4-7 $50.63, claude-sonnet-4-6 $26.53, claude-haiku-4-5 $1.68)"><title>2026-04-23: $78.84 (claude-opus-4-7 $50.63, claude-sonnet-4-6 $26.53, claude-haiku-4-5 $1.68)</title><rect class="hit" x="737" y="0" width="26" height="1000"/><rect class="blk tone-1" x="737" y="358" width="26" height="642"/><rect class="blk tone-2" x="737" y="21" width="26" height="337"/><rect class="blk tone-3" x="737" y="0" width="26" height="21"/></g><g class="day" data-tip="2026-04-24: $12.71 (claude-opus-4-7 $12.71)"><title>2026-04-24: $12.71 (claude-opus-4-7 $12.71)</title><rect class="hit" x="771" y="0" width="25" height="1000"/><rect class="blk tone-1" x="771" y="839" width="25" height="161"/></g><g class="day" data-tip="2026-04-25: $0.00"><title>2026-04-25: $0.00</title><rect class="hit" x="804" y="0" width="25" height="1000"/></g><g class="day" data-tip="2026-04-26: $34.54 (claude-opus-4-7 $29.44, claude-sonnet-4-6 $2.31, claude-haiku-4-5 $2.79)"><title>2026-04-26: $34.54 (claude-opus-4-7 $29.44, claude-sonnet-4-6 $2.31, claude-haiku-4-5 $2.79)</title><rect class="hit" x="837" y="0" width="26" height="1000"/><rect class="blk tone-1" x="837" y="627" width="26" height="373"/><rect class="blk tone-2" x="837" y="597" width="26" height="30"/><rect class="blk tone-3" x="837" y="562" width="26" height="35"/></g><g class="day" data-tip="2026-04-27: $20.55 (claude-opus-4-7 $12.21, claude-sonnet-4-6 $8.34)"><title>2026-04-27: $20.55 (claude-opus-4-7 $12.21, claude-sonnet-4-6 $8.34)</title><rect class="hit" x="871" y="0" width="25" height="1000"/><rect class="blk tone-1" x="871" y="845" width="25" height="155"/><rect class="blk tone-2" x="871" y="739" width="25" height="106"/></g><g class="day" data-tip="2026-04-28: $32.13 (claude-opus-4-7 $14.77, claude-sonnet-4-6 $15.65, claude-haiku-4-5 $1.71)"><title>2026-04-28: $32.13 (claude-opus-4-7 $14.77, claude-sonnet-4-6 $15.65, claude-haiku-4-5 $1.71)</title><rect class="hit" x="904" y="0" width="25" height="1000"/><rect class="blk tone-1" x="904" y="813" width="25" height="187"/><rect class="blk tone-2" x="904" y="614" width="25" height="199"/><rect class="blk tone-3" x="904" y="592" width="25" height="22"/></g><g class="day" data-tip="2026-04-29: $47.85 (claude-opus-4-7 $23.74, claude-sonnet-4-6 $19.54, claude-haiku-4-5 $4.57)"><title>2026-04-29: $47.85 (claude-opus-4-7 $23.74, claude-sonnet-4-6 $19.54, claude-haiku-4-5 $4.57)</title><rect class="hit" x="937" y="0" width="26" height="1000"/><rect class="blk tone-1" x="937" y="699" width="26" height="301"/><rect class="blk tone-2" x="937" y="451" width="26" height="248"/><rect class="blk tone-3" x="937" y="393" width="26" height="58"/></g><g class="day" data-tip="2026-04-30: $0.00"><title>2026-04-30: $0.00</title><rect class="hit" x="971" y="0" width="25" height="1000"/></g></svg><div class="x-axis" aria-hidden="true"><span>2026-04-01</span><span>2026-04-07</span><span>2026-04-13</span><span>2026-04-18</span><span>2026-04-24</span><span>2026-04-30</span></div></div><ul class="legend stack-legend"><li><i class="swatch tone-1"></i><code>claude-opus-4-7</code></li><li><i class="swatch tone-2"></i><code>claude-sonnet-4-6</code></li><li><i class="swatch tone-3"></i><code>claude-haiku-4-5</code></li></ul></figure>
+<figure class="chart cal-fig"><figcaption>Spend by day</figcaption><div class="cal"><div class="cal-days" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><svg viewBox="0 0 82 58" role="img" aria-label="Spend by day"><rect class="l1" x="24" y="0" width="10" height="10" rx="2" data-tip="2026-04-01: $11.80"><title>2026-04-01: $11.80</title></rect><rect class="l2" x="36" y="0" width="10" height="10" rx="2" data-tip="2026-04-02: $34.25"><title>2026-04-02: $34.25</title></rect><rect class="l1" x="48" y="0" width="10" height="10" rx="2" data-tip="2026-04-03: $6.08"><title>2026-04-03: $6.08</title></rect><rect class="l3" x="60" y="0" width="10" height="10" rx="2" data-tip="2026-04-04: $50.94"><title>2026-04-04: $50.94</title></rect><rect class="l1" x="72" y="0" width="10" height="10" rx="2" data-tip="2026-04-05: $15.37"><title>2026-04-05: $15.37</title></rect><rect class="l3" x="0" y="12" width="10" height="10" rx="2" data-tip="2026-04-06: $42.73"><title>2026-04-06: $42.73</title></rect><rect class="l1" x="12" y="12" width="10" height="10" rx="2" data-tip="2026-04-07: $17.51"><title>2026-04-07: $17.51</title></rect><rect class="l1" x="24" y="12" width="10" height="10" rx="2" data-tip="2026-04-08: $10.69"><title>2026-04-08: $10.69</title></rect><rect class="l1" x="36" y="12" width="10" height="10" rx="2" data-tip="2026-04-09: $17.04"><title>2026-04-09: $17.04</title></rect><rect class="l0" x="48" y="12" width="10" height="10" rx="2" data-tip="2026-04-10: $0.00"><title>2026-04-10: $0.00</title></rect><rect class="l2" x="60" y="12" width="10" height="10" rx="2" data-tip="2026-04-11: $20.98"><title>2026-04-11: $20.98</title></rect><rect class="l1" x="72" y="12" width="10" height="10" rx="2" data-tip="2026-04-12: $15.94"><title>2026-04-12: $15.94</title></rect><rect class="l0" x="0" y="24" width="10" height="10" rx="2" data-tip="2026-04-13: $0.00"><title>2026-04-13: $0.00</title></rect><rect class="l1" x="12" y="24" width="10" height="10" rx="2" data-tip="2026-04-14: $4.07"><title>2026-04-14: $4.07</title></rect><rect class="l1" x="24" y="24" width="10" height="10" rx="2" data-tip="2026-04-15: $1.26"><title>2026-04-15: $1.26</title></rect><rect class="l2" x="36" y="24" width="10" height="10" rx="2" data-tip="2026-04-16: $32.27"><title>2026-04-16: $32.27</title></rect><rect class="l3" x="48" y="24" width="10" height="10" rx="2" data-tip="2026-04-17: $44.28"><title>2026-04-17: $44.28</title></rect><rect class="l3" x="60" y="24" width="10" height="10" rx="2" data-tip="2026-04-18: $44.68"><title>2026-04-18: $44.68</title></rect><rect class="l1" x="72" y="24" width="10" height="10" rx="2" data-tip="2026-04-19: $12.12"><title>2026-04-19: $12.12</title></rect><rect class="l1" x="0" y="36" width="10" height="10" rx="2" data-tip="2026-04-20: $15.90"><title>2026-04-20: $15.90</title></rect><rect class="l2" x="12" y="36" width="10" height="10" rx="2" data-tip="2026-04-21: $26.74"><title>2026-04-21: $26.74</title></rect><rect class="l2" x="24" y="36" width="10" height="10" rx="2" data-tip="2026-04-22: $19.99"><title>2026-04-22: $19.99</title></rect><rect class="l4" x="36" y="36" width="10" height="10" rx="2" data-tip="2026-04-23: $78.84"><title>2026-04-23: $78.84</title></rect><rect class="l1" x="48" y="36" width="10" height="10" rx="2" data-tip="2026-04-24: $12.71"><title>2026-04-24: $12.71</title></rect><rect class="l0" x="60" y="36" width="10" height="10" rx="2" data-tip="2026-04-25: $0.00"><title>2026-04-25: $0.00</title></rect><rect class="l2" x="72" y="36" width="10" height="10" rx="2" data-tip="2026-04-26: $34.54"><title>2026-04-26: $34.54</title></rect><rect class="l2" x="0" y="48" width="10" height="10" rx="2" data-tip="2026-04-27: $20.55"><title>2026-04-27: $20.55</title></rect><rect class="l2" x="12" y="48" width="10" height="10" rx="2" data-tip="2026-04-28: $32.13"><title>2026-04-28: $32.13</title></rect><rect class="l3" x="24" y="48" width="10" height="10" rx="2" data-tip="2026-04-29: $47.85"><title>2026-04-29: $47.85</title></rect><rect class="l0" x="36" y="48" width="10" height="10" rx="2" data-tip="2026-04-30: $0.00"><title>2026-04-30: $0.00</title></rect></svg><div class="cal-legend" aria-hidden="true"><span>Less</span><i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i><span>More</span></div></div></figure>
+</div>
+<div class="duo"><figure class="chart tone-cache"><figcaption>Daily cache-read share</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">100.0%</span><span class="y-mid">50.0%</span><span class="y-low">0.0%</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily cache-read share"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polyline class="line" points="0,32 34,34 69,29 103,37 138,30 172,33 207,32 241,30 276,34"/><polyline class="line" points="345,30 379,31"/><polyline class="line" points="448,30 483,32 517,34 552,31 586,30 621,31 655,32 690,34 724,29 759,32 793,33"/><polyline class="line" points="862,35 897,33 931,31 966,32"/><g class="hits"><rect x="0" y="0" width="17" height="100%" data-tip="2026-04-01: 92.0% of input read from cache"><title>2026-04-01: 92.0% of input read from cache</title></rect><rect x="17" y="0" width="34" height="100%" data-tip="2026-04-02: 91.4% of input read from cache"><title>2026-04-02: 91.4% of input read from cache</title></rect><rect x="51" y="0" width="35" height="100%" data-tip="2026-04-03: 93.0% of input read from cache"><title>2026-04-03: 93.0% of input read from cache</title></rect><rect x="86" y="0" width="34" height="100%" data-tip="2026-04-04: 90.4% of input read from cache"><title>2026-04-04: 90.4% of input read from cache</title></rect><rect x="120" y="0" width="35" height="100%" data-tip="2026-04-05: 93.0% of input read from cache"><title>2026-04-05: 93.0% of input read from cache</title></rect><rect x="155" y="0" width="34" height="100%" data-tip="2026-04-06: 91.9% of input read from cache"><title>2026-04-06: 91.9% of input read from cache</title></rect><rect x="189" y="0" width="35" height="100%" data-tip="2026-04-07: 92.3% of input read from cache"><title>2026-04-07: 92.3% of input read from cache</title></rect><rect x="224" y="0" width="34" height="100%" data-tip="2026-04-08: 92.9% of input read from cache"><title>2026-04-08: 92.9% of input read from cache</title></rect><rect x="258" y="0" width="35" height="100%" data-tip="2026-04-09: 91.5% of input read from cache"><title>2026-04-09: 91.5% of input read from cache</title></rect><rect x="293" y="0" width="34" height="100%" data-tip="2026-04-10: no tokens"><title>2026-04-10: no tokens</title></rect><rect x="327" y="0" width="35" height="100%" data-tip="2026-04-11: 92.7% of input read from cache"><title>2026-04-11: 92.7% of input read from cache</title></rect><rect x="362" y="0" width="34" height="100%" data-tip="2026-04-12: 92.4% of input read from cache"><title>2026-04-12: 92.4% of input read from cache</title></rect><rect x="396" y="0" width="35" height="100%" data-tip="2026-04-13: no tokens"><title>2026-04-13: no tokens</title></rect><rect x="431" y="0" width="34" height="100%" data-tip="2026-04-14: 92.7% of input read from cache"><title>2026-04-14: 92.7% of input read from cache</title></rect><rect x="465" y="0" width="35" height="100%" data-tip="2026-04-15: 92.0% of input read from cache"><title>2026-04-15: 92.0% of input read from cache</title></rect><rect x="500" y="0" width="34" height="100%" data-tip="2026-04-16: 91.5% of input read from cache"><title>2026-04-16: 91.5% of input read from cache</title></rect><rect x="534" y="0" width="35" height="100%" data-tip="2026-04-17: 92.6% of input read from cache"><title>2026-04-17: 92.6% of input read from cache</title></rect><rect x="569" y="0" width="34" height="100%" data-tip="2026-04-18: 92.9% of input read from cache"><title>2026-04-18: 92.9% of input read from cache</title></rect><rect x="603" y="0" width="35" height="100%" data-tip="2026-04-19: 92.4% of input read from cache"><title>2026-04-19: 92.4% of input read from cache</title></rect><rect x="638" y="0" width="34" height="100%" data-tip="2026-04-20: 92.1% of input read from cache"><title>2026-04-20: 92.1% of input read from cache</title></rect><rect x="672" y="0" width="35" height="100%" data-tip="2026-04-21: 91.5% of input read from cache"><title>2026-04-21: 91.5% of input read from cache</title></rect><rect x="707" y="0" width="34" height="100%" data-tip="2026-04-22: 93.2% of input read from cache"><title>2026-04-22: 93.2% of input read from cache</title></rect><rect x="741" y="0" width="35" height="100%" data-tip="2026-04-23: 92.2% of input read from cache"><title>2026-04-23: 92.2% of input read from cache</title></rect><rect x="776" y="0" width="34" height="100%" data-tip="2026-04-24: 91.6% of input read from cache"><title>2026-04-24: 91.6% of input read from cache</title></rect><rect x="810" y="0" width="35" height="100%" data-tip="2026-04-25: no tokens"><title>2026-04-25: no tokens</title></rect><rect x="845" y="0" width="34" height="100%" data-tip="2026-04-26: 91.2% of input read from cache"><title>2026-04-26: 91.2% of input read from cache</title></rect><rect x="879" y="0" width="35" height="100%" data-tip="2026-04-27: 91.6% of input read from cache"><title>2026-04-27: 91.6% of input read from cache</title></rect><rect x="914" y="0" width="34" height="100%" data-tip="2026-04-28: 92.3% of input read from cache"><title>2026-04-28: 92.3% of input read from cache</title></rect><rect x="948" y="0" width="35" height="100%" data-tip="2026-04-29: 92.2% of input read from cache"><title>2026-04-29: 92.2% of input read from cache</title></rect><rect x="983" y="0" width="17" height="100%" data-tip="2026-04-30: no tokens"><title>2026-04-30: no tokens</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-04-01</span><span>2026-04-07</span><span>2026-04-13</span><span>2026-04-18</span><span>2026-04-24</span><span>2026-04-30</span></div></div></figure>
+<figure class="chart tone-sessions"><figcaption>Daily active sessions</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">4</span><span class="y-mid">2</span><span class="y-low">0</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily active sessions"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polygon class="area" points="0,290 0,150 34,10 69,220 103,150 138,220 172,150 207,150 241,150 276,150 310,290 345,220 379,220 414,290 448,150 483,220 517,220 552,80 586,80 621,220 655,150 690,220 724,150 759,80 793,220 828,290 862,10 897,150 931,80 966,150 1000,290 1000,290"/><polyline class="line" points="0,150 34,10 69,220 103,150 138,220 172,150 207,150 241,150 276,150 310,290 345,220 379,220 414,290 448,150 483,220 517,220 552,80 586,80 621,220 655,150 690,220 724,150 759,80 793,220 828,290 862,10 897,150 931,80 966,150 1000,290"/><g class="hits"><rect x="0" y="0" width="17" height="100%" data-tip="2026-04-01: 2 sessions"><title>2026-04-01: 2 sessions</title></rect><rect x="17" y="0" width="34" height="100%" data-tip="2026-04-02: 4 sessions"><title>2026-04-02: 4 sessions</title></rect><rect x="51" y="0" width="35" height="100%" data-tip="2026-04-03: 1 session"><title>2026-04-03: 1 session</title></rect><rect x="86" y="0" width="34" height="100%" data-tip="2026-04-04: 2 sessions"><title>2026-04-04: 2 sessions</title></rect><rect x="120" y="0" width="35" height="100%" data-tip="2026-04-05: 1 session"><title>2026-04-05: 1 session</title></rect><rect x="155" y="0" width="34" height="100%" data-tip="2026-04-06: 2 sessions"><title>2026-04-06: 2 sessions</title></rect><rect x="189" y="0" width="35" height="100%" data-tip="2026-04-07: 2 sessions"><title>2026-04-07: 2 sessions</title></rect><rect x="224" y="0" width="34" height="100%" data-tip="2026-04-08: 2 sessions"><title>2026-04-08: 2 sessions</title></rect><rect x="258" y="0" width="35" height="100%" data-tip="2026-04-09: 2 sessions"><title>2026-04-09: 2 sessions</title></rect><rect x="293" y="0" width="34" height="100%" data-tip="2026-04-10: 0 sessions"><title>2026-04-10: 0 sessions</title></rect><rect x="327" y="0" width="35" height="100%" data-tip="2026-04-11: 1 session"><title>2026-04-11: 1 session</title></rect><rect x="362" y="0" width="34" height="100%" data-tip="2026-04-12: 1 session"><title>2026-04-12: 1 session</title></rect><rect x="396" y="0" width="35" height="100%" data-tip="2026-04-13: 0 sessions"><title>2026-04-13: 0 sessions</title></rect><rect x="431" y="0" width="34" height="100%" data-tip="2026-04-14: 2 sessions"><title>2026-04-14: 2 sessions</title></rect><rect x="465" y="0" width="35" height="100%" data-tip="2026-04-15: 1 session"><title>2026-04-15: 1 session</title></rect><rect x="500" y="0" width="34" height="100%" data-tip="2026-04-16: 1 session"><title>2026-04-16: 1 session</title></rect><rect x="534" y="0" width="35" height="100%" data-tip="2026-04-17: 3 sessions"><title>2026-04-17: 3 sessions</title></rect><rect x="569" y="0" width="34" height="100%" data-tip="2026-04-18: 3 sessions"><title>2026-04-18: 3 sessions</title></rect><rect x="603" y="0" width="35" height="100%" data-tip="2026-04-19: 1 session"><title>2026-04-19: 1 session</title></rect><rect x="638" y="0" width="34" height="100%" data-tip="2026-04-20: 2 sessions"><title>2026-04-20: 2 sessions</title></rect><rect x="672" y="0" width="35" height="100%" data-tip="2026-04-21: 1 session"><title>2026-04-21: 1 session</title></rect><rect x="707" y="0" width="34" height="100%" data-tip="2026-04-22: 2 sessions"><title>2026-04-22: 2 sessions</title></rect><rect x="741" y="0" width="35" height="100%" data-tip="2026-04-23: 3 sessions"><title>2026-04-23: 3 sessions</title></rect><rect x="776" y="0" width="34" height="100%" data-tip="2026-04-24: 1 session"><title>2026-04-24: 1 session</title></rect><rect x="810" y="0" width="35" height="100%" data-tip="2026-04-25: 0 sessions"><title>2026-04-25: 0 sessions</title></rect><rect x="845" y="0" width="34" height="100%" data-tip="2026-04-26: 4 sessions"><title>2026-04-26: 4 sessions</title></rect><rect x="879" y="0" width="35" height="100%" data-tip="2026-04-27: 2 sessions"><title>2026-04-27: 2 sessions</title></rect><rect x="914" y="0" width="34" height="100%" data-tip="2026-04-28: 3 sessions"><title>2026-04-28: 3 sessions</title></rect><rect x="948" y="0" width="35" height="100%" data-tip="2026-04-29: 2 sessions"><title>2026-04-29: 2 sessions</title></rect><rect x="983" y="0" width="17" height="100%" data-tip="2026-04-30: 0 sessions"><title>2026-04-30: 0 sessions</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-04-01</span><span>2026-04-07</span><span>2026-04-13</span><span>2026-04-18</span><span>2026-04-24</span><span>2026-04-30</span></div></div></figure>
+</div>
+<p class="caption">The daily series accounts for all $671.26 of the period&#39;s spend.</p>
+</section>
+<section class="section">
+<h2>The Efficiency Story</h2>
+<figure class="chart waterfall-fig"><figcaption>List price, cache savings, spend</figcaption><ol class="steps"><li class="step list"><span class="step-label">List price</span><div class="track"><span class="bar" style="--x:0;--w:100"></span><span class="val"><b>$3,201.81</b></span></div></li><li class="step savings"><span class="step-label">Cache savings</span><div class="track"><span class="bar" style="--x:21;--w:79"></span><span class="val"><b>$2,530.55</b></span></div></li><li class="step spend"><span class="step-label">Spend</span><div class="track"><span class="bar" style="--x:0;--w:21"></span><span class="val"><b>$671.26</b></span></div></li></ol></figure>
+<p>Cache read share was 92.2%: most of the context read each turn is re-read from cache at a fraction of the fresh-input rate, which is what makes sustained agentic sessions economical. Fresh input was 11.6M against 883.3M read from cache.</p>
+<p>At full list-price input rates the same tokens would model to $3,201.81, so cache reuse accounts for $2,530.55 (computed from published per-token rates).</p>
+<div class="kpis">
+<div class="kpi"><div class="kpi-value">4.2%</div><div class="kpi-label">Tool error rate</div></div>
+<div class="kpi"><div class="kpi-value">7.4%</div><div class="kpi-label">Share of cache writes paying the 1h premium</div></div>
+<div class="kpi"><div class="kpi-value">29</div><div class="kpi-label">Interrupts observed</div></div>
+<div class="kpi"><div class="kpi-value">6</div><div class="kpi-label">Context compactions observed</div></div>
+</div>
+<h3>By skill</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Skill</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td><code>schema-review</code></td><td class="num">24.1M</td><td class="num">$44.59</td></tr>
+<tr><td><code>release-notes</code></td><td class="num">14.8M</td><td class="num">$27.44</td></tr>
+</tbody>
+</table></div>
+<p class="caption">Coverage: $72.03 of $671.26 (10.7%), embedded-price basis</p>
+<h3>By MCP tool</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>MCP Tool</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td><code>tracker-search</code></td><td class="num">21.9M</td><td class="num">$40.51</td></tr>
+<tr><td><code>wiki-write</code></td><td class="num">9.6M</td><td class="num">$17.83</td></tr>
+</tbody>
+</table></div>
+<p class="caption">Coverage: $58.34 of $671.26 (8.7%), embedded-price basis</p>
+</section>
+<section class="section">
+<h2>Unobserved and Flagged Spend</h2>
+<p class="lead">Spend worth a second look. These rows overlap and are not a partition of the total.</p>
+<ul class="facts">
+<li>Sessions in <code>no-observed-outcome</code>: 9, spending $128.95 (19% of session spend).</li>
+<li>Heavy model on a short session: 2 sessions, $50.89. Heavy means a model name containing <code>opus</code>, <code>fable</code>; short means at most 3 turns.</li>
+</ul>
+<p class="caption">What <code>no-observed-outcome</code> does and does not mean is noted under the band table above.</p>
+<h3>Efficiency flags</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Flag</th><th class="num">Sessions</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td>Low cache-read share</td><td class="num">4</td><td class="num">$141.20</td></tr>
+<tr><td>High tool-error rate</td><td class="num">6</td><td class="num">$126.91</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="section">
+<h2>Cost Summary</h2>
+<figure class="chart stack-fig"><figcaption>Spend by model</figcaption><div class="stackbar"><span class="seg tone-1" style="--x:0;--w:57.6" data-tip="claude-opus-4-7: $386.51 (58%)"><span>58%</span></span><span class="seg tone-2" style="--x:57.6;--w:36.2" data-tip="claude-sonnet-4-6: $243.46 (36%)"><span>36%</span></span><span class="seg tone-3" style="--x:93.8;--w:6.2" data-tip="claude-haiku-4-5: $41.29 (6%)"></span></div><ul class="legend stack-legend"><li><i class="swatch tone-1"></i><code>claude-opus-4-7</code> <span class="figures">$386.51 · 58%</span></li><li><i class="swatch tone-2"></i><code>claude-sonnet-4-6</code> <span class="figures">$243.46 · 36%</span></li><li><i class="swatch tone-3"></i><code>claude-haiku-4-5</code> <span class="figures">$41.29 · 6%</span></li></ul></figure>
+<div class="table-wrap"><table>
+<thead><tr><th>Model</th><th class="num">Sessions Using</th><th class="num">Total Tokens</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td><code>claude-opus-4-7</code></td><td class="num">18</td><td class="num">346.4M</td><td class="num">$386.51</td></tr>
+<tr><td><code>claude-sonnet-4-6</code></td><td class="num">26</td><td class="num">403.7M</td><td class="num">$243.46</td></tr>
+<tr><td><code>claude-haiku-4-5</code></td><td class="num">18</td><td class="num">211.8M</td><td class="num">$41.29</td></tr>
+</tbody>
+<tfoot><tr><td>Total</td><td class="num">44</td><td class="num">961.9M</td><td class="num">$671.26</td></tr>
+</tfoot>
+</table></div>
+</section>
+<section class="section">
+<h2>Agent-Type Cost Attribution</h2>
+<p class="lead">Every dollar of the period&#39;s $671.26 spend lands in exactly one row below; <code>(main-session)</code> carried the most. The <code>(main-session)</code> row is work a session did itself rather than delegating.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Agent Type</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td><code>(main-session)</code></td><td class="num">639.6M</td><td class="num">$479.75</td></tr>
+<tr><td><code>phase-implementer</code></td><td class="num">133.4M</td><td class="num">$79.31</td></tr>
+<tr><td><code>doc-writer</code></td><td class="num">103.5M</td><td class="num">$61.78</td></tr>
+<tr><td><code>code-reviewer</code></td><td class="num">85.4M</td><td class="num">$50.42</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="section">
+<h2>Session Cost</h2>
+<p class="lead">Median session spend was $12.71; the 90th percentile was $28.43.</p>
+<figure class="chart histo-fig"><figcaption>Sessions by cost</figcaption><div class="histo" style="--n:6"><div class="cols"><div class="col" data-tip="$1 to $2.50: 7 sessions"><span class="count">7</span><span class="colbar" style="--h:38.9"></span></div><div class="col" data-tip="$2.50 to $5: 3 sessions"><span class="count">3</span><span class="colbar" style="--h:16.7"></span></div><div class="col" data-tip="$5 to $10: 7 sessions"><span class="count">7</span><span class="colbar" style="--h:38.9"></span></div><div class="col" data-tip="$10 to $25: 18 sessions"><span class="count">18</span><span class="colbar" style="--h:100"></span></div><div class="col" data-tip="$25 to $50: 8 sessions"><span class="count">8</span><span class="colbar" style="--h:44.4"></span></div><div class="col" data-tip="$50 to $100: 1 session"><span class="count">1</span><span class="colbar" style="--h:5.6"></span></div></div><div class="edges" aria-hidden="true"><span style="--i:0">$1</span><span style="--i:1">$2.50</span><span style="--i:2">$5</span><span style="--i:3">$10</span><span style="--i:4">$25</span><span style="--i:5">$50</span><span style="--i:6">$100</span></div><div class="marks"><span></span><span></span><span></span><span>median</span><span>90th pct</span><span></span></div></div></figure>
+<h3>Outlier sessions</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Session</th><th>Repo</th><th class="num">Tokens</th><th class="num">Spend</th><th>What it produced</th></tr></thead>
+<tbody>
+<tr><td>Wire the ingest retry backoff</td><td><code>northwind-media/beacon</code></td><td class="num">83.1M</td><td class="num">$72.45</td><td>4 commits, 5 files edited</td></tr>
+<tr><td>Document the quill plugin hooks</td><td><code>openpipe-oss/quill</code></td><td class="num">43.8M</td><td class="num">$41.12</td><td>4 commits, 2 PRs opened, 20 files edited</td></tr>
+<tr><td>3aed06b6</td><td><code>openpipe-oss/quill</code></td><td class="num">35.3M</td><td class="num">$34.04</td><td>3 commits, 9 files edited</td></tr>
+<tr><td>54f9d4bb</td><td><code>northwind-media/beacon</code></td><td class="num">29.4M</td><td class="num">$32.27</td><td>1 file edited</td></tr>
+<tr><td>Document the quill plugin hooks</td><td><code>openpipe-oss/quill</code></td><td class="num">27.9M</td><td class="num">$28.43</td><td>(no recorded output)</td></tr>
+<tr><td>18c8897c</td><td><code>northwind-media/tideline</code></td><td class="num">24.9M</td><td class="num">$26.74</td><td>4 commits, 1 PR opened, 16 files edited</td></tr>
+<tr><td>Add a rollback trigger to halyard</td><td><code>northwind-media/halyard</code></td><td class="num">66.6M</td><td class="num">$26.70</td><td>3 commits, 1 PR opened, 7 files edited</td></tr>
+<tr><td>Harden the quill release script</td><td><code>openpipe-oss/quill</code></td><td class="num">27.4M</td><td class="num">$26.36</td><td>(no recorded output)</td></tr>
+<tr><td>Add a dead-letter queue to the ingest path</td><td><code>northwind-media/beacon</code></td><td class="num">25.3M</td><td class="num">$25.96</td><td>12 files edited</td></tr>
+<tr><td>Repair the nightly almanac backfill</td><td><code>northwind-media/almanac</code></td><td class="num">23.7M</td><td class="num">$24.98</td><td>2 commits, 1 PR opened, 5 files edited</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="section">
+<h2>Reconciliation</h2>
+<p>This render&#39;s modeled total was reconciled against the Claude Enterprise Analytics cost export for jordan.rivera@northwind-media.example over this exact window; see the Reconciliation section for the billed figure and the scope note.</p>
+<div class="kpis">
+<div class="kpi"><div class="kpi-value">$910.76</div><div class="kpi-label">Billed</div></div>
+<div class="kpi"><div class="kpi-value">$671.26</div><div class="kpi-label">Modeled</div></div>
+<div class="kpi"><div class="kpi-value">+$239.50</div><div class="kpi-label">Unseen account spend</div></div>
+</div>
+<p>Unseen account spend is +$239.50, from anthropic enterprise analytics for jordan.rivera@northwind-media.example over 2026-04-01 to 2026-04-30.</p>
+<p class="lead">This billed figure is the Claude Enterprise Analytics cost report for jordan.rivera@northwind-media.example alone, covering everything that account was billed across every Claude product: claude.ai web, Cowork, other clients, and other hosts. clyde report covers only the Claude Code sessions in this catalog on this machine. Billed spend meeting or exceeding modeled spend is the expected relationship here; a positive unseen-account-spend figure is the same person&#39;s usage that clyde cannot see, never that clyde miscounted.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Model</th><th class="num">Billed</th><th class="num">Modeled</th><th class="num">Unseen Account Spend</th></tr></thead>
+<tbody>
+<tr><td><code>claude-opus-4-7</code></td><td class="num">$534.58</td><td class="num">$386.51</td><td class="num">+$148.07</td></tr>
+<tr><td><code>claude-sonnet-4-6</code></td><td class="num">$229.10</td><td class="num">$243.46</td><td class="num">-$14.36</td></tr>
+<tr><td><code>claude-opus-4-8</code></td><td class="num">$73.90</td><td class="num">$0.00</td><td class="num">+$73.90</td></tr>
+<tr><td><code>claude-haiku-4-5</code></td><td class="num">$73.18</td><td class="num">$41.29</td><td class="num">+$31.89</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="section">
+<h2>What This Funded</h2>
+<p class="empty">No narrative was generated for this render.</p>
+<div class="org">
+<h3>northwind-media</h3>
+<p class="lead">20 sessions across 4 repositories, 504.0M tokens, $353.04.</p>
+<ul class="repos">
+<li><code>northwind-media/beacon</code> <span class="figures">(7 sessions, 208.9M tokens, $165.84 spend)</span>: 12 commits, 2 PRs opened, 49 files edited</li>
+<li><code>northwind-media/tideline</code> <span class="figures">(4 sessions, 109.3M tokens, $83.29 spend)</span>: 8 commits, 4 PRs opened, 56 files edited</li>
+<li><code>northwind-media/halyard</code> <span class="figures">(6 sessions, 132.7M tokens, $58.42 spend)</span>: 7 commits, 4 PRs opened, 71 files edited</li>
+<li><code>northwind-media/almanac</code> <span class="figures">(3 sessions, 53.1M tokens, $45.49 spend)</span>: 6 commits, 1 PR opened, 22 files edited</li>
+</ul>
+</div>
+<div class="org">
+<h3>openpipe-oss</h3>
+<p class="lead">17 sessions across 1 repository, 370.0M tokens, $264.78.</p>
+<ul class="repos">
+<li><code>openpipe-oss/quill</code> <span class="figures">(17 sessions, 370.0M tokens, $264.78 spend)</span>: 20 commits, 9 PRs opened, 146 files edited</li>
+</ul>
+</div>
+<div class="org">
+<h3>jrivera</h3>
+<p class="lead">7 sessions across 2 repositories, 87.9M tokens, $53.44.</p>
+<ul class="repos">
+<li><code>jrivera/driftwood</code> <span class="figures">(5 sessions, 65.6M tokens, $49.28 spend)</span>: 3 commits, 30 files edited</li>
+<li><code>jrivera/sextant</code> <span class="figures">(2 sessions, 22.3M tokens, $4.16 spend)</span></li>
+</ul>
+</div>
+</section>
+<section class="section">
+<h2>Usage Profile</h2>
+<p class="empty">No narrative was generated for this render.</p>
+</section>
+<section class="section">
+<h2>Month over Month</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Figure</th><th class="num">2026-03-02 to 2026-03-31</th><th class="num">2026-04-01 to 2026-04-30</th></tr></thead>
+<tbody>
+<tr><td>Spend</td><td class="num">$523.14</td><td class="num">$671.26</td></tr>
+<tr><td>Sessions</td><td class="num">31</td><td class="num">44</td></tr>
+<tr><td>Total tokens</td><td class="num">765.8M</td><td class="num">961.9M</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="section">
+<h2>Conclusion</h2>
+<p class="empty">No narrative was generated for this render.</p>
+</section>
+<footer class="colophon"><p>Generated 2026-06-01. Every figure on this page was computed by clyde from the session catalog; the narrative sections are model-written and carry no figures of their own.</p></footer>
+
+</main>
+<script>
+// Sort toggles on the paired-bar charts. Optional: with JS off the controls stay hidden and the
+// rows keep their server order (by spend). Rows carry their rank under each key in a data- attribute,
+// so sorting only reorders existing nodes; rows past the figure's data-top fold behind its expander.
+(function () {
+  "use strict";
+  var figures = document.querySelectorAll("[data-sortable]");
+  Array.prototype.forEach.call(figures, function (figure) {
+    var control = figure.querySelector(".sort");
+    var list = figure.querySelector(".pairs");
+    if (!control || !list) {
+      return;
+    }
+    var top = Number(figure.getAttribute("data-top"));
+    var buttons = control.querySelectorAll("button");
+    control.hidden = false;
+    Array.prototype.forEach.call(buttons, function (button) {
+      button.addEventListener("click", function () {
+        var key = "data-" + button.getAttribute("data-key");
+        var rows = Array.prototype.slice.call(list.children);
+        rows.sort(function (a, b) {
+          return Number(a.getAttribute(key)) - Number(b.getAttribute(key));
+        });
+        rows.forEach(function (row, index) {
+          row.classList.toggle("extra", index >= top);
+          list.appendChild(row);
+        });
+        Array.prototype.forEach.call(buttons, function (other) {
+          other.setAttribute("aria-pressed", other === button ? "true" : "false");
+        });
+      });
+    });
+  });
+})();
+
+// Hover tooltips for any element carrying data-tip. Optional: with JS off, each chart column keeps
+// its SVG title as the browser's native tooltip, and every figure is already printed on the page.
+// This script builds no display text of its own; it only moves data-tip into the tooltip.
+(function () {
+  "use strict";
+  var targets = document.querySelectorAll("[data-tip]");
+  if (!targets.length) {
+    return;
+  }
+  // The custom tooltip replaces the native one, so the SVG titles would only show a second copy.
+  Array.prototype.forEach.call(targets, function (el) {
+    var title = el.querySelector("title");
+    if (title) {
+      el.removeChild(title);
+    }
+  });
+
+  var tip = document.createElement("div");
+  tip.className = "tip";
+  tip.setAttribute("role", "tooltip");
+  tip.hidden = true;
+  document.body.appendChild(tip);
+
+  var gap = 14;
+
+  function place(event) {
+    var box = tip.getBoundingClientRect();
+    var x = event.clientX + gap;
+    var y = event.clientY - box.height - gap;
+    if (x + box.width > window.innerWidth - gap) {
+      x = event.clientX - box.width - gap;
+    }
+    if (y < gap) {
+      y = event.clientY + gap;
+    }
+    tip.style.left = Math.max(gap, x) + "px";
+    tip.style.top = y + "px";
+  }
+
+  function owner(node) {
+    return node && node.closest ? node.closest("[data-tip]") : null;
+  }
+
+  document.addEventListener("pointerover", function (event) {
+    var el = owner(event.target);
+    if (!el) {
+      tip.hidden = true;
+      return;
+    }
+    tip.textContent = el.getAttribute("data-tip");
+    tip.hidden = false;
+    place(event);
+  });
+
+  document.addEventListener("pointermove", function (event) {
+    if (!tip.hidden) {
+      place(event);
+    }
+  });
+
+  document.addEventListener("pointerout", function (event) {
+    if (!owner(event.relatedTarget)) {
+      tip.hidden = true;
+    }
+  });
+})();
+
+</script>
+</body>
+</html>

@@ -115,6 +115,46 @@ fn a_stubbed_render_reproduces_every_committed_golden_byte_for_byte() {
     );
 }
 
+/// The HTML twin of the byte-for-byte golden check: a stubbed render of each fixture must equal its
+/// committed `golden.html`. The pathological fixture's golden is the zero-row case: every section
+/// with no data renders its empty state, never a NaN coordinate.
+#[test]
+fn a_stubbed_render_reproduces_every_committed_html_golden_byte_for_byte() {
+    let pricing = Pricing::embedded();
+    let mut stale: Vec<String> = Vec::new();
+    for fixture in fixtures() {
+        let report = render::load_report(&fixture.report, "fixture report").unwrap();
+        let rendered = render::for_eval(
+            &report,
+            &pricing,
+            fixture.spec.persona.as_ref(),
+            eval_opts(&fixture),
+            DEFAULT_OUTLIERS,
+            render::SlotSource::Stubbed,
+        )
+        .unwrap();
+        let golden = fixture
+            .golden_html
+            .as_ref()
+            .unwrap_or_else(|| panic!("fixture {} must commit golden.html", fixture.name));
+        assert!(!golden.contains("NaN"), "{}: golden.html carries NaN", fixture.name);
+        if &rendered.html != golden {
+            stale.push(format!(
+                "{}: rendered {} bytes, golden {} bytes",
+                fixture.name,
+                rendered.html.len(),
+                golden.len()
+            ));
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "{} html golden(s) no longer match a stubbed render:\n{}\nRegenerate with `report eval --write-goldens`.",
+        stale.len(),
+        stale.join("\n")
+    );
+}
+
 /// A stubbed render is DETERMINISTIC: two of them are identical. Without this, the byte-exact golden
 /// check above could pass by luck on one run and fail on the next.
 #[test]

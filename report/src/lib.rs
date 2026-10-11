@@ -4,6 +4,7 @@
 #![deny(unused_variables)]
 
 pub mod aggregate;
+pub(crate) mod bands;
 pub(crate) mod cents;
 pub mod chart;
 pub mod cli;
@@ -170,7 +171,7 @@ pub(crate) fn run_with_pricing(config: &Config, pricing: &Pricing) -> Result<Run
 
 /// Collect-once, from the canonical catalog. Reads the `[since, until]` window from `sessions.db`
 /// (session rows + the RAW `efficiency_json` / `outcome_json` blobs, one query), parses the blobs
-/// with `efficiency`'s types, and shapes a schema-v2 report. NO JSONL is scanned -- tokens, cost,
+/// with `efficiency`'s types, and shapes a schema-v3 report. NO JSONL is scanned -- tokens, cost,
 /// cache/tool/agent-type signals and outcomes are all catalog-sourced.
 ///
 /// Fails closed on an incomplete catalog: if any session in the window has a NULL `efficiency_json`

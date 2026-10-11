@@ -1,0 +1,1642 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Claude Enterprise Usage Report: Jordan Rivera, 2026-05-01 to 2026-05-20</title>
+<style>
+:root {
+  --bg: #fafaf7;
+  --surface: #ffffff;
+  --fg: #1f1f1c;
+  --muted: #66655e;
+  --faint: #8f8d84;
+  --border: #e3e1d9;
+  --hairline: #ecebe5;
+  --hover: #f3f2ec;
+  --code-fg: #3a3934;
+  --code-bg: #f0efe8;
+  --note-bg: #f3f2ec;
+  --warn-bg: #fbf0e6;
+  --warn-fg: #8a4513;
+  --accent-sessions: #2f6fe4;
+  --accent-spend: #e8643b;
+  --accent-cache: #0f8b8d;
+  --cat-1: #2f6fe4;
+  --cat-2: #e8643b;
+  --cat-3: #1e9e74;
+  --cat-4: #d8a01a;
+  --cat-5: #8b5cf6;
+  --cat-6: #a29f95;
+  --on-cat: #ffffff;
+  --track: #efeee8;
+  --serif: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161614;
+    --surface: #1e1e1b;
+    --fg: #ecebe5;
+    --muted: #a6a49b;
+    --faint: #7d7b73;
+    --border: #36352f;
+    --hairline: #2a2a26;
+    --hover: #24241f;
+    --code-fg: #dedcd3;
+    --code-bg: #2a2a25;
+    --note-bg: #1f1f1c;
+    --warn-bg: #2d2118;
+    --warn-fg: #f1b98a;
+    --accent-sessions: #6d9dff;
+    --accent-spend: #ff8a5e;
+    --accent-cache: #47c2c4;
+    --cat-1: #6d9dff;
+    --cat-2: #ff8a5e;
+    --cat-3: #3fc497;
+    --cat-4: #f0bd42;
+    --cat-5: #a98bfa;
+    --cat-6: #8a877e;
+    --on-cat: #121210;
+    --track: #262622;
+    color-scheme: dark;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 64px 24px 96px;
+}
+
+/* Masthead */
+
+h1 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 34px;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+
+.byline {
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+
+.strip {
+  display: grid;
+  grid-template-columns: 1.25fr 2fr 1fr 0.8fr 0.8fr 1fr;
+  gap: 1px;
+  margin: 24px 0 0;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.strip .cell {
+  background: var(--surface);
+  padding: 14px 16px 15px;
+  min-width: 0;
+}
+
+.strip dt {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 3px;
+}
+
+.strip dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.basis {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 14px 0 0;
+  max-width: none;
+}
+
+.note {
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  background: var(--note-bg);
+  border-left: 3px solid var(--border);
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Sections */
+
+.section {
+  margin-top: 72px;
+}
+
+h2 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 27px;
+  line-height: 1.2;
+  letter-spacing: -0.005em;
+  margin: 0 0 18px;
+}
+
+h3 {
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+  margin: 36px 0 8px;
+}
+
+p {
+  margin: 0 0 14px;
+  max-width: 70ch;
+}
+
+.lead {
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.caption {
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.prose p {
+  font-size: 16.5px;
+  line-height: 1.7;
+}
+
+.prose ul,
+.prose ol {
+  max-width: 70ch;
+  padding-left: 22px;
+}
+
+.empty {
+  color: var(--faint);
+  font-size: 14px;
+  font-style: italic;
+}
+
+.warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  max-width: none;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  color: var(--code-fg);
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+td code,
+.repos code {
+  background: none;
+  padding: 0;
+}
+
+td code,
+p code,
+li code {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+/* Figure tiles */
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: 12px;
+  margin: 18px 0 18px;
+}
+
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px 13px;
+}
+
+.kpi-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-label {
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+/* Tables */
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 8px 0 10px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  text-align: left;
+}
+
+th {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+}
+
+th:first-child,
+td:first-child {
+  padding-left: 0;
+}
+
+th:last-child,
+td:last-child {
+  padding-right: 0;
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+tbody tr:hover td {
+  background: var(--hover);
+}
+
+tfoot td {
+  font-weight: 600;
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+}
+
+details.more {
+  margin: 0 0 10px;
+}
+
+details.more > summary {
+  display: block;
+  width: max-content;
+  margin-left: auto;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 12px;
+}
+
+details.more > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.more > summary:hover {
+  background: var(--hover);
+}
+
+details.more > summary:focus-visible {
+  outline: 2px solid var(--accent-sessions);
+  outline-offset: 2px;
+}
+
+.when-open {
+  display: none;
+}
+
+details[open] .when-open {
+  display: inline;
+}
+
+details[open] .when-closed {
+  display: none;
+}
+
+.topn:has(+ details[open]) {
+  display: none;
+}
+
+/* Lists */
+
+ul.facts,
+ul.repos {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  max-width: none;
+}
+
+ul.facts li,
+ul.repos li {
+  padding: 9px 0;
+  border-top: 1px solid var(--hairline);
+  font-size: 14.5px;
+}
+
+ul.facts li:last-child,
+ul.repos li:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+
+ul.prs a {
+  color: var(--accent-sessions);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+ul.prs a:hover,
+ul.prs a:focus-visible {
+  text-decoration: underline;
+}
+
+.figures {
+  color: var(--muted);
+}
+
+.org h3 {
+  margin-bottom: 2px;
+}
+
+.org .lead {
+  margin-bottom: 8px;
+}
+
+/* Charts */
+
+.chart {
+  margin: 32px 0 8px;
+}
+
+.chart.tone-spend {
+  --c: var(--accent-spend);
+}
+
+.chart.tone-sessions {
+  --c: var(--accent-sessions);
+}
+
+.chart.tone-cache {
+  --c: var(--accent-cache);
+}
+
+.chart figcaption {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0 0 12px;
+}
+
+.plot {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  column-gap: 12px;
+}
+
+.y-axis {
+  position: relative;
+  height: 200px;
+  font-size: 11.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.y-axis span {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.y-axis .y-top {
+  top: 3.3%;
+}
+
+.y-axis .y-mid {
+  top: 50%;
+}
+
+.y-axis .y-low {
+  top: 96.7%;
+}
+
+.plot svg {
+  display: block;
+  width: 100%;
+  height: 200px;
+  overflow: visible;
+}
+
+.grid line {
+  stroke: var(--hairline);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.grid line:last-child {
+  stroke: var(--border);
+}
+
+.area {
+  fill: var(--c);
+  fill-opacity: 0.1;
+}
+
+.line {
+  fill: none;
+  stroke: var(--c);
+  stroke-width: 1.75;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.hits rect {
+  fill: transparent;
+}
+
+.hits rect:hover {
+  fill: var(--c);
+  fill-opacity: 0.09;
+}
+
+.x-axis {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.x-axis span {
+  flex: 0 0 0;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.x-axis span:first-child,
+.x-axis span:last-child {
+  flex: 0 0 auto;
+}
+
+.chart-empty {
+  color: var(--faint);
+  font-size: 14px;
+  padding: 28px 0;
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  text-align: center;
+  max-width: none;
+}
+
+.tip {
+  position: fixed;
+  z-index: 10;
+  pointer-events: none;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 12.5px;
+  line-height: 1.3;
+  padding: 6px 9px;
+  border-radius: 6px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+}
+
+.tip[hidden] {
+  display: none;
+}
+
+/* Dashboard charts */
+
+/* Categorical order leads with blue, green and violet so the first categories never read as the
+   sessions / spend accents, which are blue and orange. */
+.tone-1 { --c: var(--cat-1); }
+.tone-2 { --c: var(--cat-3); }
+.tone-3 { --c: var(--cat-5); }
+.tone-4 { --c: var(--cat-4); }
+.tone-5 { --c: var(--cat-2); }
+.tone-6 { --c: var(--cat-6); }
+
+.fig-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+
+.fig-head figcaption {
+  margin: 0;
+}
+
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
+.sort[hidden] {
+  display: none;
+}
+
+.sort-label {
+  color: var(--muted);
+  padding: 0 6px 0 8px;
+}
+
+.sort button {
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.sort button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.sort button[aria-pressed="true"] {
+  color: var(--fg);
+  background: var(--code-bg);
+  font-weight: 600;
+}
+
+.sort button:focus-visible {
+  outline: 2px solid var(--accent-sessions);
+  outline-offset: 1px;
+}
+
+ol.pairs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-width: none;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  column-gap: 20px;
+  align-items: center;
+  padding: 7px 0;
+  border-radius: 6px;
+}
+
+.pair:hover {
+  background: var(--hover);
+}
+
+.pair.extra {
+  display: none;
+}
+
+.pairs-fig:has(details[open]) .pair.extra {
+  display: grid;
+}
+
+.pair-label {
+  font-size: 13.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  padding-left: 4px;
+}
+
+code.pair-label {
+  background: none;
+  padding: 0 0 0 4px;
+  white-space: normal;
+}
+
+.pair-head {
+  min-width: 0;
+}
+
+.pair-per {
+  display: block;
+  margin-top: 2px;
+  padding-left: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pair-bars {
+  display: grid;
+  row-gap: 3px;
+}
+
+.track {
+  --room: 8.5rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 15px;
+  font-size: 12px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar {
+  display: block;
+  flex: none;
+  height: 12px;
+  width: calc((100% - var(--room)) * var(--w) / 100);
+  border-radius: 3px;
+  background: var(--c, var(--fg));
+}
+
+.bar.sessions {
+  background: var(--accent-sessions);
+}
+
+.bar.spend {
+  background: var(--accent-spend);
+}
+
+.val {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.val b {
+  color: var(--fg);
+  font-weight: 650;
+  margin-right: 2px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  list-style: none;
+  padding: 0;
+  margin: 14px 0 0;
+  max-width: none;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.legend .key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.swatch.sessions {
+  background: var(--accent-sessions);
+}
+
+.swatch.spend {
+  background: var(--accent-spend);
+}
+
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.legend code {
+  background: none;
+  padding: 0;
+  color: var(--fg);
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--c);
+}
+
+details.pairs-more {
+  margin: 8px 0 0;
+}
+
+/* Treemap */
+
+.treemap {
+  position: relative;
+  aspect-ratio: 1000 / 480;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.treemap svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.tm rect {
+  fill: var(--c);
+  stroke: var(--bg);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.tm .shade-1 { fill-opacity: 1; }
+.tm .shade-2 { fill-opacity: 0.8; }
+.tm .shade-3 { fill-opacity: 0.64; }
+.tm .shade-4 { fill-opacity: 0.5; }
+
+.tm rect:hover {
+  fill-opacity: 0.9;
+  filter: brightness(1.08);
+}
+
+.tm rect.tm-org {
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 4;
+  pointer-events: none;
+}
+
+.tm-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tm-label {
+  position: absolute;
+  left: calc(var(--x) * 0.1%);
+  top: calc(var(--y) * 100% / 480);
+  width: calc(var(--w) * 0.1%);
+  height: calc(var(--h) * 100% / 480);
+  padding: 8px 10px;
+  overflow: hidden;
+  color: var(--on-cat);
+  font-size: 12.5px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+.tm-label b,
+.tm-label span {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tm-label b {
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.tm-label span {
+  opacity: 0.85;
+}
+
+/* Stacked bar */
+
+.stackbar {
+  position: relative;
+  height: 28px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--track);
+}
+
+.seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--x) * 1%);
+  width: calc(var(--w) * 1%);
+  background: var(--c);
+  border-right: 2px solid var(--bg);
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  color: var(--on-cat);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.seg:last-child {
+  border-right: 0;
+}
+
+.seg:hover {
+  filter: brightness(1.08);
+}
+
+/* Outcome bands */
+
+.band-fig .stackbar {
+  height: 14px;
+}
+
+.band-fig .seg {
+  padding: 0;
+  font-size: 0;
+}
+
+table.bands .rule {
+  display: block;
+  margin: 2px 0 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+table.bands td:first-child {
+  white-space: normal;
+}
+
+/* Waterfall */
+
+ol.steps {
+  list-style: none;
+  margin: 0 0 24px;
+  padding: 0;
+  max-width: none;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 13.5px;
+}
+
+.step .track {
+  --room: 6.5rem;
+  gap: 0;
+}
+
+.step .bar {
+  height: 22px;
+  margin-left: calc((100% - var(--room)) * var(--x) / 100);
+  margin-right: 10px;
+}
+
+.step.list .bar {
+  background: var(--cat-6);
+}
+
+.step.savings .bar {
+  background: var(--cat-3);
+}
+
+.step.premium .bar {
+  background: var(--warn-fg);
+}
+
+.step.spend .bar {
+  background: var(--accent-spend);
+}
+
+.step .val {
+  font-size: 13px;
+}
+
+.step-label {
+  color: var(--muted);
+}
+
+/* Histogram */
+
+.histo {
+  --plot: 180px;
+  position: relative;
+  max-width: calc(var(--n) * 84px);
+}
+
+.cols {
+  display: grid;
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+  column-gap: 6px;
+  align-items: end;
+  height: var(--plot);
+  border-bottom: 1px solid var(--border);
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  height: 100%;
+}
+
+.col:hover .colbar {
+  filter: brightness(1.1);
+}
+
+.count {
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 4px;
+}
+
+.colbar {
+  display: block;
+  height: calc((var(--plot) - 24px) * var(--h) / 100);
+  background: var(--accent-spend);
+  opacity: 0.9;
+  border-radius: 3px 3px 0 0;
+}
+
+.edges {
+  position: relative;
+  height: 20px;
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.edges span {
+  position: absolute;
+  left: calc(var(--i) / var(--n) * 100%);
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.edges span:first-child {
+  transform: none;
+}
+
+.edges span:last-child:not(:first-child) {
+  transform: translateX(-100%);
+}
+
+.marks {
+  display: grid;
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr));
+  column-gap: 6px;
+  font-size: 11.5px;
+  color: var(--fg);
+  font-weight: 600;
+  text-align: center;
+}
+
+.marks span {
+  white-space: nowrap;
+}
+
+/* Daily spend by model: standing columns on the tallest day's scale. Their plot runs edge to
+   edge (no top margin), so the axis labels sit on the edges too. */
+
+.plot.columns .y-top {
+  top: 0;
+}
+
+.plot.columns .y-low {
+  top: 100%;
+}
+
+.daily-fig .blk {
+  fill: var(--c);
+}
+
+.daily-fig .hit {
+  fill: transparent;
+}
+
+.daily-fig .day:hover .hit {
+  fill: var(--fg);
+  fill-opacity: 0.05;
+}
+
+.daily-fig .day:hover .blk {
+  fill-opacity: 0.85;
+}
+
+.daily-fig .stack-legend {
+  margin-top: 12px;
+}
+
+.duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 36px;
+  align-items: start;
+}
+
+/* Half-width charts have room for the period's first and last dates only; the full-width chart
+   above them carries the in-between ones. The hidden labels keep their slots. */
+.duo .x-axis span:not(:first-child):not(:last-child) {
+  visibility: hidden;
+}
+
+/* Calendar */
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 232px;
+  column-gap: 36px;
+  align-items: start;
+}
+
+.cal-fig {
+  min-width: 0;
+}
+
+.cal {
+  max-width: 260px;
+}
+
+.cal-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  column-gap: calc(100% * 2 / 82);
+  font-size: 10.5px;
+  color: var(--faint);
+  text-align: center;
+  margin: 0 0 4px;
+}
+
+.cal svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.cal rect,
+.cal-legend i {
+  fill: var(--accent-spend);
+  background: var(--accent-spend);
+}
+
+.cal .l0,
+.cal-legend .l0 {
+  fill: var(--track);
+  background: var(--track);
+}
+
+.cal .l1 { fill-opacity: 0.3; }
+.cal .l2 { fill-opacity: 0.5; }
+.cal .l3 { fill-opacity: 0.75; }
+
+.cal-legend .l1 { opacity: 0.3; }
+.cal-legend .l2 { opacity: 0.5; }
+.cal-legend .l3 { opacity: 0.75; }
+
+.cal rect:hover {
+  stroke: var(--fg);
+  stroke-width: 0.6;
+}
+
+.cal-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.cal-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.cal-legend span:first-child {
+  margin-right: 4px;
+}
+
+.cal-legend span:last-child {
+  margin-left: 4px;
+}
+
+/* Footer */
+
+.colophon {
+  margin-top: 80px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+.colophon p {
+  max-width: none;
+}
+
+/* Narrow screens */
+
+@media (max-width: 720px) {
+  .strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  table {
+    font-size: 13.5px;
+  }
+
+  th,
+  td {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+
+@media (max-width: 600px) {
+  table.bands .rule {
+    display: none;
+  }
+
+  table.bands td,
+  table.bands th {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  table.bands {
+    table-layout: fixed;
+  }
+
+  table.bands th:nth-child(2) {
+    width: 21%;
+  }
+
+  table.bands th:nth-child(3) {
+    width: 22%;
+  }
+
+  table.bands th:nth-child(4) {
+    width: 16%;
+  }
+
+  table.bands code {
+    font-size: 11px;
+    padding: 1px 2px;
+    white-space: normal;
+  }
+
+
+  .page {
+    padding: 36px 16px 64px;
+  }
+
+  h1 {
+    font-size: 28px;
+  }
+
+  h2 {
+    font-size: 23px;
+  }
+
+  .section {
+    margin-top: 56px;
+  }
+
+  .strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .strip .cell:nth-child(-n + 2) {
+    grid-column: span 2;
+  }
+
+  th {
+    white-space: normal;
+    vertical-align: bottom;
+  }
+
+  td code {
+    font-size: 0.82em;
+  }
+
+  td:not(.num) {
+    min-width: 9.5em;
+  }
+
+  .strip .cell {
+    padding: 12px 14px;
+  }
+
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .kpi-value {
+    font-size: 19px;
+  }
+
+  .plot {
+    grid-template-columns: 56px minmax(0, 1fr);
+    column-gap: 8px;
+  }
+
+  .y-axis,
+  .plot svg {
+    height: 160px;
+  }
+
+  .pair {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 5px;
+  }
+
+  .track {
+    --room: 7.5rem;
+  }
+
+  .split,
+  .duo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cal {
+    max-width: 240px;
+  }
+
+  .treemap {
+    aspect-ratio: 1000 / 860;
+  }
+
+  .tm-label.wide-only {
+    display: none;
+  }
+
+  .step {
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    column-gap: 10px;
+  }
+
+  .cols,
+  .marks {
+    column-gap: 3px;
+  }
+
+  .edges span:nth-child(even):not(:last-child) {
+    visibility: hidden;
+  }
+
+  .x-axis span:nth-child(2),
+  .x-axis span:nth-child(4),
+  .x-axis span:nth-child(5) {
+    visibility: hidden;
+  }
+}
+
+</style>
+</head>
+<body>
+<main class="page">
+<header class="masthead">
+<h1>Claude Enterprise Usage Report</h1>
+<p class="byline">Staff Software Engineer · Platform Tooling</p>
+<dl class="strip">
+<div class="cell"><dt>Operator</dt><dd>Jordan Rivera</dd></div>
+<div class="cell"><dt>Period</dt><dd>2026-05-01 to 2026-05-20</dd></div>
+<div class="cell"><dt>Spend</dt><dd>$49.47</dd></div>
+<div class="cell"><dt>Sessions</dt><dd>12</dd></div>
+<div class="cell"><dt>Repos</dt><dd>1</dd></div>
+<div class="cell"><dt>Active days</dt><dd>9 of 20</dd></div>
+</dl>
+<p class="basis">Pricing basis: Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.</p>
+<aside class="note">window is session-level (M2): whole sessions whose catalog <code>modified</code> falls in [since, until]; not per-record like pre-v2 reports, so a boundary-straddling session&#39;s numbers can differ from a v1 report.</aside>
+</header>
+<section class="section">
+<h2>Executive Summary</h2>
+<p class="empty">No narrative was generated for this render.</p>
+</section>
+<section class="section">
+<h2>What the Money Produced</h2>
+<p class="lead">Every session falls in exactly one band, and the first rule that matches wins. Names say what was observed in the transcript, not what the session achieved.</p>
+<figure class="chart stack-fig band-fig"><figcaption>Session spend by what it produced</figcaption><div class="stackbar"><span class="seg tone-1" style="--x:0;--w:0" data-tip="committed: $0.00 (0%, 0 sessions)"></span><span class="seg tone-5" style="--x:0;--w:0" data-tip="edited: $0.00 (0%, 0 sessions)"></span><span class="seg tone-2" style="--x:0;--w:0" data-tip="wrote-records: $0.00 (0%, 0 sessions)"></span><span class="seg tone-6" style="--x:0;--w:100" data-tip="no-observed-outcome: $49.47 (100%, 12 sessions)"><span>100%</span></span></div></figure>
+<div class="table-wrap"><table class="bands">
+<thead><tr><th>Band</th><th class="num">Sessions</th><th class="num">Spend</th><th class="num">Share</th></tr></thead>
+<tbody>
+<tr><td><i class="swatch tone-1"></i> <code>committed</code><span class="rule">at least one commit or opened pull request</span></td><td class="num">0</td><td class="num">$0.00</td><td class="num">0%</td></tr>
+<tr><td><i class="swatch tone-5"></i> <code>edited</code><span class="rule">files edited, no commit or pull request</span></td><td class="num">0</td><td class="num">$0.00</td><td class="num">0%</td></tr>
+<tr><td><i class="swatch tone-2"></i> <code>wrote-records</code><span class="rule">a Confluence, Jira or Slack write, no file edit</span></td><td class="num">0</td><td class="num">$0.00</td><td class="num">0%</td></tr>
+<tr><td><i class="swatch tone-6"></i> <code>no-observed-outcome</code><span class="rule">none of the above</span></td><td class="num">12</td><td class="num">$49.47</td><td class="num">100%</td></tr>
+</tbody>
+<tfoot><tr><td>Total</td><td class="num">12</td><td class="num">$49.47</td><td></td></tr></tfoot>
+</table></div>
+<p class="caption"><code>no-observed-outcome</code> is not &quot;no result&quot;: a sample shows it is mostly <code>claude -p</code> hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to <code>outcome::extract</code>.</p>
+</section>
+<section class="section">
+<h2>Where It Went</h2>
+<p class="lead">Each row compares a share of the period&#39;s sessions with its share of spend. A spend bar longer than its sessions bar is work that cost more than its share of the sessions.</p>
+<figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By repository</figcaption></div>
+<ol class="pairs">
+<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="jrivera/driftwood: 12 sessions (100%), $49.47 (100%), $4.12 per session"><div class="pair-head"><code class="pair-label">jrivera/driftwood</code><span class="pair-per">$4.12 per session</span></div><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 12 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $49.47</span></div></div></li>
+</ol>
+<div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
+</section>
+<section class="section">
+<h2>Spend Over Time</h2>
+<p class="lead">Daily figures are whole UTC days: each session&#39;s spend sits on the days its turns ran, not the day it began.</p>
+<div class="split"><figure class="chart daily-fig"><figcaption>Daily spend by model</figcaption><div class="plot columns"><div class="y-axis" aria-hidden="true"><span class="y-top">$5.83</span><span class="y-mid">$2.92</span><span class="y-low">$0.00</span></div><svg viewBox="0 0 1000 1000" preserveAspectRatio="none" role="img" aria-label="Daily spend by model"><g class="grid"><line x1="0" x2="1000" y1="0" y2="0"/><line x1="0" x2="1000" y1="500" y2="500"/><line x1="0" x2="1000" y1="1000" y2="1000"/></g><g class="day" data-tip="2026-05-01: $5.23 (claude-sonnet-4-6 $5.23)"><title>2026-05-01: $5.23 (claude-sonnet-4-6 $5.23)</title><rect class="hit" x="6" y="0" width="38" height="1000"/><rect class="blk tone-1" x="6" y="103" width="38" height="897"/></g><g class="day" data-tip="2026-05-02: $4.83 (claude-sonnet-4-6 $4.83)"><title>2026-05-02: $4.83 (claude-sonnet-4-6 $4.83)</title><rect class="hit" x="56" y="0" width="38" height="1000"/><rect class="blk tone-1" x="56" y="172" width="38" height="828"/></g><g class="day" data-tip="2026-05-03: $0.00"><title>2026-05-03: $0.00</title><rect class="hit" x="106" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-04: $0.00"><title>2026-05-04: $0.00</title><rect class="hit" x="156" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-05: $4.56 (claude-sonnet-4-6 $4.56)"><title>2026-05-05: $4.56 (claude-sonnet-4-6 $4.56)</title><rect class="hit" x="206" y="0" width="38" height="1000"/><rect class="blk tone-1" x="206" y="218" width="38" height="782"/></g><g class="day" data-tip="2026-05-06: $3.70 (claude-sonnet-4-6 $3.70)"><title>2026-05-06: $3.70 (claude-sonnet-4-6 $3.70)</title><rect class="hit" x="256" y="0" width="38" height="1000"/><rect class="blk tone-1" x="256" y="365" width="38" height="635"/></g><g class="day" data-tip="2026-05-07: $0.00"><title>2026-05-07: $0.00</title><rect class="hit" x="306" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-08: $0.00"><title>2026-05-08: $0.00</title><rect class="hit" x="356" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-09: $0.00"><title>2026-05-09: $0.00</title><rect class="hit" x="406" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-10: $0.00"><title>2026-05-10: $0.00</title><rect class="hit" x="456" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-11: $0.00"><title>2026-05-11: $0.00</title><rect class="hit" x="506" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-12: $0.00"><title>2026-05-12: $0.00</title><rect class="hit" x="556" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-13: $0.00"><title>2026-05-13: $0.00</title><rect class="hit" x="606" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-14: $0.00"><title>2026-05-14: $0.00</title><rect class="hit" x="656" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-15: $4.49 (claude-sonnet-4-6 $4.49)"><title>2026-05-15: $4.49 (claude-sonnet-4-6 $4.49)</title><rect class="hit" x="706" y="0" width="38" height="1000"/><rect class="blk tone-1" x="706" y="230" width="38" height="770"/></g><g class="day" data-tip="2026-05-16: $4.15 (claude-sonnet-4-6 $4.15)"><title>2026-05-16: $4.15 (claude-sonnet-4-6 $4.15)</title><rect class="hit" x="756" y="0" width="38" height="1000"/><rect class="blk tone-1" x="756" y="288" width="38" height="712"/></g><g class="day" data-tip="2026-05-17: $0.00"><title>2026-05-17: $0.00</title><rect class="hit" x="806" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-18: $5.83 (claude-sonnet-4-6 $5.83)"><title>2026-05-18: $5.83 (claude-sonnet-4-6 $5.83)</title><rect class="hit" x="856" y="0" width="38" height="1000"/><rect class="blk tone-1" x="856" y="0" width="38" height="1000"/></g><g class="day" data-tip="2026-05-19: $5.27 (claude-sonnet-4-6 $5.27)"><title>2026-05-19: $5.27 (claude-sonnet-4-6 $5.27)</title><rect class="hit" x="906" y="0" width="38" height="1000"/><rect class="blk tone-1" x="906" y="96" width="38" height="904"/></g><g class="day" data-tip="2026-05-20: $0.00"><title>2026-05-20: $0.00</title><rect class="hit" x="956" y="0" width="38" height="1000"/></g></svg><div class="x-axis" aria-hidden="true"><span>2026-05-01</span><span>2026-05-05</span><span>2026-05-09</span><span>2026-05-12</span><span>2026-05-16</span><span>2026-05-20</span></div></div><ul class="legend stack-legend"><li><i class="swatch tone-1"></i><code>claude-sonnet-4-6</code></li></ul></figure>
+<figure class="chart cal-fig"><figcaption>Spend by day</figcaption><div class="cal"><div class="cal-days" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><svg viewBox="0 0 82 46" role="img" aria-label="Spend by day"><rect class="l4" x="48" y="0" width="10" height="10" rx="2" data-tip="2026-05-01: $5.23"><title>2026-05-01: $5.23</title></rect><rect class="l4" x="60" y="0" width="10" height="10" rx="2" data-tip="2026-05-02: $4.83"><title>2026-05-02: $4.83</title></rect><rect class="l0" x="72" y="0" width="10" height="10" rx="2" data-tip="2026-05-03: $0.00"><title>2026-05-03: $0.00</title></rect><rect class="l0" x="0" y="12" width="10" height="10" rx="2" data-tip="2026-05-04: $0.00"><title>2026-05-04: $0.00</title></rect><rect class="l4" x="12" y="12" width="10" height="10" rx="2" data-tip="2026-05-05: $4.56"><title>2026-05-05: $4.56</title></rect><rect class="l3" x="24" y="12" width="10" height="10" rx="2" data-tip="2026-05-06: $3.70"><title>2026-05-06: $3.70</title></rect><rect class="l0" x="36" y="12" width="10" height="10" rx="2" data-tip="2026-05-07: $0.00"><title>2026-05-07: $0.00</title></rect><rect class="l0" x="48" y="12" width="10" height="10" rx="2" data-tip="2026-05-08: $0.00"><title>2026-05-08: $0.00</title></rect><rect class="l0" x="60" y="12" width="10" height="10" rx="2" data-tip="2026-05-09: $0.00"><title>2026-05-09: $0.00</title></rect><rect class="l0" x="72" y="12" width="10" height="10" rx="2" data-tip="2026-05-10: $0.00"><title>2026-05-10: $0.00</title></rect><rect class="l0" x="0" y="24" width="10" height="10" rx="2" data-tip="2026-05-11: $0.00"><title>2026-05-11: $0.00</title></rect><rect class="l0" x="12" y="24" width="10" height="10" rx="2" data-tip="2026-05-12: $0.00"><title>2026-05-12: $0.00</title></rect><rect class="l0" x="24" y="24" width="10" height="10" rx="2" data-tip="2026-05-13: $0.00"><title>2026-05-13: $0.00</title></rect><rect class="l0" x="36" y="24" width="10" height="10" rx="2" data-tip="2026-05-14: $0.00"><title>2026-05-14: $0.00</title></rect><rect class="l4" x="48" y="24" width="10" height="10" rx="2" data-tip="2026-05-15: $4.49"><title>2026-05-15: $4.49</title></rect><rect class="l3" x="60" y="24" width="10" height="10" rx="2" data-tip="2026-05-16: $4.15"><title>2026-05-16: $4.15</title></rect><rect class="l0" x="72" y="24" width="10" height="10" rx="2" data-tip="2026-05-17: $0.00"><title>2026-05-17: $0.00</title></rect><rect class="l4" x="0" y="36" width="10" height="10" rx="2" data-tip="2026-05-18: $5.83"><title>2026-05-18: $5.83</title></rect><rect class="l4" x="12" y="36" width="10" height="10" rx="2" data-tip="2026-05-19: $5.27"><title>2026-05-19: $5.27</title></rect><rect class="l0" x="24" y="36" width="10" height="10" rx="2" data-tip="2026-05-20: $0.00"><title>2026-05-20: $0.00</title></rect></svg><div class="cal-legend" aria-hidden="true"><span>Less</span><i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i><span>More</span></div></div></figure>
+</div>
+<div class="duo"><figure class="chart tone-cache"><figcaption>Daily cache-read share</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">100.0%</span><span class="y-mid">50.0%</span><span class="y-low">0.0%</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily cache-read share"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polyline class="line" points="0,29 53,29 105,32"/><polyline class="line" points="211,30 263,26"/><polyline class="line" points="737,28 789,27"/><polyline class="line" points="895,31 947,30"/><g class="hits"><rect x="0" y="0" width="26" height="100%" data-tip="2026-05-01: 93.3% of input read from cache"><title>2026-05-01: 93.3% of input read from cache</title></rect><rect x="26" y="0" width="53" height="100%" data-tip="2026-05-02: 93.3% of input read from cache"><title>2026-05-02: 93.3% of input read from cache</title></rect><rect x="79" y="0" width="52" height="100%" data-tip="2026-05-03: 92.3% of input read from cache"><title>2026-05-03: 92.3% of input read from cache</title></rect><rect x="131" y="0" width="53" height="100%" data-tip="2026-05-04: no tokens"><title>2026-05-04: no tokens</title></rect><rect x="184" y="0" width="53" height="100%" data-tip="2026-05-05: 92.9% of input read from cache"><title>2026-05-05: 92.9% of input read from cache</title></rect><rect x="237" y="0" width="52" height="100%" data-tip="2026-05-06: 94.4% of input read from cache"><title>2026-05-06: 94.4% of input read from cache</title></rect><rect x="289" y="0" width="53" height="100%" data-tip="2026-05-07: no tokens"><title>2026-05-07: no tokens</title></rect><rect x="342" y="0" width="52" height="100%" data-tip="2026-05-08: no tokens"><title>2026-05-08: no tokens</title></rect><rect x="394" y="0" width="53" height="100%" data-tip="2026-05-09: no tokens"><title>2026-05-09: no tokens</title></rect><rect x="447" y="0" width="53" height="100%" data-tip="2026-05-10: no tokens"><title>2026-05-10: no tokens</title></rect><rect x="500" y="0" width="52" height="100%" data-tip="2026-05-11: no tokens"><title>2026-05-11: no tokens</title></rect><rect x="552" y="0" width="53" height="100%" data-tip="2026-05-12: no tokens"><title>2026-05-12: no tokens</title></rect><rect x="605" y="0" width="53" height="100%" data-tip="2026-05-13: no tokens"><title>2026-05-13: no tokens</title></rect><rect x="658" y="0" width="52" height="100%" data-tip="2026-05-14: no tokens"><title>2026-05-14: no tokens</title></rect><rect x="710" y="0" width="53" height="100%" data-tip="2026-05-15: 93.5% of input read from cache"><title>2026-05-15: 93.5% of input read from cache</title></rect><rect x="763" y="0" width="52" height="100%" data-tip="2026-05-16: 93.9% of input read from cache"><title>2026-05-16: 93.9% of input read from cache</title></rect><rect x="815" y="0" width="53" height="100%" data-tip="2026-05-17: no tokens"><title>2026-05-17: no tokens</title></rect><rect x="868" y="0" width="53" height="100%" data-tip="2026-05-18: 92.5% of input read from cache"><title>2026-05-18: 92.5% of input read from cache</title></rect><rect x="921" y="0" width="52" height="100%" data-tip="2026-05-19: 92.9% of input read from cache"><title>2026-05-19: 92.9% of input read from cache</title></rect><rect x="973" y="0" width="27" height="100%" data-tip="2026-05-20: no tokens"><title>2026-05-20: no tokens</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-05-01</span><span>2026-05-05</span><span>2026-05-09</span><span>2026-05-12</span><span>2026-05-16</span><span>2026-05-20</span></div></div></figure>
+<figure class="chart tone-sessions"><figcaption>Daily active sessions</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">2</span><span class="y-mid">1</span><span class="y-low">0</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily active sessions"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polygon class="area" points="0,290 0,10 53,150 105,150 158,290 211,150 263,150 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,150 789,150 842,290 895,150 947,150 1000,290 1000,290"/><polyline class="line" points="0,10 53,150 105,150 158,290 211,150 263,150 316,290 368,290 421,290 474,290 526,290 579,290 632,290 684,290 737,150 789,150 842,290 895,150 947,150 1000,290"/><g class="hits"><rect x="0" y="0" width="26" height="100%" data-tip="2026-05-01: 2 sessions"><title>2026-05-01: 2 sessions</title></rect><rect x="26" y="0" width="53" height="100%" data-tip="2026-05-02: 1 session"><title>2026-05-02: 1 session</title></rect><rect x="79" y="0" width="52" height="100%" data-tip="2026-05-03: 1 session"><title>2026-05-03: 1 session</title></rect><rect x="131" y="0" width="53" height="100%" data-tip="2026-05-04: 0 sessions"><title>2026-05-04: 0 sessions</title></rect><rect x="184" y="0" width="53" height="100%" data-tip="2026-05-05: 1 session"><title>2026-05-05: 1 session</title></rect><rect x="237" y="0" width="52" height="100%" data-tip="2026-05-06: 1 session"><title>2026-05-06: 1 session</title></rect><rect x="289" y="0" width="53" height="100%" data-tip="2026-05-07: 0 sessions"><title>2026-05-07: 0 sessions</title></rect><rect x="342" y="0" width="52" height="100%" data-tip="2026-05-08: 0 sessions"><title>2026-05-08: 0 sessions</title></rect><rect x="394" y="0" width="53" height="100%" data-tip="2026-05-09: 0 sessions"><title>2026-05-09: 0 sessions</title></rect><rect x="447" y="0" width="53" height="100%" data-tip="2026-05-10: 0 sessions"><title>2026-05-10: 0 sessions</title></rect><rect x="500" y="0" width="52" height="100%" data-tip="2026-05-11: 0 sessions"><title>2026-05-11: 0 sessions</title></rect><rect x="552" y="0" width="53" height="100%" data-tip="2026-05-12: 0 sessions"><title>2026-05-12: 0 sessions</title></rect><rect x="605" y="0" width="53" height="100%" data-tip="2026-05-13: 0 sessions"><title>2026-05-13: 0 sessions</title></rect><rect x="658" y="0" width="52" height="100%" data-tip="2026-05-14: 0 sessions"><title>2026-05-14: 0 sessions</title></rect><rect x="710" y="0" width="53" height="100%" data-tip="2026-05-15: 1 session"><title>2026-05-15: 1 session</title></rect><rect x="763" y="0" width="52" height="100%" data-tip="2026-05-16: 1 session"><title>2026-05-16: 1 session</title></rect><rect x="815" y="0" width="53" height="100%" data-tip="2026-05-17: 0 sessions"><title>2026-05-17: 0 sessions</title></rect><rect x="868" y="0" width="53" height="100%" data-tip="2026-05-18: 1 session"><title>2026-05-18: 1 session</title></rect><rect x="921" y="0" width="52" height="100%" data-tip="2026-05-19: 1 session"><title>2026-05-19: 1 session</title></rect><rect x="973" y="0" width="27" height="100%" data-tip="2026-05-20: 0 sessions"><title>2026-05-20: 0 sessions</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-05-01</span><span>2026-05-05</span><span>2026-05-09</span><span>2026-05-12</span><span>2026-05-16</span><span>2026-05-20</span></div></div></figure>
+</div>
+<p class="caption">The daily series shows $38.06 of the period&#39;s $49.47 spend; the other $11.41 was spent on days outside the window by 3 sessions the window includes.</p>
+<p class="caption">1 session has no per-day breakdown (the transcript was gone when the catalog was rebuilt), so its spend sits whole on the day it began: $4.26.</p>
+</section>
+<section class="section">
+<h2>The Efficiency Story</h2>
+<figure class="chart waterfall-fig"><figcaption>List price, cache savings, spend</figcaption><p class="chart-empty">A model that used the cache has no published price, so the list-price comparison is not drawn.</p></figure>
+<p>Cache read share was 93.3%: most of the context read each turn is re-read from cache at a fraction of the fresh-input rate, which is what makes sustained agentic sessions economical. Fresh input was 1.0M against 91.1M read from cache.</p>
+<div class="kpis">
+<div class="kpi"><div class="kpi-value">5.2%</div><div class="kpi-label">Tool error rate</div></div>
+<div class="kpi"><div class="kpi-value">3.0%</div><div class="kpi-label">Share of cache writes paying the 1h premium</div></div>
+<div class="kpi"><div class="kpi-value">5</div><div class="kpi-label">Interrupts observed</div></div>
+<div class="kpi"><div class="kpi-value">2</div><div class="kpi-label">Context compactions observed</div></div>
+</div>
+<h3>By skill</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Skill</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td><code>release-notes</code></td><td class="num">3.3M</td><td class="num">$6.13</td></tr>
+<tr><td><code>schema-review</code></td><td class="num">1.9M</td><td class="num">$3.44</td></tr>
+</tbody>
+</table></div>
+<p class="caption">Coverage: $9.57 of $49.47 (19.3%), embedded-price basis</p>
+<h3>By MCP tool</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>MCP Tool</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td><code>wiki-write</code></td><td class="num">6.5M</td><td class="num">$11.99</td></tr>
+<tr><td><code>tracker-search</code></td><td class="num">3.4M</td><td class="num">$6.23</td></tr>
+</tbody>
+</table></div>
+<p class="caption">Coverage: $18.22 of $49.47 (36.8%), embedded-price basis</p>
+</section>
+<section class="section">
+<h2>Unobserved and Flagged Spend</h2>
+<p class="lead">Spend worth a second look. These rows overlap and are not a partition of the total.</p>
+<ul class="facts">
+<li>Sessions in <code>no-observed-outcome</code>: 12, spending $49.47 (100% of session spend).</li>
+<li>Heavy model on a short session: 0 sessions, $0.00. Heavy means a model name containing <code>opus</code>, <code>fable</code>; short means at most 3 turns.</li>
+</ul>
+<p class="caption">What <code>no-observed-outcome</code> does and does not mean is noted under the band table above.</p>
+<p class="empty">No session carries an efficiency flag.</p>
+</section>
+<section class="section">
+<h2>Cost Summary</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Model</th><th class="num">Sessions Using</th><th class="num">Total Tokens</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td><code>claude-sonnet-4-6</code></td><td class="num">11</td><td class="num">87.6M</td><td class="num">$49.47</td></tr>
+<tr><td><code>claude-nimbus-2</code></td><td class="num">1</td><td class="num">10.3M</td><td class="num">(untracked)</td></tr>
+</tbody>
+<tfoot><tr><td>Total</td><td class="num">12</td><td class="num">97.9M</td><td class="num">$49.47</td></tr>
+</tfoot>
+</table></div>
+<p class="warn">Note: spend for the following models was not computed because they are not in this binary&#39;s pricing table: <code>claude-nimbus-2</code>. The total above understates actual spend. Update clyde&#39;s pricing data to include them.</p>
+</section>
+<section class="section">
+<h2>Agent-Type Cost Attribution</h2>
+<p class="lead">Every dollar of the period&#39;s $49.47 spend lands in exactly one row below; <code>(main-session)</code> carried the most. The <code>(main-session)</code> row is work a session did itself rather than delegating.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Agent Type</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
+<tbody>
+<tr><td><code>(main-session)</code></td><td class="num">97.9M</td><td class="num">$49.47</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="section">
+<h2>Session Cost</h2>
+<p class="lead">Median session spend was $4.30; the 90th percentile was $5.27.</p>
+<figure class="chart histo-fig"><figcaption>Sessions by cost</figcaption><div class="histo" style="--n:2"><div class="cols"><div class="col" data-tip="$2.50 to $5: 9 sessions"><span class="count">9</span><span class="colbar" style="--h:100"></span></div><div class="col" data-tip="$5 to $10: 2 sessions"><span class="count">2</span><span class="colbar" style="--h:22.2"></span></div></div><div class="edges" aria-hidden="true"><span style="--i:0">$2.50</span><span style="--i:1">$5</span><span style="--i:2">$10</span></div><div class="marks"><span>median</span><span>90th pct</span></div></div><p class="caption">1 session with no price is not shown.</p></figure>
+<h3>Outlier sessions</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Session</th><th>Repo</th><th class="num">Tokens</th><th class="num">Spend</th><th>What it produced</th></tr></thead>
+<tbody>
+<tr><td>Teach driftwood to report a line number</td><td><code>jrivera/driftwood</code></td><td class="num">9.7M</td><td class="num">$5.83</td><td>(no recorded output)</td></tr>
+<tr><td>Split the driftwood parser module</td><td><code>jrivera/driftwood</code></td><td class="num">9.0M</td><td class="num">$5.27</td><td>(no recorded output)</td></tr>
+<tr><td>Teach driftwood to report a line number</td><td><code>jrivera/driftwood</code></td><td class="num">8.5M</td><td class="num">$4.83</td><td>(no recorded output)</td></tr>
+<tr><td>ef35bcda</td><td><code>jrivera/driftwood</code></td><td class="num">7.6M</td><td class="num">$4.56</td><td>(no recorded output)</td></tr>
+<tr><td>Teach driftwood to report a line number</td><td><code>jrivera/driftwood</code></td><td class="num">8.0M</td><td class="num">$4.49</td><td>(no recorded output)</td></tr>
+<tr><td>eec33f5b</td><td><code>jrivera/driftwood</code></td><td class="num">7.3M</td><td class="num">$4.30</td><td>(no recorded output)</td></tr>
+<tr><td>Teach driftwood to report a line number</td><td><code>jrivera/driftwood</code></td><td class="num">7.8M</td><td class="num">$4.26</td><td>(no recorded output)</td></tr>
+<tr><td>9587c1f7</td><td><code>jrivera/driftwood</code></td><td class="num">7.6M</td><td class="num">$4.15</td><td>(no recorded output)</td></tr>
+<tr><td>Split the driftwood parser module</td><td><code>jrivera/driftwood</code></td><td class="num">7.5M</td><td class="num">$4.04</td><td>(no recorded output)</td></tr>
+<tr><td>Teach driftwood to report a line number</td><td><code>jrivera/driftwood</code></td><td class="num">7.5M</td><td class="num">$4.04</td><td>(no recorded output)</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="section">
+<h2>Reconciliation</h2>
+<p>No Claude Enterprise Analytics cost export was supplied for this render (--reconcile &lt;file&gt;); the total spend above is a modeled figure only and has not been reconciled against this operator&#39;s authoritative billed spend.</p>
+</section>
+<section class="section">
+<h2>What This Funded</h2>
+<p class="empty">No narrative was generated for this render.</p>
+<div class="org">
+<h3>jrivera</h3>
+<p class="lead">12 sessions across 1 repository, 97.9M tokens, $49.47.</p>
+<ul class="repos">
+<li><code>jrivera/driftwood</code> <span class="figures">(12 sessions, 97.9M tokens, $49.47 spend)</span></li>
+</ul>
+</div>
+</section>
+<section class="section">
+<h2>Usage Profile</h2>
+<p class="empty">No narrative was generated for this render.</p>
+</section>
+<section class="section">
+<h2>Conclusion</h2>
+<p class="empty">No narrative was generated for this render.</p>
+</section>
+<footer class="colophon"><p>Generated 2026-06-01. Every figure on this page was computed by clyde from the session catalog; the narrative sections are model-written and carry no figures of their own.</p></footer>
+
+</main>
+<script>
+// Sort toggles on the paired-bar charts. Optional: with JS off the controls stay hidden and the
+// rows keep their server order (by spend). Rows carry their rank under each key in a data- attribute,
+// so sorting only reorders existing nodes; rows past the figure's data-top fold behind its expander.
+(function () {
+  "use strict";
+  var figures = document.querySelectorAll("[data-sortable]");
+  Array.prototype.forEach.call(figures, function (figure) {
+    var control = figure.querySelector(".sort");
+    var list = figure.querySelector(".pairs");
+    if (!control || !list) {
+      return;
+    }
+    var top = Number(figure.getAttribute("data-top"));
+    var buttons = control.querySelectorAll("button");
+    control.hidden = false;
+    Array.prototype.forEach.call(buttons, function (button) {
+      button.addEventListener("click", function () {
+        var key = "data-" + button.getAttribute("data-key");
+        var rows = Array.prototype.slice.call(list.children);
+        rows.sort(function (a, b) {
+          return Number(a.getAttribute(key)) - Number(b.getAttribute(key));
+        });
+        rows.forEach(function (row, index) {
+          row.classList.toggle("extra", index >= top);
+          list.appendChild(row);
+        });
+        Array.prototype.forEach.call(buttons, function (other) {
+          other.setAttribute("aria-pressed", other === button ? "true" : "false");
+        });
+      });
+    });
+  });
+})();
+
+// Hover tooltips for any element carrying data-tip. Optional: with JS off, each chart column keeps
+// its SVG title as the browser's native tooltip, and every figure is already printed on the page.
+// This script builds no display text of its own; it only moves data-tip into the tooltip.
+(function () {
+  "use strict";
+  var targets = document.querySelectorAll("[data-tip]");
+  if (!targets.length) {
+    return;
+  }
+  // The custom tooltip replaces the native one, so the SVG titles would only show a second copy.
+  Array.prototype.forEach.call(targets, function (el) {
+    var title = el.querySelector("title");
+    if (title) {
+      el.removeChild(title);
+    }
+  });
+
+  var tip = document.createElement("div");
+  tip.className = "tip";
+  tip.setAttribute("role", "tooltip");
+  tip.hidden = true;
+  document.body.appendChild(tip);
+
+  var gap = 14;
+
+  function place(event) {
+    var box = tip.getBoundingClientRect();
+    var x = event.clientX + gap;
+    var y = event.clientY - box.height - gap;
+    if (x + box.width > window.innerWidth - gap) {
+      x = event.clientX - box.width - gap;
+    }
+    if (y < gap) {
+      y = event.clientY + gap;
+    }
+    tip.style.left = Math.max(gap, x) + "px";
+    tip.style.top = y + "px";
+  }
+
+  function owner(node) {
+    return node && node.closest ? node.closest("[data-tip]") : null;
+  }
+
+  document.addEventListener("pointerover", function (event) {
+    var el = owner(event.target);
+    if (!el) {
+      tip.hidden = true;
+      return;
+    }
+    tip.textContent = el.getAttribute("data-tip");
+    tip.hidden = false;
+    place(event);
+  });
+
+  document.addEventListener("pointermove", function (event) {
+    if (!tip.hidden) {
+      place(event);
+    }
+  });
+
+  document.addEventListener("pointerout", function (event) {
+    if (!owner(event.relatedTarget)) {
+      tip.hidden = true;
+    }
+  });
+})();
+
+</script>
+</body>
+</html>

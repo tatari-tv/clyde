@@ -511,3 +511,250 @@ fn staging_before_the_efficiency_pass_survives_a_reap() {
     assert_eq!(stats.unrecoverable, 0, "nothing was lost");
     assert!(db.get_efficiency_json(SID_DORMANT).unwrap().is_some());
 }
+
+// ---------------------------------------------------------------------------------------------
+// Catalog v15 + reindex: per-day buckets without losing stored accounting.
+
+const SID_V14_GONE: &str = "66666666-6666-4666-8666-6666666666ab";
+const SID_V14_MIXED: &str = "77777777-7777-4777-8777-7777777777cd";
+const SID_V14_BROKEN: &str = "88888888-8888-4888-8888-8888888888ef";
+const USAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/efficiency/usage.jsonl");
+
+/// A real blob as a pre-v15 clyde wrote it: the current shape with every `by-day` key removed.
+fn v14_blob(session_id: &str) -> String {
+    fn strip(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                map.remove("by-day");
+                map.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let fe = extract(Path::new(MULTI_SUBAGENT)).unwrap();
+    let mut json = serde_json::to_value(scored(fold(session_id, &[fe]), &config())).unwrap();
+    strip(&mut json);
+    let blob = json.to_string();
+    assert!(!blob.contains("by-day"));
+    blob
+}
+
+/// Write a v14 catalog at `path` holding `rows` `(session id, transcript, staged dir)`, each
+/// annotated with a pre-v15 blob, then stamp `user_version = 14`.
+fn build_v14_catalog(path: &Path, project: &Path, rows: &[(&str, &Path, Option<&Path>)]) {
+    let db = Db::open_at(path).unwrap();
+    for (sid, transcript, staged) in rows {
+        db.upsert_session(&parsed_row(sid, project, transcript), "host-01")
+            .unwrap();
+        if let Some(staged) = staged {
+            db.set_staged_path(sid, staged).unwrap();
+        }
+        let blob = v14_blob(sid);
+        db.set_efficiency_many(&[sessions::EfficiencyWrite {
+            session_id: sid,
+            efficiency_json: &blob,
+            cache_read_share: None,
+            tool_errors: 0,
+            cost_usd: 9.75,
+            outcome_json: "{}",
+        }])
+        .unwrap();
+    }
+    drop(db);
+    let conn = rusqlite_conn(path);
+    conn.pragma_update(None, "user_version", 14i64).unwrap();
+}
+
+fn rusqlite_conn(path: &Path) -> rusqlite::Connection {
+    rusqlite::Connection::open(path).unwrap()
+}
+
+fn stored_cost(path: &Path, sid: &str) -> Option<f64> {
+    rusqlite_conn(path)
+        .query_row("SELECT cost_usd FROM sessions WHERE session_id = ?1", [sid], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+/// The v15 promise for the row a blanket NULL would have lost: a v14 row whose transcript bytes
+/// are gone KEEPS its blob and its spend through the v15 migration AND the reindex after it, and is
+/// counted `kept`, never `unrecoverable`. BITES: route a bucket-less blob with no bytes to the
+/// unrecoverable arm (or NULL it in v15) and the stored accounting is gone.
+#[test]
+fn migrate_v15_then_reindex_keeps_an_unrecoverable_rows_blob_and_spend() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let project = tmp.path().join("projects").join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let path = tmp.path().join("sessions.db");
+    let reaped = project.join(format!("{SID_V14_GONE}.jsonl"));
+    build_v14_catalog(&path, &project, &[(SID_V14_GONE, &reaped, None)]);
+    let before = v14_blob(SID_V14_GONE);
+
+    let db = Db::open_at(&path).unwrap();
+    let stats = reindex_efficiency(&db, &config(), &[]).unwrap();
+    assert_eq!(stats.candidates, 1, "a bucket-less blob is offered");
+    assert_eq!(stats.computed, 0);
+    assert_eq!(stats.kept, 1, "its bytes are gone, so its blob stays");
+    assert_eq!(
+        stats.unrecoverable, 0,
+        "its spend is in the catalog, so it is not unrecoverable"
+    );
+    assert_eq!(stats.candidates, stats.computed + stats.unrecoverable + stats.kept);
+    assert_eq!(
+        db.get_efficiency_json(SID_V14_GONE).unwrap().as_deref(),
+        Some(before.as_str())
+    );
+    drop(db);
+    assert_eq!(stored_cost(&path, SID_V14_GONE), Some(9.75), "and its spend");
+}
+
+/// A v14 row for a partly-live, partly-staged session recomputes from the UNION of both layouts:
+/// its parent is still live, one subagent survives only in the staged copy. BITES: restore the
+/// live-else-staged `pricing_files` and the staged subagent's tokens vanish from the recompute.
+#[test]
+fn migrate_v15_then_reindex_recomputes_a_mixed_live_staged_session_from_both() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let project = tmp.path().join("projects").join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let live_parent = project.join(format!("{SID_V14_MIXED}.jsonl"));
+    std::fs::copy(MULTI_SUBAGENT, &live_parent).unwrap();
+    let staged = tmp.path().join("staged").join(SID_V14_MIXED);
+    std::fs::create_dir_all(staged.join("subagents")).unwrap();
+    std::fs::copy(MULTI_SUBAGENT, staged.join(format!("{SID_V14_MIXED}.jsonl"))).unwrap();
+    std::fs::copy(USAGE, staged.join("subagents").join("agent-reaped.jsonl")).unwrap();
+    let path = tmp.path().join("sessions.db");
+    build_v14_catalog(&path, &project, &[(SID_V14_MIXED, &live_parent, Some(&staged))]);
+
+    let db = Db::open_at(&path).unwrap();
+    let stats = reindex_efficiency(&db, &config(), &[]).unwrap();
+    assert_eq!((stats.computed, stats.recomputed, stats.kept), (1, 1, 0));
+
+    let want = fold(
+        SID_V14_MIXED,
+        &[extract(&live_parent).unwrap(), extract(Path::new(USAGE)).unwrap()],
+    );
+    let stored: crate::fold::SessionEfficiency =
+        serde_json::from_str(&db.get_efficiency_json(SID_V14_MIXED).unwrap().unwrap()).unwrap();
+    assert_eq!(
+        stored.aggregate.raw.total_tokens(),
+        want.aggregate.raw.total_tokens(),
+        "live parent + staged-only subagent, each once"
+    );
+    let bucketed: u64 = stored
+        .aggregate
+        .raw
+        .by_day
+        .values()
+        .flat_map(|m| m.values())
+        .map(|t| t.total)
+        .sum();
+    assert_eq!(bucketed, stored.aggregate.raw.total_tokens(), "now bucketed");
+    assert!(
+        db.sessions_missing_efficiency().unwrap().is_empty(),
+        "no longer a candidate"
+    );
+}
+
+/// A recompute that fails keeps the old blob: one of the row's files cannot be read, so overwriting
+/// would trade the stored accounting for part of it. BITES: drop the `failed > 0 && has_blob` arm
+/// in `collect_layouts` and the blob is replaced by the readable files alone.
+#[cfg(unix)]
+#[test]
+fn migrate_v15_then_reindex_keeps_the_old_blob_when_a_file_fails_to_extract() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let project = tmp.path().join("projects").join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(project.join(SID_V14_BROKEN).join("subagents")).unwrap();
+    let parent = project.join(format!("{SID_V14_BROKEN}.jsonl"));
+    std::fs::copy(MULTI_SUBAGENT, &parent).unwrap();
+    let unreadable = project.join(SID_V14_BROKEN).join("subagents").join("agent-x.jsonl");
+    std::fs::copy(USAGE, &unreadable).unwrap();
+    let path = tmp.path().join("sessions.db");
+    build_v14_catalog(&path, &project, &[(SID_V14_BROKEN, &parent, None)]);
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&unreadable).is_ok() {
+        eprintln!("skipped: running with privileges that read a mode-000 file");
+        return;
+    }
+    let before = v14_blob(SID_V14_BROKEN);
+
+    let db = Db::open_at(&path).unwrap();
+    let stats = reindex_efficiency(&db, &config(), &[]).unwrap();
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!((stats.computed, stats.kept, stats.written), (0, 1, 0));
+    assert_eq!(
+        db.get_efficiency_json(SID_V14_BROKEN).unwrap().as_deref(),
+        Some(before.as_str())
+    );
+}
+
+const SID_V14_TRUNCATED: &str = "99999999-9999-4999-8999-999999999901";
+
+/// A recompute that succeeds on FEWER bytes than the blob saw keeps the blob: the only copy left on
+/// disk is a truncated one (a staged copy taken before the session ended), so every file extracts
+/// and the recompute is complete for what remains, yet it accounts for fewer tokens than the stored
+/// blob. It is counted `kept`, never `computed`. BITES: drop the `recomputed < stored` arm in
+/// `collect_layouts` and the blob is overwritten with less accounting.
+#[test]
+fn migrate_v15_then_reindex_keeps_the_old_blob_when_the_recompute_sees_fewer_tokens() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let project = tmp.path().join("projects").join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let truncated = project.join(format!("{SID_V14_TRUNCATED}.jsonl"));
+    let full = std::fs::read_to_string(MULTI_SUBAGENT).unwrap();
+    let head: Vec<&str> = full.lines().take(full.lines().count() / 2).collect();
+    std::fs::write(&truncated, head.join("\n") + "\n").unwrap();
+    let path = tmp.path().join("sessions.db");
+    build_v14_catalog(&path, &project, &[(SID_V14_TRUNCATED, &truncated, None)]);
+    let before = v14_blob(SID_V14_TRUNCATED);
+    let stored: crate::fold::SessionEfficiency = serde_json::from_str(&before).unwrap();
+    let on_disk = fold(SID_V14_TRUNCATED, &[extract(&truncated).unwrap()]);
+    assert!(
+        on_disk.aggregate.raw.total_tokens() < stored.aggregate.raw.total_tokens(),
+        "precondition: the truncated copy holds fewer tokens than the blob"
+    );
+
+    let db = Db::open_at(&path).unwrap();
+    let stats = reindex_efficiency(&db, &config(), &[]).unwrap();
+    assert_eq!(
+        (stats.candidates, stats.computed, stats.kept, stats.written),
+        (1, 0, 1, 0),
+        "{stats:?}"
+    );
+    assert_eq!(stats.candidates, stats.computed + stats.unrecoverable + stats.kept);
+    assert_eq!(
+        db.get_efficiency_json(SID_V14_TRUNCATED).unwrap().as_deref(),
+        Some(before.as_str()),
+        "the stored blob is untouched"
+    );
+}
+
+const SID_V14_SAME: &str = "99999999-9999-4999-8999-999999999902";
+
+/// The guard's other edge: a recompute that sees EXACTLY the tokens the blob accounts for (the same
+/// bytes, now bucketed) replaces the blob. BITES: `recomputed <= stored` keeps every unchanged row
+/// bucket-less forever.
+#[test]
+fn migrate_v15_then_reindex_recomputes_when_the_recompute_matches_the_blob() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let project = tmp.path().join("projects").join("-home-alice-repos-example-org-widget");
+    std::fs::create_dir_all(&project).unwrap();
+    let transcript = project.join(format!("{SID_V14_SAME}.jsonl"));
+    std::fs::copy(MULTI_SUBAGENT, &transcript).unwrap();
+    let path = tmp.path().join("sessions.db");
+    build_v14_catalog(&path, &project, &[(SID_V14_SAME, &transcript, None)]);
+    let stored: crate::fold::SessionEfficiency = serde_json::from_str(&v14_blob(SID_V14_SAME)).unwrap();
+
+    let db = Db::open_at(&path).unwrap();
+    let stats = reindex_efficiency(&db, &config(), &[]).unwrap();
+    assert_eq!((stats.computed, stats.recomputed, stats.kept), (1, 1, 0), "{stats:?}");
+    let written: crate::fold::SessionEfficiency =
+        serde_json::from_str(&db.get_efficiency_json(SID_V14_SAME).unwrap().unwrap()).unwrap();
+    assert_eq!(
+        written.aggregate.raw.total_tokens(),
+        stored.aggregate.raw.total_tokens()
+    );
+    assert!(!written.aggregate.raw.by_day.is_empty(), "now bucketed");
+}
