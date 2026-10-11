@@ -3,7 +3,7 @@
 **Author:** Scott Idler
 **Date:** 2026-10-11
 **Status:** In Review
-**Review Passes Completed:** 5/5 (panel rounds 1-2 folded in)
+**Review Passes Completed:** 5/5 (panel rounds 1-2 folded in, including round 2 items 11-13)
 
 ## Summary
 
@@ -150,6 +150,7 @@ render: join calls and cost on the same key -> columns, row coverage marker, pai
   2. non-fork subagents
   3. fork subagents
   - Ties within a class sort by path, as the scan already does.
+  - So a fork of a fork sorts by path against its source fork, not by `spawnDepth`. Totals are unaffected (max rule); only which fork's scope keeps a shared turn can shift. Accepted, listed in Risks (panel round 2, item 11).
 - **Fork detection:** a file is a fork when its sibling `<agent>.meta.json` has `"isFork": true`, or when its first record has `type == "fork-context-ref"`.
 - **One gap: a staged fork-of-subagent written before Phase 2.**
   - It has neither marker: no meta was staged, and that shape carries no ref. So it sorts as a non-fork.
@@ -183,6 +184,7 @@ render: join calls and cost on the same key -> columns, row coverage marker, pai
   - **Confirmed on the spot:** when the very next record is a meta user record whose text contains `Base directory for this skill:`.
   - Panel measurement, with no non-meta record allowed in between: 485 slash records, 420 confirmed on the next record, 0 within records 2-4, 65 unconfirmed. So the window is the next record only. Widening it adds only false `/model` confirms.
   - **Unconfirmed:** the name is held in `FileEfficiency.slash_candidates` (name -> count). `fold` counts a candidate when the group's `by_skill` has that key, and drops it otherwise.
+  - A resolved candidate counts in the scope of the file that held it, the same rule as every other call. The lookup is group-wide, so under `--no-rollup` a parent slash command whose spend landed only in a subagent still counts on the parent row (panel round 2, item 12).
   - This counts bundled prompt commands that spend, such as `/simplify`, which gets a meta instruction record without the "Base directory" marker, plus attributed turns.
   - It drops built-ins that never spend under their own name: `/model`, `/clear`, `/login`, `/mcp`.
 - **MCP calls:**
@@ -196,7 +198,7 @@ render: join calls and cost on the same key -> columns, row coverage marker, pai
   - Cost is keyed `server_key(attributionMcpServer) + "__" + attributionMcpTool`.
   - So `claude.ai Atlassian` -> `claude_ai_Atlassian`, which matches the tool_use name. `hindsight-work` stays distinct from `hindsight_work`, and `claude.ai Foo (Bar)` lands on one key.
   - A cost record with a tool but no server is keyed `_unknown__<tool>`. Live count: 0.
-  - The Server column shows `attributionMcpServer` as written.
+  - The Server column shows the key's server segment, the `In()`-normalized form (`claude_ai_Atlassian`). No display-name field is stored: calls are keyed on the tool_use name, which only holds the normalized form, so both sides of the join share it (panel round 2, item 13).
 - **MCP time:**
   - Each call sets `pending[tool_use_id] = (key, ts_use)`.
   - The matching `tool_result` adds `ts_result - ts_use` to `total-ms` and 1 to `timed`, even when the result is in a later file of the group.
@@ -287,7 +289,7 @@ pub struct McpCalls {
 ```rust
 struct CallRow {
     name: String,            // skill name, or MCP tool
-    server: Option<String>,  // MCP only, attributionMcpServer as written
+    server: Option<String>,  // MCP only, the key's normalized server segment
     calls: String,           // "1,204", "1,204†", "n/a"
     sessions: String,
     tokens_human: String,
@@ -541,6 +543,7 @@ Run these against the installed build after `clyde session reindex` on desk and 
 | The guard keeps an inflated blob | Low | The double count survives on that row | The guard compares on the blob's own basis; the Phase 1 test covers both shapes |
 | Old blobs read as 0 calls | Low | A false zero | The `Option` marker and the per-row `†` / `n/a`; a Phase 6 test pins `None` |
 | A staged fork-of-subagent has no meta | Low (2 live files) | The per-agent split shifts; totals stay right | Phase 2 stages meta from now on |
+| A fork of a fork sorts by path, not `spawnDepth` | Low | The per-agent split shifts; totals stay right | The max rule keeps totals order-free |
 
 ## Open Questions
 
@@ -549,5 +552,5 @@ Run these against the installed build after `clyde session reindex` on desk and 
 ## References
 - `docs/design/2026-10-10-report-html-dashboard.md`: the HTML backend, the pairs chart, number licensing, and the v15 precedent.
 - `docs/design/2026-07-29-render-inversion.md`: Rust authors the numbers.
-- Panel round 1: `~/.cache/review-panel/runs/dsN5OV9O/synthesis.md`.
+- Panel rounds 1-2: `~/.cache/review-panel/runs/dsN5OV9O/synthesis.md`.
 - `marquee ~scott-idler/claude-report-2026-09-5`.
