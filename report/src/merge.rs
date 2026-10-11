@@ -12,10 +12,10 @@
 //!    blind-summed from each input's `totals`. Blind-summing would double-count any session that
 //!    appears in more than one input; re-summing the actual entries is correct by construction.
 
-use crate::cents::round_cents;
+use crate::cents::{self, to_cents};
 use crate::config::{MergeConfig, Output};
 use crate::outcome;
-use crate::report::{ModelTokens, Report, SessionEntry, Totals, WINDOW_NOTE};
+use crate::report::{ModelTokens, Report, SCHEMA_VERSION, SessionEntry, Totals, WINDOW_NOTE, session_cents_total};
 use crate::{OutputDest, RunResult};
 use chrono::{DateTime, Utc};
 use efficiency::{RawCounters, finalize};
@@ -28,7 +28,7 @@ use thiserror::Error;
 
 /// Typed errors for the merge module. `report` is a workspace library, so per repo convention it
 /// uses `thiserror` with a matchable enum rather than `eyre` strings -- consumers (and tests) can
-/// discriminate `SchemaMismatch` from `NoInputs` without parsing a `Display` string. The CLI
+/// discriminate `UnsupportedSchema` from `NoInputs` without parsing a `Display` string. The CLI
 /// boundary (`merge::run`) maps these into the crate's `eyre` flow via `#[from]`.
 #[derive(Debug, Error)]
 pub enum MergeError {
@@ -36,12 +36,13 @@ pub enum MergeError {
     #[error("report merge: no input files given; nothing to merge")]
     NoInputs,
 
-    /// Two input reports disagree on `schema-version`; merging incompatible shapes is refused.
-    /// Both versions are named so the operator can see exactly which inputs clashed.
+    /// An input is a schema this clyde does not merge. Every input must be the CURRENT schema, the
+    /// lone input of a one-file merge included: a v2 artifact has no per-day buckets, and passing it
+    /// through would hand `render` a file it then rejects for a reason the merge never stated.
     #[error(
-        "report merge: schema-version mismatch: input reports disagree ({expected} vs {found}); refusing to merge incompatible report shapes"
+        "report merge: {input} is schema v{found}, but this clyde merges schema v{expected}; re-run `clyde report collect` to regenerate it"
     )]
-    SchemaMismatch { expected: u32, found: u32 },
+    UnsupportedSchema { input: String, found: u32, expected: u32 },
 
     /// Reading an input report from disk failed.
     #[error("failed to read report at {path}")]
@@ -84,6 +85,13 @@ pub fn run(cfg: &MergeConfig) -> Result<RunResult> {
     })
 }
 
+/// Only the version, read before anything else in an input.
+#[derive(serde::Deserialize)]
+struct SchemaProbe {
+    #[serde(rename = "schema-version")]
+    schema_version: u32,
+}
+
 /// Read and deserialize every input path into a [`Report`]. Zero inputs is a typed error (nothing
 /// to merge); a single input is allowed (the merge is then an identity passthrough).
 fn read_reports(inputs: &[PathBuf]) -> std::result::Result<Vec<Report>, MergeError> {
@@ -97,6 +105,19 @@ fn read_reports(inputs: &[PathBuf]) -> std::result::Result<Vec<Report>, MergeErr
             path: path.clone(),
             source,
         })?;
+        // Gate on the version BEFORE the full parse, the same way `render` does: an older artifact
+        // is named as the wrong schema, never surfaced as a serde error about some internal field.
+        let probe: SchemaProbe = serde_json::from_str(&body).map_err(|source| MergeError::Parse {
+            path: path.clone(),
+            source,
+        })?;
+        if probe.schema_version != SCHEMA_VERSION {
+            return Err(MergeError::UnsupportedSchema {
+                input: path.display().to_string(),
+                found: probe.schema_version,
+                expected: SCHEMA_VERSION,
+            });
+        }
         let report: Report = serde_json::from_str(&body).map_err(|source| MergeError::Parse {
             path: path.clone(),
             source,
@@ -106,7 +127,8 @@ fn read_reports(inputs: &[PathBuf]) -> std::result::Result<Vec<Report>, MergeErr
     Ok(reports)
 }
 
-/// Combine the deserialized reports into one. Asserts a uniform `schema-version`, re-keys sessions
+/// Combine the deserialized reports into one. Refuses any input that is not the current
+/// `schema-version` (so the inputs are uniform by construction), re-keys sessions
 /// to `"<host>/<session_id>"` (keep-both), recomputes totals from the merged set, and widens the
 /// `since`/`until` window to the min/max across inputs. `host` becomes a multi-host marker.
 ///
@@ -118,6 +140,18 @@ fn read_reports(inputs: &[PathBuf]) -> std::result::Result<Vec<Report>, MergeErr
 fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError> {
     log::debug!("merge::merge_reports: inputs={}", reports.len());
 
+    // Every input, the lone one included, must be the current schema. `read_reports` already
+    // refuses an older file by path; this holds the same line for a caller handing reports in.
+    for (index, report) in reports.iter().enumerate() {
+        if report.schema_version != SCHEMA_VERSION {
+            return Err(MergeError::UnsupportedSchema {
+                input: format!("input {} ({})", index + 1, report.host),
+                found: report.schema_version,
+                expected: SCHEMA_VERSION,
+            });
+        }
+    }
+
     // Single-input identity passthrough: hand back the lone input verbatim. `<[_; 1]>::try_into`
     // moves the single element out without any index/unwrap, and falls through (returning the Vec)
     // for any other length.
@@ -125,8 +159,6 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
         Ok([only]) => return Ok(only),
         Err(reports) => reports,
     };
-
-    let schema_version = assert_uniform_schema(&reports)?;
 
     // Coverage rule (fail closed): the merged outcomes rollup is trustworthy only when EVERY
     // input ran extraction. An absent flag (`None`, a pre-Phase-4 JSON) is treated the same as
@@ -169,6 +201,9 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
         for (sid, entry) in report.sessions {
             // Keep-both: re-key by host so same-id-different-host sessions both survive.
             // Per-session `outcomes` fields ride through untouched -- only the rollup is gated.
+            // So do the per-day buckets: they stay on their session AFTER this collision step, so
+            // daily spend is always a sum of per-session cents, never an input-level total that
+            // could count a session twice.
             let key = format!("{}/{}", report.host, sid);
             sessions.insert(key, entry);
         }
@@ -183,7 +218,7 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
     let until = until.unwrap_or_else(Utc::now);
 
     Ok(Report {
-        schema_version,
+        schema_version: SCHEMA_VERSION,
         generated: Utc::now(),
         host,
         since,
@@ -199,25 +234,6 @@ fn merge_reports(reports: Vec<Report>) -> std::result::Result<Report, MergeError
         totals,
         sessions,
     })
-}
-
-/// All inputs must share the same `schema-version`; merging incompatible shapes is a typed error
-/// naming both versions. Returns the common version on success.
-fn assert_uniform_schema(reports: &[Report]) -> std::result::Result<u32, MergeError> {
-    // `first()` avoids an index panic; `merge_reports` only reaches here with >= 2 inputs, but a
-    // missing first element degenerates to "no common version" rather than panicking.
-    let Some(first) = reports.first().map(|r| r.schema_version) else {
-        return Err(MergeError::NoInputs);
-    };
-    for report in &reports[1..] {
-        if report.schema_version != first {
-            return Err(MergeError::SchemaMismatch {
-                expected: first,
-                found: report.schema_version,
-            });
-        }
-    }
-    Ok(first)
 }
 
 /// Recompute `totals` by RE-SUMMING the merged session set (never blind-summing each input's
@@ -237,8 +253,8 @@ fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>, outcomes_enabled:
     );
 
     let mut models: BTreeMap<String, ModelTokens> = BTreeMap::new();
+    let mut model_cents: BTreeMap<String, i64> = BTreeMap::new();
     let mut untracked: BTreeSet<String> = BTreeSet::new();
-    let mut total_spend = 0.0_f64;
     // Union of every merged session's raw counters, taken from the `efficiency` passthrough each v2
     // `SessionEntry` carries. The global ratios recompute from THIS union (ratio-of-sums), never an
     // average of the inputs' per-report ratios -- the Aggregation invariant across the merge seam.
@@ -258,10 +274,15 @@ fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>, outcomes_enabled:
             acc.cache_read += mt.cache_read;
             acc.total += mt.total;
             if let Some(spend) = mt.spend_usd {
-                let acc_spend = acc.spend_usd.get_or_insert(0.0);
-                *acc_spend = round_cents(*acc_spend + spend);
-                total_spend += spend;
+                *model_cents.entry(model.clone()).or_default() += to_cents(spend);
             }
+        }
+    }
+    // Spend in whole cents, the same per-session cents `build_report` sums, so a merged artifact's
+    // model rows and headline add up exactly as a single host's do.
+    for (model, c) in &model_cents {
+        if let Some(acc) = models.get_mut(model) {
+            acc.spend_usd = Some(cents::to_dollars(*c));
         }
     }
 
@@ -275,7 +296,7 @@ fn recompute_totals(sessions: &BTreeMap<String, SessionEntry>, outcomes_enabled:
 
     Totals {
         sessions: sessions.len(),
-        spend_usd: round_cents(total_spend),
+        spend_usd: cents::to_dollars(session_cents_total(sessions.values())),
         untracked_models: untracked.into_iter().collect(),
         models,
         outcomes,

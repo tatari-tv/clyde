@@ -61,7 +61,7 @@ pub fn collect_all(
 
     let sessions: Vec<CollectedSession> = groups
         .par_iter()
-        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None))
+        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None).0)
         .collect();
 
     Ok(sessions)
@@ -88,7 +88,7 @@ pub fn collect_matching(
     let matches: Vec<CollectedSession> = groups
         .iter()
         .filter(|(session_id, _)| session_id.starts_with(id))
-        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None))
+        .map(|(session_id, group_files)| build_session(session_id, group_files, config, None).0)
         .collect();
     debug!("collect_matching: id={id} matches={}", matches.len());
     Ok(matches)
@@ -99,9 +99,15 @@ pub fn collect_matching(
 #[derive(Debug, Clone, Default)]
 pub struct Collected {
     pub sessions: Vec<CollectedSession>,
-    /// Session ids that resolved to NO readable transcript, live or staged. Nothing to price, ever,
-    /// so `sessions.len() < candidates.len()` is never a silent delta.
+    /// Session ids that resolved to NO readable transcript, live or staged, and have no stored blob
+    /// to fall back on. Nothing to price, ever, so `sessions.len() < candidates.len()` is never a
+    /// silent delta.
     pub unrecoverable: Vec<String>,
+    /// Candidates that already carry a blob (one without per-day buckets) and could not be
+    /// recomputed in full: no bytes left, or a file failed to extract. Their stored blob stays,
+    /// because a partial or empty recompute would overwrite real accounting with less of it. The
+    /// next reindex offers them again.
+    pub kept: Vec<String>,
 }
 
 /// Compute the listed candidates, resolving each one's bytes through [`common::scan::pricing_files`]
@@ -139,6 +145,7 @@ pub fn collect_layouts(
     // cheap, and it keeps `unrecoverable` in the catalog's own stable row order rather than in
     // whatever order a parallel map happens to finish.
     let mut unrecoverable: Vec<String> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
     let mut priceable: Vec<(&EfficiencyCandidate, Vec<SessionFile>)> = Vec::new();
     for candidate in candidates {
         let files = pricing_files(
@@ -147,7 +154,15 @@ pub fn collect_layouts(
             Path::new(&candidate.project_dir),
             candidate.staged_path.as_deref(),
         );
-        if files.is_empty() {
+        if files.is_empty() && candidate.has_blob {
+            // A bucket-less blob whose bytes are gone: the stored accounting is all there will ever
+            // be, so it stays. Not unrecoverable -- its spend is already in the catalog.
+            debug!(
+                "collect_layouts: session_id={} has no bytes left to bucket; keeping its stored blob",
+                candidate.session_id
+            );
+            kept.push(candidate.session_id.clone());
+        } else if files.is_empty() {
             // Names the REASON, not just the id: the first run after this ships emits one of these
             // per historically-reaped session, and a wall of bare ids reads as a live crash rather
             // than as the historical fact it is.
@@ -167,23 +182,43 @@ pub fn collect_layouts(
     // `with_hosts`, NOT `new`: rule 3 must be able to refuse a work-looking slug that arrived from
     // a non-allowlisted remote, which is the same gate rule 1 applies.
     let slugs = SharedResolver::with_hosts(work_remote_hosts);
-    let sessions: Vec<CollectedSession> = priceable
+    let built: Vec<(&EfficiencyCandidate, CollectedSession, usize)> = priceable
         .par_iter()
         .map(|(candidate, files)| {
             let group_files: Vec<&SessionFile> = files.iter().collect();
-            build_session(&candidate.session_id, &group_files, config, Some(&slugs))
+            let (session, failed) = build_session(&candidate.session_id, &group_files, config, Some(&slugs));
+            (*candidate, session, failed)
         })
         .collect();
 
+    // A recompute that lost a file keeps the old blob: overwriting it would trade stored accounting
+    // for a partial one. A row with no blob has nothing to keep, so a partial recompute still beats
+    // none for it, as before.
+    let mut sessions: Vec<CollectedSession> = Vec::with_capacity(built.len());
+    for (candidate, session, failed) in built {
+        if failed > 0 && candidate.has_blob {
+            warn!(
+                "{}: {failed} transcript file(s) failed to extract; keeping the stored efficiency blob rather \
+                 than overwriting it with a partial recompute",
+                candidate.session_id
+            );
+            kept.push(candidate.session_id.clone());
+        } else {
+            sessions.push(session);
+        }
+    }
+
     debug!(
-        "collect_layouts: candidates={} computed={} unrecoverable={}",
+        "collect_layouts: candidates={} computed={} unrecoverable={} kept={}",
         candidates.len(),
         sessions.len(),
-        unrecoverable.len()
+        unrecoverable.len(),
+        kept.len()
     );
     Ok(Collected {
         sessions,
         unrecoverable,
+        kept,
     })
 }
 
@@ -203,12 +238,15 @@ fn group_by_session(files: &[SessionFile]) -> BTreeMap<String, Vec<&SessionFile>
 /// It replaces the clone root this used to take. Rule 3 no longer reads the `<root>/<org>/<repo>`
 /// shape at all (Problem 5), so a root is no longer the thing it needs; rule 4 still reads the
 /// configured roots, but rule 4 lives in `common::repo` and never came through here.
+///
+/// Returns the session and how many of its files failed to extract (warned and skipped), so the
+/// reindex path can refuse to overwrite a stored blob with a partial recompute.
 fn build_session(
     session_id: &str,
     group_files: &[&SessionFile],
     config: &EfficiencyConfig,
     slugs: Option<&SharedResolver>,
-) -> CollectedSession {
+) -> (CollectedSession, usize) {
     let file_effs: Vec<FileEfficiency> = group_files
         .iter()
         .filter_map(|f| match extract::extract(&f.path) {
@@ -262,12 +300,16 @@ fn build_session(
         outcomes.repos_touched.len(),
     );
 
-    CollectedSession {
-        session_id: session_id.to_string(),
-        last_active,
-        efficiency,
-        outcomes,
-    }
+    let failed = group_files.len() - file_effs.len();
+    (
+        CollectedSession {
+            session_id: session_id.to_string(),
+            last_active,
+            efficiency,
+            outcomes,
+        },
+        failed,
+    )
 }
 
 #[cfg(test)]

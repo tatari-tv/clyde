@@ -110,10 +110,84 @@ pub fn compute_charts(by_day: &[DayRow]) -> Charts {
     charts
 }
 
+/// Half the width of the dash a lone point draws as, in user units: a run of one day has no line to
+/// draw, and a dot would distort under the stretched aspect ratio.
+const DASH_HALF_WIDTH: i64 = 4;
+
+/// A daily share line on a FIXED 0-100% scale (the cache-read share), broken wherever a day has no
+/// value. A day with no tokens has no share, which is not a share of zero: joining across it, or
+/// drawing it at zero, would show a collapse that never happened.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShareLine {
+    /// Always [`VIEWBOX`].
+    pub viewbox: String,
+    /// One `points` string per run of consecutive valued days. A run of one day is a short flat
+    /// dash centered on its x.
+    pub runs: Vec<String>,
+    /// Every day's x, valued or not, so a backend can place one hover column per day.
+    pub xs: Vec<i64>,
+    /// The x-axis dates, subsampled like [`LineChart::x_labels`].
+    pub x_labels: Vec<String>,
+}
+
+/// The share line over `shares` (fractions, `0.0..=1.0`, clamped), one per date. `None` when the
+/// series is shorter than [`MIN_POINTS`], misaligned with its dates, or has no valued day at all.
+pub fn share_line(shares: &[Option<f64>], dates: &[&str]) -> Option<ShareLine> {
+    debug!(
+        "chart::share_line: days={} valued={}",
+        shares.len(),
+        shares.iter().flatten().count()
+    );
+    if shares.len() < MIN_POINTS || shares.len() != dates.len() || shares.iter().all(Option::is_none) {
+        debug!("chart::share_line: absent, too short, misaligned, or no valued day");
+        return None;
+    }
+    let last = (shares.len() - 1) as f64;
+    let plot = PLOT_HEIGHT - 2.0 * PLOT_MARGIN;
+    let xs: Vec<i64> = (0..shares.len())
+        .map(|i| (i as f64 / last * PLOT_WIDTH).round() as i64)
+        .collect();
+    let mut runs: Vec<Vec<(i64, i64)>> = Vec::new();
+    let mut current: Vec<(i64, i64)> = Vec::new();
+    for (x, share) in xs.iter().zip(shares) {
+        match share {
+            Some(v) => {
+                let y = (PLOT_HEIGHT - PLOT_MARGIN - v.clamp(0.0, 1.0) * plot).round() as i64;
+                current.push((*x, y));
+            }
+            None => {
+                if !current.is_empty() {
+                    runs.push(std::mem::take(&mut current));
+                }
+            }
+        }
+    }
+    if !current.is_empty() {
+        runs.push(current);
+    }
+    let runs = runs
+        .into_iter()
+        .map(|run| match run.as_slice() {
+            [(x, y)] => points(&[
+                ((x - DASH_HALF_WIDTH).max(0), *y),
+                ((x + DASH_HALF_WIDTH).min(PLOT_RIGHT), *y),
+            ]),
+            _ => points(&run),
+        })
+        .collect::<Vec<String>>();
+    trace!("chart::share_line: runs={}", runs.len());
+    Some(ShareLine {
+        viewbox: VIEWBOX.to_string(),
+        runs,
+        xs,
+        x_labels: x_labels(dates),
+    })
+}
+
 /// The three y labels: max, midpoint, zero. A midpoint whose text repeats its neighbor (a max-1
 /// integer series prints the midpoint `0.5` as `1`) is blanked, never printed twice: the gridline
 /// keeps its slot and the axis stops reading `1, 1, 0`.
-fn y_labels(max: f64, label: &impl Fn(f64) -> String) -> Vec<String> {
+pub fn y_labels(max: f64, label: &impl Fn(f64) -> String) -> Vec<String> {
     let (top, mid, low) = (label(max), label(max / 2.0), label(0.0));
     let mid = if mid == top || mid == low { String::new() } else { mid };
     vec![top, mid, low]
@@ -188,7 +262,7 @@ fn points(coords: &[(i64, i64)]) -> String {
 /// The x-axis dates, subsampled to at most [`MAX_X_LABELS`] evenly spaced entries with the first
 /// and last always included. A long window (`--since 2026-01-01` is 200+ rows) keeps every POINT
 /// and loses only labels: the line stays honest, the axis stays legible.
-fn x_labels(dates: &[&str]) -> Vec<String> {
+pub fn x_labels(dates: &[&str]) -> Vec<String> {
     if dates.len() <= MAX_X_LABELS {
         return dates.iter().map(|d| (*d).to_string()).collect();
     }

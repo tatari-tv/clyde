@@ -1,5 +1,5 @@
 {
-  "schema-version": 2,
+  "schema-version": 3,
   "generated": "2026-06-01T12:00:00Z",
   "host": "fixture-host",
   "since": "2026-05-01T00:00:00Z",
@@ -10,7 +10,7 @@
   ],
   "totals": {
     "sessions": 12,
-    "spend-usd": 49.48,
+    "spend-usd": 49.47,
     "untracked-models": [
       "claude-nimbus-2"
     ],
@@ -31,7 +31,7 @@
         "cache-1h-write": 166142,
         "cache-read": 81600174,
         "total": 87581346,
-        "spend-usd": 49.48
+        "spend-usd": 49.47
       }
     },
     "outcomes": {
@@ -69,6 +69,48 @@
           "cache-read": 7019190,
           "total": 7488740,
           "spend-usd": 4.04
+        }
+      },
+      "by-day": {
+        "2026-04-27": {
+          "claude-sonnet-4-6": {
+            "input": 9249,
+            "output": 2676,
+            "cache-5m-write": 50681,
+            "cache-1h-write": 0,
+            "cache-read": 935892,
+            "spend-cents": 54
+          }
+        },
+        "2026-04-28": {
+          "claude-sonnet-4-6": {
+            "input": 27748,
+            "output": 8028,
+            "cache-5m-write": 152044,
+            "cache-1h-write": 0,
+            "cache-read": 2807676,
+            "spend-cents": 162
+          }
+        },
+        "2026-04-29": {
+          "claude-sonnet-4-6": {
+            "input": 27748,
+            "output": 8028,
+            "cache-5m-write": 152044,
+            "cache-1h-write": 0,
+            "cache-read": 2807676,
+            "spend-cents": 161
+          }
+        },
+        "2026-04-30": {
+          "claude-sonnet-4-6": {
+            "input": 4625,
+            "output": 1338,
+            "cache-5m-write": 25341,
+            "cache-1h-write": 0,
+            "cache-read": 467946,
+            "spend-cents": 27
+          }
         }
       },
       "agent-type-costs": {
@@ -137,6 +179,48 @@
                 "total": 7488740
               }
             },
+            "by-day": {
+              "2026-04-27": {
+                "claude-sonnet-4-6": {
+                  "input": 9249,
+                  "output": 2676,
+                  "cache-5m-write": 50681,
+                  "cache-1h-write": 0,
+                  "cache-read": 935892,
+                  "total": 998498
+                }
+              },
+              "2026-04-28": {
+                "claude-sonnet-4-6": {
+                  "input": 27748,
+                  "output": 8028,
+                  "cache-5m-write": 152044,
+                  "cache-1h-write": 0,
+                  "cache-read": 2807676,
+                  "total": 2995496
+                }
+              },
+              "2026-04-29": {
+                "claude-sonnet-4-6": {
+                  "input": 27748,
+                  "output": 8028,
+                  "cache-5m-write": 152044,
+                  "cache-1h-write": 0,
+                  "cache-read": 2807676,
+                  "total": 2995496
+                }
+              },
+              "2026-04-30": {
+                "claude-sonnet-4-6": {
+                  "input": 4625,
+                  "output": 1338,
+                  "cache-5m-write": 25341,
+                  "cache-1h-write": 0,
+                  "cache-read": 467946,
+                  "total": 499250
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "wiki-write": {
@@ -179,6 +263,18 @@
           "cache-read": 8360299,
           "total": 9028454,
           "spend-usd": 5.27
+        }
+      },
+      "by-day": {
+        "2026-05-19": {
+          "claude-sonnet-4-6": {
+            "input": 103877,
+            "output": 30047,
+            "cache-5m-write": 534231,
+            "cache-1h-write": 0,
+            "cache-read": 8360299,
+            "spend-cents": 527
+          }
         }
       },
       "agent-type-costs": {
@@ -239,6 +335,18 @@
                 "total": 9028454
               }
             },
+            "by-day": {
+              "2026-05-19": {
+                "claude-sonnet-4-6": {
+                  "input": 103877,
+                  "output": 30047,
+                  "cache-5m-write": 534231,
+                  "cache-1h-write": 0,
+                  "cache-read": 8360299,
+                  "total": 9028454
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "wiki-write": {
@@ -281,6 +389,18 @@
           "cache-read": 6653433,
           "total": 7068818,
           "spend-usd": 3.7
+        }
+      },
+      "by-day": {
+        "2026-05-06": {
+          "claude-sonnet-4-6": {
+            "input": 59959,
+            "output": 17349,
+            "cache-5m-write": 338077,
+            "cache-1h-write": 0,
+            "cache-read": 6653433,
+            "spend-cents": 370
+          }
         }
       },
       "agent-type-costs": {
@@ -354,6 +474,18 @@
                 "total": 7068818
               }
             },
+            "by-day": {
+              "2026-05-06": {
+                "claude-sonnet-4-6": {
+                  "input": 59959,
+                  "output": 17349,
+                  "cache-5m-write": 338077,
+                  "cache-1h-write": 0,
+                  "cache-read": 6653433,
+                  "total": 7068818
+                }
+              }
+            },
             "by-skill": {
               "release-notes": {
                 "tokens": 589068,
@@ -401,6 +533,18 @@
           "cache-read": 8969894,
           "total": 9728324,
           "spend-usd": 5.83
+        }
+      },
+      "by-day": {
+        "2026-05-18": {
+          "claude-sonnet-4-6": {
+            "input": 119562,
+            "output": 34582,
+            "cache-5m-write": 604286,
+            "cache-1h-write": 0,
+            "cache-read": 8969894,
+            "spend-cents": 583
+          }
         }
       },
       "agent-type-costs": {
@@ -468,6 +612,18 @@
                 "total": 9728324
               }
             },
+            "by-day": {
+              "2026-05-18": {
+                "claude-sonnet-4-6": {
+                  "input": 119562,
+                  "output": 34582,
+                  "cache-5m-write": 604286,
+                  "cache-1h-write": 0,
+                  "cache-read": 8969894,
+                  "total": 9728324
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -510,6 +666,18 @@
           "cache-read": 7872623,
           "total": 8468558,
           "spend-usd": 4.83
+        }
+      },
+      "by-day": {
+        "2026-05-02": {
+          "claude-sonnet-4-6": {
+            "input": 91329,
+            "output": 26419,
+            "cache-5m-write": 478187,
+            "cache-1h-write": 0,
+            "cache-read": 7872623,
+            "spend-cents": 483
+          }
         }
       },
       "agent-type-costs": {
@@ -570,6 +738,18 @@
                 "total": 8468558
               }
             },
+            "by-day": {
+              "2026-05-02": {
+                "claude-sonnet-4-6": {
+                  "input": 91329,
+                  "output": 26419,
+                  "cache-5m-write": 478187,
+                  "cache-1h-write": 0,
+                  "cache-read": 7872623,
+                  "total": 8468558
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 1209794,
@@ -614,6 +794,18 @@
           "cache-read": 9457570,
           "total": 10288220,
           "spend-usd": null
+        }
+      },
+      "by-day": {
+        "2026-05-03": {
+          "claude-nimbus-2": {
+            "input": 132110,
+            "output": 38210,
+            "cache-5m-write": 660330,
+            "cache-1h-write": 0,
+            "cache-read": 9457570,
+            "spend-cents": 0
+          }
         }
       },
       "agent-type-costs": {
@@ -680,6 +872,18 @@
                 "total": 10288220
               }
             },
+            "by-day": {
+              "2026-05-03": {
+                "claude-nimbus-2": {
+                  "input": 132110,
+                  "output": 38210,
+                  "cache-5m-write": 660330,
+                  "cache-1h-write": 0,
+                  "cache-read": 9457570,
+                  "total": 10288220
+                }
+              }
+            },
             "by-skill": {
               "release-notes": {
                 "tokens": 2057644,
@@ -727,6 +931,18 @@
           "cache-read": 7506866,
           "total": 8048636,
           "spend-usd": 4.49
+        }
+      },
+      "by-day": {
+        "2026-05-15": {
+          "claude-sonnet-4-6": {
+            "input": 81918,
+            "output": 23698,
+            "cache-5m-write": 436154,
+            "cache-1h-write": 0,
+            "cache-read": 7506866,
+            "spend-cents": 449
+          }
         }
       },
       "agent-type-costs": {
@@ -794,6 +1010,18 @@
                 "total": 8048636
               }
             },
+            "by-day": {
+              "2026-05-15": {
+                "claude-sonnet-4-6": {
+                  "input": 81918,
+                  "output": 23698,
+                  "cache-5m-write": 436154,
+                  "cache-1h-write": 0,
+                  "cache-read": 7506866,
+                  "total": 8048636
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -836,6 +1064,18 @@
           "cache-read": 7141109,
           "total": 7628714,
           "spend-usd": 4.15
+        }
+      },
+      "by-day": {
+        "2026-05-16": {
+          "claude-sonnet-4-6": {
+            "input": 72507,
+            "output": 20977,
+            "cache-5m-write": 394121,
+            "cache-1h-write": 0,
+            "cache-read": 7141109,
+            "spend-cents": 415
+          }
         }
       },
       "agent-type-costs": {
@@ -891,6 +1131,18 @@
                 "total": 7628714
               }
             },
+            "by-day": {
+              "2026-05-16": {
+                "claude-sonnet-4-6": {
+                  "input": 72507,
+                  "output": 20977,
+                  "cache-5m-write": 394121,
+                  "cache-1h-write": 0,
+                  "cache-read": 7141109,
+                  "total": 7628714
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -928,6 +1180,38 @@
           "cache-read": 7019190,
           "total": 7488740,
           "spend-usd": 4.04
+        }
+      },
+      "by-day": {
+        "2026-04-29": {
+          "claude-sonnet-4-6": {
+            "input": 18787,
+            "output": 5435,
+            "cache-5m-write": 102946,
+            "cache-1h-write": 0,
+            "cache-read": 1901030,
+            "spend-cents": 109
+          }
+        },
+        "2026-04-30": {
+          "claude-sonnet-4-6": {
+            "input": 34685,
+            "output": 10035,
+            "cache-5m-write": 190055,
+            "cache-1h-write": 0,
+            "cache-read": 3509595,
+            "spend-cents": 202
+          }
+        },
+        "2026-05-01": {
+          "claude-sonnet-4-6": {
+            "input": 15898,
+            "output": 4600,
+            "cache-5m-write": 87109,
+            "cache-1h-write": 0,
+            "cache-read": 1608565,
+            "spend-cents": 93
+          }
         }
       },
       "agent-type-costs": {
@@ -993,6 +1277,38 @@
                 "total": 7488740
               }
             },
+            "by-day": {
+              "2026-04-29": {
+                "claude-sonnet-4-6": {
+                  "input": 18787,
+                  "output": 5435,
+                  "cache-5m-write": 102946,
+                  "cache-1h-write": 0,
+                  "cache-read": 1901030,
+                  "total": 2028198
+                }
+              },
+              "2026-04-30": {
+                "claude-sonnet-4-6": {
+                  "input": 34685,
+                  "output": 10035,
+                  "cache-5m-write": 190055,
+                  "cache-1h-write": 0,
+                  "cache-read": 3509595,
+                  "total": 3744370
+                }
+              },
+              "2026-05-01": {
+                "claude-sonnet-4-6": {
+                  "input": 15898,
+                  "output": 4600,
+                  "cache-5m-write": 87109,
+                  "cache-1h-write": 0,
+                  "cache-read": 1608565,
+                  "total": 1716172
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "wiki-write": {
@@ -1035,6 +1351,18 @@
           "cache-read": 6775352,
           "total": 7288744,
           "spend-usd": 4.3
+        }
+      },
+      "by-day": {
+        "2026-05-01": {
+          "claude-sonnet-4-6": {
+            "input": 63096,
+            "output": 18256,
+            "cache-5m-write": 352088,
+            "cache-1h-write": 79952,
+            "cache-read": 6775352,
+            "spend-cents": 430
+          }
         }
       },
       "agent-type-costs": {
@@ -1100,6 +1428,18 @@
                 "total": 7288744
               }
             },
+            "by-day": {
+              "2026-05-01": {
+                "claude-sonnet-4-6": {
+                  "input": 63096,
+                  "output": 18256,
+                  "cache-5m-write": 352088,
+                  "cache-1h-write": 79952,
+                  "cache-read": 6775352,
+                  "total": 7288744
+                }
+              }
+            },
             "by-skill": {
               "release-notes": {
                 "tokens": 662613,
@@ -1142,6 +1482,18 @@
           "cache-read": 7019190,
           "total": 7574930,
           "spend-usd": 4.56
+        }
+      },
+      "by-day": {
+        "2026-05-05": {
+          "claude-sonnet-4-6": {
+            "input": 69370,
+            "output": 20070,
+            "cache-5m-write": 380110,
+            "cache-1h-write": 86190,
+            "cache-read": 7019190,
+            "spend-cents": 456
+          }
         }
       },
       "agent-type-costs": {
@@ -1211,6 +1563,18 @@
                 "cache-1h-write": 86190,
                 "cache-read": 7019190,
                 "total": 7574930
+              }
+            },
+            "by-day": {
+              "2026-05-05": {
+                "claude-sonnet-4-6": {
+                  "input": 69370,
+                  "output": 20070,
+                  "cache-5m-write": 380110,
+                  "cache-1h-write": 86190,
+                  "cache-read": 7019190,
+                  "total": 7574930
+                }
               }
             },
             "by-skill": {},
@@ -1327,6 +1691,7 @@
                 "total": 7768688
               }
             },
+            "by-day": {},
             "by-skill": {
               "schema-review": {
                 "tokens": 647390,

@@ -25,11 +25,13 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::OnceLock;
 
+use chrono::{DateTime, Utc};
 use claude_pricing::TokenUsage;
+use common::metrics::TokenTotals;
 use eyre::{Context, Result};
 use log::{debug, trace, warn};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::metrics::{Compaction, CompactionTrigger, RawCounters};
@@ -95,6 +97,16 @@ pub struct FileEfficiency {
     /// keys this map back to the subagent by the name embedded in its `agentId` (`a<name>-<hash>`).
     /// Empty for a classic inline subagent whose type already rides `attributionAgent`.
     pub spawn_types: BTreeMap<String, String>,
+    /// The earliest record `timestamp` in the file, any record type. `fold` takes the minimum across
+    /// a session's files as the session's begin, the same MIN the catalog's `created` is
+    /// (`session::parse`), so an undated turn lands on the day the report calls the begin day.
+    pub earliest: Option<DateTime<Utc>>,
+    /// The file's modification time, the begin fallback for a session with no timestamp anywhere
+    /// (the catalog falls back to the latest file mtime, `modified`, in exactly that case).
+    pub mtime: Option<DateTime<Utc>>,
+    /// Per-scope tokens from usage records that carried no timestamp, held back because their day
+    /// is the SESSION's begin day, which one file cannot know. `fold` buckets them once it does.
+    pub undated: BTreeMap<Scope, BTreeMap<String, TokenTotals>>,
 }
 
 impl FileEfficiency {
@@ -134,6 +146,28 @@ struct Record {
     compact_metadata: Option<CompactMetadata>,
     #[serde(rename = "durationMs")]
     duration_ms: Option<u64>,
+    /// When the record was written. `None` when absent OR unparseable: a malformed timestamp must not
+    /// cost the record its usage (the line would otherwise fail to parse and be skipped whole), so it
+    /// degrades to the undated path, which still counts the tokens.
+    #[serde(default, deserialize_with = "lenient_timestamp")]
+    timestamp: Option<DateTime<Utc>>,
+}
+
+/// Parse an RFC 3339 `timestamp`, mapping any non-string or unparseable value to `None`.
+fn lenient_timestamp<'de, D>(deserializer: D) -> std::result::Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<Value>::deserialize(deserializer)?;
+    let parsed = raw
+        .as_ref()
+        .and_then(Value::as_str)
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc));
+    if parsed.is_none() && raw.as_ref().is_some_and(|v| !v.is_null()) {
+        trace!("lenient_timestamp: unparseable timestamp {raw:?} treated as undated");
+    }
+    Ok(parsed)
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,9 +256,16 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
     debug!("extract: path={}", path.display());
 
     let file = std::fs::File::open(path).with_context(|| format!("extract: failed to open {}", path.display()))?;
+    let mtime = file
+        .metadata()
+        .and_then(|m| m.modified())
+        .with_context(|| format!("extract: failed to read the mtime of {}", path.display()))?;
     let reader = BufReader::new(file);
 
-    let mut out = FileEfficiency::default();
+    let mut out = FileEfficiency {
+        mtime: Some(mtime.into()),
+        ..FileEfficiency::default()
+    };
     let mut line_no: u64 = 0;
     // Assistant `message.id`s whose message-level `usage` has already been folded in. One assistant
     // turn spans N content-block records, each stamped with the SAME `usage`; without this, an
@@ -288,16 +329,30 @@ pub fn extract(path: &Path) -> Result<FileEfficiency> {
         // of scope: the spawn tool_use lives on whichever scope did the spawning.
         collect_spawn_types(&record, &mut out.spawn_types);
 
-        apply_record(&record, &scope, out.counters_mut(&scope), &mut seen_usage_msg_ids);
+        if let Some(ts) = record.timestamp {
+            out.earliest = Some(out.earliest.map_or(ts, |cur| cur.min(ts)));
+        }
+
+        if let Some((model, usage)) = apply_record(&record, &scope, out.counters_mut(&scope), &mut seen_usage_msg_ids) {
+            out.undated
+                .entry(scope.clone())
+                .or_default()
+                .entry(model)
+                .or_default()
+                .add(&usage);
+        }
     }
 
     debug!(
-        "extract: path={} parent-turns={} subagents={} parent-tool-errors={} parent-compactions={}",
+        "extract: path={} parent-turns={} subagents={} parent-tool-errors={} parent-compactions={} \
+         undated-scopes={} earliest={:?}",
         path.display(),
         out.parent.turns,
         out.subagents.len(),
         out.parent.tool_errors,
         out.parent.compactions.len(),
+        out.undated.len(),
+        out.earliest,
     );
     Ok(out)
 }
@@ -365,7 +420,18 @@ fn first_seen_usage(message: &Message, seen: &mut HashSet<String>) -> bool {
 
 /// Apply one parsed record's signals to its scope's counters. Split out so the per-record logic is
 /// unit-testable and the `extract` loop stays a thin read-and-dispatch shell.
-fn apply_record(record: &Record, scope: &Scope, raw: &mut RawCounters, seen_usage_msg_ids: &mut HashSet<String>) {
+///
+/// A counted turn is bucketed on its own timestamp's UTC day. A counted turn with NO timestamp is
+/// returned as `(model, usage)` instead: its day is the session's begin day, which only `fold` can
+/// know, and the caller holds it until then. Dedupe has already run, so the turn a repeated
+/// `message.id` keeps is the FIRST record's, timestamp included.
+fn apply_record(
+    record: &Record,
+    scope: &Scope,
+    raw: &mut RawCounters,
+    seen_usage_msg_ids: &mut HashSet<String>,
+) -> Option<(String, TokenUsage)> {
+    let mut undated = None;
     // Assistant record: token/cost + model-mix + effort + web tool use + per-workflow attribution.
     // GATED on `first_seen_usage`: message-level `usage` is folded in ONCE per `message.id`, because
     // one assistant turn spans N content-block records that all repeat the same `usage`. Everything
@@ -386,6 +452,10 @@ fn apply_record(record: &Record, scope: &Scope, raw: &mut RawCounters, seen_usag
             + token_usage.cache_1h_write_tokens;
         let model = message.model.as_deref().unwrap_or("");
         let cost = raw.add_usage(model, &token_usage);
+        match record.timestamp {
+            Some(ts) => raw.bucket_usage(ts.date_naive(), model, &token_usage),
+            None => undated = Some((model.to_string(), token_usage.clone())),
+        }
 
         if let Some(stu) = &usage.server_tool_use {
             raw.web_search_requests += stu.web_search_requests;
@@ -435,6 +505,7 @@ fn apply_record(record: &Record, scope: &Scope, raw: &mut RawCounters, seen_usag
         raw.interrupts_text += 1;
         trace!("apply_record: scope={scope:?} interrupts_text marker");
     }
+    undated
 }
 
 /// A `compact_boundary` record -> a [`Compaction`], iff `trigger` parses to a known value. An

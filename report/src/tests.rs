@@ -142,7 +142,7 @@ fn run(cfg: &Config) -> eyre::Result<crate::RunResult> {
 }
 
 #[test]
-fn collect_reads_catalog_and_emits_schema_v2() {
+fn collect_reads_catalog_and_emits_schema_v3() {
     let tmp = TempDir::new().unwrap();
     let db = Db::open_at(&tmp.path().join("sessions.db")).unwrap();
     insert_indexed(
@@ -177,7 +177,7 @@ fn collect_reads_catalog_and_emits_schema_v2() {
     }
 
     let report: Report = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
-    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.schema_version, 3);
     assert_eq!(report.totals.sessions, 2);
     assert!(report.sessions.contains_key(SID_A));
     // Title comes from the catalog row (no Haiku call in collect).
@@ -443,7 +443,7 @@ fn collect_empty_window_writes_valid_empty_artifact() {
     let result = run(&cfg).unwrap();
     assert_eq!(result.sessions_emitted, 0);
     let report: Report = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
-    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.schema_version, 3);
     assert_eq!(report.totals.sessions, 0);
     assert!(report.sessions.is_empty());
 }

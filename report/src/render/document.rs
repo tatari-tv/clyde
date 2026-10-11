@@ -328,7 +328,7 @@ fn unobserved_spend(md: &mut String, block: &ContextBlock<'_>) {
     let _ = writeln!(md, "- {}", sections::heavy_on_short_line(block));
     let _ = writeln!(md);
     if block.bands.bands.is_some() {
-        let _ = writeln!(md, "{}", sections::NO_OBSERVED_CAVEAT);
+        let _ = writeln!(md, "{}", sections::NO_OBSERVED_SEE_ABOVE);
         let _ = writeln!(md);
     }
     let flags = sections::flag_rows(block);
@@ -472,7 +472,9 @@ fn usage_profile(
 ) {
     section(md, Section::UsageProfile.title(), prose, reg);
 
-    if let Some(sentence) = sections::carried_in_sentence(block) {
+    let _ = writeln!(md, "{} {}", sections::DAY_BASIS, sections::day_coverage_sentence(block));
+    let _ = writeln!(md);
+    if let Some(sentence) = sections::unbucketed_sentence(block) {
         let _ = writeln!(md, "{sentence}");
         let _ = writeln!(md);
     }
@@ -480,7 +482,7 @@ fn usage_profile(
     let series = [
         ("Daily spend", block.aggregates.charts.by_day_spend.as_ref(), true),
         (
-            "Daily sessions",
+            "Daily active sessions",
             block.aggregates.charts.by_day_sessions.as_ref(),
             false,
         ),

@@ -28,7 +28,7 @@ clyde report eval --fixture fixtures/report/local
 
 | file | what it is |
 |---|---|
-| `report.json` | the collected schema-v2 artifact (generated) |
+| `report.json` | the collected schema-v3 artifact (generated) |
 | `eval.yml` | the per-fixture spec: required sections, required citations, judge floors, persona |
 | `prior.json` | a prior-period artifact, lighting up Month over Month (medium only) |
 | `analytics.json` | a synthesized Analytics cost export, lighting up Reconciliation (medium only) |
@@ -39,7 +39,7 @@ clyde report eval --fixture fixtures/report/local
 |---|---|
 | `small` | one repo, no subagents, a seven-day window, all `git-origin` attribution |
 | `medium` | three orgs, seven repos, subagents with a positive `(main-session)` residual, the full outcome mix, all four `repo-source` values, partial enrich coverage, `--prior`, `--reconcile` |
-| `pathological` | zero outcomes, one unpriced nonzero-token model, a multi-day gap, carried-in sessions, an all-`path-guess` attribution, zero enrich coverage |
+| `pathological` | zero outcomes, one unpriced nonzero-token model, a multi-day gap, sessions begun before the window (one with no per-day buckets), an all-`path-guess` attribution, zero enrich coverage |
 
 ## The two layers
 

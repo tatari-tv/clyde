@@ -163,7 +163,17 @@ fn tiered_cost(tokens: u64, total_input: u64, standard_rate: f64, premium_rate: 
 pub fn calculate_cost(pricing: &ModelPricing, usage: &TokenUsage) -> f64 {
     let total_input =
         usage.input_tokens + usage.cache_5m_write_tokens + usage.cache_1h_write_tokens + usage.cache_read_tokens;
+    calculate_cost_at_tier(pricing, usage, total_input)
+}
 
+/// Price `usage` at the long-context tier a DIFFERENT, larger usage selected: `tier_input` is the
+/// total input (fresh + cache writes + cache reads) whose size decides standard vs above-200k rates.
+///
+/// [`calculate_cost`] is this with `tier_input` taken from `usage` itself. The split exists for a
+/// slice of an already-priced whole: a day's share of a session's tokens must be costed at the
+/// session's tier, or the slices would not be proportional to the whole they divide.
+pub fn calculate_cost_at_tier(pricing: &ModelPricing, usage: &TokenUsage, tier_input: u64) -> f64 {
+    let total_input = tier_input;
     tiered_cost(
         usage.input_tokens,
         total_input,

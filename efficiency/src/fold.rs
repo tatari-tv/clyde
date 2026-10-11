@@ -11,10 +11,11 @@
 
 use std::collections::BTreeMap;
 
-use log::debug;
+use chrono::{DateTime, NaiveDate, Utc};
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 
-use crate::extract::{FileEfficiency, SubagentRaw, name_from_agent_id};
+use crate::extract::{FileEfficiency, Scope, SubagentRaw, name_from_agent_id};
 use crate::metrics::{EfficiencySignals, RawCounters, finalize};
 
 /// Signals for one subagent scope, tagged with its `agentId` and (if known) its `attributionAgent`
@@ -92,6 +93,19 @@ pub fn fold(session_id: &str, files: &[FileEfficiency]) -> SessionEfficiency {
         }
     }
 
+    // Undated turns land on the session's begin day, in the scope that spent them, so every scope's
+    // `by_day` still sums to its own `by_model` and the aggregate below inherits that.
+    let begin = begin_day(session_id, files);
+    for file in files {
+        for (scope, by_model) in &file.undated {
+            let raw = match scope {
+                Scope::Parent => &mut parent_own,
+                Scope::Subagent(id) => &mut subagents.entry(id.clone()).or_default().raw,
+            };
+            raw.bucket_totals(begin, by_model);
+        }
+    }
+
     // The invariant: aggregate = finalize(parent_own ⊎ all subagents' counters). Recomputed from
     // the unioned RAW counters, never field-summed from the sub-scope derived metrics.
     let mut aggregate_raw = parent_own.clone();
@@ -130,6 +144,27 @@ pub fn fold(session_id: &str, files: &[FileEfficiency]) -> SessionEfficiency {
         aggregate,
         subagents: subagent_breakdown,
         flags: Vec::new(),
+    }
+}
+
+/// The session's begin as a UTC day: the earliest record timestamp across every file (the catalog's
+/// `created`), else the latest file mtime (the catalog's `modified`, which is what a report falls
+/// back to as `begin` when no record carries a timestamp). The epoch only for a hand-built file set
+/// carrying neither, which real extraction cannot produce: `extract` fails when it cannot read a
+/// file's mtime.
+fn begin_day(session_id: &str, files: &[FileEfficiency]) -> NaiveDate {
+    let earliest = files.iter().filter_map(|f| f.earliest).min();
+    let latest_mtime = files.iter().filter_map(|f| f.mtime).max();
+    match earliest.or(latest_mtime) {
+        Some(at) => at.date_naive(),
+        None => {
+            if files.iter().any(|f| !f.undated.is_empty()) {
+                warn!(
+                    "fold: session_id={session_id} has undated turns and no timestamp or mtime; bucketing them on the epoch"
+                );
+            }
+            DateTime::<Utc>::UNIX_EPOCH.date_naive()
+        }
     }
 }
 

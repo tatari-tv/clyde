@@ -109,10 +109,15 @@ pub(super) const BANDS_NOT_COLLECTED: &str = "Outcomes were not collected for th
      with --no-outcomes, or merged from reports that did not collect them), so spend cannot be split by \
      what it produced.";
 
-/// The caveat both band sections carry verbatim: what `no-observed-outcome` does and does not mean.
+/// The caveat on what `no-observed-outcome` does and does not mean, printed verbatim ONCE, under the
+/// band table.
 pub(super) const NO_OBSERVED_CAVEAT: &str = "`no-observed-outcome` is not \"no result\": a sample shows it is mostly \
      `claude -p` hook sessions that answered a question, and files written through Bash heredocs or \
      commits made by subprocesses are invisible to `outcome::extract`.";
+
+/// The Unobserved section's pointer back to [`NO_OBSERVED_CAVEAT`] instead of a second copy of it.
+pub(super) const NO_OBSERVED_SEE_ABOVE: &str = "What `no-observed-outcome` does and does not mean is noted \
+     under the band table above.";
 
 /// Lead under "What the Money Produced".
 pub(super) const BANDS_LEAD: &str = "Every session falls in exactly one band, and the first rule that matches \
@@ -434,18 +439,48 @@ pub(super) fn repo_outcome_tail(row: &RepoRow) -> String {
     format!(": {}", parts.join(", "))
 }
 
-/// The carried-in sentence: sessions that began before the window opened. `None` when there are none.
-pub(super) fn carried_in_sentence(block: &ContextBlock<'_>) -> Option<String> {
-    let carried = &block.aggregates.carried_in;
-    if carried.sessions == 0 {
+/// What a day means on every daily figure: a whole UTC day, carrying the spend of the turns that
+/// ran on it. A sub-day `--since`/`--until` still windows sessions, never days.
+pub(super) const DAY_BASIS: &str = "Daily figures are whole UTC days: each session's spend sits on \
+     the days its turns ran, not the day it began.";
+
+/// How the daily series reconciles with the headline, in one line: its sum, plus whatever the
+/// window's sessions spent on days outside it, is the period's spend to the cent.
+pub(super) fn day_coverage_sentence(block: &ContextBlock<'_>) -> String {
+    let c = &block.aggregates.day_coverage;
+    if c.out_of_window_cents == 0 {
+        return format!(
+            "The daily series accounts for all {} of the period's spend.",
+            block.totals.spend
+        );
+    }
+    format!(
+        "The daily series shows {} of the period's {} spend; the other {} was spent on days outside \
+         the window by {} the window includes.",
+        c.in_window,
+        block.totals.spend,
+        c.out_of_window,
+        plural(c.out_of_window_sessions, "session"),
+    )
+}
+
+/// The footnote for sessions placed on their begin day because they carry no per-day buckets.
+/// `None` when every session is bucketed.
+pub(super) fn unbucketed_sentence(block: &ContextBlock<'_>) -> Option<String> {
+    let c = &block.aggregates.day_coverage;
+    if c.unbucketed_sessions == 0 {
         return None;
     }
+    let (has, rest) = if c.unbucketed_sessions == 1 {
+        ("has", "its spend sits whole on the day it began")
+    } else {
+        ("have", "their spend sits whole on the day each began")
+    };
     Some(format!(
-        "{} began before the window opened and carried in {} tokens and {}; the by-day series \
-         below does not cover that spend.",
-        plural(carried.sessions, "session"),
-        carried.tokens_human,
-        carried.spend
+        "{} {has} no per-day breakdown (the transcript was gone when the catalog was rebuilt), so \
+         {rest}: {}.",
+        plural(c.unbucketed_sessions, "session"),
+        c.unbucketed_spend,
     ))
 }
 

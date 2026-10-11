@@ -530,6 +530,90 @@ fn pricing_files_prefers_live_when_both_roots_hold_the_session() {
 }
 
 #[test]
+fn pricing_files_unions_a_live_parent_with_a_subagent_only_staged() {
+    // The mixed case: the parent is still live, but a dormant subagent was staged and then reaped
+    // from the live tree. Live-only resolution priced the parent and silently dropped the subagent.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged_root = tmp.path().join("staged");
+    let parent = live_session(&projects, PROJECT_DIR_NAME, PARENT_UUID_A, &["agent-live.jsonl"]);
+    let staged = staged_session(
+        &staged_root,
+        PARENT_UUID_A,
+        true,
+        &["agent-live.jsonl", "agent-reaped.jsonl"],
+    );
+
+    let files = pricing_files(
+        PARENT_UUID_A,
+        &parent,
+        &projects.join(PROJECT_DIR_NAME),
+        Some(staged.as_path()),
+    );
+
+    let names: Vec<(SessionFileKind, String, bool)> = files
+        .iter()
+        .map(|f| {
+            (
+                f.kind,
+                f.path.file_name().unwrap().to_string_lossy().into_owned(),
+                f.path.starts_with(&projects),
+            )
+        })
+        .collect();
+    assert_eq!(
+        files.len(),
+        3,
+        "live parent + live subagent + the staged-only subagent: {names:?}"
+    );
+    assert!(
+        names.contains(&(SessionFileKind::Subagent, "agent-reaped.jsonl".to_string(), false)),
+        "the reaped subagent comes from the staged copy: {names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .filter(|(_, name, _)| name != "agent-reaped.jsonl")
+            .all(|(_, _, live)| *live),
+        "a file both roots hold resolves to the live copy: {names:?}"
+    );
+}
+
+#[test]
+fn pricing_files_unions_a_staged_parent_with_a_live_subagent() {
+    // The reverse mix: the parent was reaped live (staged copy survives) while a subagent file is
+    // still live.
+    let tmp = TempDir::new().unwrap();
+    let projects = tmp.path().join("projects");
+    let staged_root = tmp.path().join("staged");
+    let project_dir = projects.join(PROJECT_DIR_NAME);
+    write_jsonl(
+        &project_dir
+            .join(PARENT_UUID_A)
+            .join("subagents")
+            .join("agent-one.jsonl"),
+        r#"{"type":"assistant"}"#,
+    );
+    let staged = staged_session(&staged_root, PARENT_UUID_A, true, &[]);
+
+    let files = pricing_files(
+        PARENT_UUID_A,
+        &project_dir.join(format!("{PARENT_UUID_A}.jsonl")),
+        &project_dir,
+        Some(staged.as_path()),
+    );
+
+    assert_eq!(files.len(), 2);
+    let parent = files.iter().find(|f| f.kind == SessionFileKind::Parent).unwrap();
+    assert!(
+        parent.path.starts_with(&staged_root),
+        "the parent resolves from staging"
+    );
+    let sub = files.iter().find(|f| f.kind == SessionFileKind::Subagent).unwrap();
+    assert!(sub.path.starts_with(&projects), "the subagent resolves live");
+}
+
+#[test]
 fn pricing_files_falls_back_to_the_staged_copy() {
     // The archived case: the live transcript is reaped, the staged copy holds the money.
     let tmp = TempDir::new().unwrap();

@@ -18,7 +18,7 @@ tags:
 **Title:** Staff Software Engineer
 **Team:** Platform Tooling
 **Period:** 2026-05-01 - 2026-05-20
-**Total Spend:** $49.48
+**Total Spend:** $49.47
 **Pricing Basis:** Total spend is modeled Claude Code catalog spend at published list rates; account-level billed spend comes from Claude Enterprise Analytics.
 **Sessions:** 12 across 1 repository
 **Active Days:** 9 of 20
@@ -52,9 +52,9 @@ Every session falls in exactly one band, and the first rule that matches wins. N
 
 | Model | Sessions Using | Total Tokens | Spend |
 |-------|---------------:|-------------:|------:|
-| `claude-sonnet-4-6` | 11 | 87.6M | $49.48 |
+| `claude-sonnet-4-6` | 11 | 87.6M | $49.47 |
 | `claude-nimbus-2` | 1 | 10.3M | (untracked) |
-| **Total** | 12 | 97.9M | $49.48 |
+| **Total** | 12 | 97.9M | $49.47 |
 
 **Note: spend for the following models was not computed because they are not in this binary's pricing table: `claude-nimbus-2`. The total above understates actual spend. Update clyde's pricing data to include them.**
 
@@ -64,11 +64,11 @@ No Claude Enterprise Analytics cost export was supplied for this render (--recon
 
 ## Agent-Type Cost Attribution
 
-Every dollar of the period's $49.48 spend lands in exactly one row below; `(main-session)` carried the most. The `(main-session)` row is work a session did itself rather than delegating.
+Every dollar of the period's $49.47 spend lands in exactly one row below; `(main-session)` carried the most. The `(main-session)` row is work a session did itself rather than delegating.
 
 | Agent Type | Tokens | Spend |
 |------------|-------:|------:|
-| `(main-session)` | 97.9M | $49.48 |
+| `(main-session)` | 97.9M | $49.47 |
 
 ## The Efficiency Story
 
@@ -83,14 +83,14 @@ Every dollar of the period's $49.48 spend lands in exactly one row below; `(main
 | `release-notes` | 3.3M | $6.13 |
 | `schema-review` | 1.9M | $3.44 |
 
-Coverage: $9.57 of $49.48 (19.3%), embedded-price basis
+Coverage: $9.57 of $49.47 (19.3%), embedded-price basis
 
 | MCP Tool | Tokens | Spend |
 |---|-------:|------:|
 | `wiki-write` | 6.5M | $11.99 |
 | `tracker-search` | 3.4M | $6.23 |
 
-Coverage: $18.22 of $49.48 (36.8%), embedded-price basis
+Coverage: $18.22 of $49.47 (36.8%), embedded-price basis
 
 ## Unobserved and Flagged Spend
 
@@ -99,7 +99,7 @@ Spend worth a second look. These rows overlap and are not a partition of the tot
 - Sessions in `no-observed-outcome`: 12, spending $49.47 (100% of session spend).
 - Heavy model on a short session: 0 sessions, $0.00. Heavy means a model name containing `opus`, `fable`; short means at most 3 turns.
 
-`no-observed-outcome` is not "no result": a sample shows it is mostly `claude -p` hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to `outcome::extract`.
+What `no-observed-outcome` does and does not mean is noted under the band table above.
 
 No session carries an efficiency flag.
 
@@ -107,19 +107,21 @@ No session carries an efficiency flag.
 
 ### jrivera
 
-12 sessions across 1 repository, 97.9M tokens, $49.48.
+12 sessions across 1 repository, 97.9M tokens, $49.47.
 
-- `jrivera/driftwood` (12 sessions, 97.9M tokens, $49.48 spend)
+- `jrivera/driftwood` (12 sessions, 97.9M tokens, $49.47 spend)
 
 ## Usage Profile
 
-3 sessions began before the window opened and carried in 22.7M tokens and $12.34; the by-day series below does not cover that spend.
+Daily figures are whole UTC days: each session's spend sits on the days its turns ran, not the day it began. The daily series shows $38.06 of the period's $49.47 spend; the other $11.41 was spent on days outside the window by 3 sessions the window includes.
+
+1 session has no per-day breakdown (the transcript was gone when the catalog was rebuilt), so its spend sits whole on the day it began: $4.26.
 
 **Daily spend**
 
 | Day | Spend |
 |-----|------:|
-| 2026-05-01 | $4.30 |
+| 2026-05-01 | $5.23 |
 | 2026-05-02 | $4.83 |
 | 2026-05-03 | $0.00 |
 | 2026-05-04 | $0.00 |
@@ -140,11 +142,11 @@ No session carries an efficiency flag.
 | 2026-05-19 | $5.27 |
 | 2026-05-20 | $0.00 |
 
-**Daily sessions**
+**Daily active sessions**
 
 | Day | Sessions |
 |-----|------:|
-| 2026-05-01 | 1 |
+| 2026-05-01 | 2 |
 | 2026-05-02 | 1 |
 | 2026-05-03 | 1 |
 | 2026-05-04 | 0 |

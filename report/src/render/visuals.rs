@@ -13,7 +13,7 @@ use super::ContextBlock;
 use super::sections;
 use crate::aggregate::{self, UNATTRIBUTED_ORG};
 use crate::bands::Band;
-use crate::chart::{bars, calendar, histogram, stack, treemap, waterfall};
+use crate::chart::{self, bars, calendar, histogram, stack, treemap, waterfall};
 use crate::fmt::{format_int, format_usd, format_usd_edge};
 
 /// Categorical palette slots a chart may assign (`--cat-1` .. `--cat-5`); [`MUTED_TONE`] is the
@@ -33,6 +33,35 @@ pub(super) struct Visuals {
     pub(super) waterfall: Cascade,
     pub(super) histogram: Option<Histogram>,
     pub(super) calendar: Option<Calendar>,
+    /// Daily spend stacked by model, colored like [`Self::models`].
+    pub(super) daily: Option<DailyStack>,
+    /// The daily cache-read share line.
+    pub(super) cache_share: Option<ShareChart>,
+}
+
+/// Daily spend as standing columns, one per day, split by model.
+pub(super) struct DailyStack {
+    /// Models in Cost Summary order, each with the tone the Cost Summary bar gives it.
+    pub(super) legend: Vec<(String, usize)>,
+    pub(super) columns: Vec<DailyColumn>,
+    /// Max, midpoint and zero.
+    pub(super) y_labels: Vec<String>,
+    pub(super) x_labels: Vec<String>,
+}
+
+pub(super) struct DailyColumn {
+    pub(super) tip: String,
+    pub(super) x: i64,
+    pub(super) w: i64,
+    /// One block per legend model with spend that day, bottom first, with its tone.
+    pub(super) blocks: Vec<(stack::Block, usize)>,
+}
+
+/// The daily cache-read share line and its per-day tooltips.
+pub(super) struct ShareChart {
+    pub(super) line: chart::ShareLine,
+    pub(super) tips: Vec<String>,
+    pub(super) y_labels: Vec<String>,
 }
 
 /// Paired %-sessions / %-spend bars, one row per org or repo, in spend order.
@@ -167,6 +196,8 @@ pub(super) fn build(block: &ContextBlock<'_>) -> Visuals {
         waterfall: build_waterfall(block),
         histogram: build_histogram(block),
         calendar: build_calendar(block),
+        daily: build_daily(block),
+        cache_share: build_cache_share(block),
     }
 }
 
@@ -315,13 +346,20 @@ fn build_treemap(block: &ContextBlock<'_>, total_spend: f64) -> Option<Treemap> 
     Some(Treemap { groups })
 }
 
-fn build_models(block: &ContextBlock<'_>) -> Option<Stack> {
-    let rows: Vec<&super::ModelRow> = block
+/// The priced models with spend, in Cost Summary order (spend descending). Index `i` is the model's
+/// palette slot (`i % TONES`) on EVERY chart that colors by model, so a model is one color on the
+/// page.
+fn priced_models<'a>(block: &'a ContextBlock<'_>) -> Vec<&'a super::ModelRow> {
+    block
         .totals
         .models
         .iter()
         .filter(|m| m.spend_usd.is_some_and(|s| s > 0.0))
-        .collect();
+        .collect()
+}
+
+fn build_models(block: &ContextBlock<'_>) -> Option<Stack> {
+    let rows = priced_models(block);
     let values: Vec<f64> = rows.iter().map(|m| m.spend_usd.unwrap_or(0.0)).collect();
     let total: f64 = values.iter().sum();
     let segments = stack::stack(&values)?;
@@ -449,6 +487,90 @@ fn build_histogram(block: &ContextBlock<'_>) -> Option<Histogram> {
     })
 }
 
+fn build_daily(block: &ContextBlock<'_>) -> Option<DailyStack> {
+    let rows = &block.aggregates.by_day;
+    let legend: Vec<(String, usize)> = priced_models(block)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, m)| rows.iter().any(|r| r.model_cents.get(&m.model).is_some_and(|c| *c > 0)))
+        .map(|(i, m)| (m.model.clone(), i % TONES))
+        .collect();
+    let values: Vec<Vec<f64>> = rows
+        .iter()
+        .map(|r| {
+            legend
+                .iter()
+                .map(|(model, _)| r.model_cents.get(model).copied().unwrap_or(0) as f64)
+                .collect()
+        })
+        .collect();
+    let laid = stack::columns(&values)?;
+    let max_cents = rows.iter().map(|r| r.spend_cents).max().unwrap_or(0);
+    let columns = rows
+        .iter()
+        .zip(laid)
+        .map(|(row, col)| {
+            let parts: Vec<String> = legend
+                .iter()
+                .filter_map(|(model, _)| {
+                    let c = row.model_cents.get(model).copied().unwrap_or(0);
+                    (c > 0).then(|| format!("{model} {}", format_usd(crate::cents::to_dollars(c))))
+                })
+                .collect();
+            let tip = if parts.is_empty() {
+                format!("{}: {}", row.date, row.spend)
+            } else {
+                format!("{}: {} ({})", row.date, row.spend, parts.join(", "))
+            };
+            let blocks = col
+                .blocks
+                .into_iter()
+                .zip(&legend)
+                .filter(|(b, _)| b.h > 0)
+                .map(|(b, (_, tone))| (b, *tone))
+                .collect();
+            DailyColumn {
+                tip,
+                x: col.x,
+                w: col.w,
+                blocks,
+            }
+        })
+        .collect();
+    let dates: Vec<&str> = rows.iter().map(|r| r.date.as_str()).collect();
+    Some(DailyStack {
+        legend,
+        columns,
+        y_labels: chart::line::y_labels(crate::cents::to_dollars(max_cents), &format_usd),
+        x_labels: chart::line::x_labels(&dates),
+    })
+}
+
+/// The daily cache-read share as a whole-day percent with one decimal (`"96.4%"`), the format the
+/// period-wide share prints in.
+fn share_percent(share: f64) -> String {
+    format!("{:.1}%", share * 100.0)
+}
+
+fn build_cache_share(block: &ContextBlock<'_>) -> Option<ShareChart> {
+    let rows = &block.aggregates.by_day;
+    let shares: Vec<Option<f64>> = rows.iter().map(|r| r.cache_read_share).collect();
+    let dates: Vec<&str> = rows.iter().map(|r| r.date.as_str()).collect();
+    let line = chart::share_line(&shares, &dates)?;
+    let tips = rows
+        .iter()
+        .map(|r| match r.cache_read_share {
+            Some(share) => format!("{}: {} of input read from cache", r.date, share_percent(share)),
+            None => format!("{}: no tokens", r.date),
+        })
+        .collect();
+    Some(ShareChart {
+        line,
+        tips,
+        y_labels: vec![share_percent(1.0), share_percent(0.5), share_percent(0.0)],
+    })
+}
+
 fn build_calendar(block: &ContextBlock<'_>) -> Option<Calendar> {
     let rows = &block.aggregates.by_day;
     let first = NaiveDate::parse_from_str(&rows.first()?.date, "%Y-%m-%d").ok()?;
@@ -516,6 +638,17 @@ pub(super) fn display_strings(v: &Visuals) -> Vec<String> {
     }
     if let Some(c) = &v.calendar {
         out.extend(c.cells.iter().map(|(_, tip)| tip.clone()));
+    }
+    if let Some(d) = &v.daily {
+        out.extend(d.legend.iter().map(|(model, _)| model.clone()));
+        out.extend(d.columns.iter().map(|c| c.tip.clone()));
+        out.extend(d.y_labels.iter().cloned());
+        out.extend(d.x_labels.iter().cloned());
+    }
+    if let Some(c) = &v.cache_share {
+        out.extend(c.tips.iter().cloned());
+        out.extend(c.y_labels.iter().cloned());
+        out.extend(c.line.x_labels.iter().cloned());
     }
     out
 }

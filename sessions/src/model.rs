@@ -229,6 +229,10 @@ pub struct EfficiencyCandidate {
     pub transcript_path: PathBuf,
     pub project_dir: String,
     pub staged_path: Option<PathBuf>,
+    /// `true` when the row already carries an efficiency blob, one that predates per-day buckets.
+    /// Such a row is offered for recompute, but its stored accounting is the fallback: when its bytes
+    /// are gone or a recompute fails, the old blob stays and the row is never counted unrecoverable.
+    pub has_blob: bool,
 }
 
 /// Counts from a reindex pass.

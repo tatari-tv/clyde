@@ -141,7 +141,8 @@ fn the_medium_prior_window_is_the_same_length() {
 }
 
 /// PATHOLOGICAL is the absent-section fixture: zero outcomes, an unpriced nonzero-token model, a
-/// multi-day gap, carried-in sessions, and an attribution that is entirely `path-guess`.
+/// multi-day gap, sessions that began before `since` (one with no per-day buckets), and an
+/// attribution that is entirely `path-guess`.
 ///
 /// BITES: give any pathological session an outcome and the zero-outcome assertion fails, which is
 /// what keeps `forbid-sections: Quantified Output` a real check rather than a coincidence.
@@ -176,7 +177,10 @@ fn pathological_carries_every_absent_section_case() {
     );
 
     let aggregates = aggregate::compute(&report, crate::aggregate::DEFAULT_OUTLIERS, &pricing());
-    assert_eq!(aggregates.carried_in.sessions, 3, "pathological must carry sessions in");
+    let coverage = &aggregates.day_coverage;
+    assert_eq!(coverage.out_of_window_sessions, 3, "three sessions spend before since");
+    assert!(coverage.out_of_window_cents > 0);
+    assert_eq!(coverage.unbucketed_sessions, 1, "one session has no per-day buckets");
     let gap = aggregates.by_day.windows(4).any(|w| w.iter().all(|d| !d.active));
     assert!(gap, "pathological must contain a multi-day gap of inactive rows");
     assert!(
@@ -248,4 +252,40 @@ fn the_vocabulary_names_nothing_real() {
 #[test]
 fn the_generated_const_parses() {
     assert_eq!(ts(GENERATED).to_rfc3339(), "2026-06-01T12:00:00+00:00");
+}
+
+/// Every synthesized scope's day buckets sum to its per-model split, model for model, the invariant
+/// `efficiency::fold` guarantees for a real blob. BITES: drop the last-day remainder in `spread`.
+#[test]
+fn every_fixture_scope_buckets_sum_to_its_models() {
+    for kind in [Kind::Small, Kind::Medium, Kind::MediumPrior, Kind::Pathological] {
+        let report = build(kind, &pricing()).unwrap();
+        for (sid, entry) in &report.sessions {
+            let raw = &entry.efficiency.aggregate.raw;
+            if raw.by_day.is_empty() {
+                continue;
+            }
+            let mut sums: BTreeMap<String, u64> = BTreeMap::new();
+            for by_model in raw.by_day.values() {
+                for (m, t) in by_model {
+                    *sums.entry(m.clone()).or_default() += t.total;
+                }
+            }
+            let want: BTreeMap<String, u64> = raw.by_model.iter().map(|(m, t)| (m.clone(), t.total)).collect();
+            assert_eq!(sums, want, "{kind:?} {sid}");
+        }
+    }
+}
+
+/// The medium fixture has sessions that ran across midnight, so the bucketed daily series differs
+/// from the begin-day one.
+#[test]
+fn the_medium_fixture_has_multi_day_sessions() {
+    let report = build(Kind::Medium, &pricing()).unwrap();
+    let multi = report
+        .sessions
+        .values()
+        .filter(|e| e.by_day.as_ref().is_some_and(|d| d.len() > 1))
+        .count();
+    assert!(multi >= 5, "medium carries multi-day sessions, saw {multi}");
 }

@@ -63,6 +63,7 @@ fn entry(
         },
         jsonl_paths: Vec::new(),
         models,
+        by_day: None,
         outcomes: None,
         agent_type_costs: BTreeMap::new(),
         cache_read_share: None,
@@ -84,7 +85,7 @@ fn report_with(since: &str, until: &str, sessions: Vec<(&str, SessionEntry)>) ->
         map.insert(sid.to_string(), e);
     }
     Report {
-        schema_version: 2,
+        schema_version: crate::report::SCHEMA_VERSION,
         generated: ts("2026-07-01T00:00:00Z"),
         host: "desk".into(),
         since: ts(since),
@@ -235,13 +236,12 @@ fn by_repo_excludes_none_repo_and_sorts_by_spend_descending() {
     assert_eq!(aggregates.by_repo[0].models, vec!["claude-opus-4-7".to_string()]);
 }
 
-/// Inverts the pre-Phase-4 pin (`by_day_clamps_boundary_session_into_period_and_preserves_spend_sum`):
-/// a session begun BEFORE `since` used to clamp onto the `since` date, inflating day 1 (design
-/// finding 2, measured 4.4x on the real window). It must now get its own [`CarriedIn`] row instead,
-/// appear on NO `by-day` date row (not even `since`'s), and `by-day`'s spend sum must fall short of
-/// `totals.spend` by exactly the carried-in amount.
+/// Inverts `by_day_excludes_pre_since_session_into_carried_in_row`: the carried-in row is gone.
+/// A session with no per-day buckets still sits on its begin day, and one that began before
+/// `since` has its spend in the OUT-OF-WINDOW remainder (never clamped onto `since`, never on a
+/// row), so the rows plus the remainder equal the headline to the cent.
 #[test]
-fn by_day_excludes_pre_since_session_into_carried_in_row() {
+fn by_day_puts_an_unbucketed_pre_since_session_out_of_window() {
     let report = report_with(
         "2026-06-01T00:00:00Z",
         "2026-07-01T00:00:00Z",
@@ -272,46 +272,109 @@ fn by_day_excludes_pre_since_session_into_carried_in_row() {
     );
 
     let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
-
-    let since_date = report.since.date_naive();
-    let until_date = report.until.date_naive();
-    for row in &aggregates.by_day {
-        let d = chrono::NaiveDate::parse_from_str(&row.date, "%Y-%m-%d").unwrap();
-        assert!(
-            d >= since_date && d <= until_date,
-            "by-day date {} must lie within [{}, {}]",
-            row.date,
-            since_date,
-            until_date
-        );
-    }
     assert!(
         !aggregates.by_day.iter().any(|r| r.date == "2026-05-31"),
         "the out-of-period date must never appear as a by-day row"
     );
-    let since_row = aggregates
-        .by_day
-        .iter()
-        .find(|r| r.date == "2026-06-01")
-        .expect("since's own date must have a zero-fill row");
+    let since_row = aggregates.by_day.iter().find(|r| r.date == "2026-06-01").unwrap();
+    assert_eq!(since_row.sessions, 0, "never clamped onto the since row");
+    assert!(!since_row.active);
+
+    let c = &aggregates.day_coverage;
+    assert_eq!((c.out_of_window_sessions, c.out_of_window.as_str()), (1, "$3.00"));
+    assert_eq!((c.unbucketed_sessions, c.unbucketed_spend.as_str()), (2, "$4.50"));
+    assert_eq!(c.in_window, "$1.50");
+    let rows: i64 = aggregates.by_day.iter().map(|r| r.spend_cents).sum();
+    assert_eq!(rows, 150);
     assert_eq!(
-        since_row.sessions, 0,
-        "the pre-since session must NOT be clamped onto the since row"
+        rows + c.out_of_window_cents,
+        crate::cents::to_cents(report.totals.spend_usd)
     );
-    assert!(!since_row.active, "an unvisited since row is inactive");
+}
 
-    assert_eq!(aggregates.carried_in.sessions, 1);
-    assert_eq!(aggregates.carried_in.spend, "$3.00");
-    assert_eq!(aggregates.carried_in.tokens_human, "1,000");
-
-    let sum: f64 = aggregates.by_day.iter().map(|r| r.spend_raw).sum();
-    assert!(
-        (sum - 1.5).abs() < 1e-9,
-        "by-day must sum to only the in-window session's spend, not the carried-in one: got {sum}"
+/// A day-bucketed entry: tokens and cents per (day, model).
+fn bucketed(begin: &str, days: &[(&str, &str, u64, i64)]) -> SessionEntry {
+    let total_cents: i64 = days.iter().map(|d| d.3).sum();
+    let mut e = entry(
+        Some("bucketed"),
+        Some("tatari-tv/clyde"),
+        ts(begin),
+        days[0].1,
+        0,
+        Some(total_cents as f64 / 100.0),
     );
-    assert!(
-        (sum - report.totals.spend_usd).abs() > 1.0,
-        "by-day no longer accounts for totals.spend once carried-in is excluded (design finding 2)"
+    let mut by_day: BTreeMap<chrono::NaiveDate, BTreeMap<String, crate::report::DayModel>> = BTreeMap::new();
+    e.models.clear();
+    for (day, model, cache_read, cents) in days {
+        by_day.entry(day.parse().unwrap()).or_default().insert(
+            (*model).to_string(),
+            crate::report::DayModel {
+                input: 10,
+                cache_read: *cache_read,
+                spend_cents: *cents,
+                ..Default::default()
+            },
+        );
+        let m = e.models.entry((*model).to_string()).or_default();
+        m.input += 10;
+        m.cache_read += cache_read;
+        m.total += 10 + cache_read;
+        m.spend_usd = Some(m.spend_usd.unwrap_or(0.0) + *cents as f64 / 100.0);
+    }
+    e.by_day = Some(by_day);
+    e
+}
+
+/// THE fix: a multi-day session's spend lands on the days its turns ran, per model, a turn after
+/// `until` lands in the remainder, and the day's cache-read share is computed from its own tokens.
+/// BITES: put a bucketed session back on its begin day and the June 3 row reads $0.00.
+#[test]
+fn by_day_puts_each_turn_on_its_day_and_the_rest_out_of_window() {
+    let report = report_with(
+        "2026-06-01T00:00:00Z",
+        "2026-06-05T00:00:00Z",
+        vec![(
+            "multi",
+            bucketed(
+                "2026-06-02T22:00:00Z",
+                &[
+                    ("2026-06-02", "claude-opus-4-7", 90, 125),
+                    ("2026-06-03", "claude-opus-4-7", 30, 300),
+                    ("2026-06-03", "claude-sonnet-4-6", 0, 75),
+                    ("2026-06-06", "claude-opus-4-7", 0, 40),
+                ],
+            ),
+        )],
+    );
+    let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
+    let day = |d: &str| aggregates.by_day.iter().find(|r| r.date == d).unwrap();
+    assert_eq!(day("2026-06-02").spend, "$1.25");
+    assert_eq!(day("2026-06-03").spend, "$3.75");
+    assert_eq!(day("2026-06-03").model_cents.get("claude-sonnet-4-6"), Some(&75));
+    assert_eq!(day("2026-06-03").model_cents.get("claude-opus-4-7"), Some(&300));
+    assert_eq!(
+        (day("2026-06-02").sessions, day("2026-06-03").sessions),
+        (1, 1),
+        "active on both days"
+    );
+    assert_eq!(day("2026-06-04").sessions, 0);
+    assert_eq!(day("2026-06-02").cache_read_share, Some(0.9));
+    assert_eq!(day("2026-06-03").cache_read_share, Some(0.6));
+    assert_eq!(
+        day("2026-06-04").cache_read_share,
+        None,
+        "no tokens is no share, not zero"
+    );
+
+    let c = &aggregates.day_coverage;
+    assert_eq!(
+        (c.out_of_window_cents, c.out_of_window_sessions, c.unbucketed_sessions),
+        (40, 1, 0)
+    );
+    assert_eq!(c.in_window, "$5.00");
+    assert_eq!(
+        aggregates.by_day.iter().map(|r| r.spend_cents).sum::<i64>() + c.out_of_window_cents,
+        crate::cents::to_cents(report.totals.spend_usd)
     );
 }
 
@@ -372,8 +435,8 @@ fn since_row_counts_only_sessions_that_began_on_since_date() {
         .expect("since row must exist");
     assert_eq!(since_row.sessions, 2, "only sessions that began ON since count here");
     assert_eq!(
-        aggregates.carried_in.sessions, 3,
-        "the pre-since sessions land in carried-in"
+        aggregates.day_coverage.out_of_window_sessions, 3,
+        "the pre-since sessions land in the out-of-window remainder"
     );
 }
 
@@ -437,7 +500,7 @@ fn outliers_are_sorted_by_spend_and_truncated_to_n() {
 /// zero rows. It now zero-fills one row per calendar date in the window regardless of activity
 /// (design finding 3, gaps visible), so an empty report still gets a full, all-inactive series.
 #[test]
-fn compute_on_empty_report_zero_fills_by_day_and_yields_empty_carried_in() {
+fn compute_on_empty_report_zero_fills_by_day_and_yields_empty_coverage() {
     let report = report_with("2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z", vec![]);
     let aggregates = compute(&report, DEFAULT_OUTLIERS, &pricing());
     assert!(aggregates.by_org.is_empty());
@@ -450,8 +513,9 @@ fn compute_on_empty_report_zero_fills_by_day_and_yields_empty_carried_in() {
     assert!(aggregates.by_day.iter().any(|r| r.date == "2026-06-01"));
     assert!(aggregates.by_day.iter().any(|r| r.date == "2026-07-01"));
 
-    assert_eq!(aggregates.carried_in.sessions, 0);
-    assert_eq!(aggregates.carried_in.spend, "$0.00");
+    assert_eq!(aggregates.day_coverage.out_of_window_sessions, 0);
+    assert_eq!(aggregates.day_coverage.out_of_window, "$0.00");
+    assert_eq!(aggregates.day_coverage.in_window, "$0.00");
 
     // No models -> zero-denominator share is "0.0%", and with no cache-bearing unpriced model the
     // counterfactual is still defined (a $0.00 baseline), not absent.
@@ -488,7 +552,7 @@ fn report_with_totals(models: Vec<(&str, ModelTokens)>, actual_spend: f64) -> Re
         totals_models.insert(name.to_string(), mt);
     }
     Report {
-        schema_version: 2,
+        schema_version: crate::report::SCHEMA_VERSION,
         generated: ts("2026-07-01T00:00:00Z"),
         host: "desk".into(),
         since: ts("2026-06-01T00:00:00Z"),

@@ -341,14 +341,21 @@ fn two_renders_are_byte_identical() {
     }
 }
 
-/// The medium page draws every chart current data supports: both daily lines, the treemap and the
-/// calendar as inline SVG; paired bars, the model stack, the waterfall and the histogram as HTML.
+/// The medium page draws every chart current data supports: the daily stacked columns, the share
+/// and sessions lines, the treemap and the calendar as inline SVG; paired bars, the model stack, the
+/// waterfall and the histogram as HTML.
 #[test]
 fn the_page_draws_every_chart_the_data_supports() {
     let html = page(&medium(), 10);
-    assert_eq!(html.matches("<svg").count(), 4, "two lines, the treemap, the calendar");
+    assert_eq!(
+        html.matches("<svg").count(),
+        5,
+        "daily columns, two lines, the treemap, the calendar"
+    );
     assert!(html.contains("<polyline class=\"line\""));
-    assert!(html.contains("data-tip=\"2026-04-01: $18.43\""));
+    assert!(html.contains("<figure class=\"chart daily-fig\">"));
+    assert!(html.contains("<figure class=\"chart tone-cache\">"));
+    assert!(html.contains("data-tip=\"2026-04-01: $11.80\""));
     assert_eq!(
         html.matches("<figure class=\"chart pairs-fig\"").count(),
         2,
@@ -376,13 +383,19 @@ fn a_chart_with_no_drawable_series_renders_its_empty_state() {
     let html = with_case(
         &medium(),
         |agg| {
-            agg.charts.by_day_spend = None;
             agg.charts.by_day_sessions = None;
+            for row in &mut agg.by_day {
+                row.cache_read_share = None;
+            }
         },
         |block| render(block, &SlotProse::new(), 10).unwrap(),
     );
     assert_eq!(html.matches("<polyline").count(), 0);
-    assert_eq!(html.matches(line_empty_marker()).count(), 2);
+    assert_eq!(
+        html.matches(line_empty_marker()).count(),
+        2,
+        "the share line and the sessions line"
+    );
     assert!(!html.contains("NaN"));
 }
 
@@ -410,8 +423,9 @@ fn zero_data_renders_every_chart_as_an_empty_state() {
         |block| render(block, &SlotProse::new(), 10).unwrap(),
     );
     assert!(!html.contains("<svg"));
-    // outcome bar, by org, by repo, treemap, two lines, calendar, waterfall, model stack, histogram
-    assert_eq!(html.matches(line_empty_marker()).count(), 10);
+    // outcome bar, by org, by repo, treemap, daily columns, calendar, two lines, waterfall, model
+    // stack, histogram
+    assert_eq!(html.matches(line_empty_marker()).count(), 11);
     assert!(!html.contains("NaN"));
 }
 
@@ -578,7 +592,7 @@ fn fill_fails_on_an_unknown_token_by_name() {
 
 #[test]
 fn hover_columns_tile_the_plot_width() {
-    let cols = line::columns(&[(0, 5), (500, 5), (1000, 5)], 1000);
+    let cols = line::columns(&[0, 500, 1000], 1000);
     assert_eq!(cols, vec![(0, 250), (250, 750), (750, 1000)]);
     assert!(line::columns(&[], 1000).is_empty());
 }
@@ -695,4 +709,153 @@ fn bands_a_report_with_no_flags_says_so() {
     let (html, md) = both_with_waste(&case, &["opus"], 3, 10);
     assert!(html.contains("No session carries an efficiency flag."));
     assert!(md.contains("No session carries an efficiency flag."));
+}
+
+/// Orchestrator-directed fix: every spend total on the page comes from ONE source, the sum of each
+/// session's integer cents. On the medium golden the header read $671.28 (rounded from an f64 sum
+/// over a window-wide re-pricing) under a band total of $671.26 (session cents). Now the header,
+/// the band total, the model table's total row, the repo rows and the daily series (plus its stated
+/// out-of-window remainder) agree to the cent on every committed fixture. BITES: price
+/// `totals.spend-usd` from the window-wide union again and the medium header moves off $671.26.
+#[test]
+fn spend_totals_header_band_and_session_cents_agree_on_every_fixture() {
+    for case in cases().into_iter().take(3) {
+        let session_cents: i64 = case
+            .report
+            .sessions
+            .values()
+            .map(|e| e.spend_usd.map_or(0, crate::cents::to_cents))
+            .sum();
+        let want = crate::fmt::format_usd(crate::cents::to_dollars(session_cents));
+        with_case(
+            &case,
+            |_| {},
+            |block| {
+                assert_eq!(block.totals.spend, want, "header");
+                assert_eq!(block.totals.total_row.spend, want, "model table total row");
+                let bands = block.bands.bands.as_ref().expect("every fixture collected outcomes");
+                assert_eq!(bands.total_spend, want, "band total");
+                let models: i64 = block
+                    .totals
+                    .models
+                    .iter()
+                    .filter_map(|m| m.spend_usd)
+                    .map(crate::cents::to_cents)
+                    .sum();
+                assert_eq!(models, session_cents, "model rows");
+                let coverage = &block.aggregates.day_coverage;
+                let days: i64 = block.aggregates.by_day.iter().map(|r| r.spend_cents).sum();
+                assert_eq!(
+                    days + coverage.out_of_window_cents,
+                    session_cents,
+                    "daily rows + remainder"
+                );
+                assert_eq!(coverage.in_window_cents, days);
+            },
+        );
+        let html = page(&case, 10);
+        assert!(
+            html.contains(&format!("<dd>{}</dd>", page::escape(&want))),
+            "the strip shows {want}"
+        );
+    }
+}
+
+/// Daily dollars are an allocation, never a re-pricing: for every bucketed session in every
+/// committed fixture, its daily cents sum EXACTLY to its own cents, per model and in total.
+#[test]
+fn daily_cents_for_every_fixture_session_sum_exactly_to_its_cents() {
+    let mut checked = 0;
+    for case in cases().into_iter().take(3) {
+        for (sid, entry) in &case.report.sessions {
+            let Some(by_day) = &entry.by_day else { continue };
+            let total: i64 = by_day.values().flat_map(|m| m.values()).map(|d| d.spend_cents).sum();
+            assert_eq!(total, entry.spend_usd.map_or(0, crate::cents::to_cents), "{sid}");
+            for (model, mt) in &entry.models {
+                let model_days: i64 = by_day
+                    .values()
+                    .filter_map(|m| m.get(model))
+                    .map(|d| d.spend_cents)
+                    .sum();
+                assert_eq!(
+                    model_days,
+                    mt.spend_usd.map_or(0, crate::cents::to_cents),
+                    "{sid} {model}"
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 50, "the fixtures carry bucketed sessions, saw {checked}");
+}
+
+/// Orchestrator-directed fix: the `no-observed-outcome` caveat is printed ONCE, under the band
+/// table, and the Unobserved section points back to it instead of repeating it, in both backends.
+#[test]
+fn bands_the_no_observed_caveat_appears_once_with_a_pointer_back() {
+    let case = medium();
+    let html = page(&case, 10);
+    let caveat = page::escape("is not \"no result\"");
+    assert_eq!(html.matches(&caveat).count(), 1, "one copy of the caveat");
+    let bands_at = html.find("What the Money Produced").unwrap();
+    let caveat_at = html.find(&caveat).unwrap();
+    let unobserved_at = html.find("Unobserved and Flagged Spend").unwrap();
+    assert!(
+        bands_at < caveat_at && caveat_at < unobserved_at,
+        "under the band table"
+    );
+    assert!(html.contains("is noted under the band table above"), "the pointer back");
+
+    let md = with_case(
+        &case,
+        |_| {},
+        |block| {
+            crate::render::document::render(block, &SlotProse::new(), crate::render::document::ChartMode::Table)
+                .markdown
+        },
+    );
+    assert_eq!(
+        md.matches("is not \"no result\"").count(),
+        1,
+        "markdown carries one copy too"
+    );
+    assert!(md.contains("is noted under the band table above"));
+}
+
+/// Spend Over Time states the day basis, reconciles the series with the headline in one line, and
+/// on the pathological fixture names the session with no per-day buckets.
+#[test]
+fn spend_over_time_states_coverage_and_the_unbucketed_footnote() {
+    let medium_html = page(&medium(), 10);
+    assert!(medium_html.contains("Daily figures are whole UTC days"));
+    assert!(medium_html.contains("The daily series"));
+    assert!(!medium_html.contains("no per-day breakdown"));
+    let patho = cases().into_iter().nth(2).unwrap();
+    let html = page(&patho, 10);
+    assert!(
+        html.contains("1 session has no per-day breakdown"),
+        "the unbucketed footnote"
+    );
+    assert!(html.contains("was spent on days outside the window by 3 sessions"));
+}
+
+/// The daily stacked chart colors each model as the Cost Summary model bar does, so a model is one
+/// color on the page.
+#[test]
+fn daily_spend_by_model_uses_the_cost_summary_model_colors() {
+    with_case(
+        &medium(),
+        |_| {},
+        |block| {
+            let v = visuals::build(block);
+            let daily = v.daily.as_ref().expect("medium draws the daily stack");
+            let models = v.models.as_ref().expect("medium draws the model bar");
+            for (model, tone) in &daily.legend {
+                let seg = models.segments.iter().find(|s| &s.label == model).unwrap();
+                assert_eq!(seg.tone, *tone, "{model}");
+            }
+            assert_eq!(daily.columns.len(), block.aggregates.by_day.len(), "one column per day");
+            assert!(daily.legend.len() >= 2);
+        },
+    );
 }

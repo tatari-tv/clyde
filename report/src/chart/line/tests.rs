@@ -16,8 +16,7 @@ fn rows(series: &[(&str, usize, f64)]) -> Vec<DayRow> {
             spend_raw: *spend,
             spend: format_usd(*spend),
             active: *sessions > 0,
-            spend_percent_of_max: None,
-            sessions_percent_of_max: None,
+            ..DayRow::default()
         })
         .collect()
 }
@@ -34,8 +33,7 @@ fn long_series(days: usize) -> Vec<DayRow> {
                 spend_raw: spend,
                 spend: format_usd(spend),
                 active: i % 7 > 0,
-                spend_percent_of_max: None,
-                sessions_percent_of_max: None,
+                ..DayRow::default()
             }
         })
         .collect()
@@ -169,4 +167,50 @@ fn a_distinct_midpoint_label_stays() {
     let labels = y_labels(4.0, &|v| format!("{v}"));
 
     assert_eq!(labels, vec!["4", "2", "0"]);
+}
+
+/// The share line breaks at a day with no value instead of joining across it or dropping to zero,
+/// draws a lone valued day as a dash, and maps shares onto a fixed 0-100% scale.
+#[test]
+fn share_line_breaks_at_unvalued_days_on_a_fixed_scale() {
+    let dates = ["d1", "d2", "d3", "d4", "d5"];
+    let line = share_line(&[Some(1.0), Some(0.5), None, Some(0.0), None], &dates).unwrap();
+    assert_eq!(line.viewbox, VIEWBOX);
+    assert_eq!(line.xs, vec![0, 250, 500, 750, 1000]);
+    assert_eq!(
+        line.runs,
+        vec!["0,10 250,150".to_string(), "746,290 754,290".to_string()]
+    );
+    assert_eq!(line.x_labels, dates.iter().map(|d| d.to_string()).collect::<Vec<_>>());
+}
+
+/// A lone point at an edge keeps its dash inside the plot, and an out-of-range share clamps.
+#[test]
+fn share_line_dashes_clamp_at_the_edges() {
+    let line = share_line(&[Some(1.7), None, Some(-0.2)], &["a", "b", "c"]).unwrap();
+    assert_eq!(line.runs, vec!["0,10 4,10".to_string(), "996,290 1000,290".to_string()]);
+    let full = share_line(&[Some(0.25), Some(0.75)], &["a", "b"]).unwrap();
+    assert_eq!(full.runs, vec!["0,220 1000,80".to_string()]);
+}
+
+#[test]
+fn share_line_is_absent_without_a_drawable_series() {
+    assert!(share_line(&[Some(0.5)], &["a"]).is_none(), "one day is not a line");
+    assert!(share_line(&[None, None], &["a", "b"]).is_none(), "no valued day");
+    assert!(share_line(&[Some(0.5), Some(0.5)], &["a"]).is_none(), "misaligned");
+    assert!(share_line(&[], &[]).is_none());
+}
+
+/// `y_labels` is shared with the HTML backend's stacked daily chart: max, blanked duplicate mid, zero.
+#[test]
+fn y_labels_blank_a_midpoint_that_repeats_a_neighbour() {
+    let money = |v: f64| format_usd(v);
+    assert_eq!(y_labels(10.0, &money), vec!["$10.00", "$5.00", "$0.00"]);
+    let int = |v: f64| format_int(v.round() as u64);
+    assert_eq!(y_labels(1.0, &int), vec!["1", "", "0"]);
+    assert_eq!(
+        y_labels(0.0, &int),
+        vec!["0", "", "0"],
+        "a zero series blanks the mid against both"
+    );
 }

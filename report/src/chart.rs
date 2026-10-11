@@ -6,9 +6,9 @@
 //! the view model formats with [`crate::fmt`], and a backend writes geometry and labels through
 //! separate paths (`render/html/page.rs`).
 //!
-//! - [`line`]: the by-day polyline (markdown and HTML).
+//! - [`line`]: the by-day polyline (markdown and HTML), and the broken daily share line.
 //! - [`bars`]: paired share bars, two series against one scale.
-//! - [`stack`]: one bar split into segments that tile it exactly.
+//! - [`stack`]: one bar split into segments that tile it exactly, and stacked daily columns.
 //! - [`treemap`]: squarified two-level treemap.
 //! - [`waterfall`]: list price, cache savings, spend.
 //! - [`histogram`]: counts over fixed log-ish cost buckets.
@@ -22,7 +22,9 @@ pub mod stack;
 pub mod treemap;
 pub mod waterfall;
 
-pub use line::{BASELINE_Y, Charts, GRIDLINE_YS, LineChart, PLOT_RIGHT, VIEWBOX, compute_charts};
+pub use line::{
+    BASELINE_Y, Charts, GRIDLINE_YS, LineChart, PLOT_RIGHT, ShareLine, VIEWBOX, compute_charts, share_line,
+};
 
 /// A whole track in tenths of a percent: `1000` is `100.0%`.
 pub const FULL: i64 = 1000;

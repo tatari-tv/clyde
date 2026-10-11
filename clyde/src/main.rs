@@ -1270,7 +1270,7 @@ fn print_reindex(reindex: &ReindexStats, stage: &StageStats, eff: &efficiency::P
             reindex.archived,
         );
         // `unrecoverable` is printed unconditionally, not only when non-zero: it is the accounting
-        // half of `candidates` (candidates == computed + unrecoverable), and a count that appears
+        // half of `candidates` (candidates == computed + unrecoverable + kept), and a count that appears
         // only sometimes reads as an error rather than as a standing ledger line.
         // The staging sweep is reported so the first run's dormant-backlog copy is visible rather
         // than a mysterious pause. A separate object in the JSON shape (a sibling of `reindex` and
@@ -1290,12 +1290,15 @@ fn print_reindex(reindex: &ReindexStats, stage: &StageStats, eff: &efficiency::P
         // the embedded feed could not price a model their turns actually used; the model ids
         // themselves are in each session's blob (`clyde efficiency session <id>`).
         println!(
-            "{} efficiency: candidates {}, computed {}, written {}, unrecoverable {}, unpriced {}",
+            "{} efficiency: candidates {}, computed {}, written {}, unrecoverable {}, recomputed {}, kept {}, \
+             unpriced {}",
             "✓".green(),
             eff.candidates,
             eff.computed,
             eff.written,
             eff.unrecoverable,
+            eff.recomputed,
+            eff.kept,
             eff.unpriced,
         );
     } else {

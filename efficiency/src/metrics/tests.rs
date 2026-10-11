@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -390,4 +392,46 @@ fn cache_1h_write_fraction_healthy_vs_degraded() {
         ..RawCounters::default()
     };
     assert_eq!(cache_1h_write_fraction(&degraded), Some(0.9));
+}
+
+/// `merge` unions day buckets key-wise (day, then model), and `add_entry` buckets on the entry's own
+/// timestamp. BITES: drop the `by_day` loop in `merge` and the second scope's day vanishes.
+#[test]
+fn by_day_merge_unions_buckets_and_add_entry_buckets_on_its_timestamp() {
+    let d1 = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+    let d2 = NaiveDate::from_ymd_opt(2026, 4, 2).unwrap();
+    let mut a = RawCounters::default();
+    a.bucket_usage(d1, "m", &usage(10, 1, 0, 0, 0));
+    let mut b = RawCounters::default();
+    b.bucket_usage(d1, "m", &usage(5, 0, 0, 0, 0));
+    b.bucket_usage(d2, "n", &usage(3, 0, 0, 0, 0));
+    a.merge(&b);
+    assert_eq!(a.by_day[&d1]["m"].input, 15);
+    assert_eq!(a.by_day[&d2]["n"].input, 3);
+
+    let entries = load(USAGE_FIXTURE);
+    let signals = aggregate_tokens(&entries);
+    let bucketed: u64 = signals
+        .raw
+        .by_day
+        .values()
+        .flat_map(|m| m.values())
+        .map(|t| t.total)
+        .sum();
+    assert_eq!(bucketed, signals.raw.total_tokens(), "every parsed entry is bucketed");
+}
+
+/// A blob written before `by-day` existed deserializes to an empty map, and a fresh one always
+/// serializes the key (the catalog's backfill predicate reads its absence).
+#[test]
+fn by_day_is_always_serialized_and_defaults_when_absent() {
+    let json = serde_json::to_value(RawCounters::default()).unwrap();
+    assert!(
+        json.get("by-day").is_some(),
+        "an empty map still writes the key: {json}"
+    );
+    let mut old = json.clone();
+    old.as_object_mut().unwrap().remove("by-day");
+    let parsed: RawCounters = serde_json::from_value(old).unwrap();
+    assert!(parsed.by_day.is_empty());
 }

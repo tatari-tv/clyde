@@ -108,7 +108,7 @@ fn pr(number: u64, url: &str) -> PrRef {
 }
 
 #[test]
-fn write_json_round_trips_and_emits_schema_v2() {
+fn write_json_round_trips_and_emits_schema_v3() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("claude-report.json");
     let s = opus_session(SID_A, Some("do the thing"));
@@ -128,7 +128,7 @@ fn write_json_round_trips_and_emits_schema_v2() {
 
     let body = fs::read_to_string(&path).unwrap();
     let report: Report = serde_json::from_str(&body).unwrap();
-    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.schema_version, 3);
     assert_eq!(report.schema_version, SCHEMA_VERSION);
     assert_eq!(report.host, "desk");
     assert_eq!(report.totals.sessions, 1);
@@ -225,7 +225,7 @@ fn json_uses_kebab_case_keys_and_carries_v2_fields() {
     .unwrap();
 
     let body = fs::read_to_string(&path).unwrap();
-    assert!(body.contains("\"schema-version\": 2"), "body:\n{}", body);
+    assert!(body.contains("\"schema-version\": 3"), "body:\n{}", body);
     assert!(body.contains("\"spend-usd\":"));
     assert!(body.contains("\"cache-5m-write\":"));
     assert!(body.contains("\"cache-1h-write\":"));
@@ -1123,4 +1123,213 @@ fn subtract_subagents_recovers_parent_only_counters() {
     // A degenerate signals check: an all-zero scope yields no derived signals (never NaN).
     let empty = finalize(RawCounters::default());
     assert_eq!(empty, EfficiencySignals::default());
+}
+
+/// One model's usage on one day, bucketed the way `efficiency::extract` buckets a dated turn.
+fn dated(raw: &mut RawCounters, day: &str, model: &str, usage: TokenUsage) {
+    raw.add_usage(model, &usage);
+    raw.bucket_usage(day.parse().unwrap(), model, &usage);
+}
+
+fn day_cents(entry: &SessionEntry) -> i64 {
+    entry
+        .by_day
+        .as_ref()
+        .expect("bucketed")
+        .values()
+        .flat_map(|m| m.values())
+        .map(|d| d.spend_cents)
+        .sum()
+}
+
+/// A multi-day session's buckets carry its spend split across its days, and the daily cents sum
+/// EXACTLY to the session's cents (not to a re-pricing of each day).
+#[test]
+fn by_day_cents_sum_exactly_to_the_session_cents() {
+    let mut parent = RawCounters::default();
+    dated(&mut parent, "2026-04-10", "claude-opus-4-7", opus_usage());
+    dated(&mut parent, "2026-04-11", "claude-opus-4-7", small_usage(333));
+    dated(&mut parent, "2026-04-12", "claude-sonnet-4-6", small_usage(777));
+    let s = collected(SID_A, None, session_eff(SID_A, parent, vec![]), None);
+    let report = build_report(
+        &[s],
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "h",
+        &pricing(),
+        true,
+        false,
+        &[],
+    )
+    .unwrap();
+    let entry = &report.sessions[SID_A];
+    assert_eq!(day_cents(entry), to_cents(entry.spend_usd.unwrap()));
+    let by_day = entry.by_day.as_ref().unwrap();
+    assert_eq!(by_day.len(), 3);
+    for (model, mt) in &entry.models {
+        let model_days: i64 = by_day
+            .values()
+            .filter_map(|m| m.get(model))
+            .map(|d| d.spend_cents)
+            .sum();
+        assert_eq!(
+            model_days,
+            to_cents(mt.spend_usd.unwrap()),
+            "{model}: per-model cents sum too"
+        );
+    }
+    assert_eq!(report.totals.spend_usd, entry.spend_usd.unwrap());
+}
+
+/// Day weights use the SESSION's long-context tier. Two days of equal tokens whose combined input
+/// crosses 200k must split evenly; pricing each day at its own (standard) tier would also split
+/// evenly here, so the check that bites is the opposite one: a day that alone crosses the tier is
+/// weighted at the same rates as the small day, not at a premium only it would pay.
+#[test]
+fn by_day_weights_cost_each_day_at_the_sessions_tier() {
+    let mut parent = RawCounters::default();
+    dated(&mut parent, "2026-04-10", "claude-sonnet-4-5", small_usage(250_000));
+    dated(&mut parent, "2026-04-11", "claude-sonnet-4-5", small_usage(50_000));
+    let s = collected(SID_A, None, session_eff(SID_A, parent, vec![]), None);
+    let report = build_report(
+        &[s],
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "h",
+        &pricing(),
+        true,
+        false,
+        &[],
+    )
+    .unwrap();
+    let entry = &report.sessions[SID_A];
+    let by_day = entry.by_day.as_ref().unwrap();
+    let a = by_day[&"2026-04-10".parse::<NaiveDate>().unwrap()]["claude-sonnet-4-5"].spend_cents;
+    let b = by_day[&"2026-04-11".parse::<NaiveDate>().unwrap()]["claude-sonnet-4-5"].spend_cents;
+    assert_eq!(a + b, to_cents(entry.spend_usd.unwrap()));
+    // One tier for both days means the split is exactly the 5:1 token ratio, to the cent.
+    assert!(
+        (a - 5 * b).abs() <= 5,
+        "a={a} b={b}: weights must be proportional at one tier"
+    );
+}
+
+/// A blob with tokens and no buckets (pre-v15, bytes gone) has no `by-day`; a zero-token session
+/// has an empty one.
+#[test]
+fn by_day_is_none_for_a_bucket_less_blob() {
+    let s = opus_session(SID_A, None);
+    let report = build_report(
+        &[s],
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "h",
+        &pricing(),
+        true,
+        false,
+        &[],
+    )
+    .unwrap();
+    assert!(report.sessions[SID_A].by_day.is_none());
+    let json = serde_json::to_value(&report).unwrap();
+    assert!(json["sessions"][SID_A].get("by-day").is_none(), "absent, not null");
+
+    let empty = collected(SID_B, None, session_eff(SID_B, RawCounters::default(), vec![]), None);
+    let report = build_report(
+        &[empty],
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "h",
+        &pricing(),
+        true,
+        false,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(report.sessions[SID_B].by_day.as_ref().map(BTreeMap::len), Some(0));
+}
+
+/// `--no-rollup` does not double-count days: the residual's buckets plus every subagent row's
+/// buckets equal the rolled-up session's buckets, token for token. BITES: drop the `by_day` loop
+/// in `subtract_subagents` and the residual keeps the subagent's tokens on its day too.
+#[test]
+fn by_day_no_rollup_residual_plus_subagents_equals_the_rollup() {
+    let mut parent = RawCounters::default();
+    dated(&mut parent, "2026-04-10", "claude-opus-4-7", opus_usage());
+    dated(&mut parent, "2026-04-11", "claude-opus-4-7", small_usage(40));
+    let mut sub = RawCounters::default();
+    dated(&mut sub, "2026-04-11", "claude-opus-4-7", small_usage(900));
+    dated(&mut sub, "2026-04-12", "claude-opus-4-7", small_usage(60));
+    let eff = session_eff(SID_A, parent, vec![subagent("agent_1", Some("worker"), sub)]);
+    let s = collected(SID_A, None, eff, None);
+    let window = (ts("2026-04-01T00:00:00Z"), ts("2026-04-30T00:00:00Z"));
+    let rolled = build_report(
+        std::slice::from_ref(&s),
+        window.0,
+        window.1,
+        "h",
+        &pricing(),
+        true,
+        false,
+        &[],
+    )
+    .unwrap();
+    let exploded = build_report(&[s], window.0, window.1, "h", &pricing(), true, true, &[]).unwrap();
+    assert_eq!(exploded.sessions.len(), 2);
+
+    let tokens = |entries: Vec<&SessionEntry>| {
+        let mut out: BTreeMap<NaiveDate, u64> = BTreeMap::new();
+        for e in entries {
+            for (day, by_model) in e.by_day.as_ref().unwrap() {
+                *out.entry(*day).or_default() += by_model.values().map(DayModel::total).sum::<u64>();
+            }
+        }
+        out
+    };
+    assert_eq!(
+        tokens(exploded.sessions.values().collect()),
+        tokens(rolled.sessions.values().collect())
+    );
+    for entry in exploded.sessions.values() {
+        assert_eq!(
+            day_cents(entry),
+            to_cents(entry.spend_usd.unwrap()),
+            "each row's cents sum"
+        );
+    }
+}
+
+/// THE one-source rule for totals: `totals.spend-usd` is the sum of session cents, and the model
+/// rows sum to it exactly. Pricing the window-wide union would pick a long-context tier on a
+/// month's input no session saw. BITES: price `totals.models` from the union again.
+#[test]
+fn totals_spend_is_the_sum_of_session_cents_and_model_rows_sum_to_it() {
+    let sessions: Vec<CollectedSession> = (0..3)
+        .map(|i| {
+            let sid = format!("9d4c1f28-7a3b-4a9c-93b1-6e2a90d1f04{i}");
+            let raw = raw_with("claude-sonnet-4-5", small_usage(150_000 + i * 7_777));
+            collected(&sid, None, session_eff(&sid, raw, vec![]), None)
+        })
+        .collect();
+    let report = build_report(
+        &sessions,
+        ts("2026-04-01T00:00:00Z"),
+        ts("2026-04-30T00:00:00Z"),
+        "h",
+        &pricing(),
+        true,
+        false,
+        &[],
+    )
+    .unwrap();
+    let session_sum: i64 = report.sessions.values().map(|e| to_cents(e.spend_usd.unwrap())).sum();
+    assert_eq!(to_cents(report.totals.spend_usd), session_sum);
+    let model_sum: i64 = report
+        .totals
+        .models
+        .values()
+        .filter_map(|m| m.spend_usd)
+        .map(to_cents)
+        .sum();
+    assert_eq!(model_sum, session_sum);
 }

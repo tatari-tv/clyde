@@ -282,7 +282,7 @@ fn a_v13_db_is_snapshotted_then_gains_both_v14_columns() {
 
     let db = Db::open_at(&path).unwrap();
     let uv: i64 = db.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-    assert_eq!(uv, 14);
+    assert_eq!(uv, crate::db::SCHEMA_VERSION);
     let n: i64 = db
         .conn
         .query_row(

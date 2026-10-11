@@ -22,6 +22,7 @@
   --warn-fg: #8a4513;
   --accent-sessions: #2f6fe4;
   --accent-spend: #e8643b;
+  --accent-cache: #0f8b8d;
   --cat-1: #2f6fe4;
   --cat-2: #e8643b;
   --cat-3: #1e9e74;
@@ -53,6 +54,7 @@
     --warn-fg: #f1b98a;
     --accent-sessions: #6d9dff;
     --accent-spend: #ff8a5e;
+    --accent-cache: #47c2c4;
     --cat-1: #6d9dff;
     --cat-2: #ff8a5e;
     --cat-3: #3fc497;
@@ -423,6 +425,10 @@ ul.repos li:last-child {
 
 .chart.tone-sessions {
   --c: var(--accent-sessions);
+}
+
+.chart.tone-cache {
+  --c: var(--accent-cache);
 }
 
 .chart figcaption {
@@ -1035,6 +1041,51 @@ ol.steps {
   white-space: nowrap;
 }
 
+/* Daily spend by model: standing columns on the tallest day's scale. Their plot runs edge to
+   edge (no top margin), so the axis labels sit on the edges too. */
+
+.plot.columns .y-top {
+  top: 0;
+}
+
+.plot.columns .y-low {
+  top: 100%;
+}
+
+.daily-fig .blk {
+  fill: var(--c);
+}
+
+.daily-fig .hit {
+  fill: transparent;
+}
+
+.daily-fig .day:hover .hit {
+  fill: var(--fg);
+  fill-opacity: 0.05;
+}
+
+.daily-fig .day:hover .blk {
+  fill-opacity: 0.85;
+}
+
+.daily-fig .stack-legend {
+  margin-top: 12px;
+}
+
+.duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 36px;
+  align-items: start;
+}
+
+/* Half-width charts have room for the period's first and last dates only; the full-width chart
+   above them carries the in-between ones. The hidden labels keep their slots. */
+.duo .x-axis span:not(:first-child):not(:last-child) {
+  visibility: hidden;
+}
+
 /* Calendar */
 
 .split {
@@ -1253,7 +1304,8 @@ ol.steps {
     --room: 7.5rem;
   }
 
-  .split {
+  .split,
+  .duo {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1300,7 +1352,7 @@ ol.steps {
 <dl class="strip">
 <div class="cell"><dt>Operator</dt><dd>Jordan Rivera</dd></div>
 <div class="cell"><dt>Period</dt><dd>2026-03-02 to 2026-03-08</dd></div>
-<div class="cell"><dt>Spend</dt><dd>$64.85</dd></div>
+<div class="cell"><dt>Spend</dt><dd>$64.86</dd></div>
 <div class="cell"><dt>Sessions</dt><dd>9</dd></div>
 <div class="cell"><dt>Repos</dt><dd>1</dd></div>
 <div class="cell"><dt>Active days</dt><dd>6 of 7</dd></div>
@@ -1333,7 +1385,7 @@ ol.steps {
 <p class="lead">Each row compares a share of the period&#39;s sessions with its share of spend. A spend bar longer than its sessions bar is work that cost more than its share of the sessions.</p>
 <figure class="chart pairs-fig" data-sortable="" data-top="10"><div class="fig-head"><figcaption>By repository</figcaption></div>
 <ol class="pairs">
-<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="northwind-media/beacon: 9 sessions (100%), $64.85 (100%), $7.21 per session"><code class="pair-label">northwind-media/beacon</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 9 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $64.85</span></div></div></li>
+<li class="pair" data-by-spend="0" data-by-sessions="0" data-by-per-session="0" data-tip="northwind-media/beacon: 9 sessions (100%), $64.86 (100%), $7.21 per session"><code class="pair-label">northwind-media/beacon</code><div class="pair-bars"><div class="track"><span class="bar sessions" style="--w:100"></span><span class="val"><b>100%</b> 9 sessions</span></div><div class="track"><span class="bar spend" style="--w:100"></span><span class="val"><b>100%</b> $64.86</span></div></div></li>
 </ol>
 <div class="legend"><span class="key"><i class="swatch sessions"></i>% of sessions</span><span class="key"><i class="swatch spend"></i>% of spend</span></div></figure>
 </section>
@@ -1355,13 +1407,13 @@ ol.steps {
 <div class="table-wrap"><table>
 <thead><tr><th>Repo</th><th class="num">Spend</th><th class="num">Commits</th><th class="num">PRs Opened</th><th class="num">Files Edited</th></tr></thead>
 <tbody>
-<tr><td><code>northwind-media/beacon</code></td><td class="num">$64.85</td><td class="num">26</td><td class="num">12</td><td class="num">108</td></tr>
+<tr><td><code>northwind-media/beacon</code></td><td class="num">$64.86</td><td class="num">26</td><td class="num">12</td><td class="num">108</td></tr>
 </tbody>
 </table></div>
 <h3>Unit costs</h3>
 <ul class="facts">
 <li>A ratio of $2.49 of period spend per observed commit.</li>
-<li>A ratio of $5.40 of period spend per pull request opened.</li>
+<li>A ratio of $5.41 of period spend per pull request opened.</li>
 <li>A ratio of $10.81 of period spend per active day.</li>
 <li>A ratio of $7.21 of period spend per session (the mean).</li>
 <li>Median session spend was $6.39; the 90th percentile was $11.59.</li>
@@ -1369,16 +1421,20 @@ ol.steps {
 </section>
 <section class="section">
 <h2>Spend Over Time</h2>
-<div class="split"><figure class="chart tone-spend"><figcaption>Daily spend</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">$18.70</span><span class="y-mid">$9.35</span><span class="y-low">$0.00</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily spend"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polygon class="area" points="0,290 0,10 167,100 333,144 500,116 667,173 833,226 1000,290 1000,290"/><polyline class="line" points="0,10 167,100 333,144 500,116 667,173 833,226 1000,290"/><g class="hits"><rect x="0" y="0" width="83" height="100%" data-tip="2026-03-02: $18.70"><title>2026-03-02: $18.70</title></rect><rect x="83" y="0" width="167" height="100%" data-tip="2026-03-03: $12.67"><title>2026-03-03: $12.67</title></rect><rect x="250" y="0" width="166" height="100%" data-tip="2026-03-04: $9.77"><title>2026-03-04: $9.77</title></rect><rect x="416" y="0" width="167" height="100%" data-tip="2026-03-05: $11.59"><title>2026-03-05: $11.59</title></rect><rect x="583" y="0" width="167" height="100%" data-tip="2026-03-06: $7.83"><title>2026-03-06: $7.83</title></rect><rect x="750" y="0" width="166" height="100%" data-tip="2026-03-07: $4.30"><title>2026-03-07: $4.30</title></rect><rect x="916" y="0" width="84" height="100%" data-tip="2026-03-08: $0.00"><title>2026-03-08: $0.00</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-03-02</span><span>2026-03-03</span><span>2026-03-04</span><span>2026-03-06</span><span>2026-03-07</span><span>2026-03-08</span></div></div></figure>
+<p class="lead">Daily figures are whole UTC days: each session&#39;s spend sits on the days its turns ran, not the day it began.</p>
+<div class="split"><figure class="chart daily-fig"><figcaption>Daily spend by model</figcaption><div class="plot columns"><div class="y-axis" aria-hidden="true"><span class="y-top">$18.70</span><span class="y-mid">$9.35</span><span class="y-low">$0.00</span></div><svg viewBox="0 0 1000 1000" preserveAspectRatio="none" role="img" aria-label="Daily spend by model"><g class="grid"><line x1="0" x2="1000" y1="0" y2="0"/><line x1="0" x2="1000" y1="500" y2="500"/><line x1="0" x2="1000" y1="1000" y2="1000"/></g><g class="day" data-tip="2026-03-02: $18.70 (claude-opus-4-7 $18.70)"><title>2026-03-02: $18.70 (claude-opus-4-7 $18.70)</title><rect class="hit" x="17" y="0" width="109" height="1000"/><rect class="blk tone-2" x="17" y="0" width="109" height="1000"/></g><g class="day" data-tip="2026-03-03: $12.67 (claude-sonnet-4-6 $12.67)"><title>2026-03-03: $12.67 (claude-sonnet-4-6 $12.67)</title><rect class="hit" x="160" y="0" width="109" height="1000"/><rect class="blk tone-1" x="160" y="322" width="109" height="678"/></g><g class="day" data-tip="2026-03-04: $9.77 (claude-sonnet-4-6 $9.77)"><title>2026-03-04: $9.77 (claude-sonnet-4-6 $9.77)</title><rect class="hit" x="303" y="0" width="109" height="1000"/><rect class="blk tone-1" x="303" y="478" width="109" height="522"/></g><g class="day" data-tip="2026-03-05: $11.59 (claude-opus-4-7 $11.59)"><title>2026-03-05: $11.59 (claude-opus-4-7 $11.59)</title><rect class="hit" x="446" y="0" width="108" height="1000"/><rect class="blk tone-2" x="446" y="380" width="108" height="620"/></g><g class="day" data-tip="2026-03-06: $7.83 (claude-sonnet-4-6 $7.83)"><title>2026-03-06: $7.83 (claude-sonnet-4-6 $7.83)</title><rect class="hit" x="588" y="0" width="109" height="1000"/><rect class="blk tone-1" x="588" y="581" width="109" height="419"/></g><g class="day" data-tip="2026-03-07: $4.30 (claude-sonnet-4-6 $4.30)"><title>2026-03-07: $4.30 (claude-sonnet-4-6 $4.30)</title><rect class="hit" x="731" y="0" width="109" height="1000"/><rect class="blk tone-1" x="731" y="770" width="109" height="230"/></g><g class="day" data-tip="2026-03-08: $0.00"><title>2026-03-08: $0.00</title><rect class="hit" x="874" y="0" width="109" height="1000"/></g></svg><div class="x-axis" aria-hidden="true"><span>2026-03-02</span><span>2026-03-03</span><span>2026-03-04</span><span>2026-03-06</span><span>2026-03-07</span><span>2026-03-08</span></div></div><ul class="legend stack-legend"><li><i class="swatch tone-1"></i><code>claude-sonnet-4-6</code></li><li><i class="swatch tone-2"></i><code>claude-opus-4-7</code></li></ul></figure>
 <figure class="chart cal-fig"><figcaption>Spend by day</figcaption><div class="cal"><div class="cal-days" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><svg viewBox="0 0 82 10" role="img" aria-label="Spend by day"><rect class="l4" x="0" y="0" width="10" height="10" rx="2" data-tip="2026-03-02: $18.70"><title>2026-03-02: $18.70</title></rect><rect class="l3" x="12" y="0" width="10" height="10" rx="2" data-tip="2026-03-03: $12.67"><title>2026-03-03: $12.67</title></rect><rect class="l3" x="24" y="0" width="10" height="10" rx="2" data-tip="2026-03-04: $9.77"><title>2026-03-04: $9.77</title></rect><rect class="l3" x="36" y="0" width="10" height="10" rx="2" data-tip="2026-03-05: $11.59"><title>2026-03-05: $11.59</title></rect><rect class="l2" x="48" y="0" width="10" height="10" rx="2" data-tip="2026-03-06: $7.83"><title>2026-03-06: $7.83</title></rect><rect class="l1" x="60" y="0" width="10" height="10" rx="2" data-tip="2026-03-07: $4.30"><title>2026-03-07: $4.30</title></rect><rect class="l0" x="72" y="0" width="10" height="10" rx="2" data-tip="2026-03-08: $0.00"><title>2026-03-08: $0.00</title></rect></svg><div class="cal-legend" aria-hidden="true"><span>Less</span><i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i><span>More</span></div></div></figure>
 </div>
-<figure class="chart tone-sessions"><figcaption>Daily sessions</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">2</span><span class="y-mid">1</span><span class="y-low">0</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily sessions"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polygon class="area" points="0,290 0,10 167,10 333,10 500,150 667,150 833,150 1000,290 1000,290"/><polyline class="line" points="0,10 167,10 333,10 500,150 667,150 833,150 1000,290"/><g class="hits"><rect x="0" y="0" width="83" height="100%" data-tip="2026-03-02: 2 sessions"><title>2026-03-02: 2 sessions</title></rect><rect x="83" y="0" width="167" height="100%" data-tip="2026-03-03: 2 sessions"><title>2026-03-03: 2 sessions</title></rect><rect x="250" y="0" width="166" height="100%" data-tip="2026-03-04: 2 sessions"><title>2026-03-04: 2 sessions</title></rect><rect x="416" y="0" width="167" height="100%" data-tip="2026-03-05: 1 session"><title>2026-03-05: 1 session</title></rect><rect x="583" y="0" width="167" height="100%" data-tip="2026-03-06: 1 session"><title>2026-03-06: 1 session</title></rect><rect x="750" y="0" width="166" height="100%" data-tip="2026-03-07: 1 session"><title>2026-03-07: 1 session</title></rect><rect x="916" y="0" width="84" height="100%" data-tip="2026-03-08: 0 sessions"><title>2026-03-08: 0 sessions</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-03-02</span><span>2026-03-03</span><span>2026-03-04</span><span>2026-03-06</span><span>2026-03-07</span><span>2026-03-08</span></div></div></figure>
+<div class="duo"><figure class="chart tone-cache"><figcaption>Daily cache-read share</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">100.0%</span><span class="y-mid">50.0%</span><span class="y-low">0.0%</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily cache-read share"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polyline class="line" points="0,31 167,33 333,29 500,33 667,36 833,29"/><g class="hits"><rect x="0" y="0" width="83" height="100%" data-tip="2026-03-02: 92.7% of input read from cache"><title>2026-03-02: 92.7% of input read from cache</title></rect><rect x="83" y="0" width="167" height="100%" data-tip="2026-03-03: 91.9% of input read from cache"><title>2026-03-03: 91.9% of input read from cache</title></rect><rect x="250" y="0" width="166" height="100%" data-tip="2026-03-04: 93.2% of input read from cache"><title>2026-03-04: 93.2% of input read from cache</title></rect><rect x="416" y="0" width="167" height="100%" data-tip="2026-03-05: 91.9% of input read from cache"><title>2026-03-05: 91.9% of input read from cache</title></rect><rect x="583" y="0" width="167" height="100%" data-tip="2026-03-06: 90.6% of input read from cache"><title>2026-03-06: 90.6% of input read from cache</title></rect><rect x="750" y="0" width="166" height="100%" data-tip="2026-03-07: 93.2% of input read from cache"><title>2026-03-07: 93.2% of input read from cache</title></rect><rect x="916" y="0" width="84" height="100%" data-tip="2026-03-08: no tokens"><title>2026-03-08: no tokens</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-03-02</span><span>2026-03-03</span><span>2026-03-04</span><span>2026-03-06</span><span>2026-03-07</span><span>2026-03-08</span></div></div></figure>
+<figure class="chart tone-sessions"><figcaption>Daily active sessions</figcaption><div class="plot"><div class="y-axis" aria-hidden="true"><span class="y-top">2</span><span class="y-mid">1</span><span class="y-low">0</span></div><svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Daily active sessions"><g class="grid"><line x1="0" x2="1000" y1="10" y2="10"/><line x1="0" x2="1000" y1="150" y2="150"/><line x1="0" x2="1000" y1="290" y2="290"/></g><polygon class="area" points="0,290 0,10 167,10 333,10 500,150 667,150 833,150 1000,290 1000,290"/><polyline class="line" points="0,10 167,10 333,10 500,150 667,150 833,150 1000,290"/><g class="hits"><rect x="0" y="0" width="83" height="100%" data-tip="2026-03-02: 2 sessions"><title>2026-03-02: 2 sessions</title></rect><rect x="83" y="0" width="167" height="100%" data-tip="2026-03-03: 2 sessions"><title>2026-03-03: 2 sessions</title></rect><rect x="250" y="0" width="166" height="100%" data-tip="2026-03-04: 2 sessions"><title>2026-03-04: 2 sessions</title></rect><rect x="416" y="0" width="167" height="100%" data-tip="2026-03-05: 1 session"><title>2026-03-05: 1 session</title></rect><rect x="583" y="0" width="167" height="100%" data-tip="2026-03-06: 1 session"><title>2026-03-06: 1 session</title></rect><rect x="750" y="0" width="166" height="100%" data-tip="2026-03-07: 1 session"><title>2026-03-07: 1 session</title></rect><rect x="916" y="0" width="84" height="100%" data-tip="2026-03-08: 0 sessions"><title>2026-03-08: 0 sessions</title></rect></g></svg><div class="x-axis" aria-hidden="true"><span>2026-03-02</span><span>2026-03-03</span><span>2026-03-04</span><span>2026-03-06</span><span>2026-03-07</span><span>2026-03-08</span></div></div></figure>
+</div>
+<p class="caption">The daily series accounts for all $64.86 of the period&#39;s spend.</p>
 </section>
 <section class="section">
 <h2>The Efficiency Story</h2>
-<figure class="chart waterfall-fig"><figcaption>List price, cache savings, spend</figcaption><ol class="steps"><li class="step list"><span class="step-label">List price</span><div class="track"><span class="bar" style="--x:0;--w:100"></span><span class="val"><b>$320.69</b></span></div></li><li class="step savings"><span class="step-label">Cache savings</span><div class="track"><span class="bar" style="--x:20.2;--w:79.8"></span><span class="val"><b>$255.84</b></span></div></li><li class="step spend"><span class="step-label">Spend</span><div class="track"><span class="bar" style="--x:0;--w:20.2"></span><span class="val"><b>$64.85</b></span></div></li></ol></figure>
+<figure class="chart waterfall-fig"><figcaption>List price, cache savings, spend</figcaption><ol class="steps"><li class="step list"><span class="step-label">List price</span><div class="track"><span class="bar" style="--x:0;--w:100"></span><span class="val"><b>$320.69</b></span></div></li><li class="step savings"><span class="step-label">Cache savings</span><div class="track"><span class="bar" style="--x:20.2;--w:79.8"></span><span class="val"><b>$255.83</b></span></div></li><li class="step spend"><span class="step-label">Spend</span><div class="track"><span class="bar" style="--x:0;--w:20.2"></span><span class="val"><b>$64.86</b></span></div></li></ol></figure>
 <p>Cache read share was 92.3%: most of the context read each turn is re-read from cache at a fraction of the fresh-input rate, which is what makes sustained agentic sessions economical. Fresh input was 1.0M against 78.5M read from cache.</p>
-<p>At full list-price input rates the same tokens would model to $320.69, so cache reuse accounts for $255.84 (computed from published per-token rates).</p>
+<p>At full list-price input rates the same tokens would model to $320.69, so cache reuse accounts for $255.83 (computed from published per-token rates).</p>
 <div class="kpis">
 <div class="kpi"><div class="kpi-value">6.0%</div><div class="kpi-label">Tool error rate</div></div>
 <div class="kpi"><div class="kpi-value">6.7%</div><div class="kpi-label">Share of cache writes paying the 1h premium</div></div>
@@ -1393,7 +1449,7 @@ ol.steps {
 <tr><td><code>schema-review</code></td><td class="num">1.1M</td><td class="num">$1.97</td></tr>
 </tbody>
 </table></div>
-<p class="caption">Coverage: $4.06 of $64.85 (6.3%), embedded-price basis</p>
+<p class="caption">Coverage: $4.06 of $64.86 (6.3%), embedded-price basis</p>
 <h3>By MCP tool</h3>
 <div class="table-wrap"><table>
 <thead><tr><th>MCP Tool</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
@@ -1401,7 +1457,7 @@ ol.steps {
 <tr><td><code>wiki-write</code></td><td class="num">3.9M</td><td class="num">$7.24</td></tr>
 </tbody>
 </table></div>
-<p class="caption">Coverage: $7.24 of $64.85 (11.2%), embedded-price basis</p>
+<p class="caption">Coverage: $7.24 of $64.86 (11.2%), embedded-price basis</p>
 </section>
 <section class="section">
 <h2>Unobserved and Flagged Spend</h2>
@@ -1410,29 +1466,29 @@ ol.steps {
 <li>Sessions in <code>no-observed-outcome</code>: 0, spending $0.00 (0% of session spend).</li>
 <li>Heavy model on a short session: 0 sessions, $0.00. Heavy means a model name containing <code>opus</code>, <code>fable</code>; short means at most 3 turns.</li>
 </ul>
-<p class="caption"><code>no-observed-outcome</code> is not &quot;no result&quot;: a sample shows it is mostly <code>claude -p</code> hook sessions that answered a question, and files written through Bash heredocs or commits made by subprocesses are invisible to <code>outcome::extract</code>.</p>
+<p class="caption">What <code>no-observed-outcome</code> does and does not mean is noted under the band table above.</p>
 <p class="empty">No session carries an efficiency flag.</p>
 </section>
 <section class="section">
 <h2>Cost Summary</h2>
-<figure class="chart stack-fig"><figcaption>Spend by model</figcaption><div class="stackbar"><span class="seg tone-1" style="--x:0;--w:53.3" data-tip="claude-sonnet-4-6: $34.56 (53%)"><span>53%</span></span><span class="seg tone-2" style="--x:53.3;--w:46.7" data-tip="claude-opus-4-7: $30.29 (47%)"><span>47%</span></span></div><ul class="legend stack-legend"><li><i class="swatch tone-1"></i><code>claude-sonnet-4-6</code> <span class="figures">$34.56 · 53%</span></li><li><i class="swatch tone-2"></i><code>claude-opus-4-7</code> <span class="figures">$30.29 · 47%</span></li></ul></figure>
+<figure class="chart stack-fig"><figcaption>Spend by model</figcaption><div class="stackbar"><span class="seg tone-1" style="--x:0;--w:53.3" data-tip="claude-sonnet-4-6: $34.57 (53%)"><span>53%</span></span><span class="seg tone-2" style="--x:53.3;--w:46.7" data-tip="claude-opus-4-7: $30.29 (47%)"><span>47%</span></span></div><ul class="legend stack-legend"><li><i class="swatch tone-1"></i><code>claude-sonnet-4-6</code> <span class="figures">$34.57 · 53%</span></li><li><i class="swatch tone-2"></i><code>claude-opus-4-7</code> <span class="figures">$30.29 · 47%</span></li></ul></figure>
 <div class="table-wrap"><table>
 <thead><tr><th>Model</th><th class="num">Sessions Using</th><th class="num">Total Tokens</th><th class="num">Spend</th></tr></thead>
 <tbody>
-<tr><td><code>claude-sonnet-4-6</code></td><td class="num">6</td><td class="num">55.4M</td><td class="num">$34.56</td></tr>
+<tr><td><code>claude-sonnet-4-6</code></td><td class="num">6</td><td class="num">55.4M</td><td class="num">$34.57</td></tr>
 <tr><td><code>claude-opus-4-7</code></td><td class="num">3</td><td class="num">30.0M</td><td class="num">$30.29</td></tr>
 </tbody>
-<tfoot><tr><td>Total</td><td class="num">9</td><td class="num">85.4M</td><td class="num">$64.85</td></tr>
+<tfoot><tr><td>Total</td><td class="num">9</td><td class="num">85.4M</td><td class="num">$64.86</td></tr>
 </tfoot>
 </table></div>
 </section>
 <section class="section">
 <h2>Agent-Type Cost Attribution</h2>
-<p class="lead">Every dollar of the period&#39;s $64.85 spend lands in exactly one row below; <code>(main-session)</code> carried the most. The <code>(main-session)</code> row is work a session did itself rather than delegating.</p>
+<p class="lead">Every dollar of the period&#39;s $64.86 spend lands in exactly one row below; <code>(main-session)</code> carried the most. The <code>(main-session)</code> row is work a session did itself rather than delegating.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Agent Type</th><th class="num">Tokens</th><th class="num">Spend</th></tr></thead>
 <tbody>
-<tr><td><code>(main-session)</code></td><td class="num">85.4M</td><td class="num">$64.85</td></tr>
+<tr><td><code>(main-session)</code></td><td class="num">85.4M</td><td class="num">$64.86</td></tr>
 </tbody>
 </table></div>
 </section>
@@ -1465,9 +1521,9 @@ ol.steps {
 <p class="empty">No narrative was generated for this render.</p>
 <div class="org">
 <h3>northwind-media</h3>
-<p class="lead">9 sessions across 1 repository, 85.4M tokens, $64.85.</p>
+<p class="lead">9 sessions across 1 repository, 85.4M tokens, $64.86.</p>
 <ul class="repos">
-<li><code>northwind-media/beacon</code> <span class="figures">(9 sessions, 85.4M tokens, $64.85 spend)</span>: 26 commits, 12 PRs opened, 108 files edited</li>
+<li><code>northwind-media/beacon</code> <span class="figures">(9 sessions, 85.4M tokens, $64.86 spend)</span>: 26 commits, 12 PRs opened, 108 files edited</li>
 </ul>
 </div>
 </section>

@@ -1,5 +1,5 @@
 {
-  "schema-version": 2,
+  "schema-version": 3,
   "generated": "2026-06-01T12:00:00Z",
   "host": "fixture-host",
   "since": "2026-04-01T00:00:00Z",
@@ -10,7 +10,7 @@
   ],
   "totals": {
     "sessions": 44,
-    "spend-usd": 671.28,
+    "spend-usd": 671.26,
     "untracked-models": [],
     "models": {
       "claude-haiku-4-5": {
@@ -20,7 +20,7 @@
         "cache-1h-write": 1368848,
         "cache-read": 196711351,
         "total": 211823294,
-        "spend-usd": 41.31
+        "spend-usd": 41.29
       },
       "claude-opus-4-7": {
         "input": 4966428,
@@ -90,6 +90,26 @@
           "cache-read": 7141109,
           "total": 7718023,
           "spend-usd": 4.69
+        }
+      },
+      "by-day": {
+        "2026-04-03": {
+          "claude-haiku-4-5": {
+            "input": 59959,
+            "output": 17349,
+            "cache-5m-write": 338077,
+            "cache-1h-write": 76833,
+            "cache-read": 6653433,
+            "spend-cents": 139
+          },
+          "claude-sonnet-4-6": {
+            "input": 72507,
+            "output": 20977,
+            "cache-5m-write": 394121,
+            "cache-1h-write": 89309,
+            "cache-read": 7141109,
+            "spend-cents": 469
+          }
         }
       },
       "outcomes": {
@@ -166,6 +186,26 @@
                 "total": 7718023
               }
             },
+            "by-day": {
+              "2026-04-03": {
+                "claude-haiku-4-5": {
+                  "input": 59959,
+                  "output": 17349,
+                  "cache-5m-write": 338077,
+                  "cache-1h-write": 76833,
+                  "cache-read": 6653433,
+                  "total": 7145651
+                },
+                "claude-sonnet-4-6": {
+                  "input": 72507,
+                  "output": 20977,
+                  "cache-5m-write": 394121,
+                  "cache-1h-write": 89309,
+                  "cache-read": 7141109,
+                  "total": 7718023
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -208,6 +248,18 @@
           "cache-read": 7141109,
           "total": 7628714,
           "spend-usd": 1.38
+        }
+      },
+      "by-day": {
+        "2026-04-14": {
+          "claude-haiku-4-5": {
+            "input": 72507,
+            "output": 20977,
+            "cache-5m-write": 394121,
+            "cache-1h-write": 0,
+            "cache-read": 7141109,
+            "spend-cents": 138
+          }
         }
       },
       "outcomes": {
@@ -294,6 +346,18 @@
                 "total": 7628714
               }
             },
+            "by-day": {
+              "2026-04-14": {
+                "claude-haiku-4-5": {
+                  "input": 72507,
+                  "output": 20977,
+                  "cache-5m-write": 394121,
+                  "cache-1h-write": 0,
+                  "cache-read": 7141109,
+                  "total": 7628714
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 847634,
@@ -354,6 +418,26 @@
           "cache-read": 23130193,
           "total": 24931968,
           "spend-usd": 14.54
+        }
+      },
+      "by-day": {
+        "2026-04-17": {
+          "claude-haiku-4-5": {
+            "input": 252028,
+            "output": 72908,
+            "cache-5m-write": 1336484,
+            "cache-1h-write": 302236,
+            "cache-read": 22764436,
+            "spend-cents": 517
+          },
+          "claude-sonnet-4-6": {
+            "input": 261439,
+            "output": 75629,
+            "cache-5m-write": 1378517,
+            "cache-1h-write": 86190,
+            "cache-read": 23130193,
+            "spend-cents": 1454
+          }
         }
       },
       "agent-type-costs": {
@@ -455,6 +539,26 @@
                 "total": 24931968
               }
             },
+            "by-day": {
+              "2026-04-17": {
+                "claude-haiku-4-5": {
+                  "input": 252028,
+                  "output": 72908,
+                  "cache-5m-write": 1336484,
+                  "cache-1h-write": 302236,
+                  "cache-read": 22764436,
+                  "total": 24728092
+                },
+                "claude-sonnet-4-6": {
+                  "input": 261439,
+                  "output": 75629,
+                  "cache-5m-write": 1378517,
+                  "cache-1h-write": 86190,
+                  "cache-read": 23130193,
+                  "total": 24931968
+                }
+              }
+            },
             "by-skill": {
               "release-notes": {
                 "tokens": 1338234,
@@ -526,6 +630,26 @@
                     "cache-1h-write": 0,
                     "cache-read": 7994542,
                     "total": 8608532
+                  }
+                },
+                "by-day": {
+                  "2026-04-17": {
+                    "claude-haiku-4-5": {
+                      "input": 94466,
+                      "output": 27326,
+                      "cache-5m-write": 492198,
+                      "cache-1h-write": 111142,
+                      "cache-read": 7994542,
+                      "total": 8719674
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 94466,
+                      "output": 27326,
+                      "cache-5m-write": 492198,
+                      "cache-1h-write": 0,
+                      "cache-read": 7994542,
+                      "total": 8608532
+                    }
                   }
                 },
                 "by-skill": {},
@@ -600,6 +724,26 @@
                     "total": 8748506
                   }
                 },
+                "by-day": {
+                  "2026-04-17": {
+                    "claude-haiku-4-5": {
+                      "input": 97603,
+                      "output": 28233,
+                      "cache-5m-write": 506209,
+                      "cache-1h-write": 114261,
+                      "cache-read": 8116461,
+                      "total": 8862767
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 97603,
+                      "output": 28233,
+                      "cache-5m-write": 506209,
+                      "cache-1h-write": 0,
+                      "cache-read": 8116461,
+                      "total": 8748506
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -652,6 +796,26 @@
           "cache-read": 8604137,
           "total": 9308402,
           "spend-usd": 5.5
+        }
+      },
+      "by-day": {
+        "2026-04-04": {
+          "claude-opus-4-7": {
+            "input": 254453,
+            "output": 73583,
+            "cache-5m-write": 1206759,
+            "cache-1h-write": 270211,
+            "cache-read": 14212411,
+            "spend-cents": 2046
+          },
+          "claude-sonnet-4-6": {
+            "input": 110151,
+            "output": 31861,
+            "cache-5m-write": 562253,
+            "cache-1h-write": 0,
+            "cache-read": 8604137,
+            "spend-cents": 550
+          }
         }
       },
       "outcomes": {
@@ -739,6 +903,26 @@
                 "total": 9308402
               }
             },
+            "by-day": {
+              "2026-04-04": {
+                "claude-opus-4-7": {
+                  "input": 254453,
+                  "output": 73583,
+                  "cache-5m-write": 1206759,
+                  "cache-1h-write": 270211,
+                  "cache-read": 14212411,
+                  "total": 16017417
+                },
+                "claude-sonnet-4-6": {
+                  "input": 110151,
+                  "output": 31861,
+                  "cache-5m-write": 562253,
+                  "cache-1h-write": 0,
+                  "cache-read": 8604137,
+                  "total": 9308402
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 6331454,
@@ -792,6 +976,18 @@
           "cache-read": 22694629,
           "total": 24915634,
           "spend-usd": 26.74
+        }
+      },
+      "by-day": {
+        "2026-04-21": {
+          "claude-opus-4-7": {
+            "input": 361467,
+            "output": 104537,
+            "cache-5m-write": 1755001,
+            "cache-1h-write": 0,
+            "cache-read": 22694629,
+            "spend-cents": 2674
+          }
         }
       },
       "outcomes": {
@@ -885,6 +1081,18 @@
                 "total": 24915634
               }
             },
+            "by-day": {
+              "2026-04-21": {
+                "claude-opus-4-7": {
+                  "input": 361467,
+                  "output": 104537,
+                  "cache-5m-write": 1755001,
+                  "cache-1h-write": 0,
+                  "cache-read": 22694629,
+                  "total": 24915634
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -945,6 +1153,18 @@
                     "total": 6788870
                   }
                 },
+                "by-day": {
+                  "2026-04-21": {
+                    "claude-opus-4-7": {
+                      "input": 53685,
+                      "output": 15535,
+                      "cache-5m-write": 310055,
+                      "cache-1h-write": 0,
+                      "cache-read": 6409595,
+                      "total": 6788870
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -987,6 +1207,18 @@
           "cache-read": 6653433,
           "total": 7068818,
           "spend-usd": 1.23
+        }
+      },
+      "by-day": {
+        "2026-04-26": {
+          "claude-haiku-4-5": {
+            "input": 59959,
+            "output": 17349,
+            "cache-5m-write": 338077,
+            "cache-1h-write": 0,
+            "cache-read": 6653433,
+            "spend-cents": 123
+          }
         }
       },
       "outcomes": {
@@ -1073,6 +1305,18 @@
                 "total": 7068818
               }
             },
+            "by-day": {
+              "2026-04-26": {
+                "claude-haiku-4-5": {
+                  "input": 59959,
+                  "output": 17349,
+                  "cache-5m-write": 338077,
+                  "cache-1h-write": 0,
+                  "cache-read": 6653433,
+                  "total": 7068818
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "wiki-write": {
@@ -1119,6 +1363,18 @@
           "cache-read": 9823327,
           "total": 10708142,
           "spend-usd": 6.62
+        }
+      },
+      "by-day": {
+        "2026-04-20": {
+          "claude-sonnet-4-6": {
+            "input": 141521,
+            "output": 40931,
+            "cache-5m-write": 702363,
+            "cache-1h-write": 0,
+            "cache-read": 9823327,
+            "spend-cents": 662
+          }
         }
       },
       "outcomes": {
@@ -1194,6 +1450,18 @@
                 "total": 10708142
               }
             },
+            "by-day": {
+              "2026-04-20": {
+                "claude-sonnet-4-6": {
+                  "input": 141521,
+                  "output": 40931,
+                  "cache-5m-write": 702363,
+                  "cache-1h-write": 0,
+                  "cache-read": 9823327,
+                  "total": 10708142
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 973467,
@@ -1226,7 +1494,7 @@
       "repo": "northwind-media/halyard",
       "repo-source": "files-touched",
       "begin": "2026-04-28T15:00:00Z",
-      "end": "2026-04-28T16:00:00Z",
+      "end": "2026-04-30T00:00:00Z",
       "spend-usd": 26.7,
       "untracked-models": [],
       "jsonl-paths": [
@@ -1250,6 +1518,44 @@
           "cache-read": 32709682,
           "total": 35273972,
           "spend-usd": 20.42
+        }
+      },
+      "by-day": {
+        "2026-04-28": {
+          "claude-haiku-4-5": {
+            "input": 82519,
+            "output": 23871,
+            "cache-5m-write": 445233,
+            "cache-1h-write": 81576,
+            "cache-read": 7923302,
+            "spend-cents": 171
+          },
+          "claude-sonnet-4-6": {
+            "input": 108185,
+            "output": 31292,
+            "cache-5m-write": 559868,
+            "cache-1h-write": 0,
+            "cache-read": 8920821,
+            "spend-cents": 557
+          }
+        },
+        "2026-04-29": {
+          "claude-haiku-4-5": {
+            "input": 220057,
+            "output": 63665,
+            "cache-5m-write": 1187295,
+            "cache-1h-write": 217541,
+            "cache-read": 21128810,
+            "spend-cents": 457
+          },
+          "claude-sonnet-4-6": {
+            "input": 288501,
+            "output": 83454,
+            "cache-5m-write": 1492990,
+            "cache-1h-write": 0,
+            "cache-read": 23788861,
+            "spend-cents": 1485
+          }
         }
       },
       "outcomes": {
@@ -1373,6 +1679,44 @@
                 "total": 35273972
               }
             },
+            "by-day": {
+              "2026-04-28": {
+                "claude-haiku-4-5": {
+                  "input": 82519,
+                  "output": 23871,
+                  "cache-5m-write": 445233,
+                  "cache-1h-write": 81576,
+                  "cache-read": 7923302,
+                  "total": 8556501
+                },
+                "claude-sonnet-4-6": {
+                  "input": 108185,
+                  "output": 31292,
+                  "cache-5m-write": 559868,
+                  "cache-1h-write": 0,
+                  "cache-read": 8920821,
+                  "total": 9620166
+                }
+              },
+              "2026-04-29": {
+                "claude-haiku-4-5": {
+                  "input": 220057,
+                  "output": 63665,
+                  "cache-5m-write": 1187295,
+                  "cache-1h-write": 217541,
+                  "cache-read": 21128810,
+                  "total": 22817368
+                },
+                "claude-sonnet-4-6": {
+                  "input": 288501,
+                  "output": 83454,
+                  "cache-5m-write": 1492990,
+                  "cache-1h-write": 0,
+                  "cache-read": 23788861,
+                  "total": 25653806
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -1441,6 +1785,44 @@
                     "total": 7068818
                   }
                 },
+                "by-day": {
+                  "2026-04-28": {
+                    "claude-haiku-4-5": {
+                      "input": 16352,
+                      "output": 4731,
+                      "cache-5m-write": 92202,
+                      "cache-1h-write": 20954,
+                      "cache-read": 1814572,
+                      "total": 1948811
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 16352,
+                      "output": 4731,
+                      "cache-5m-write": 92202,
+                      "cache-1h-write": 0,
+                      "cache-read": 1814572,
+                      "total": 1927857
+                    }
+                  },
+                  "2026-04-29": {
+                    "claude-haiku-4-5": {
+                      "input": 43607,
+                      "output": 12618,
+                      "cache-5m-write": 245875,
+                      "cache-1h-write": 55879,
+                      "cache-read": 4838861,
+                      "total": 5196840
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 43607,
+                      "output": 12618,
+                      "cache-5m-write": 245875,
+                      "cache-1h-write": 0,
+                      "cache-read": 4838861,
+                      "total": 5140961
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -1503,6 +1885,44 @@
                     "cache-1h-write": 0,
                     "cache-read": 9213732,
                     "total": 10008272
+                  }
+                },
+                "by-day": {
+                  "2026-04-28": {
+                    "claude-haiku-4-5": {
+                      "input": 34318,
+                      "output": 9926,
+                      "cache-5m-write": 172447,
+                      "cache-1h-write": 38817,
+                      "cache-read": 2512836,
+                      "total": 2768344
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 34318,
+                      "output": 9926,
+                      "cache-5m-write": 172447,
+                      "cache-1h-write": 0,
+                      "cache-read": 2512836,
+                      "total": 2729527
+                    }
+                  },
+                  "2026-04-29": {
+                    "claude-haiku-4-5": {
+                      "input": 91518,
+                      "output": 26470,
+                      "cache-5m-write": 459861,
+                      "cache-1h-write": 103515,
+                      "cache-read": 6700896,
+                      "total": 7382260
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 91518,
+                      "output": 26470,
+                      "cache-5m-write": 459861,
+                      "cache-1h-write": 0,
+                      "cache-read": 6700896,
+                      "total": 7278745
+                    }
                   }
                 },
                 "by-skill": {},
@@ -1570,6 +1990,44 @@
                     "total": 6788870
                   }
                 },
+                "by-day": {
+                  "2026-04-28": {
+                    "claude-haiku-4-5": {
+                      "input": 14641,
+                      "output": 4236,
+                      "cache-5m-write": 84560,
+                      "cache-1h-write": 0,
+                      "cache-read": 1748071,
+                      "total": 1851508
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 14641,
+                      "output": 4236,
+                      "cache-5m-write": 84560,
+                      "cache-1h-write": 0,
+                      "cache-read": 1748071,
+                      "total": 1851508
+                    }
+                  },
+                  "2026-04-29": {
+                    "claude-haiku-4-5": {
+                      "input": 39044,
+                      "output": 11299,
+                      "cache-5m-write": 225495,
+                      "cache-1h-write": 0,
+                      "cache-read": 4661524,
+                      "total": 4937362
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 39044,
+                      "output": 11299,
+                      "cache-5m-write": 225495,
+                      "cache-1h-write": 0,
+                      "cache-read": 4661524,
+                      "total": 4937362
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -1612,6 +2070,18 @@
           "cache-read": 7750704,
           "total": 8328584,
           "spend-usd": 4.71
+        }
+      },
+      "by-day": {
+        "2026-04-23": {
+          "claude-sonnet-4-6": {
+            "input": 88192,
+            "output": 25512,
+            "cache-5m-write": 464176,
+            "cache-1h-write": 0,
+            "cache-read": 7750704,
+            "spend-cents": 471
+          }
         }
       },
       "agent-type-costs": {
@@ -1667,6 +2137,18 @@
                 "total": 8328584
               }
             },
+            "by-day": {
+              "2026-04-23": {
+                "claude-sonnet-4-6": {
+                  "input": 88192,
+                  "output": 25512,
+                  "cache-5m-write": 464176,
+                  "cache-1h-write": 0,
+                  "cache-read": 7750704,
+                  "total": 8328584
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -1694,7 +2176,7 @@
       "repo": "openpipe-oss/quill",
       "repo-source": "known-path",
       "begin": "2026-04-27T13:00:00Z",
-      "end": "2026-04-27T14:00:00Z",
+      "end": "2026-04-28T22:00:00Z",
       "spend-usd": 15.12,
       "untracked-models": [],
       "jsonl-paths": [
@@ -1709,6 +2191,28 @@
           "cache-read": 22886355,
           "total": 24784995,
           "spend-usd": 15.12
+        }
+      },
+      "by-day": {
+        "2026-04-27": {
+          "claude-sonnet-4-6": {
+            "input": 85054,
+            "output": 24605,
+            "cache-5m-write": 450164,
+            "cache-1h-write": 73055,
+            "cache-read": 7628785,
+            "spend-cents": 504
+          }
+        },
+        "2026-04-28": {
+          "claude-sonnet-4-6": {
+            "input": 170111,
+            "output": 49210,
+            "cache-5m-write": 900331,
+            "cache-1h-write": 146110,
+            "cache-read": 15257570,
+            "spend-cents": 1008
+          }
         }
       },
       "outcomes": {
@@ -1816,6 +2320,28 @@
                 "total": 24784995
               }
             },
+            "by-day": {
+              "2026-04-27": {
+                "claude-sonnet-4-6": {
+                  "input": 85054,
+                  "output": 24605,
+                  "cache-5m-write": 450164,
+                  "cache-1h-write": 73055,
+                  "cache-read": 7628785,
+                  "total": 8261663
+                }
+              },
+              "2026-04-28": {
+                "claude-sonnet-4-6": {
+                  "input": 170111,
+                  "output": 49210,
+                  "cache-5m-write": 900331,
+                  "cache-1h-write": 146110,
+                  "cache-read": 15257570,
+                  "total": 16523332
+                }
+              }
+            },
             "by-skill": {
               "release-notes": {
                 "tokens": 688630,
@@ -1886,6 +2412,28 @@
                     "total": 9721325
                   }
                 },
+                "by-day": {
+                  "2026-04-27": {
+                    "claude-sonnet-4-6": {
+                      "input": 38808,
+                      "output": 11225,
+                      "cache-5m-write": 196758,
+                      "cache-1h-write": 44325,
+                      "cache-read": 2949325,
+                      "total": 3240441
+                    }
+                  },
+                  "2026-04-28": {
+                    "claude-sonnet-4-6": {
+                      "input": 77617,
+                      "output": 22450,
+                      "cache-5m-write": 393517,
+                      "cache-1h-write": 88650,
+                      "cache-read": 5898650,
+                      "total": 6480884
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -1946,6 +2494,28 @@
                     "total": 7488740
                   }
                 },
+                "by-day": {
+                  "2026-04-27": {
+                    "claude-sonnet-4-6": {
+                      "input": 23123,
+                      "output": 6690,
+                      "cache-5m-write": 126703,
+                      "cache-1h-write": 0,
+                      "cache-read": 2339730,
+                      "total": 2496246
+                    }
+                  },
+                  "2026-04-28": {
+                    "claude-sonnet-4-6": {
+                      "input": 46247,
+                      "output": 13380,
+                      "cache-5m-write": 253407,
+                      "cache-1h-write": 0,
+                      "cache-read": 4679460,
+                      "total": 4992494
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -1989,6 +2559,18 @@
           "cache-read": 32709682,
           "total": 35273972,
           "spend-usd": 34.04
+        }
+      },
+      "by-day": {
+        "2026-04-18": {
+          "claude-opus-4-7": {
+            "input": 396686,
+            "output": 114746,
+            "cache-5m-write": 2052858,
+            "cache-1h-write": 0,
+            "cache-read": 32709682,
+            "spend-cents": 3404
+          }
         }
       },
       "outcomes": {
@@ -2105,6 +2687,18 @@
                 "total": 35273972
               }
             },
+            "by-day": {
+              "2026-04-18": {
+                "claude-opus-4-7": {
+                  "input": 396686,
+                  "output": 114746,
+                  "cache-5m-write": 2052858,
+                  "cache-1h-write": 0,
+                  "cache-read": 32709682,
+                  "total": 35273972
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "wiki-write": {
@@ -2165,6 +2759,18 @@
                     "cache-1h-write": 0,
                     "cache-read": 8360299,
                     "total": 9028454
+                  }
+                },
+                "by-day": {
+                  "2026-04-18": {
+                    "claude-opus-4-7": {
+                      "input": 103877,
+                      "output": 30047,
+                      "cache-5m-write": 534231,
+                      "cache-1h-write": 0,
+                      "cache-read": 8360299,
+                      "total": 9028454
+                    }
                   }
                 },
                 "by-skill": {},
@@ -2228,6 +2834,18 @@
                     "total": 9868298
                   }
                 },
+                "by-day": {
+                  "2026-04-18": {
+                    "claude-opus-4-7": {
+                      "input": 122699,
+                      "output": 35489,
+                      "cache-5m-write": 618297,
+                      "cache-1h-write": 0,
+                      "cache-read": 9091813,
+                      "total": 9868298
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -2283,6 +2901,18 @@
                     "total": 6648896
                   }
                 },
+                "by-day": {
+                  "2026-04-18": {
+                    "claude-opus-4-7": {
+                      "input": 50548,
+                      "output": 14628,
+                      "cache-5m-write": 296044,
+                      "cache-1h-write": 0,
+                      "cache-read": 6287676,
+                      "total": 6648896
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -2325,6 +2955,18 @@
           "cache-read": 12261707,
           "total": 13507622,
           "spend-usd": 14.77
+        }
+      },
+      "by-day": {
+        "2026-04-28": {
+          "claude-opus-4-7": {
+            "input": 204261,
+            "output": 59071,
+            "cache-5m-write": 982583,
+            "cache-1h-write": 0,
+            "cache-read": 12261707,
+            "spend-cents": 1477
+          }
         }
       },
       "outcomes": {
@@ -2410,6 +3052,18 @@
                 "total": 13507622
               }
             },
+            "by-day": {
+              "2026-04-28": {
+                "claude-opus-4-7": {
+                  "input": 204261,
+                  "output": 59071,
+                  "cache-5m-write": 982583,
+                  "cache-1h-write": 0,
+                  "cache-read": 12261707,
+                  "total": 13507622
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -2461,6 +3115,26 @@
           "cache-read": 11042517,
           "total": 12296999,
           "spend-usd": 8.88
+        }
+      },
+      "by-day": {
+        "2026-04-02": {
+          "claude-haiku-4-5": {
+            "input": 66233,
+            "output": 19163,
+            "cache-5m-write": 366099,
+            "cache-1h-write": 83071,
+            "cache-read": 6897271,
+            "spend-cents": 148
+          },
+          "claude-sonnet-4-6": {
+            "input": 172891,
+            "output": 50001,
+            "cache-5m-write": 842473,
+            "cache-1h-write": 189117,
+            "cache-read": 11042517,
+            "spend-cents": 888
+          }
         }
       },
       "outcomes": {
@@ -2562,6 +3236,26 @@
                 "total": 12296999
               }
             },
+            "by-day": {
+              "2026-04-02": {
+                "claude-haiku-4-5": {
+                  "input": 66233,
+                  "output": 19163,
+                  "cache-5m-write": 366099,
+                  "cache-1h-write": 83071,
+                  "cache-read": 6897271,
+                  "total": 7431837
+                },
+                "claude-sonnet-4-6": {
+                  "input": 172891,
+                  "output": 50001,
+                  "cache-5m-write": 842473,
+                  "cache-1h-write": 189117,
+                  "cache-read": 11042517,
+                  "total": 12296999
+                }
+              }
+            },
             "by-skill": {
               "release-notes": {
                 "tokens": 3945767,
@@ -2618,6 +3312,26 @@
           "cache-read": 7141109,
           "total": 7718023,
           "spend-usd": 4.69
+        }
+      },
+      "by-day": {
+        "2026-04-29": {
+          "claude-opus-4-7": {
+            "input": 354837,
+            "output": 102607,
+            "cache-5m-write": 1655111,
+            "cache-1h-write": 0,
+            "cache-read": 18113819,
+            "spend-cents": 2374
+          },
+          "claude-sonnet-4-6": {
+            "input": 72507,
+            "output": 20977,
+            "cache-5m-write": 394121,
+            "cache-1h-write": 89309,
+            "cache-read": 7141109,
+            "spend-cents": 469
+          }
         }
       },
       "agent-type-costs": {
@@ -2705,6 +3419,26 @@
                 "total": 7718023
               }
             },
+            "by-day": {
+              "2026-04-29": {
+                "claude-opus-4-7": {
+                  "input": 354837,
+                  "output": 102607,
+                  "cache-5m-write": 1655111,
+                  "cache-1h-write": 0,
+                  "cache-read": 18113819,
+                  "total": 20226374
+                },
+                "claude-sonnet-4-6": {
+                  "input": 72507,
+                  "output": 20977,
+                  "cache-5m-write": 394121,
+                  "cache-1h-write": 89309,
+                  "cache-read": 7141109,
+                  "total": 7718023
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 3493049,
@@ -2772,6 +3506,26 @@
           "cache-read": 9091813,
           "total": 10007511,
           "spend-usd": 6.78
+        }
+      },
+      "by-day": {
+        "2026-04-07": {
+          "claude-haiku-4-5": {
+            "input": 75644,
+            "output": 21884,
+            "cache-5m-write": 408132,
+            "cache-1h-write": 0,
+            "cache-read": 7263028,
+            "spend-cents": 142
+          },
+          "claude-sonnet-4-6": {
+            "input": 122699,
+            "output": 35489,
+            "cache-5m-write": 618297,
+            "cache-1h-write": 139213,
+            "cache-read": 9091813,
+            "spend-cents": 678
+          }
         }
       },
       "outcomes": {
@@ -2858,6 +3612,26 @@
                 "total": 10007511
               }
             },
+            "by-day": {
+              "2026-04-07": {
+                "claude-haiku-4-5": {
+                  "input": 75644,
+                  "output": 21884,
+                  "cache-5m-write": 408132,
+                  "cache-1h-write": 0,
+                  "cache-read": 7263028,
+                  "total": 7768688
+                },
+                "claude-sonnet-4-6": {
+                  "input": 122699,
+                  "output": 35489,
+                  "cache-5m-write": 618297,
+                  "cache-1h-write": 139213,
+                  "cache-read": 9091813,
+                  "total": 10007511
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -2905,6 +3679,18 @@
           "cache-read": 6409595,
           "total": 6788870,
           "spend-usd": 1.16
+        }
+      },
+      "by-day": {
+        "2026-04-09": {
+          "claude-haiku-4-5": {
+            "input": 53685,
+            "output": 15535,
+            "cache-5m-write": 310055,
+            "cache-1h-write": 0,
+            "cache-read": 6409595,
+            "spend-cents": 116
+          }
         }
       },
       "agent-type-costs": {
@@ -2973,6 +3759,18 @@
                 "total": 6788870
               }
             },
+            "by-day": {
+              "2026-04-09": {
+                "claude-haiku-4-5": {
+                  "input": 53685,
+                  "output": 15535,
+                  "cache-5m-write": 310055,
+                  "cache-1h-write": 0,
+                  "cache-read": 6409595,
+                  "total": 6788870
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 754318,
@@ -3011,7 +3809,7 @@
       "repo": "northwind-media/halyard",
       "repo-source": "files-touched",
       "begin": "2026-04-14T09:00:00Z",
-      "end": "2026-04-14T11:00:00Z",
+      "end": "2026-04-15T07:00:00Z",
       "spend-usd": 3.95,
       "untracked-models": [],
       "jsonl-paths": [
@@ -3026,6 +3824,28 @@
           "cache-read": 17208274,
           "total": 18759136,
           "spend-usd": 3.95
+        }
+      },
+      "by-day": {
+        "2026-04-14": {
+          "claude-haiku-4-5": {
+            "input": 150205,
+            "output": 43446,
+            "cache-5m-write": 766708,
+            "cache-1h-write": 97044,
+            "cache-read": 11732914,
+            "spend-cents": 269
+          }
+        },
+        "2026-04-15": {
+          "claude-haiku-4-5": {
+            "input": 70097,
+            "output": 20276,
+            "cache-5m-write": 357798,
+            "cache-1h-write": 45288,
+            "cache-read": 5475360,
+            "spend-cents": 126
+          }
         }
       },
       "outcomes": {
@@ -3119,6 +3939,28 @@
                 "total": 18759136
               }
             },
+            "by-day": {
+              "2026-04-14": {
+                "claude-haiku-4-5": {
+                  "input": 150205,
+                  "output": 43446,
+                  "cache-5m-write": 766708,
+                  "cache-1h-write": 97044,
+                  "cache-read": 11732914,
+                  "total": 12790317
+                }
+              },
+              "2026-04-15": {
+                "claude-haiku-4-5": {
+                  "input": 70097,
+                  "output": 20276,
+                  "cache-5m-write": 357798,
+                  "cache-1h-write": 45288,
+                  "cache-read": 5475360,
+                  "total": 5968819
+                }
+              }
+            },
             "by-skill": {
               "release-notes": {
                 "tokens": 2152133,
@@ -3179,6 +4021,28 @@
                     "total": 10150604
                   }
                 },
+                "by-day": {
+                  "2026-04-14": {
+                    "claude-haiku-4-5": {
+                      "input": 85797,
+                      "output": 24815,
+                      "cache-5m-write": 431119,
+                      "cache-1h-write": 97044,
+                      "cache-read": 6282090,
+                      "total": 6920865
+                    }
+                  },
+                  "2026-04-15": {
+                    "claude-haiku-4-5": {
+                      "input": 40039,
+                      "output": 11581,
+                      "cache-5m-write": 201189,
+                      "cache-1h-write": 45288,
+                      "cache-read": 2931642,
+                      "total": 3229739
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -3222,6 +4086,18 @@
           "cache-read": 8482218,
           "total": 9292046,
           "spend-usd": 10.21
+        }
+      },
+      "by-day": {
+        "2026-04-17": {
+          "claude-opus-4-7": {
+            "input": 107014,
+            "output": 30954,
+            "cache-5m-write": 548242,
+            "cache-1h-write": 123618,
+            "cache-read": 8482218,
+            "spend-cents": 1021
+          }
         }
       },
       "agent-type-costs": {
@@ -3284,6 +4160,18 @@
                 "total": 9292046
               }
             },
+            "by-day": {
+              "2026-04-17": {
+                "claude-opus-4-7": {
+                  "input": 107014,
+                  "output": 30954,
+                  "cache-5m-write": 548242,
+                  "cache-1h-write": 123618,
+                  "cache-read": 8482218,
+                  "total": 9292046
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -3326,6 +4214,18 @@
           "cache-read": 26787763,
           "total": 29373328,
           "spend-usd": 32.27
+        }
+      },
+      "by-day": {
+        "2026-04-16": {
+          "claude-opus-4-7": {
+            "input": 355549,
+            "output": 102839,
+            "cache-5m-write": 1798847,
+            "cache-1h-write": 328330,
+            "cache-read": 26787763,
+            "spend-cents": 3227
+          }
         }
       },
       "outcomes": {
@@ -3418,6 +4318,18 @@
                 "total": 29373328
               }
             },
+            "by-day": {
+              "2026-04-16": {
+                "claude-opus-4-7": {
+                  "input": 355549,
+                  "output": 102839,
+                  "cache-5m-write": 1798847,
+                  "cache-1h-write": 328330,
+                  "cache-read": 26787763,
+                  "total": 29373328
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -3473,6 +4385,18 @@
                     "cache-1h-write": 126737,
                     "cache-read": 8604137,
                     "total": 9435139
+                  }
+                },
+                "by-day": {
+                  "2026-04-16": {
+                    "claude-opus-4-7": {
+                      "input": 110151,
+                      "output": 31861,
+                      "cache-5m-write": 562253,
+                      "cache-1h-write": 126737,
+                      "cache-read": 8604137,
+                      "total": 9435139
+                    }
                   }
                 },
                 "by-skill": {},
@@ -3533,6 +4457,18 @@
                     "total": 7068818
                   }
                 },
+                "by-day": {
+                  "2026-04-16": {
+                    "claude-opus-4-7": {
+                      "input": 59959,
+                      "output": 17349,
+                      "cache-5m-write": 338077,
+                      "cache-1h-write": 0,
+                      "cache-read": 6653433,
+                      "total": 7068818
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -3575,6 +4511,18 @@
           "cache-read": 10189084,
           "total": 11128064,
           "spend-usd": 6.96
+        }
+      },
+      "by-day": {
+        "2026-04-02": {
+          "claude-sonnet-4-6": {
+            "input": 150932,
+            "output": 43652,
+            "cache-5m-write": 744396,
+            "cache-1h-write": 0,
+            "cache-read": 10189084,
+            "spend-cents": 696
+          }
         }
       },
       "outcomes": {
@@ -3648,6 +4596,18 @@
                 "total": 11128064
               }
             },
+            "by-day": {
+              "2026-04-02": {
+                "claude-sonnet-4-6": {
+                  "input": 150932,
+                  "output": 43652,
+                  "cache-5m-write": 744396,
+                  "cache-1h-write": 0,
+                  "cache-read": 10189084,
+                  "total": 11128064
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -3704,6 +4664,26 @@
           "cache-read": 13550704,
           "total": 14577488,
           "spend-usd": 8.59
+        }
+      },
+      "by-day": {
+        "2026-04-06": {
+          "claude-opus-4-7": {
+            "input": 458714,
+            "output": 132654,
+            "cache-5m-write": 2189342,
+            "cache-1h-write": 0,
+            "cache-read": 26474118,
+            "spend-cents": 3253
+          },
+          "claude-sonnet-4-6": {
+            "input": 126192,
+            "output": 36512,
+            "cache-5m-write": 704176,
+            "cache-1h-write": 159904,
+            "cache-read": 13550704,
+            "spend-cents": 859
+          }
         }
       },
       "outcomes": {
@@ -3813,6 +4793,26 @@
                 "total": 14577488
               }
             },
+            "by-day": {
+              "2026-04-06": {
+                "claude-opus-4-7": {
+                  "input": 458714,
+                  "output": 132654,
+                  "cache-5m-write": 2189342,
+                  "cache-1h-write": 0,
+                  "cache-read": 26474118,
+                  "total": 29254828
+                },
+                "claude-sonnet-4-6": {
+                  "input": 126192,
+                  "output": 36512,
+                  "cache-5m-write": 704176,
+                  "cache-1h-write": 159904,
+                  "cache-read": 13550704,
+                  "total": 14577488
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "wiki-write": {
@@ -3884,6 +4884,26 @@
                     "total": 6716372
                   }
                 },
+                "by-day": {
+                  "2026-04-06": {
+                    "claude-opus-4-7": {
+                      "input": 50548,
+                      "output": 14628,
+                      "cache-5m-write": 296044,
+                      "cache-1h-write": 0,
+                      "cache-read": 6287676,
+                      "total": 6648896
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 50548,
+                      "output": 14628,
+                      "cache-5m-write": 296044,
+                      "cache-1h-write": 67476,
+                      "cache-read": 6287676,
+                      "total": 6716372
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -3936,6 +4956,26 @@
           "cache-read": 11164436,
           "total": 12247856,
           "spend-usd": 7.85
+        }
+      },
+      "by-day": {
+        "2026-04-20": {
+          "claude-haiku-4-5": {
+            "input": 63096,
+            "output": 18256,
+            "cache-5m-write": 352088,
+            "cache-1h-write": 79952,
+            "cache-read": 6775352,
+            "spend-cents": 143
+          },
+          "claude-sonnet-4-6": {
+            "input": 176028,
+            "output": 50908,
+            "cache-5m-write": 856484,
+            "cache-1h-write": 0,
+            "cache-read": 11164436,
+            "spend-cents": 785
+          }
         }
       },
       "outcomes": {
@@ -4021,6 +5061,26 @@
                 "total": 12247856
               }
             },
+            "by-day": {
+              "2026-04-20": {
+                "claude-haiku-4-5": {
+                  "input": 63096,
+                  "output": 18256,
+                  "cache-5m-write": 352088,
+                  "cache-1h-write": 79952,
+                  "cache-read": 6775352,
+                  "total": 7288744
+                },
+                "claude-sonnet-4-6": {
+                  "input": 176028,
+                  "output": 50908,
+                  "cache-5m-write": 856484,
+                  "cache-1h-write": 0,
+                  "cache-read": 11164436,
+                  "total": 12247856
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -4068,6 +5128,18 @@
           "cache-read": 7872623,
           "total": 8468558,
           "spend-usd": 1.61
+        }
+      },
+      "by-day": {
+        "2026-04-06": {
+          "claude-haiku-4-5": {
+            "input": 91329,
+            "output": 26419,
+            "cache-5m-write": 478187,
+            "cache-1h-write": 0,
+            "cache-read": 7872623,
+            "spend-cents": 161
+          }
         }
       },
       "outcomes": {
@@ -4151,6 +5223,18 @@
                 "total": 8468558
               }
             },
+            "by-day": {
+              "2026-04-06": {
+                "claude-haiku-4-5": {
+                  "input": 91329,
+                  "output": 26419,
+                  "cache-5m-write": 478187,
+                  "cache-1h-write": 0,
+                  "cache-read": 7872623,
+                  "total": 8468558
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 1693711,
@@ -4204,6 +5288,18 @@
           "cache-read": 18427464,
           "total": 20016544,
           "spend-usd": 12.12
+        }
+      },
+      "by-day": {
+        "2026-04-19": {
+          "claude-sonnet-4-6": {
+            "input": 251672,
+            "output": 72792,
+            "cache-5m-write": 1264616,
+            "cache-1h-write": 0,
+            "cache-read": 18427464,
+            "spend-cents": 1212
+          }
         }
       },
       "outcomes": {
@@ -4310,6 +5406,18 @@
                 "total": 20016544
               }
             },
+            "by-day": {
+              "2026-04-19": {
+                "claude-sonnet-4-6": {
+                  "input": 251672,
+                  "output": 72792,
+                  "cache-5m-write": 1264616,
+                  "cache-1h-write": 0,
+                  "cache-read": 18427464,
+                  "total": 20016544
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -4374,6 +5482,18 @@
                     "total": 9588350
                   }
                 },
+                "by-day": {
+                  "2026-04-19": {
+                    "claude-sonnet-4-6": {
+                      "input": 116425,
+                      "output": 33675,
+                      "cache-5m-write": 590275,
+                      "cache-1h-write": 0,
+                      "cache-read": 8847975,
+                      "total": 9588350
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -4432,6 +5552,26 @@
           "cache-read": 6653433,
           "total": 7068818,
           "spend-usd": 3.7
+        }
+      },
+      "by-day": {
+        "2026-04-17": {
+          "claude-opus-4-7": {
+            "input": 135247,
+            "output": 39117,
+            "cache-5m-write": 674341,
+            "cache-1h-write": 0,
+            "cache-read": 9579489,
+            "spend-cents": 1066
+          },
+          "claude-sonnet-4-6": {
+            "input": 59959,
+            "output": 17349,
+            "cache-5m-write": 338077,
+            "cache-1h-write": 0,
+            "cache-read": 6653433,
+            "spend-cents": 370
+          }
         }
       },
       "outcomes": {
@@ -4517,6 +5657,26 @@
                 "total": 7068818
               }
             },
+            "by-day": {
+              "2026-04-17": {
+                "claude-opus-4-7": {
+                  "input": 135247,
+                  "output": 39117,
+                  "cache-5m-write": 674341,
+                  "cache-1h-write": 0,
+                  "cache-read": 9579489,
+                  "total": 10428194
+                },
+                "claude-sonnet-4-6": {
+                  "input": 59959,
+                  "output": 17349,
+                  "cache-5m-write": 338077,
+                  "cache-1h-write": 0,
+                  "cache-read": 6653433,
+                  "total": 7068818
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 4374253,
@@ -4575,6 +5735,18 @@
           "cache-read": 7263028,
           "total": 7768688,
           "spend-usd": 1.42
+        }
+      },
+      "by-day": {
+        "2026-04-18": {
+          "claude-haiku-4-5": {
+            "input": 75644,
+            "output": 21884,
+            "cache-5m-write": 408132,
+            "cache-1h-write": 0,
+            "cache-read": 7263028,
+            "spend-cents": 142
+          }
         }
       },
       "outcomes": {
@@ -4655,6 +5827,18 @@
                 "total": 7768688
               }
             },
+            "by-day": {
+              "2026-04-18": {
+                "claude-haiku-4-5": {
+                  "input": 75644,
+                  "output": 21884,
+                  "cache-5m-write": 408132,
+                  "cache-1h-write": 0,
+                  "cache-read": 7263028,
+                  "total": 7768688
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "wiki-write": {
@@ -4687,7 +5871,7 @@
       "repo": "openpipe-oss/quill",
       "repo-source": "known-path",
       "begin": "2026-04-26T10:00:00Z",
-      "end": "2026-04-26T12:00:00Z",
+      "end": "2026-04-27T20:00:00Z",
       "spend-usd": 26.36,
       "untracked-models": [],
       "jsonl-paths": [
@@ -4711,6 +5895,44 @@
           "cache-read": 8726056,
           "total": 9448376,
           "spend-usd": 5.61
+        }
+      },
+      "by-day": {
+        "2026-04-26": {
+          "claude-opus-4-7": {
+            "input": 125442,
+            "output": 36274,
+            "cache-5m-write": 589208,
+            "cache-1h-write": 0,
+            "cache-read": 6655400,
+            "spend-cents": 854
+          },
+          "claude-sonnet-4-6": {
+            "input": 46648,
+            "output": 13492,
+            "cache-5m-write": 237285,
+            "cache-1h-write": 0,
+            "cache-read": 3593081,
+            "spend-cents": 231
+          }
+        },
+        "2026-04-27": {
+          "claude-opus-4-7": {
+            "input": 179203,
+            "output": 51821,
+            "cache-5m-write": 841727,
+            "cache-1h-write": 0,
+            "cache-read": 9507715,
+            "spend-cents": 1221
+          },
+          "claude-sonnet-4-6": {
+            "input": 66640,
+            "output": 19276,
+            "cache-5m-write": 338979,
+            "cache-1h-write": 0,
+            "cache-read": 5132975,
+            "spend-cents": 330
+          }
         }
       },
       "agent-type-costs": {
@@ -4786,6 +6008,44 @@
                 "total": 9448376
               }
             },
+            "by-day": {
+              "2026-04-26": {
+                "claude-opus-4-7": {
+                  "input": 125442,
+                  "output": 36274,
+                  "cache-5m-write": 589208,
+                  "cache-1h-write": 0,
+                  "cache-read": 6655400,
+                  "total": 7406324
+                },
+                "claude-sonnet-4-6": {
+                  "input": 46648,
+                  "output": 13492,
+                  "cache-5m-write": 237285,
+                  "cache-1h-write": 0,
+                  "cache-read": 3593081,
+                  "total": 3890506
+                }
+              },
+              "2026-04-27": {
+                "claude-opus-4-7": {
+                  "input": 179203,
+                  "output": 51821,
+                  "cache-5m-write": 841727,
+                  "cache-1h-write": 0,
+                  "cache-read": 9507715,
+                  "total": 10580466
+                },
+                "claude-sonnet-4-6": {
+                  "input": 66640,
+                  "output": 19276,
+                  "cache-5m-write": 338979,
+                  "cache-1h-write": 0,
+                  "cache-read": 5132975,
+                  "total": 5557870
+                }
+              }
+            },
             "by-skill": {
               "release-notes": {
                 "tokens": 2494106,
@@ -4832,6 +6092,18 @@
           "cache-read": 7141109,
           "total": 7628714,
           "spend-usd": 1.38
+        }
+      },
+      "by-day": {
+        "2026-04-08": {
+          "claude-haiku-4-5": {
+            "input": 72507,
+            "output": 20977,
+            "cache-5m-write": 394121,
+            "cache-1h-write": 0,
+            "cache-read": 7141109,
+            "spend-cents": 138
+          }
         }
       },
       "outcomes": {
@@ -4923,6 +6195,18 @@
                 "total": 7628714
               }
             },
+            "by-day": {
+              "2026-04-08": {
+                "claude-haiku-4-5": {
+                  "input": 72507,
+                  "output": 20977,
+                  "cache-5m-write": 394121,
+                  "cache-1h-write": 0,
+                  "cache-read": 7141109,
+                  "total": 7628714
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 762871,
@@ -4969,6 +6253,18 @@
           "cache-read": 10920598,
           "total": 11967908,
           "spend-usd": 12.71
+        }
+      },
+      "by-day": {
+        "2026-04-24": {
+          "claude-opus-4-7": {
+            "input": 169754,
+            "output": 49094,
+            "cache-5m-write": 828462,
+            "cache-1h-write": 0,
+            "cache-read": 10920598,
+            "spend-cents": 1271
+          }
         }
       },
       "outcomes": {
@@ -5046,6 +6342,18 @@
                 "total": 11967908
               }
             },
+            "by-day": {
+              "2026-04-24": {
+                "claude-opus-4-7": {
+                  "input": 169754,
+                  "output": 49094,
+                  "cache-5m-write": 828462,
+                  "cache-1h-write": 0,
+                  "cache-read": 10920598,
+                  "total": 11967908
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -5096,6 +6404,26 @@
           "cache-read": 11286355,
           "total": 12387830,
           "spend-usd": 7.96
+        }
+      },
+      "by-day": {
+        "2026-04-18": {
+          "claude-haiku-4-5": {
+            "input": 50548,
+            "output": 14628,
+            "cache-5m-write": 296044,
+            "cache-1h-write": 67476,
+            "cache-read": 6287676,
+            "spend-cents": 126
+          },
+          "claude-sonnet-4-6": {
+            "input": 179165,
+            "output": 51815,
+            "cache-5m-write": 870495,
+            "cache-1h-write": 0,
+            "cache-read": 11286355,
+            "spend-cents": 796
+          }
         }
       },
       "agent-type-costs": {
@@ -5168,6 +6496,26 @@
                 "total": 12387830
               }
             },
+            "by-day": {
+              "2026-04-18": {
+                "claude-haiku-4-5": {
+                  "input": 50548,
+                  "output": 14628,
+                  "cache-5m-write": 296044,
+                  "cache-1h-write": 67476,
+                  "cache-read": 6287676,
+                  "total": 6716372
+                },
+                "claude-sonnet-4-6": {
+                  "input": 179165,
+                  "output": 51815,
+                  "cache-5m-write": 870495,
+                  "cache-1h-write": 0,
+                  "cache-read": 11286355,
+                  "total": 12387830
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -5200,7 +6548,7 @@
       "repo": "jrivera/sextant",
       "repo-source": "git-origin",
       "begin": "2026-04-22T09:00:00Z",
-      "end": "2026-04-22T11:00:00Z",
+      "end": "2026-04-23T19:00:00Z",
       "spend-usd": 3.0,
       "untracked-models": [],
       "jsonl-paths": [
@@ -5215,6 +6563,28 @@
           "cache-read": 14404137,
           "total": 15492949,
           "spend-usd": 3.0
+        }
+      },
+      "by-day": {
+        "2026-04-22": {
+          "claude-haiku-4-5": {
+            "input": 65360,
+            "output": 18908,
+            "cache-5m-write": 353934,
+            "cache-1h-write": 42153,
+            "cache-read": 6354765,
+            "spend-cents": 132
+          }
+        },
+        "2026-04-23": {
+          "claude-haiku-4-5": {
+            "input": 82791,
+            "output": 23953,
+            "cache-5m-write": 448319,
+            "cache-1h-write": 53394,
+            "cache-read": 8049372,
+            "spend-cents": 168
+          }
         }
       },
       "outcomes": {
@@ -5293,6 +6663,28 @@
                 "total": 15492949
               }
             },
+            "by-day": {
+              "2026-04-22": {
+                "claude-haiku-4-5": {
+                  "input": 65360,
+                  "output": 18908,
+                  "cache-5m-write": 353934,
+                  "cache-1h-write": 42153,
+                  "cache-read": 6354765,
+                  "total": 6835120
+                }
+              },
+              "2026-04-23": {
+                "claude-haiku-4-5": {
+                  "input": 82791,
+                  "output": 23953,
+                  "cache-5m-write": 448319,
+                  "cache-1h-write": 53394,
+                  "cache-read": 8049372,
+                  "total": 8657829
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -5351,6 +6743,28 @@
                     "total": 7488740
                   }
                 },
+                "by-day": {
+                  "2026-04-22": {
+                    "claude-haiku-4-5": {
+                      "input": 30604,
+                      "output": 8854,
+                      "cache-5m-write": 167695,
+                      "cache-1h-write": 0,
+                      "cache-read": 3096701,
+                      "total": 3303854
+                    }
+                  },
+                  "2026-04-23": {
+                    "claude-haiku-4-5": {
+                      "input": 38766,
+                      "output": 11216,
+                      "cache-5m-write": 212415,
+                      "cache-1h-write": 0,
+                      "cache-read": 3922489,
+                      "total": 4184886
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -5394,6 +6808,18 @@
           "cache-read": 11652112,
           "total": 13012464,
           "spend-usd": 15.88
+        }
+      },
+      "by-day": {
+        "2026-04-09": {
+          "claude-opus-4-7": {
+            "input": 188576,
+            "output": 54536,
+            "cache-5m-write": 912528,
+            "cache-1h-write": 204712,
+            "cache-read": 11652112,
+            "spend-cents": 1588
+          }
         }
       },
       "agent-type-costs": {
@@ -5456,6 +6882,18 @@
                 "total": 13012464
               }
             },
+            "by-day": {
+              "2026-04-09": {
+                "claude-opus-4-7": {
+                  "input": 188576,
+                  "output": 54536,
+                  "cache-5m-write": 912528,
+                  "cache-1h-write": 204712,
+                  "cache-read": 11652112,
+                  "total": 13012464
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "wiki-write": {
@@ -5511,6 +6949,26 @@
           "cache-read": 33563115,
           "total": 36355575,
           "spend-usd": 21.82
+        }
+      },
+      "by-day": {
+        "2026-04-23": {
+          "claude-opus-4-7": {
+            "input": 650783,
+            "output": 188213,
+            "cache-5m-write": 3187749,
+            "cache-1h-write": 145451,
+            "cache-read": 42585121,
+            "spend-cents": 5063
+          },
+          "claude-sonnet-4-6": {
+            "input": 418645,
+            "output": 121095,
+            "cache-5m-write": 2150935,
+            "cache-1h-write": 101785,
+            "cache-read": 33563115,
+            "spend-cents": 2182
+          }
         }
       },
       "outcomes": {
@@ -5645,6 +7103,26 @@
                 "total": 36355575
               }
             },
+            "by-day": {
+              "2026-04-23": {
+                "claude-opus-4-7": {
+                  "input": 650783,
+                  "output": 188213,
+                  "cache-5m-write": 3187749,
+                  "cache-1h-write": 145451,
+                  "cache-read": 42585121,
+                  "total": 46757317
+                },
+                "claude-sonnet-4-6": {
+                  "input": 418645,
+                  "output": 121095,
+                  "cache-5m-write": 2150935,
+                  "cache-1h-write": 101785,
+                  "cache-read": 33563115,
+                  "total": 36355575
+                }
+              }
+            },
             "by-skill": {
               "schema-review": {
                 "tokens": 4875804,
@@ -5722,6 +7200,26 @@
                     "total": 8290395
                   }
                 },
+                "by-day": {
+                  "2026-04-23": {
+                    "claude-opus-4-7": {
+                      "input": 85055,
+                      "output": 24605,
+                      "cache-5m-write": 450165,
+                      "cache-1h-write": 0,
+                      "cache-read": 7628785,
+                      "total": 8188610
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 85055,
+                      "output": 24605,
+                      "cache-5m-write": 450165,
+                      "cache-1h-write": 101785,
+                      "cache-read": 7628785,
+                      "total": 8290395
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -5792,6 +7290,26 @@
                     "total": 8468558
                   }
                 },
+                "by-day": {
+                  "2026-04-23": {
+                    "claude-opus-4-7": {
+                      "input": 91329,
+                      "output": 26419,
+                      "cache-5m-write": 478187,
+                      "cache-1h-write": 0,
+                      "cache-read": 7872623,
+                      "total": 8468558
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 91329,
+                      "output": 26419,
+                      "cache-5m-write": 478187,
+                      "cache-1h-write": 0,
+                      "cache-read": 7872623,
+                      "total": 8468558
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -5858,6 +7376,26 @@
                     "total": 10148246
                   }
                 },
+                "by-day": {
+                  "2026-04-23": {
+                    "claude-opus-4-7": {
+                      "input": 128973,
+                      "output": 37303,
+                      "cache-5m-write": 646319,
+                      "cache-1h-write": 145451,
+                      "cache-read": 9335651,
+                      "total": 10293697
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 128973,
+                      "output": 37303,
+                      "cache-5m-write": 646319,
+                      "cache-1h-write": 0,
+                      "cache-read": 9335651,
+                      "total": 10148246
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -5920,6 +7458,26 @@
           "cache-read": 6653433,
           "total": 7145651,
           "spend-usd": 4.16
+        }
+      },
+      "by-day": {
+        "2026-04-12": {
+          "claude-opus-4-7": {
+            "input": 154069,
+            "output": 44559,
+            "cache-5m-write": 758407,
+            "cache-1h-write": 0,
+            "cache-read": 10311003,
+            "spend-cents": 1178
+          },
+          "claude-sonnet-4-6": {
+            "input": 59959,
+            "output": 17349,
+            "cache-5m-write": 338077,
+            "cache-1h-write": 76833,
+            "cache-read": 6653433,
+            "spend-cents": 416
+          }
         }
       },
       "outcomes": {
@@ -6019,6 +7577,26 @@
                 "total": 7145651
               }
             },
+            "by-day": {
+              "2026-04-12": {
+                "claude-opus-4-7": {
+                  "input": 154069,
+                  "output": 44559,
+                  "cache-5m-write": 758407,
+                  "cache-1h-write": 0,
+                  "cache-read": 10311003,
+                  "total": 11268038
+                },
+                "claude-sonnet-4-6": {
+                  "input": 59959,
+                  "output": 17349,
+                  "cache-5m-write": 338077,
+                  "cache-1h-write": 76833,
+                  "cache-read": 6653433,
+                  "total": 7145651
+                }
+              }
+            },
             "by-skill": {
               "release-notes": {
                 "tokens": 1841368,
@@ -6065,6 +7643,18 @@
           "cache-read": 8238380,
           "total": 8888480,
           "spend-usd": 5.16
+        }
+      },
+      "by-day": {
+        "2026-04-01": {
+          "claude-sonnet-4-6": {
+            "input": 100740,
+            "output": 29140,
+            "cache-5m-write": 520220,
+            "cache-1h-write": 0,
+            "cache-read": 8238380,
+            "spend-cents": 516
+          }
         }
       },
       "outcomes": {
@@ -6158,6 +7748,18 @@
                 "total": 8888480
               }
             },
+            "by-day": {
+              "2026-04-01": {
+                "claude-sonnet-4-6": {
+                  "input": 100740,
+                  "output": 29140,
+                  "cache-5m-write": 520220,
+                  "cache-1h-write": 0,
+                  "cache-read": 8238380,
+                  "total": 8888480
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "wiki-write": {
@@ -6205,6 +7807,18 @@
           "cache-read": 7141109,
           "total": 7718023,
           "spend-usd": 1.56
+        }
+      },
+      "by-day": {
+        "2026-04-26": {
+          "claude-haiku-4-5": {
+            "input": 72507,
+            "output": 20977,
+            "cache-5m-write": 394121,
+            "cache-1h-write": 89309,
+            "cache-read": 7141109,
+            "spend-cents": 156
+          }
         }
       },
       "outcomes": {
@@ -6284,6 +7898,18 @@
                 "total": 7718023
               }
             },
+            "by-day": {
+              "2026-04-26": {
+                "claude-haiku-4-5": {
+                  "input": 72507,
+                  "output": 20977,
+                  "cache-5m-write": 394121,
+                  "cache-1h-write": 89309,
+                  "cache-read": 7141109,
+                  "total": 7718023
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -6330,6 +7956,18 @@
           "cache-read": 24593221,
           "total": 26525466,
           "spend-usd": 15.37
+        }
+      },
+      "by-day": {
+        "2026-04-05": {
+          "claude-sonnet-4-6": {
+            "input": 299083,
+            "output": 86513,
+            "cache-5m-write": 1546649,
+            "cache-1h-write": 0,
+            "cache-read": 24593221,
+            "spend-cents": 1537
+          }
         }
       },
       "outcomes": {
@@ -6433,6 +8071,18 @@
                 "total": 26525466
               }
             },
+            "by-day": {
+              "2026-04-05": {
+                "claude-sonnet-4-6": {
+                  "input": 299083,
+                  "output": 86513,
+                  "cache-5m-write": 1546649,
+                  "cache-1h-write": 0,
+                  "cache-read": 24593221,
+                  "total": 26525466
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -6494,6 +8144,18 @@
                     "cache-1h-write": 0,
                     "cache-read": 8238380,
                     "total": 8888480
+                  }
+                },
+                "by-day": {
+                  "2026-04-05": {
+                    "claude-sonnet-4-6": {
+                      "input": 100740,
+                      "output": 29140,
+                      "cache-5m-write": 520220,
+                      "cache-1h-write": 0,
+                      "cache-read": 8238380,
+                      "total": 8888480
+                    }
                   }
                 },
                 "by-skill": {},
@@ -6558,6 +8220,18 @@
                     "total": 10148246
                   }
                 },
+                "by-day": {
+                  "2026-04-05": {
+                    "claude-sonnet-4-6": {
+                      "input": 128973,
+                      "output": 37303,
+                      "cache-5m-write": 646319,
+                      "cache-1h-write": 0,
+                      "cache-read": 9335651,
+                      "total": 10148246
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -6601,6 +8275,18 @@
           "cache-read": 32343925,
           "total": 35002620,
           "spend-usd": 20.98
+        }
+      },
+      "by-day": {
+        "2026-04-11": {
+          "claude-sonnet-4-6": {
+            "input": 387275,
+            "output": 112025,
+            "cache-5m-write": 2010825,
+            "cache-1h-write": 148570,
+            "cache-read": 32343925,
+            "spend-cents": 2098
+          }
         }
       },
       "outcomes": {
@@ -6723,6 +8409,18 @@
                 "total": 35002620
               }
             },
+            "by-day": {
+              "2026-04-11": {
+                "claude-sonnet-4-6": {
+                  "input": 387275,
+                  "output": 112025,
+                  "cache-5m-write": 2010825,
+                  "cache-1h-write": 148570,
+                  "cache-read": 32343925,
+                  "total": 35002620
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -6785,6 +8483,18 @@
                     "total": 7488740
                   }
                 },
+                "by-day": {
+                  "2026-04-11": {
+                    "claude-sonnet-4-6": {
+                      "input": 69370,
+                      "output": 20070,
+                      "cache-5m-write": 380110,
+                      "cache-1h-write": 0,
+                      "cache-read": 7019190,
+                      "total": 7488740
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -6838,6 +8548,18 @@
                     "cache-1h-write": 0,
                     "cache-read": 7141109,
                     "total": 7628714
+                  }
+                },
+                "by-day": {
+                  "2026-04-11": {
+                    "claude-sonnet-4-6": {
+                      "input": 72507,
+                      "output": 20977,
+                      "cache-5m-write": 394121,
+                      "cache-1h-write": 0,
+                      "cache-read": 7141109,
+                      "total": 7628714
+                    }
                   }
                 },
                 "by-skill": {},
@@ -6899,6 +8621,18 @@
                     "total": 10436790
                   }
                 },
+                "by-day": {
+                  "2026-04-11": {
+                    "claude-sonnet-4-6": {
+                      "input": 132110,
+                      "output": 38210,
+                      "cache-5m-write": 660330,
+                      "cache-1h-write": 148570,
+                      "cache-read": 9457570,
+                      "total": 10436790
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -6927,7 +8661,7 @@
       "repo": "jrivera/driftwood",
       "repo-source": "path-guess",
       "begin": "2026-04-01T12:00:00Z",
-      "end": "2026-04-01T16:00:00Z",
+      "end": "2026-04-02T12:00:00Z",
       "spend-usd": 13.27,
       "untracked-models": [],
       "jsonl-paths": [
@@ -6942,6 +8676,28 @@
           "cache-read": 10189084,
           "total": 11295348,
           "spend-usd": 13.27
+        }
+      },
+      "by-day": {
+        "2026-04-01": {
+          "claude-opus-4-7": {
+            "input": 75466,
+            "output": 21826,
+            "cache-5m-write": 372198,
+            "cache-1h-write": 83642,
+            "cache-read": 5094542,
+            "spend-cents": 664
+          }
+        },
+        "2026-04-02": {
+          "claude-opus-4-7": {
+            "input": 75466,
+            "output": 21826,
+            "cache-5m-write": 372198,
+            "cache-1h-write": 83642,
+            "cache-read": 5094542,
+            "spend-cents": 663
+          }
         }
       },
       "agent-type-costs": {
@@ -6999,6 +8755,28 @@
                 "total": 11295348
               }
             },
+            "by-day": {
+              "2026-04-01": {
+                "claude-opus-4-7": {
+                  "input": 75466,
+                  "output": 21826,
+                  "cache-5m-write": 372198,
+                  "cache-1h-write": 83642,
+                  "cache-read": 5094542,
+                  "total": 5647674
+                }
+              },
+              "2026-04-02": {
+                "claude-opus-4-7": {
+                  "input": 75466,
+                  "output": 21826,
+                  "cache-5m-write": 372198,
+                  "cache-1h-write": 83642,
+                  "cache-read": 5094542,
+                  "total": 5647674
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -7026,7 +8804,7 @@
       "repo": "jrivera/driftwood",
       "repo-source": "path-guess",
       "begin": "2026-04-07T12:00:00Z",
-      "end": "2026-04-07T16:00:00Z",
+      "end": "2026-04-08T12:00:00Z",
       "spend-usd": 18.62,
       "untracked-models": [],
       "jsonl-paths": [
@@ -7050,6 +8828,44 @@
           "cache-read": 6409595,
           "total": 6788870,
           "spend-usd": 3.48
+        }
+      },
+      "by-day": {
+        "2026-04-07": {
+          "claude-opus-4-7": {
+            "input": 105267,
+            "output": 30442,
+            "cache-5m-write": 505302,
+            "cache-1h-write": 0,
+            "cache-read": 6252772,
+            "spend-cents": 757
+          },
+          "claude-sonnet-4-6": {
+            "input": 26842,
+            "output": 7767,
+            "cache-5m-write": 155027,
+            "cache-1h-write": 0,
+            "cache-read": 3204797,
+            "spend-cents": 174
+          }
+        },
+        "2026-04-08": {
+          "claude-opus-4-7": {
+            "input": 105268,
+            "output": 30443,
+            "cache-5m-write": 505303,
+            "cache-1h-write": 0,
+            "cache-read": 6252773,
+            "spend-cents": 757
+          },
+          "claude-sonnet-4-6": {
+            "input": 26843,
+            "output": 7768,
+            "cache-5m-write": 155028,
+            "cache-1h-write": 0,
+            "cache-read": 3204798,
+            "spend-cents": 174
+          }
         }
       },
       "outcomes": {
@@ -7131,6 +8947,44 @@
                 "total": 6788870
               }
             },
+            "by-day": {
+              "2026-04-07": {
+                "claude-opus-4-7": {
+                  "input": 105267,
+                  "output": 30442,
+                  "cache-5m-write": 505302,
+                  "cache-1h-write": 0,
+                  "cache-read": 6252772,
+                  "total": 6893783
+                },
+                "claude-sonnet-4-6": {
+                  "input": 26842,
+                  "output": 7767,
+                  "cache-5m-write": 155027,
+                  "cache-1h-write": 0,
+                  "cache-read": 3204797,
+                  "total": 3394433
+                }
+              },
+              "2026-04-08": {
+                "claude-opus-4-7": {
+                  "input": 105268,
+                  "output": 30443,
+                  "cache-5m-write": 505303,
+                  "cache-1h-write": 0,
+                  "cache-read": 6252773,
+                  "total": 6893787
+                },
+                "claude-sonnet-4-6": {
+                  "input": 26843,
+                  "output": 7768,
+                  "cache-5m-write": 155028,
+                  "cache-1h-write": 0,
+                  "cache-read": 3204798,
+                  "total": 3394437
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -7173,6 +9027,18 @@
           "cache-read": 14456249,
           "total": 16303603,
           "spend-usd": 20.9
+        }
+      },
+      "by-day": {
+        "2026-04-26": {
+          "claude-opus-4-7": {
+            "input": 260727,
+            "output": 75397,
+            "cache-5m-write": 1234781,
+            "cache-1h-write": 276449,
+            "cache-read": 14456249,
+            "spend-cents": 2090
+          }
         }
       },
       "outcomes": {
@@ -7262,6 +9128,18 @@
                 "total": 16303603
               }
             },
+            "by-day": {
+              "2026-04-26": {
+                "claude-opus-4-7": {
+                  "input": 260727,
+                  "output": 75397,
+                  "cache-5m-write": 1234781,
+                  "cache-1h-write": 276449,
+                  "cache-read": 14456249,
+                  "total": 16303603
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {
               "tracker-search": {
@@ -7324,6 +9202,26 @@
           "cache-read": 23008274,
           "total": 24705804,
           "spend-usd": 13.92
+        }
+      },
+      "by-day": {
+        "2026-04-22": {
+          "claude-haiku-4-5": {
+            "input": 245754,
+            "output": 71094,
+            "cache-5m-write": 1308462,
+            "cache-1h-write": 132975,
+            "cache-read": 22520598,
+            "spend-cents": 475
+          },
+          "claude-sonnet-4-6": {
+            "input": 258302,
+            "output": 74722,
+            "cache-5m-write": 1364506,
+            "cache-1h-write": 0,
+            "cache-read": 23008274,
+            "spend-cents": 1392
+          }
         }
       },
       "outcomes": {
@@ -7435,6 +9333,26 @@
                 "total": 24705804
               }
             },
+            "by-day": {
+              "2026-04-22": {
+                "claude-haiku-4-5": {
+                  "input": 245754,
+                  "output": 71094,
+                  "cache-5m-write": 1308462,
+                  "cache-1h-write": 132975,
+                  "cache-read": 22520598,
+                  "total": 24278883
+                },
+                "claude-sonnet-4-6": {
+                  "input": 258302,
+                  "output": 74722,
+                  "cache-5m-write": 1364506,
+                  "cache-1h-write": 0,
+                  "cache-read": 23008274,
+                  "total": 24705804
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -7510,6 +9428,26 @@
                     "total": 7488740
                   }
                 },
+                "by-day": {
+                  "2026-04-22": {
+                    "claude-haiku-4-5": {
+                      "input": 69370,
+                      "output": 20070,
+                      "cache-5m-write": 380110,
+                      "cache-1h-write": 0,
+                      "cache-read": 7019190,
+                      "total": 7488740
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 69370,
+                      "output": 20070,
+                      "cache-5m-write": 380110,
+                      "cache-1h-write": 0,
+                      "cache-read": 7019190,
+                      "total": 7488740
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -7577,6 +9515,26 @@
                     "total": 9588350
                   }
                 },
+                "by-day": {
+                  "2026-04-22": {
+                    "claude-haiku-4-5": {
+                      "input": 116425,
+                      "output": 33675,
+                      "cache-5m-write": 590275,
+                      "cache-1h-write": 132975,
+                      "cache-read": 8847975,
+                      "total": 9721325
+                    },
+                    "claude-sonnet-4-6": {
+                      "input": 116425,
+                      "output": 33675,
+                      "cache-5m-write": 590275,
+                      "cache-1h-write": 0,
+                      "cache-read": 8847975,
+                      "total": 9588350
+                    }
+                  }
+                },
                 "by-skill": {},
                 "by-mcp-tool": {},
                 "unpriced-models": []
@@ -7634,6 +9592,26 @@
           "cache-read": 11042517,
           "total": 12296999,
           "spend-usd": 8.88
+        }
+      },
+      "by-day": {
+        "2026-04-02": {
+          "claude-haiku-4-5": {
+            "input": 75644,
+            "output": 21884,
+            "cache-5m-write": 408132,
+            "cache-1h-write": 0,
+            "cache-read": 7263028,
+            "spend-cents": 142
+          },
+          "claude-sonnet-4-6": {
+            "input": 172891,
+            "output": 50001,
+            "cache-5m-write": 842473,
+            "cache-1h-write": 189117,
+            "cache-read": 11042517,
+            "spend-cents": 888
+          }
         }
       },
       "outcomes": {
@@ -7723,6 +9701,26 @@
                 "total": 12296999
               }
             },
+            "by-day": {
+              "2026-04-02": {
+                "claude-haiku-4-5": {
+                  "input": 75644,
+                  "output": 21884,
+                  "cache-5m-write": 408132,
+                  "cache-1h-write": 0,
+                  "cache-read": 7263028,
+                  "total": 7768688
+                },
+                "claude-sonnet-4-6": {
+                  "input": 172891,
+                  "output": 50001,
+                  "cache-5m-write": 842473,
+                  "cache-1h-write": 189117,
+                  "cache-read": 11042517,
+                  "total": 12296999
+                }
+              }
+            },
             "by-skill": {},
             "by-mcp-tool": {},
             "unpriced-models": []
@@ -7774,6 +9772,26 @@
           "cache-read": 7384947,
           "total": 8004209,
           "spend-usd": 4.95
+        }
+      },
+      "by-day": {
+        "2026-04-04": {
+          "claude-opus-4-7": {
+            "input": 248179,
+            "output": 71769,
+            "cache-5m-write": 1178737,
+            "cache-1h-write": 263973,
+            "cache-read": 13968573,
+            "spend-cents": 2003
+          },
+          "claude-sonnet-4-6": {
+            "input": 78781,
+            "output": 22791,
+            "cache-5m-write": 422143,
+            "cache-1h-write": 95547,
+            "cache-read": 7384947,
+            "spend-cents": 495
+          }
         }
       },
       "outcomes": {
@@ -7871,6 +9889,26 @@
                 "cache-1h-write": 95547,
                 "cache-read": 7384947,
                 "total": 8004209
+              }
+            },
+            "by-day": {
+              "2026-04-04": {
+                "claude-opus-4-7": {
+                  "input": 248179,
+                  "output": 71769,
+                  "cache-5m-write": 1178737,
+                  "cache-1h-write": 263973,
+                  "cache-read": 13968573,
+                  "total": 15731231
+                },
+                "claude-sonnet-4-6": {
+                  "input": 78781,
+                  "output": 22791,
+                  "cache-5m-write": 422143,
+                  "cache-1h-write": 95547,
+                  "cache-read": 7384947,
+                  "total": 8004209
+                }
               }
             },
             "by-skill": {

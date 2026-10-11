@@ -440,9 +440,9 @@ fn svg_output_is_pinned_for_the_medium_fixture() {
     let artifact = render_with(&report, &SlotProse::new(), ChartMode::Svg);
     assert_eq!(artifact.assets.len(), 2);
     let expected_0 = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" role="img" aria-label="Daily spend">
-  <polyline fill="none" stroke="#4c6ef5" stroke-width="3" points="0,223 34,190 69,268 103,105 138,234 172,135 207,193 241,285 276,228 310,290 345,214 379,232 414,290 448,271 483,290 517,173 552,129 586,128 621,246 655,232 690,193 724,211 759,10 793,244 828,290 862,108 897,235 931,140 966,187 1000,290"/>
-  <text x="4" y="18" font-size="16">$77.16</text>
-  <text x="4" y="157" font-size="16">$38.58</text>
+  <polyline fill="none" stroke="#4c6ef5" stroke-width="3" points="0,248 34,168 69,268 103,109 138,235 172,138 207,228 241,252 276,229 310,290 345,215 379,233 414,290 448,276 483,286 517,175 552,133 586,131 621,247 655,234 690,195 724,219 759,10 793,245 828,290 862,167 897,217 931,176 966,120 1000,290"/>
+  <text x="4" y="18" font-size="16">$78.84</text>
+  <text x="4" y="157" font-size="16">$39.42</text>
   <text x="4" y="296" font-size="16">$0.00</text>
   <text x="0" y="270" font-size="14">2026-04-01</text>
   <text x="176" y="270" font-size="14">2026-04-07</text>
@@ -453,8 +453,8 @@ fn svg_output_is_pinned_for_the_medium_fixture() {
 </svg>
 "##;
     assert_eq!(artifact.assets[0].body, expected_0);
-    let expected_1 = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" role="img" aria-label="Daily sessions">
-  <polyline fill="none" stroke="#4c6ef5" stroke-width="3" points="0,150 34,80 69,220 103,150 138,220 172,150 207,150 241,220 276,150 310,290 345,220 379,220 414,290 448,150 483,290 517,220 552,80 586,80 621,220 655,150 690,220 724,150 759,150 793,220 828,290 862,10 897,220 931,150 966,220 1000,290"/>
+    let expected_1 = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" role="img" aria-label="Daily active sessions">
+  <polyline fill="none" stroke="#4c6ef5" stroke-width="3" points="0,150 34,10 69,220 103,150 138,220 172,150 207,150 241,150 276,150 310,290 345,220 379,220 414,290 448,150 483,220 517,220 552,80 586,80 621,220 655,150 690,220 724,150 759,80 793,220 828,290 862,10 897,150 931,80 966,150 1000,290"/>
   <text x="4" y="18" font-size="16">4</text>
   <text x="4" y="157" font-size="16">2</text>
   <text x="4" y="296" font-size="16">0</text>

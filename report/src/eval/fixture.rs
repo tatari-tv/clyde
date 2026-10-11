@@ -3,7 +3,7 @@
 //! A fixture directory holds:
 //!
 //! ```text
-//! report.json    the collected schema-v2 artifact  (REQUIRED)
+//! report.json    the collected schema-v3 artifact  (REQUIRED)
 //! eval.yml       this module's `Spec`              (optional; defaults apply)
 //! prior.json     a prior-period artifact           (optional; lights up Month over Month)
 //! analytics.json an Analytics cost export          (optional; lights up Reconciliation)

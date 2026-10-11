@@ -82,6 +82,7 @@ fn fixture_efficiency() -> SessionEfficiency {
         effort_xhigh: 0,
         model_mix,
         by_model: BTreeMap::new(),
+        by_day: BTreeMap::new(),
         by_skill: BTreeMap::new(),
         by_mcp_tool: BTreeMap::new(),
         // This fixture's models both price, so there is no pricing gap to disclose.

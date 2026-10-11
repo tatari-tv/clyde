@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
+use chrono::NaiveDate;
 use claude_pricing::{AssistantEntry, Pricing, TokenUsage};
 use common::metrics::TokenTotals;
 use log::{debug, warn};
@@ -122,6 +123,18 @@ pub struct RawCounters {
     /// NO `$` field: per-model cost is priced LAST from these unioned totals via
     /// `common::metrics::price`, so a priced dollar can never be summed by accident.
     pub by_model: BTreeMap<String, TokenTotals>,
+    /// The same per-model token split as [`Self::by_model`], bucketed by the UTC day each turn
+    /// happened (`day -> model -> TokenTotals`). Summed over days it equals `by_model` model for
+    /// model, which is what lets a report put a multi-day session's spend on the days it was spent
+    /// instead of on the day it began. A turn with no timestamp lands on the session's begin day
+    /// (`fold` places it), never dropped.
+    ///
+    /// `#[serde(default)]`, and deliberately ALWAYS serialized, even empty: a blob written before this
+    /// field existed has no `by-day` key at all, and the catalog's backfill predicate reads exactly
+    /// that absence (`json_extract(efficiency_json, '$.aggregate.raw."by-day"') IS NULL`) to find the
+    /// rows a reindex should bucket. An empty map on a session with tokens would read as "bucketed".
+    #[serde(default)]
+    pub by_day: BTreeMap<NaiveDate, BTreeMap<String, TokenTotals>>,
     /// Tokens/`$` grouped by `attributionSkill`.
     pub by_skill: BTreeMap<String, WorkloadCost>,
     /// Tokens/`$` grouped by `attributionMcpTool`.
@@ -224,11 +237,34 @@ impl RawCounters {
         cost
     }
 
+    /// Put one turn's usage in its day's bucket ([`Self::by_day`]). Separate from
+    /// [`add_usage`](Self::add_usage) because the day is not always known when the turn is read: a
+    /// record with no timestamp is held back and bucketed on the session's begin day by `fold`.
+    pub fn bucket_usage(&mut self, day: NaiveDate, model: &str, usage: &TokenUsage) {
+        self.by_day
+            .entry(day)
+            .or_default()
+            .entry(model.to_string())
+            .or_default()
+            .add(usage);
+    }
+
+    /// Fold a whole per-model split into one day's bucket. The undated-turn path: `fold` carries the
+    /// held-back tokens here once it knows the session's begin day.
+    pub fn bucket_totals(&mut self, day: NaiveDate, by_model: &BTreeMap<String, TokenTotals>) {
+        let bucket = self.by_day.entry(day).or_default();
+        for (model, totals) in by_model {
+            bucket.entry(model.clone()).or_default().merge(totals);
+        }
+    }
+
     /// Phase 2 seam: fold a parsed `claude_pricing::AssistantEntry` (as returned by
     /// `parse_jsonl_file`) into these counters. Delegates to [`add_usage`](Self::add_usage) so token
-    /// and cost accumulation has exactly ONE code path shared with Phase 3's per-record extractor.
+    /// and cost accumulation has exactly ONE code path shared with Phase 3's per-record extractor,
+    /// and buckets it on its own timestamp's UTC day.
     pub fn add_entry(&mut self, entry: &AssistantEntry) {
         let _ = self.add_usage(&entry.model, &entry.usage);
+        self.bucket_usage(entry.timestamp.date_naive(), &entry.model, &entry.usage);
     }
 
     /// Union `other` into `self` (the Aggregation invariant's additive step): scalar counters add,
@@ -259,6 +295,9 @@ impl RawCounters {
         }
         for (model, totals) in &other.by_model {
             self.by_model.entry(model.clone()).or_default().merge(totals);
+        }
+        for (day, by_model) in &other.by_day {
+            self.bucket_totals(*day, by_model);
         }
         for (skill, wc) in &other.by_skill {
             self.by_skill.entry(skill.clone()).or_default().merge(wc);

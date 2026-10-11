@@ -179,7 +179,7 @@ fn repo_pairs_carry_both_shares_and_three_sort_ranks() {
             assert_eq!(quill.label, "openpipe-oss/quill");
             assert_eq!(quill.sessions, "17 sessions");
             assert_eq!(quill.sessions_share, "39%");
-            assert_eq!(quill.spend, "$264.79");
+            assert_eq!(quill.spend, "$264.78");
             assert_eq!(quill.spend_share, "39%");
             assert_eq!(
                 quill.bars.second,
@@ -188,7 +188,7 @@ fn repo_pairs_carry_both_shares_and_three_sort_ranks() {
             );
             assert_eq!(
                 quill.tip,
-                "openpipe-oss/quill: 17 sessions (39%), $264.79 (39%), $15.58 per session"
+                "openpipe-oss/quill: 17 sessions (39%), $264.78 (39%), $15.58 per session"
             );
             assert_eq!(quill.rank.spend, 0);
             assert_eq!(quill.rank.sessions, 0);
@@ -217,8 +217,8 @@ fn the_treemap_has_one_group_per_org_and_a_tile_per_repo() {
             assert_eq!(first.share, "53%");
             assert_eq!(first.tone, 0);
             let beacon = first.tiles.iter().find(|t| t.label == "beacon").unwrap();
-            assert_eq!(beacon.spend, "$165.85");
-            assert_eq!(beacon.tip, "northwind-media/beacon: $165.85 (25%)");
+            assert_eq!(beacon.spend, "$165.84");
+            assert_eq!(beacon.tip, "northwind-media/beacon: $165.84 (25%)");
         },
     );
 }
@@ -240,7 +240,7 @@ fn an_org_with_no_repo_rows_is_one_muted_tile() {
             assert_eq!(group.tiles.len(), 1);
             assert_eq!(group.tiles[0].label, UNATTRIBUTED_ORG);
             assert_eq!(group.tiles[0].rect, group.rect);
-            assert_eq!(group.tiles[0].tip, format!("{UNATTRIBUTED_ORG}: $353.05 (53%)"));
+            assert_eq!(group.tiles[0].tip, format!("{UNATTRIBUTED_ORG}: $353.04 (53%)"));
         },
     );
 }
@@ -357,7 +357,7 @@ fn the_calendar_has_a_cell_and_tip_per_day() {
         |block| {
             let cal = build(block).calendar.unwrap();
             assert_eq!(cal.cells.len(), block.aggregates.by_day.len());
-            assert_eq!(cal.cells[0].1, "2026-04-01: $18.43");
+            assert_eq!(cal.cells[0].1, "2026-04-01: $11.80");
             assert_eq!(cal.height, 58);
         },
     );
@@ -417,12 +417,12 @@ fn display_strings_cover_every_chart_label() {
         |block| {
             let strings = display_strings(&build(block));
             for expected in [
-                "$264.79",
+                "$264.78",
                 "39%",
                 "17 sessions",
                 "$10 to $25: 18 sessions",
                 "$3,201.82",
-                "2026-04-01: $18.43",
+                "2026-04-01: $11.80",
             ] {
                 assert!(strings.iter().any(|s| s == expected), "{expected}");
             }

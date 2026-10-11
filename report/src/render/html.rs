@@ -22,7 +22,6 @@ use super::facts::FactRegistry;
 use super::sections::{self, Section};
 use super::visuals::{self, Visuals};
 use crate::fmt::format_int;
-use line::Tone;
 use page::Page;
 
 const TEMPLATE: &str = include_str!("html/template.html");
@@ -275,25 +274,27 @@ fn where_it_went(p: &mut Page, v: &Visuals, top_n: usize) {
     close_section(p);
 }
 
-/// Section 6: the daily spend line beside its calendar, then daily sessions.
+/// Section 6: daily spend stacked by model beside its calendar, then the daily cache-read share and
+/// daily active sessions, then how the series reconciles with the headline.
 fn spend_over_time(p: &mut Page, block: &ContextBlock<'_>, v: &Visuals) {
     open_part(p, Part::SpendOverTime);
-    if let Some(sentence) = sections::carried_in_sentence(block) {
-        para(p, "<p class=\"lead\">", &sentence);
-    }
-    let charts = &block.aggregates.charts;
-    let by_day = &block.aggregates.by_day;
+    para(p, "<p class=\"lead\">", sections::DAY_BASIS);
     p.raw("<div class=\"split\">");
-    line::figure(p, "Daily spend", charts.by_day_spend.as_ref(), by_day, Tone::Spend);
+    figures::daily_stack(p, "Daily spend by model", v.daily.as_ref());
     figures::calendar(p, "Spend by day", v.calendar.as_ref());
-    p.raw("</div>\n");
-    line::figure(
+    p.raw("</div>\n<div class=\"duo\">");
+    line::share_figure(p, "Daily cache-read share", v.cache_share.as_ref());
+    line::sessions_figure(
         p,
-        "Daily sessions",
-        charts.by_day_sessions.as_ref(),
-        by_day,
-        Tone::Sessions,
+        "Daily active sessions",
+        block.aggregates.charts.by_day_sessions.as_ref(),
+        &block.aggregates.by_day,
     );
+    p.raw("</div>\n");
+    para(p, "<p class=\"caption\">", &sections::day_coverage_sentence(block));
+    if let Some(sentence) = sections::unbucketed_sentence(block) {
+        para(p, "<p class=\"caption\">", &sentence);
+    }
     close_section(p);
 }
 
@@ -503,7 +504,7 @@ fn unobserved_spend(p: &mut Page, block: &ContextBlock<'_>, top_n: usize) {
     code_text(p, &sections::heavy_on_short_line(block));
     p.raw("</li>\n</ul>\n");
     if block.bands.bands.is_some() {
-        para(p, "<p class=\"caption\">", sections::NO_OBSERVED_CAVEAT);
+        para(p, "<p class=\"caption\">", sections::NO_OBSERVED_SEE_ABOVE);
     }
     let flags: Vec<Vec<String>> = sections::flag_rows(block).into_iter().map(Vec::from).collect();
     if flags.is_empty() {

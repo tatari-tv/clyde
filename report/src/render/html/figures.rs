@@ -8,7 +8,7 @@
 
 use super::page::Page;
 use crate::chart::{self, calendar, treemap};
-use crate::render::visuals::{Calendar, Cascade, Histogram, Pairs, Stack, Treemap};
+use crate::render::visuals::{Calendar, Cascade, DailyStack, Histogram, Pairs, Stack, Treemap};
 
 /// Shown in place of a chart with nothing to draw.
 const EMPTY: &str = "No data in this window to draw.";
@@ -351,6 +351,54 @@ pub(super) fn histogram(p: &mut Page, caption: &str, histogram: Option<&Histogra
         p.raw("<p class=\"caption\">").text(note).raw("</p>");
     }
     p.raw("</figure>\n");
+}
+
+/// Daily spend as standing columns split by model, one per day, on the tallest day's scale. Blocks
+/// take the Cost Summary bar's model colors; each day's whole column is one hover target carrying
+/// the day's total and its per-model split.
+pub(super) fn daily_stack(p: &mut Page, caption: &str, daily: Option<&DailyStack>) {
+    p.raw("<figure class=\"chart daily-fig\"><figcaption>")
+        .text(caption)
+        .raw("</figcaption>");
+    let Some(daily) = daily else {
+        empty(p, EMPTY);
+        p.raw("</figure>\n");
+        return;
+    };
+    p.raw("<div class=\"plot columns\">");
+    super::line::y_axis(p, &daily.y_labels);
+    p.raw("<svg");
+    p.geom("viewBox", &format!("0 0 {} {}", chart::FULL, chart::FULL));
+    p.raw(" preserveAspectRatio=\"none\" role=\"img\"")
+        .attr("aria-label", caption)
+        .raw("><g class=\"grid\">");
+    for y in [0, chart::FULL / 2, chart::FULL] {
+        p.raw("<line x1=\"0\"").geom_int("x2", chart::FULL);
+        p.geom_int("y1", y).geom_int("y2", y).raw("/>");
+    }
+    p.raw("</g>");
+    for col in &daily.columns {
+        p.raw("<g class=\"day\"").attr("data-tip", &col.tip).raw("><title>");
+        p.text(&col.tip).raw("</title>");
+        p.raw("<rect class=\"hit\"").geom_int("x", col.x).raw(" y=\"0\"");
+        p.geom_int("width", col.w).geom_int("height", chart::FULL).raw("/>");
+        for (block, tone) in &col.blocks {
+            p.raw("<rect class=\"blk").raw(tone_class(*tone)).raw("\"");
+            p.geom_int("x", col.x).geom_int("y", block.y);
+            p.geom_int("width", col.w).geom_int("height", block.h).raw("/>");
+        }
+        p.raw("</g>");
+    }
+    p.raw("</svg>");
+    super::line::x_axis(p, &daily.x_labels);
+    p.raw("</div><ul class=\"legend stack-legend\">");
+    for (model, tone) in &daily.legend {
+        p.raw("<li><i class=\"swatch")
+            .raw(tone_class(*tone))
+            .raw("\"></i><code>");
+        p.text(model).raw("</code></li>");
+    }
+    p.raw("</ul></figure>\n");
 }
 
 /// The daily spend calendar: weekday header, SVG cells, a shade legend.

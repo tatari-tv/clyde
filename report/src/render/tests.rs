@@ -71,6 +71,7 @@ fn session_entry(
         untracked_models: Vec::new(),
         jsonl_paths: Vec::new(),
         models,
+        by_day: None,
         outcomes,
         agent_type_costs: BTreeMap::new(),
         cache_read_share: None,
@@ -158,7 +159,7 @@ pub(super) fn sample_report() -> Report {
     totals_models.insert("claude-sonnet-4-6".into(), sonnet_tokens());
 
     Report {
-        schema_version: 2,
+        schema_version: crate::report::SCHEMA_VERSION,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
@@ -468,7 +469,7 @@ fn report_with_n_sessions(n: usize) -> Report {
         );
     }
     Report {
-        schema_version: 2,
+        schema_version: crate::report::SCHEMA_VERSION,
         generated: ts("2026-04-27T19:42:08Z"),
         host: "desk".into(),
         since: ts("2026-04-01T00:00:00Z"),
@@ -788,7 +789,7 @@ fn render_rejects_v1_artifact_by_version_not_serde_error() {
         "the error must name the artifact's version: {msg}"
     );
     assert!(
-        msg.contains("schema v2"),
+        msg.contains("schema v3"),
         "the error must name the expected version: {msg}"
     );
     assert!(
@@ -800,9 +801,9 @@ fn render_rejects_v1_artifact_by_version_not_serde_error() {
         "the version gate must fire BEFORE serde reports an internal field: {msg}"
     );
 
-    // A current v2 envelope passes the gate.
-    let v2 = r#"{"schema-version": 2}"#;
-    check_schema_version(v2, Path::new("./claude-report.json")).expect("a v2 artifact must pass the gate");
+    // A current v3 envelope passes the gate.
+    let v3 = r#"{"schema-version": 3}"#;
+    check_schema_version(v3, Path::new("./claude-report.json")).expect("a v3 artifact must pass the gate");
 
     // Something that is not a clyde report at all is named as such, not as a version mismatch.
     let junk = r#"{"hello": "world"}"#;
@@ -997,3 +998,20 @@ mod prior;
 #[cfg(test)]
 mod reconcile;
 mod workload;
+
+/// Schema v3 is the per-day-bucket break: a v2 artifact has no `by-day`, so render refuses it by
+/// name, both versions stated, before any serde error about a field.
+#[test]
+fn render_schema_v2_artifact_is_refused_naming_v2_and_v3() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("claude-report.json");
+    let report = crate::eval::synth::build(crate::eval::synth::Kind::Small, &pricing()).unwrap();
+    let mut json = serde_json::to_value(&report).unwrap();
+    json["schema-version"] = serde_json::json!(2);
+    fs::write(&input, json.to_string()).unwrap();
+    let msg = format!("{:#}", load_report(&input, "report").unwrap_err());
+    assert!(
+        msg.contains("schema v2") && msg.contains("schema v3") && msg.contains("report collect"),
+        "{msg}"
+    );
+}

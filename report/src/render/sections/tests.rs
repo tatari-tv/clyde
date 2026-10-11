@@ -162,15 +162,27 @@ fn org_summary_reads_the_row() {
     });
 }
 
+/// Inverts `carried_in_sentence_is_absent_without_carried_in_sessions`: the coverage line is always
+/// present and reconciles the daily series with the headline; the unbucketed footnote appears only
+/// when a session has no per-day buckets.
 #[test]
-fn carried_in_sentence_is_absent_without_carried_in_sessions() {
-    with_block(&sample_report(), |b| {
-        assert_eq!(carried_in_sentence(b).is_some(), b.aggregates.carried_in.sessions > 0);
+fn day_coverage_sentence_reconciles_and_the_unbucketed_footnote_is_conditional() {
+    with_block(&medium(), |b| {
+        let line = day_coverage_sentence(b);
+        assert!(line.contains(&b.totals.spend), "{line}");
+        assert_eq!(unbucketed_sentence(b), None, "every medium session is bucketed");
     });
     let patho = build(Kind::Pathological, &pricing()).unwrap();
     with_block(&patho, |b| {
-        let s = carried_in_sentence(b).expect("pathological carries carried-in sessions");
-        assert!(s.contains("began before the window opened"));
+        let c = &b.aggregates.day_coverage;
+        let line = day_coverage_sentence(b);
+        assert!(line.contains(&c.in_window) && line.contains(&c.out_of_window), "{line}");
+        assert!(line.contains("3 sessions"), "{line}");
+        let foot = unbucketed_sentence(b).expect("pathological has an unbucketed session");
+        assert!(
+            foot.starts_with("1 session has no per-day breakdown") && foot.contains(&c.unbucketed_spend),
+            "{foot}"
+        );
     });
 }
 
