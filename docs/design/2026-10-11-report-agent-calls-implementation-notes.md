@@ -15,3 +15,23 @@
 
 ### Open questions
 - None.
+
+## Phase 2: Agent calls and sessions in the view
+
+### Design decisions
+- Calls per type come from a new `session_agent_spawns(entry)`, separate from `session_agent_cents`, so the cents split (the partition) is untouched. `build_efficiency_view` adds its spawns into `AgentCents.spawns`; `sessions += 1` rides the `session_agent_cents` loop, so a session counts once per bucket it holds, `(main-session)` included (including the spend-with-no-bucket fallback, which lands on `(main-session)`). (`report/src/render/workload.rs:session_agent_spawns`, `build_efficiency_view`)
+- The token rule is shared, not copied: `report::subagent_has_tokens(sub)` is `by_model.values().any(has_tokens)`, the same predicate that decides whether `agent_type_costs` keeps a type's bucket. (`report/src/report.rs:subagent_has_tokens`)
+- `partition_rows` returns `Vec<CallRow>`. `(main-session)` is keyed on `MAIN_SESSION_BUCKET`: Calls and $/call `n/a`, Sessions as counted, and `counts: None` so Phase 3's `call_pairs` (once it skips count-less rows) leaves it out. Every other row gets `CallCounts { calls: spawns, spend: dollars, counted_spend: dollars, partial: false }`. $/call is `cents::to_dollars(cents) / spawns`; a non-main row with 0 spawns (only reachable in hand-built data) shows Calls `0` and $/call `n/a`, the skill/MCP precedent. (`report/src/render/workload.rs:partition_rows`)
+- The `build_efficiency_view` closing debug line gains `agent-calls=<sum of spawns>`.
+- `agent_calls_equal_subagent_entries` counts the expected calls from the raw `by_model` totals, not through `subagent_has_tokens`, so the test does not grade the predicate with itself. Both `zero_token_subagent_adds_no_call` (filter removed) and `agent_sessions_and_per_call_values` (raw cents divided: `$150.00`) were mutation-checked to fail.
+
+### Deviations
+- `eval::synth` gained a `#[cfg(test)] pub(crate) fn build_no_rollup(kind, pricing)`; `build` now delegates to a private `build_view(kind, pricing, no_rollup)`. The `agent_calls_same_under_no_rollup` criterion needs synth medium under `--no-rollup` and the generator's session list is private. Same effect, correct seam; `build`'s output is byte-identical (the reproducibility test still passes).
+- `render/html.rs:workload_rows` takes `&[CallRow]` instead of the deleted `WorkloadRow`, still emitting the same three cells. HTML and Markdown output are unchanged and no golden moved (`git status` shows no fixture diff after `otto ci`). The ContextBlock JSON (`agent-type-costs`) now carries `calls`, `sessions` and `per-call` strings, as the API Design says.
+
+### Tradeoffs
+- A separate `session_agent_spawns` pass vs. folding spawns into `session_agent_cents`'s tuple: the cents function is the partition's authority and its tests pin its shape; a second pass over an in-memory list keeps it single-purpose.
+- Spawns are added to whatever type they name, even if a hand-built entry has no matching cost bucket (that row then shows `$0.00`). Report-built entries cannot diverge, because the bucket and the call use the same token rule; restricting calls to existing buckets would hide a broken entry instead of showing it.
+
+### Open questions
+- None.

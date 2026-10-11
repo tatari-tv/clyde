@@ -700,7 +700,7 @@ fn reconciliation(p: &mut Page, block: &ContextBlock<'_>) {
     close_section(p);
 }
 
-fn workload_rows(rows: &[super::WorkloadRow]) -> Vec<Vec<String>> {
+fn workload_rows(rows: &[super::CallRow]) -> Vec<Vec<String>> {
     rows.iter()
         .map(|r| vec![r.name.clone(), r.tokens_human.clone(), r.spend.clone()])
         .collect()

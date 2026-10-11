@@ -19,10 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use efficiency::{McpCalls, RawCounters, WorkloadCost, finalize};
 use log::debug;
 
-use super::{CallCounts, CallRow, EfficiencyView, WorkloadRow};
+use super::{CallCounts, CallRow, EfficiencyView};
 use crate::cents;
 use crate::fmt::{format_duration_ms, format_int, format_tokens_human, format_usd};
-use crate::report::{MAIN_SESSION_BUCKET, Report, SessionEntry};
+use crate::report::{MAIN_SESSION_BUCKET, Report, SessionEntry, UNKNOWN_AGENT_TYPE, subagent_has_tokens};
 
 /// Build the report-wide [`EfficiencyView`] from the collected sessions' curated signals + raw
 /// passthrough (design Phase 5). The two ratios `totals` already carries authoritatively
@@ -57,11 +57,16 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
             let row = agent.entry(name).or_default();
             row.tokens += tokens;
             row.cents += cents;
+            row.sessions += 1;
+        }
+        for (name, spawns) in session_agent_spawns(entry) {
+            agent.entry(name).or_default().spawns += spawns;
         }
         merge_workload(&mut by_skill, &entry.by_skill);
         merge_workload(&mut by_mcp, &entry.by_mcp);
     }
     let grand_signals = finalize(grand);
+    let agent_calls: u64 = agent.values().map(|a| a.spawns).sum();
     let skill_covered: f64 = by_skill.values().map(|w| w.cost_usd).sum();
     let mcp_covered: f64 = by_mcp.values().map(|w| w.cost_usd).sum();
     let view = EfficiencyView {
@@ -82,7 +87,7 @@ pub(super) fn build_efficiency_view(report: &Report) -> EfficiencyView {
     let subagent_rows = report.sessions.iter().any(|(key, entry)| is_subagent_row(key, entry));
     view.call_captions = call_captions(&view, counted, total, subagent_rows);
     debug!(
-        "render::build_efficiency_view: calls-counted={counted}/{total} agent-types={} skills={} mcp-tools={} interrupts={} compactions={} skill-coverage={} mcp-coverage={}",
+        "render::build_efficiency_view: calls-counted={counted}/{total} agent-types={} agent-calls={agent_calls} skills={} mcp-tools={} interrupts={} compactions={} skill-coverage={} mcp-coverage={}",
         view.agent_type_costs.len(),
         view.by_skill.len(),
         view.by_mcp.len(),
@@ -320,11 +325,28 @@ fn merge_workload(base: &mut BTreeMap<String, WorkloadCost>, add: &BTreeMap<Stri
     }
 }
 
-/// One agent type's accumulated tokens and whole cents across the window.
+/// One agent type's accumulated tokens, whole cents, spawns and sessions across the window.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct AgentCents {
     pub(super) tokens: u64,
     pub(super) cents: i64,
+    /// Subagents of this type that spent tokens: the Calls cell. Always 0 on `(main-session)`.
+    pub(super) spawns: u64,
+    /// Report rows holding this bucket. Under `--no-rollup` a subagent type's sessions equal its
+    /// spawns, since each subagent is its own row.
+    pub(super) sessions: usize,
+}
+
+/// ONE session's calls per agent type: its subagents that spent tokens ([`subagent_has_tokens`],
+/// the rule that gives a type its cost bucket), an untyped one under [`UNKNOWN_AGENT_TYPE`], so a
+/// type with calls is a type with a cost row. A resumed agent is one entry, so it counts once.
+pub(super) fn session_agent_spawns(entry: &SessionEntry) -> BTreeMap<String, u64> {
+    let mut spawns: BTreeMap<String, u64> = BTreeMap::new();
+    for sub in entry.efficiency.subagents.iter().filter(|s| subagent_has_tokens(s)) {
+        let key = sub.agent_type.as_deref().unwrap_or(UNKNOWN_AGENT_TYPE);
+        *spawns.entry(key.to_string()).or_default() += 1;
+    }
+    spawns
 }
 
 /// Split ONE session's spend cents across its agent-type buckets, by largest remainder in
@@ -374,15 +396,41 @@ pub(super) fn session_agent_cents(entry: &SessionEntry) -> Vec<(String, u64, i64
 /// Each row is a sum of per-session integer cents ([`session_agent_cents`]), so the rows add up to
 /// the sum of session cents, which IS the headline, with no display-time reallocation. Rows sort by
 /// cents descending, name ascending on a tie.
-pub(super) fn partition_rows(map: BTreeMap<String, AgentCents>) -> Vec<WorkloadRow> {
+///
+/// Calls are the type's spawns and $/call divides the row's DOLLARS by them (never raw cents, which
+/// would put the figure off by 100x). `(main-session)` is not a spawn: its Calls and $/call are
+/// `n/a`, never `0`, and it carries no [`CallCounts`], so no chart draws it. It is keyed on
+/// [`MAIN_SESSION_BUCKET`], not on zero spawns.
+pub(super) fn partition_rows(map: BTreeMap<String, AgentCents>) -> Vec<CallRow> {
     debug!("render::partition_rows: buckets={}", map.len());
     let mut rows: Vec<(String, AgentCents)> = map.into_iter().collect();
     rows.sort_by(|a, b| b.1.cents.cmp(&a.1.cents).then_with(|| a.0.cmp(&b.0)));
     rows.into_iter()
-        .map(|(name, a)| WorkloadRow {
-            name,
-            tokens_human: format_tokens_human(a.tokens),
-            spend: format_usd(cents::to_dollars(a.cents)),
+        .map(|(name, a)| {
+            let dollars = cents::to_dollars(a.cents);
+            let main = name == MAIN_SESSION_BUCKET;
+            let per_call = if main || a.spawns == 0 {
+                "n/a".to_string()
+            } else {
+                format_usd(dollars / a.spawns as f64)
+            };
+            CallRow {
+                calls: Some(if main { "n/a".to_string() } else { format_int(a.spawns) }),
+                sessions: Some(format_int(a.sessions as u64)),
+                tokens_human: format_tokens_human(a.tokens),
+                spend: format_usd(dollars),
+                per_call: Some(per_call),
+                server: None,
+                time: None,
+                avg: None,
+                counts: (!main).then_some(CallCounts {
+                    calls: a.spawns,
+                    spend: dollars,
+                    counted_spend: dollars,
+                    partial: false,
+                }),
+                name,
+            }
         })
         .collect()
 }
