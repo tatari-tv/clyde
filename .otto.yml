@@ -152,7 +152,20 @@ tasks:
       echo "✅ All CI checks passed!"
 
   mutants:
-    help: "Mutation-test the routing path; ZERO unannotated survivors (NOT part of ci: see below)"
+    help: "Mutation-test: no args = routing-path audit (ZERO survivors); --diff = CI run scoped to a diff (NOT part of ci)"
+    params:
+      --diff:
+        default: ""
+        help: "Unified diff FILE: test only mutants in the changed lines (replaces the -f routing list)"
+      --shard:
+        default: ""
+        help: "Run shard k/N of the mutant set (round-robin); e.g. 0/4"
+      --jobs:
+        default: ""
+        help: "Parallel mutant jobs (default 8; rejected with --in-place)"
+      --in-place:
+        default: false
+        help: "Mutate this checkout instead of copying it per job (single job; CI uses this)"
     bash: |
       # The gate register item 4 needed and did not have. A test that does not BITE is a surviving
       # mutant, and that is the one check which catches the whole defect class automatically, forever,
@@ -167,7 +180,9 @@ tasks:
       #
       # VERSION PINNED so a toolchain refresh cannot silently change the gate: a newer cargo-mutants
       # that generates different mutants would change what "zero" means without anyone deciding to.
-      MUTANTS_VERSION="27.1.0"
+      # The reusable `mutants.yml` exports MUTANTS_VERSION and installs the prebuilt binary first, so
+      # in CI the check below passes and nothing is compiled from source.
+      MUTANTS_VERSION="${MUTANTS_VERSION:-27.1.0}"
       have=$(cargo mutants --version 2>/dev/null | awk '{print $2}')
       if [ "$have" != "$MUTANTS_VERSION" ]; then
         echo "installing cargo-mutants $MUTANTS_VERSION (found: ${have:-none})"
@@ -233,28 +248,71 @@ tasks:
       # Floored at 1 for a host with fewer cores than jobs. Capping rayon does not change any
       # assertion -- `par_iter().map().collect()` is order-preserving regardless of pool size, and
       # none of the mutated files reasons about thread counts.
-      MUTANT_JOBS=8
+      #
+      # Contract (design 2026-10-14-mutants-on-prs.md, Architecture 2): `--in-place` and `--jobs`
+      # together is a loud error here, because cargo-mutants 27.1.0 rejects the pair anyway
+      # (`'--in-place' cannot be used with '--jobs'`) and a clear message beats its usage dump.
+      # `--in-place` is single-job by construction, so RAYON_NUM_THREADS divides by 1 under it.
+      if [ "${in_place}" = "true" ] && [ -n "${jobs}" ]; then
+        echo "mutants: --in-place and --jobs cannot be used together (--in-place runs one job)" >&2
+        exit 2
+      fi
+      if [ "${in_place}" = "true" ]; then
+        MUTANT_JOBS=1
+        JOBS_ARGS=(--in-place)
+      else
+        MUTANT_JOBS="${jobs:-8}"
+        JOBS_ARGS=(--jobs "$MUTANT_JOBS")
+      fi
       CORES=$(nproc)
       export RAYON_NUM_THREADS=$(( CORES / MUTANT_JOBS > 0 ? CORES / MUTANT_JOBS : 1 ))
       echo "mutants: --jobs $MUTANT_JOBS x RAYON_NUM_THREADS=$RAYON_NUM_THREADS on $CORES cores"
 
-      cargo mutants --workspace --timeout 300 \
-        -f "session/src/scope.rs" \
-        -f "common/src/repo.rs" \
-        -f "sessions/src/enrich.rs" \
-        -f "sessions/src/db/enrich.rs" \
-        -f "efficiency/src/outcome.rs" \
-        -f "sessions/src/db/migrate.rs" \
-        -f "report/src/bands.rs" \
-        -f "report/src/chart.rs" \
-        -f "report/src/chart/line.rs" \
-        -f "report/src/chart/bars.rs" \
-        -f "report/src/chart/stack.rs" \
-        -f "report/src/chart/treemap.rs" \
-        -f "report/src/chart/waterfall.rs" \
-        -f "report/src/chart/histogram.rs" \
-        -f "report/src/chart/calendar.rs" \
-        --jobs "$MUTANT_JOBS"
+      # Scope. `--diff FILE` means the diff IS the scope, so the routing `-f` list is NOT applied
+      # (a PR's change is wherever it is). `.cargo/mutants.toml` excludes still apply, since
+      # cargo-mutants reads that file itself. No `--diff` = the unchanged local audit run.
+      if [ -n "${diff}" ]; then
+        SCOPE_ARGS=(--in-diff "${diff}")
+      else
+        SCOPE_ARGS=(
+          -f "session/src/scope.rs"
+          -f "common/src/repo.rs"
+          -f "sessions/src/enrich.rs"
+          -f "sessions/src/db/enrich.rs"
+          -f "efficiency/src/outcome.rs"
+          -f "sessions/src/db/migrate.rs"
+          -f "report/src/bands.rs"
+          -f "report/src/chart.rs"
+          -f "report/src/chart/line.rs"
+          -f "report/src/chart/bars.rs"
+          -f "report/src/chart/stack.rs"
+          -f "report/src/chart/treemap.rs"
+          -f "report/src/chart/waterfall.rs"
+          -f "report/src/chart/histogram.rs"
+          -f "report/src/chart/calendar.rs"
+        )
+      fi
+
+      # `--sharding round-robin`: the 27.1.0 default `slice` gives ceil(total/N) chunks, so 5 mutants
+      # over N=4 yields 2,2,1,0 and a shard can be empty. Round-robin spreads them evenly.
+      SHARD_ARGS=()
+      if [ -n "${shard}" ]; then
+        SHARD_ARGS=(--shard "${shard}" --sharding round-robin)
+      fi
+
+      # No feature flags: they must match `otto test`, which is `cargo test --workspace --no-fail-fast`.
+      #
+      # cargo-mutants' RAW exit code goes to `rc` beside `mutants.out/` BEFORE this task exits
+      # non-zero. otto collapses any task failure to exit 1, and the report job has to tell
+      # 2 (missed), 3 (timeout), 4 (baseline failed), 5/6 (diff mismatch/invalid) apart. The task
+      # still exits with that code, so a local run fails loudly.
+      rm -f rc
+      rc=0
+      cargo mutants --workspace --timeout 300 --annotations auto \
+        "${SCOPE_ARGS[@]}" "${SHARD_ARGS[@]}" "${JOBS_ARGS[@]}" || rc=$?
+      echo "$rc" > rc
+      echo "mutants: cargo-mutants exit code $rc written to $(pwd)/rc"
+      exit "$rc"
 
   eval:
     help: "Judged render eval over the committed fixtures (PAID: LLM calls; NOT part of ci)"
