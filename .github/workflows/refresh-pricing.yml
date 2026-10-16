@@ -14,6 +14,9 @@ jobs:
   refresh:
     name: Refresh pricing from Anthropic
     runs-on: ubuntu-latest
+    # PRICING_APP_PRIVATE_KEY lives in this environment, which only main can
+    # deploy to, so a copy of this workflow on another branch cannot read it.
+    environment: pricing-refresh
     steps:
       - uses: actions/checkout@v6
 
