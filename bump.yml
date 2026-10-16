@@ -12,4 +12,4 @@ skip-members:
   - claude-pricing
 
 # The one install step after a successful release.
-install: cargo install --path clyde
+install: cargo install --locked --path clyde

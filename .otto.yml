@@ -185,7 +185,7 @@ tasks:
       # A stale `rc` from a prior run must not outlive a refused or failed run below.
       rm -f rc
       MUTANTS_VERSION="${MUTANTS_VERSION:-27.1.0}"
-      have=$(cargo mutants --version 2>/dev/null | awk '{print $2}')
+      have=$(cargo mutants --version 2>/dev/null | awk '{print $2}' || true)
       if [ "$have" != "$MUTANTS_VERSION" ]; then
         echo "installing cargo-mutants $MUTANTS_VERSION (found: ${have:-none})"
         cargo install cargo-mutants --version "$MUTANTS_VERSION" --locked
@@ -278,11 +278,22 @@ tasks:
       # `a/ b/` prefixes; a `diff.mnemonicPrefix` diff (`i/ w/`, set in Scott's dotfiles) lists 0
       # mutants and exits 0. Measured in Phase 2: a silent false green on any local `<(git diff)`.
       if [ -n "${diff}" ]; then
-        if [ -s "${diff}" ] && ! grep -q '^+++ b/' "${diff}"; then
-          echo "mutants: ${diff} has no '+++ b/' header; regenerate it with 'git -c diff.mnemonicPrefix=false diff' (other prefixes match nothing and test nothing)" >&2
+        # Copy first: `--diff <(git diff)` is a pipe, readable once and never `-s`.
+        diff_copy=$(mktemp)
+        trap 'rm -f "$diff_copy"' EXIT
+        cat "${diff}" > "$diff_copy"
+        if [ -s "$diff_copy" ] && ! grep -q '^+++ ' "$diff_copy"; then
+          echo "mutants: ${diff} is not a unified diff (no '+++' file header)" >&2
           exit 2
         fi
-        SCOPE_ARGS=(--in-diff "${diff}")
+        # Every new-file header must be `+++ b/` (or /dev/null): one other prefix
+        # silently drops that file from the mutant set.
+        bad=$(grep '^+++ ' "$diff_copy" | grep -v -e '^+++ b/' -e '^+++ /dev/null' || true)
+        if [ -n "$bad" ]; then
+          echo "mutants: ${diff} has headers without the 'b/' prefix (e.g. '$(head -n1 <<< "$bad")'); regenerate it with 'git -c diff.mnemonicPrefix=false diff' (other prefixes match nothing and test nothing)" >&2
+          exit 2
+        fi
+        SCOPE_ARGS=(--in-diff "$diff_copy")
       else
         SCOPE_ARGS=(
           -f "session/src/scope.rs"
