@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use eyre::Result;
 use log::{debug, info, warn};
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use serde_json::json;
 
@@ -484,13 +484,14 @@ impl SessionsMcpServer {
 
 #[tool_handler]
 impl ServerHandler for SessionsMcpServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         info!("SessionsMcpServer::get_info: MCP client requested server info");
-        // `ServerInfo::default()`'s `Implementation::from_build_env()` expands `CARGO_CRATE_NAME`
+        // `ServerConfig::default()`'s `Implementation::from_build_env()` expands `CARGO_CRATE_NAME`
         // INSIDE rmcp, so an MCP client would see the server as "rmcp". Set our own identity
         // explicitly (`env!("CARGO_PKG_VERSION")` is this crate's version, the host) so clients
         // see "clyde".
-        let mut info = ServerInfo::default().with_server_info(Implementation::new("clyde", env!("CARGO_PKG_VERSION")));
+        let mut info =
+            ServerConfig::default().with_server_info(Implementation::new("clyde", env!("CARGO_PKG_VERSION")));
         info.instructions = Some(
             "clyde session - read-only navigation over the Claude Code session catalog. \
              Find, search inside, and read past sessions conversationally instead of shelling out to the \
