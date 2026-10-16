@@ -193,7 +193,7 @@ impl Resolver {
     /// blocked roots); only the `git` spawns overlap instead of running one after another, which is
     /// most of a startup reindex once the transcript parse is skipped.
     pub fn prewarm<'a>(&mut self, cwds: impl IntoIterator<Item = &'a Path>) {
-        let pending: BTreeSet<&Path> = cwds.into_iter().filter(|c| !self.cache.contains_key(*c)).collect();
+        let pending: BTreeSet<&Path> = cwds.into_iter().filter(|cwd| !self.cache.contains_key(*cwd)).collect();
         debug!("repo::Resolver::prewarm: pending={}", pending.len());
         let blocked = &self.blocked;
         let outcomes: Vec<(PathBuf, ProbeOutcome)> = pending
