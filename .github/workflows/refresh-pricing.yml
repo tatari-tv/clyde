@@ -14,6 +14,9 @@ jobs:
   refresh:
     name: Refresh pricing from Anthropic
     runs-on: ubuntu-latest
+    # PRICING_APP_PRIVATE_KEY lives in this environment, which only main can
+    # deploy to, so a copy of this workflow on another branch cannot read it.
+    environment: pricing-refresh
     steps:
       - uses: actions/checkout@v6
 
@@ -29,10 +32,22 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # A PR opened with GITHUB_TOKEN is authored by github-actions[bot], and
+      # GitHub holds its workflow runs until a maintainer clicks approve. A
+      # tatari-clyde-pricing app token makes the PR trigger CI on its own.
+      - name: Mint GitHub App token
+        if: steps.changes.outputs.changed == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PRICING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PRICING_APP_PRIVATE_KEY }}
+
       - name: Open pull request
         if: steps.changes.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
+          token: ${{ steps.app-token.outputs.token }}
           branch: refresh-pricing
           delete-branch: true
           commit-message: 'data: refresh pricing from Anthropic'
