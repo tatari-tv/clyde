@@ -473,8 +473,9 @@ pub const RECOMMENDED_CLEANUP_PERIOD_DAYS: u64 = 90;
 /// Claude Code's default `cleanupPeriodDays` when no settings file sets it.
 const DEFAULT_CLEANUP_PERIOD_DAYS: u64 = 30;
 
-/// Linux/WSL file-based managed settings. Managed keys beat every user/project file.
-const MANAGED_SETTINGS: &str = "/etc/claude-code/managed-settings.json";
+/// Linux/WSL system directory for file-based managed settings. Managed keys beat every
+/// user/project file.
+const MANAGED_SETTINGS_DIR: &str = "/etc/claude-code";
 
 /// Where the effective `cleanupPeriodDays` came from, and its value.
 #[derive(Debug, PartialEq, Eq)]
@@ -485,6 +486,9 @@ pub enum Retention {
     Default,
     /// The key is present but not a whole number >= 1; Claude Code's handling is undefined here.
     Invalid { raw: String, file: PathBuf },
+    /// The file exists but is not a readable JSON object. Claude Code refuses to start on such a
+    /// managed file, so no value below it is effective; reporting a fallback would be a lie.
+    Unreadable { file: PathBuf, reason: String },
 }
 
 impl Retention {
@@ -493,7 +497,7 @@ impl Retention {
         match self {
             Retention::Set { days, .. } => Some(*days),
             Retention::Default => Some(DEFAULT_CLEANUP_PERIOD_DAYS),
-            Retention::Invalid { .. } => None,
+            Retention::Invalid { .. } | Retention::Unreadable { .. } => None,
         }
     }
 
@@ -503,36 +507,79 @@ impl Retention {
     }
 }
 
-/// Resolve `cleanupPeriodDays` across `files`, highest precedence first: the first file that sets
-/// the key wins. An unreadable or unparseable file is skipped, since Claude Code skips it too.
+/// Resolve the effective `cleanupPeriodDays`: the managed tier under `managed_dir` if any of its
+/// files sets the key, else `user`, else Claude Code's default.
 ///
 /// Project-scoped files (`.claude/settings{,.local}.json`) are not checked: they vary per repo,
-/// and `doctor` reports on the machine.
-fn transcript_retention(files: &[PathBuf]) -> Retention {
-    for file in files {
-        let Ok(text) = std::fs::read_to_string(file) else {
-            continue;
-        };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-            debug!("transcript_retention: unparseable {}", file.display());
-            continue;
-        };
-        let Some(value) = json.get("cleanupPeriodDays") else {
-            continue;
-        };
-        debug!("transcript_retention: {} sets {value}", file.display());
-        return match value.as_u64() {
-            Some(days) if days >= 1 => Retention::Set {
-                days,
-                file: file.clone(),
-            },
-            _ => Retention::Invalid {
-                raw: value.to_string(),
-                file: file.clone(),
-            },
-        };
+/// and `doctor` reports on the machine. `user` is `~/.claude/settings.json`, not
+/// `$CLAUDE_CONFIG_DIR`: clyde reads transcripts from `~/.claude` everywhere, so following the
+/// variable here alone would report on a directory the catalog never sees.
+fn transcript_retention(managed_dir: &Path, user: &Path) -> Retention {
+    let mut managed = None;
+    for file in managed_files(managed_dir) {
+        match file_retention(&file) {
+            Some(unreadable @ Retention::Unreadable { .. }) => return unreadable,
+            Some(found) => managed = Some(found),
+            None => {}
+        }
     }
-    Retention::Default
+    managed.unwrap_or_else(|| file_retention(user).unwrap_or(Retention::Default))
+}
+
+/// The managed files in Claude Code's merge order: `managed-settings.json`, then every non-hidden
+/// `managed-settings.d/*.json` alphabetically. A later file's key replaces an earlier one's.
+fn managed_files(dir: &Path) -> Vec<PathBuf> {
+    let mut drop_ins: Vec<PathBuf> = std::fs::read_dir(dir.join("managed-settings.d"))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                .filter(|p| {
+                    !p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.'))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    drop_ins.sort();
+    std::iter::once(dir.join("managed-settings.json"))
+        .chain(drop_ins)
+        .collect()
+}
+
+/// What one settings file says about `cleanupPeriodDays`: `None` when the file is absent or does
+/// not set the key.
+fn file_retention(file: &Path) -> Option<Retention> {
+    let unreadable = |reason: String| {
+        debug!("file_retention: unreadable {}: {reason}", file.display());
+        Some(Retention::Unreadable {
+            file: file.to_path_buf(),
+            reason,
+        })
+    };
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => return unreadable(e.to_string()),
+    };
+    let json = match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(serde_json::Value::Object(map)) => map,
+        Ok(_) => return unreadable("not a JSON object".to_string()),
+        Err(e) => return unreadable(e.to_string()),
+    };
+    let value = json.get("cleanupPeriodDays")?;
+    debug!("file_retention: {} sets {value}", file.display());
+    Some(match value.as_u64() {
+        Some(days) if days >= 1 => Retention::Set {
+            days,
+            file: file.to_path_buf(),
+        },
+        _ => Retention::Invalid {
+            raw: value.to_string(),
+            file: file.to_path_buf(),
+        },
+    })
 }
 
 impl Report {
@@ -614,10 +661,10 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
     }
 
     let (log_locations, legacy_log_dirs) = log_state(paths);
-    let transcript_retention = transcript_retention(&[
-        PathBuf::from(MANAGED_SETTINGS),
-        paths.home.join(".claude").join("settings.json"),
-    ]);
+    let transcript_retention = transcript_retention(
+        Path::new(MANAGED_SETTINGS_DIR),
+        &paths.home.join(".claude").join("settings.json"),
+    );
 
     Ok(Report {
         statusline,
@@ -902,13 +949,22 @@ fn print_retention(retention: &Retention) {
         Retention::Set { days, file } => format!("{days}d ({})", file.display()),
         Retention::Default => format!("{DEFAULT_CLEANUP_PERIOD_DAYS}d (Claude Code default; not set)"),
         Retention::Invalid { raw, file } => format!("{} ({})", format!("invalid: {raw}").red(), file.display()),
+        Retention::Unreadable { file, reason } => {
+            format!(
+                "{} ({})",
+                format!("unknown, unreadable: {reason}").red(),
+                file.display()
+            )
+        }
     };
     println!("  transcripts:   kept {value}");
     if retention.needs_warning() {
         // Point at the file that WON, not always the user file: editing ~/.claude/settings.json
         // does nothing when a managed file sets the key.
         let target = match retention {
-            Retention::Set { file, .. } | Retention::Invalid { file, .. } => file.display().to_string(),
+            Retention::Set { file, .. } | Retention::Invalid { file, .. } | Retention::Unreadable { file, .. } => {
+                file.display().to_string()
+            }
             Retention::Default => "~/.claude/settings.json".to_string(),
         };
         // Warn-only, same reasoning as the reindex timer note: a policy choice, never an exit-1.
