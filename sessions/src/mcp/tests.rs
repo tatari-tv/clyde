@@ -1235,3 +1235,13 @@ async fn sessions_search_omitted_sort_defaults_to_relevance() {
     assert_eq!(v["count"], 1, "only the marquee session matches 'bucket': {v}");
     assert_eq!(v["results"][0]["record"]["session-id"], UUID_A);
 }
+
+#[test]
+fn get_info_advertises_clyde_identity_instructions_and_tools() {
+    let server = SessionsMcpServer::new(Db::open_memory().unwrap());
+    let info = server.get_info();
+    assert_eq!(info.server_info.name, "clyde");
+    assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+    assert!(info.instructions.unwrap().contains("sessions_search"));
+    assert!(info.capabilities.tools.is_some());
+}
