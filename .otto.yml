@@ -271,7 +271,15 @@ tasks:
       # Scope. `--diff FILE` means the diff IS the scope, so the routing `-f` list is NOT applied
       # (a PR's change is wherever it is). `.cargo/mutants.toml` excludes still apply, since
       # cargo-mutants reads that file itself. No `--diff` = the unchanged local audit run.
+      #
+      # A non-empty diff with no `+++ b/` header is refused. cargo-mutants matches paths by the
+      # `a/ b/` prefixes; a `diff.mnemonicPrefix` diff (`i/ w/`, set in Scott's dotfiles) lists 0
+      # mutants and exits 0. Measured in Phase 2: a silent false green on any local `<(git diff)`.
       if [ -n "${diff}" ]; then
+        if [ -s "${diff}" ] && ! grep -q '^+++ b/' "${diff}"; then
+          echo "mutants: ${diff} has no '+++ b/' header; regenerate it with 'git -c diff.mnemonicPrefix=false diff' (other prefixes match nothing and test nothing)" >&2
+          exit 2
+        fi
         SCOPE_ARGS=(--in-diff "${diff}")
       else
         SCOPE_ARGS=(
