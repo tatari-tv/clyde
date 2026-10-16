@@ -685,3 +685,142 @@ fn a_dangling_symlink_is_not_a_pair() {
         "a link to nothing is not a repo"
     );
 }
+
+fn write_settings(path: &Path, body: &str) -> std::path::PathBuf {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, body).unwrap();
+    path.to_path_buf()
+}
+
+/// A managed dir and a user settings path under `root`, neither created.
+fn retention_paths(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    (root.join("etc-claude-code"), root.join("home").join("settings.json"))
+}
+
+#[test]
+fn retention_defaults_to_30_and_warns_when_no_file_sets_it() {
+    let dir = TempDir::new().unwrap();
+    let (managed, user) = retention_paths(dir.path());
+    write_settings(&user, r#"{"model":"opus"}"#);
+
+    let r = transcript_retention(&managed, &user);
+    assert_eq!(r, Retention::Default);
+    assert_eq!(r.days(), Some(30));
+    assert!(r.needs_warning());
+}
+
+#[test]
+fn retention_of_90_from_the_user_file_does_not_warn() {
+    let dir = TempDir::new().unwrap();
+    let (managed, user) = retention_paths(dir.path());
+    write_settings(&user, r#"{"cleanupPeriodDays": 90}"#);
+
+    let r = transcript_retention(&managed, &user);
+    assert_eq!(r, Retention::Set { days: 90, file: user });
+    assert!(!r.needs_warning());
+}
+
+#[test]
+fn retention_below_90_warns() {
+    let dir = TempDir::new().unwrap();
+    let (managed, user) = retention_paths(dir.path());
+    write_settings(&user, r#"{"cleanupPeriodDays": 89}"#);
+
+    let r = transcript_retention(&managed, &user);
+    assert_eq!(r.days(), Some(89));
+    assert!(r.needs_warning());
+}
+
+#[test]
+fn retention_from_the_managed_file_beats_the_user_file() {
+    let dir = TempDir::new().unwrap();
+    let (managed, user) = retention_paths(dir.path());
+    let main = write_settings(&managed.join("managed-settings.json"), r#"{"cleanupPeriodDays": 14}"#);
+    write_settings(&user, r#"{"cleanupPeriodDays": 90}"#);
+
+    let r = transcript_retention(&managed, &user);
+    assert_eq!(r, Retention::Set { days: 14, file: main });
+    assert!(r.needs_warning());
+}
+
+#[test]
+fn retention_from_a_later_managed_drop_in_replaces_an_earlier_one() {
+    let dir = TempDir::new().unwrap();
+    let (managed, user) = retention_paths(dir.path());
+    write_settings(&managed.join("managed-settings.json"), r#"{"cleanupPeriodDays": 120}"#);
+    let d = managed.join("managed-settings.d");
+    write_settings(&d.join("10-a.json"), r#"{"cleanupPeriodDays": 100}"#);
+    let last = write_settings(&d.join("20-b.json"), r#"{"cleanupPeriodDays": 7}"#);
+    write_settings(&d.join("30-c.json"), r#"{"model":"opus"}"#);
+    // Ignored by Claude Code: hidden, and not `.json`.
+    write_settings(&d.join(".99-hidden.json"), r#"{"cleanupPeriodDays": 365}"#);
+    write_settings(&d.join("99-notes.txt"), r#"{"cleanupPeriodDays": 365}"#);
+    write_settings(&user, r#"{"cleanupPeriodDays": 90}"#);
+
+    let r = transcript_retention(&managed, &user);
+    assert_eq!(r, Retention::Set { days: 7, file: last });
+    assert!(r.needs_warning());
+}
+
+#[test]
+fn retention_that_is_not_a_whole_number_of_at_least_one_is_invalid_and_warns() {
+    let dir = TempDir::new().unwrap();
+    let (managed, user) = retention_paths(dir.path());
+    for raw in [r#"0"#, r#""90""#, r#"-5"#, r#"1.5"#] {
+        write_settings(&user, &format!(r#"{{"cleanupPeriodDays": {raw}}}"#));
+        let r = transcript_retention(&managed, &user);
+        assert_eq!(
+            r,
+            Retention::Invalid {
+                raw: raw.to_string(),
+                file: user.clone()
+            },
+            "raw={raw}"
+        );
+        assert!(r.needs_warning(), "raw={raw}");
+    }
+}
+
+#[test]
+fn an_unparseable_managed_file_is_reported_not_skipped_for_the_user_value() {
+    let dir = TempDir::new().unwrap();
+    let (managed, user) = retention_paths(dir.path());
+    let broken = write_settings(&managed.join("managed-settings.json"), "{not json");
+    write_settings(&user, r#"{"cleanupPeriodDays": 120}"#);
+
+    let r = transcript_retention(&managed, &user);
+    assert!(
+        matches!(&r, Retention::Unreadable { file, .. } if *file == broken),
+        "got {r:?}"
+    );
+    assert_eq!(r.days(), None);
+    assert!(r.needs_warning());
+}
+
+#[test]
+fn an_unparseable_managed_drop_in_is_reported() {
+    let dir = TempDir::new().unwrap();
+    let (managed, user) = retention_paths(dir.path());
+    write_settings(&managed.join("managed-settings.json"), r#"{"cleanupPeriodDays": 120}"#);
+    let broken = write_settings(&managed.join("managed-settings.d").join("10-x.json"), "[1, 2]");
+
+    let r = transcript_retention(&managed, &user);
+    assert!(
+        matches!(&r, Retention::Unreadable { file, .. } if *file == broken),
+        "got {r:?}"
+    );
+}
+
+#[test]
+fn an_unparseable_user_file_is_reported() {
+    let dir = TempDir::new().unwrap();
+    let (managed, user) = retention_paths(dir.path());
+    write_settings(&user, "{not json");
+
+    let r = transcript_retention(&managed, &user);
+    assert!(
+        matches!(&r, Retention::Unreadable { file, .. } if *file == user),
+        "got {r:?}"
+    );
+    assert!(r.needs_warning());
+}

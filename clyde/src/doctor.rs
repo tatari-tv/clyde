@@ -461,6 +461,125 @@ pub struct Report {
     /// `claude-report/logs/`). Purely informational: logs are disposable diagnostics, so this
     /// does NOT feed [`Report::healthy`] the way `legacy_state` does.
     pub legacy_log_dirs: Vec<PathBuf>,
+    /// Claude Code's effective `cleanupPeriodDays`: how long it keeps the JSONL transcripts the
+    /// catalog is built from. Warn-only (does NOT feed [`Report::healthy`]): a short window is a
+    /// policy choice, not a broken install, but every session it reaps before staging is lost.
+    pub transcript_retention: Retention,
+}
+
+/// The `cleanupPeriodDays` floor `doctor` recommends. Claude Code's default is 30.
+pub const RECOMMENDED_CLEANUP_PERIOD_DAYS: u64 = 90;
+
+/// Claude Code's default `cleanupPeriodDays` when no settings file sets it.
+const DEFAULT_CLEANUP_PERIOD_DAYS: u64 = 30;
+
+/// Linux/WSL system directory for file-based managed settings. Managed keys beat every
+/// user/project file.
+const MANAGED_SETTINGS_DIR: &str = "/etc/claude-code";
+
+/// Where the effective `cleanupPeriodDays` came from, and its value.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Retention {
+    /// Set to a valid whole number of days in this file.
+    Set { days: u64, file: PathBuf },
+    /// No file checked sets it, so Claude Code uses its default.
+    Default,
+    /// The key is present but not a whole number >= 1; Claude Code's handling is undefined here.
+    Invalid { raw: String, file: PathBuf },
+    /// The file exists but is not a readable JSON object. Claude Code refuses to start on such a
+    /// managed file, so no value below it is effective; reporting a fallback would be a lie.
+    Unreadable { file: PathBuf, reason: String },
+}
+
+impl Retention {
+    /// The effective days, if known.
+    pub fn days(&self) -> Option<u64> {
+        match self {
+            Retention::Set { days, .. } => Some(*days),
+            Retention::Default => Some(DEFAULT_CLEANUP_PERIOD_DAYS),
+            Retention::Invalid { .. } | Retention::Unreadable { .. } => None,
+        }
+    }
+
+    /// True when the window is shorter than [`RECOMMENDED_CLEANUP_PERIOD_DAYS`] or unknowable.
+    pub fn needs_warning(&self) -> bool {
+        self.days().is_none_or(|d| d < RECOMMENDED_CLEANUP_PERIOD_DAYS)
+    }
+}
+
+/// Resolve the effective `cleanupPeriodDays`: the managed tier under `managed_dir` if any of its
+/// files sets the key, else `user`, else Claude Code's default.
+///
+/// Project-scoped files (`.claude/settings{,.local}.json`) are not checked: they vary per repo,
+/// and `doctor` reports on the machine. `user` is `~/.claude/settings.json`, not
+/// `$CLAUDE_CONFIG_DIR`: clyde reads transcripts from `~/.claude` everywhere, so following the
+/// variable here alone would report on a directory the catalog never sees.
+fn transcript_retention(managed_dir: &Path, user: &Path) -> Retention {
+    let mut managed = None;
+    for file in managed_files(managed_dir) {
+        match file_retention(&file) {
+            Some(unreadable @ Retention::Unreadable { .. }) => return unreadable,
+            Some(found) => managed = Some(found),
+            None => {}
+        }
+    }
+    managed.unwrap_or_else(|| file_retention(user).unwrap_or(Retention::Default))
+}
+
+/// The managed files in Claude Code's merge order: `managed-settings.json`, then every non-hidden
+/// `managed-settings.d/*.json` alphabetically. A later file's key replaces an earlier one's.
+fn managed_files(dir: &Path) -> Vec<PathBuf> {
+    let mut drop_ins: Vec<PathBuf> = std::fs::read_dir(dir.join("managed-settings.d"))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                .filter(|p| {
+                    !p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.'))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    drop_ins.sort();
+    std::iter::once(dir.join("managed-settings.json"))
+        .chain(drop_ins)
+        .collect()
+}
+
+/// What one settings file says about `cleanupPeriodDays`: `None` when the file is absent or does
+/// not set the key.
+fn file_retention(file: &Path) -> Option<Retention> {
+    let unreadable = |reason: String| {
+        debug!("file_retention: unreadable {}: {reason}", file.display());
+        Some(Retention::Unreadable {
+            file: file.to_path_buf(),
+            reason,
+        })
+    };
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => return unreadable(e.to_string()),
+    };
+    let json = match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(serde_json::Value::Object(map)) => map,
+        Ok(_) => return unreadable("not a JSON object".to_string()),
+        Err(e) => return unreadable(e.to_string()),
+    };
+    let value = json.get("cleanupPeriodDays")?;
+    debug!("file_retention: {} sets {value}", file.display());
+    Some(match value.as_u64() {
+        Some(days) if days >= 1 => Retention::Set {
+            days,
+            file: file.to_path_buf(),
+        },
+        _ => Retention::Invalid {
+            raw: value.to_string(),
+            file: file.to_path_buf(),
+        },
+    })
 }
 
 impl Report {
@@ -542,6 +661,10 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
     }
 
     let (log_locations, legacy_log_dirs) = log_state(paths);
+    let transcript_retention = transcript_retention(
+        Path::new(MANAGED_SETTINGS_DIR),
+        &paths.home.join(".claude").join("settings.json"),
+    );
 
     Ok(Report {
         statusline,
@@ -557,6 +680,7 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
         legacy_state,
         log_locations,
         legacy_log_dirs,
+        transcript_retention,
     })
 }
 
@@ -767,6 +891,7 @@ fn print_report(paths: &Paths, report: &Report, reposlugs_ptns: &str) {
             "note:".yellow()
         );
     }
+    print_retention(&report.transcript_retention);
     match (report.events_db_at_clyde, report.events_db_rows) {
         (true, Some(n)) => println!("  events DB:     {} ({} rows)", "clyde".green(), n),
         (true, None) => println!("  events DB:     {} (row count unavailable)", "clyde".green()),
@@ -816,6 +941,39 @@ fn print_report(paths: &Paths, report: &Report, reposlugs_ptns: &str) {
         );
     } else {
         println!("{}", "✗ legacy targets/state remain: run `clyde bootstrap`".red());
+    }
+}
+
+fn print_retention(retention: &Retention) {
+    let value = match retention {
+        Retention::Set { days, file } => format!("{days}d ({})", file.display()),
+        Retention::Default => format!("{DEFAULT_CLEANUP_PERIOD_DAYS}d (Claude Code default; not set)"),
+        Retention::Invalid { raw, file } => format!("{} ({})", format!("invalid: {raw}").red(), file.display()),
+        Retention::Unreadable { file, reason } => {
+            format!(
+                "{} ({})",
+                format!("unknown, unreadable: {reason}").red(),
+                file.display()
+            )
+        }
+    };
+    println!("  transcripts:   kept {value}");
+    if retention.needs_warning() {
+        // Point at the file that WON, not always the user file: editing ~/.claude/settings.json
+        // does nothing when a managed file sets the key.
+        let target = match retention {
+            Retention::Set { file, .. } | Retention::Invalid { file, .. } | Retention::Unreadable { file, .. } => {
+                file.display().to_string()
+            }
+            Retention::Default => "~/.claude/settings.json".to_string(),
+        };
+        // Warn-only, same reasoning as the reindex timer note: a policy choice, never an exit-1.
+        println!(
+            "    {} Claude Code deletes JSONL transcripts after `cleanupPeriodDays`, and a session \
+             reaped before it is staged is lost. Set `\"cleanupPeriodDays\": \
+             {RECOMMENDED_CLEANUP_PERIOD_DAYS}` in {target}.",
+            "warn:".yellow()
+        );
     }
 }
 
