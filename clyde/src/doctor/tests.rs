@@ -685,3 +685,90 @@ fn a_dangling_symlink_is_not_a_pair() {
         "a link to nothing is not a repo"
     );
 }
+
+fn write_settings(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+    let path = dir.join(name);
+    fs::write(&path, body).unwrap();
+    path
+}
+
+#[test]
+fn retention_defaults_to_30_and_warns_when_no_file_sets_it() {
+    let dir = TempDir::new().unwrap();
+    let user = write_settings(dir.path(), "settings.json", r#"{"model":"opus"}"#);
+    let missing = dir.path().join("managed-settings.json");
+
+    let r = transcript_retention(&[missing, user]);
+    assert_eq!(r, Retention::Default);
+    assert_eq!(r.days(), Some(30));
+    assert!(r.needs_warning());
+}
+
+#[test]
+fn retention_of_90_from_the_user_file_does_not_warn() {
+    let dir = TempDir::new().unwrap();
+    let user = write_settings(dir.path(), "settings.json", r#"{"cleanupPeriodDays": 90}"#);
+
+    let r = transcript_retention(&[dir.path().join("absent.json"), user.clone()]);
+    assert_eq!(r, Retention::Set { days: 90, file: user });
+    assert!(!r.needs_warning());
+}
+
+#[test]
+fn retention_below_90_warns() {
+    let dir = TempDir::new().unwrap();
+    let user = write_settings(dir.path(), "settings.json", r#"{"cleanupPeriodDays": 89}"#);
+
+    let r = transcript_retention(&[user]);
+    assert_eq!(r.days(), Some(89));
+    assert!(r.needs_warning());
+}
+
+#[test]
+fn retention_from_the_managed_file_beats_the_user_file() {
+    let dir = TempDir::new().unwrap();
+    let managed = write_settings(dir.path(), "managed-settings.json", r#"{"cleanupPeriodDays": 14}"#);
+    let user = write_settings(dir.path(), "settings.json", r#"{"cleanupPeriodDays": 90}"#);
+
+    let r = transcript_retention(&[managed.clone(), user]);
+    assert_eq!(
+        r,
+        Retention::Set {
+            days: 14,
+            file: managed
+        }
+    );
+    assert!(r.needs_warning());
+}
+
+#[test]
+fn retention_that_is_not_a_whole_number_of_at_least_one_is_invalid_and_warns() {
+    let dir = TempDir::new().unwrap();
+    for raw in [r#"0"#, r#""90""#, r#"-5"#, r#"1.5"#] {
+        let user = write_settings(
+            dir.path(),
+            "settings.json",
+            &format!(r#"{{"cleanupPeriodDays": {raw}}}"#),
+        );
+        let r = transcript_retention(std::slice::from_ref(&user));
+        assert_eq!(
+            r,
+            Retention::Invalid {
+                raw: raw.to_string(),
+                file: user
+            },
+            "raw={raw}"
+        );
+        assert!(r.needs_warning(), "raw={raw}");
+    }
+}
+
+#[test]
+fn retention_skips_an_unparseable_file() {
+    let dir = TempDir::new().unwrap();
+    let broken = write_settings(dir.path(), "managed-settings.json", "{not json");
+    let user = write_settings(dir.path(), "settings.json", r#"{"cleanupPeriodDays": 120}"#);
+
+    let r = transcript_retention(&[broken, user.clone()]);
+    assert_eq!(r, Retention::Set { days: 120, file: user });
+}

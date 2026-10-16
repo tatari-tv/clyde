@@ -461,6 +461,78 @@ pub struct Report {
     /// `claude-report/logs/`). Purely informational: logs are disposable diagnostics, so this
     /// does NOT feed [`Report::healthy`] the way `legacy_state` does.
     pub legacy_log_dirs: Vec<PathBuf>,
+    /// Claude Code's effective `cleanupPeriodDays`: how long it keeps the JSONL transcripts the
+    /// catalog is built from. Warn-only (does NOT feed [`Report::healthy`]): a short window is a
+    /// policy choice, not a broken install, but every session it reaps before staging is lost.
+    pub transcript_retention: Retention,
+}
+
+/// The `cleanupPeriodDays` floor `doctor` recommends. Claude Code's default is 30.
+pub const RECOMMENDED_CLEANUP_PERIOD_DAYS: u64 = 90;
+
+/// Claude Code's default `cleanupPeriodDays` when no settings file sets it.
+const DEFAULT_CLEANUP_PERIOD_DAYS: u64 = 30;
+
+/// Linux/WSL file-based managed settings. Managed keys beat every user/project file.
+const MANAGED_SETTINGS: &str = "/etc/claude-code/managed-settings.json";
+
+/// Where the effective `cleanupPeriodDays` came from, and its value.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Retention {
+    /// Set to a valid whole number of days in this file.
+    Set { days: u64, file: PathBuf },
+    /// No file checked sets it, so Claude Code uses its default.
+    Default,
+    /// The key is present but not a whole number >= 1; Claude Code's handling is undefined here.
+    Invalid { raw: String, file: PathBuf },
+}
+
+impl Retention {
+    /// The effective days, if known.
+    pub fn days(&self) -> Option<u64> {
+        match self {
+            Retention::Set { days, .. } => Some(*days),
+            Retention::Default => Some(DEFAULT_CLEANUP_PERIOD_DAYS),
+            Retention::Invalid { .. } => None,
+        }
+    }
+
+    /// True when the window is shorter than [`RECOMMENDED_CLEANUP_PERIOD_DAYS`] or unknowable.
+    pub fn needs_warning(&self) -> bool {
+        self.days().is_none_or(|d| d < RECOMMENDED_CLEANUP_PERIOD_DAYS)
+    }
+}
+
+/// Resolve `cleanupPeriodDays` across `files`, highest precedence first: the first file that sets
+/// the key wins. An unreadable or unparseable file is skipped, since Claude Code skips it too.
+///
+/// Project-scoped files (`.claude/settings{,.local}.json`) are not checked: they vary per repo,
+/// and `doctor` reports on the machine.
+fn transcript_retention(files: &[PathBuf]) -> Retention {
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+            debug!("transcript_retention: unparseable {}", file.display());
+            continue;
+        };
+        let Some(value) = json.get("cleanupPeriodDays") else {
+            continue;
+        };
+        debug!("transcript_retention: {} sets {value}", file.display());
+        return match value.as_u64() {
+            Some(days) if days >= 1 => Retention::Set {
+                days,
+                file: file.clone(),
+            },
+            _ => Retention::Invalid {
+                raw: value.to_string(),
+                file: file.clone(),
+            },
+        };
+    }
+    Retention::Default
 }
 
 impl Report {
@@ -542,6 +614,10 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
     }
 
     let (log_locations, legacy_log_dirs) = log_state(paths);
+    let transcript_retention = transcript_retention(&[
+        PathBuf::from(MANAGED_SETTINGS),
+        paths.home.join(".claude").join("settings.json"),
+    ]);
 
     Ok(Report {
         statusline,
@@ -557,6 +633,7 @@ pub fn diagnose(paths: &Paths) -> Result<Report> {
         legacy_state,
         log_locations,
         legacy_log_dirs,
+        transcript_retention,
     })
 }
 
@@ -767,6 +844,7 @@ fn print_report(paths: &Paths, report: &Report, reposlugs_ptns: &str) {
             "note:".yellow()
         );
     }
+    print_retention(&report.transcript_retention);
     match (report.events_db_at_clyde, report.events_db_rows) {
         (true, Some(n)) => println!("  events DB:     {} ({} rows)", "clyde".green(), n),
         (true, None) => println!("  events DB:     {} (row count unavailable)", "clyde".green()),
@@ -816,6 +894,30 @@ fn print_report(paths: &Paths, report: &Report, reposlugs_ptns: &str) {
         );
     } else {
         println!("{}", "✗ legacy targets/state remain: run `clyde bootstrap`".red());
+    }
+}
+
+fn print_retention(retention: &Retention) {
+    let value = match retention {
+        Retention::Set { days, file } => format!("{days}d ({})", file.display()),
+        Retention::Default => format!("{DEFAULT_CLEANUP_PERIOD_DAYS}d (Claude Code default; not set)"),
+        Retention::Invalid { raw, file } => format!("{} ({})", format!("invalid: {raw}").red(), file.display()),
+    };
+    println!("  transcripts:   kept {value}");
+    if retention.needs_warning() {
+        // Point at the file that WON, not always the user file: editing ~/.claude/settings.json
+        // does nothing when a managed file sets the key.
+        let target = match retention {
+            Retention::Set { file, .. } | Retention::Invalid { file, .. } => file.display().to_string(),
+            Retention::Default => "~/.claude/settings.json".to_string(),
+        };
+        // Warn-only, same reasoning as the reindex timer note: a policy choice, never an exit-1.
+        println!(
+            "    {} Claude Code deletes JSONL transcripts after `cleanupPeriodDays`, and a session \
+             reaped before it is staged is lost. Set `\"cleanupPeriodDays\": \
+             {RECOMMENDED_CLEANUP_PERIOD_DAYS}` in {target}.",
+            "warn:".yellow()
+        );
     }
 }
 
