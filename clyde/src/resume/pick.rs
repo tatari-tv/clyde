@@ -218,14 +218,16 @@ fn run_picker(fzf: &Path, items: &[PickItem], header: &str) -> Result<PickOutcom
     Ok(outcome)
 }
 
+fn fzf_missing_message(n: usize, cause: &dyn std::fmt::Display) -> String {
+    let noun = if n == 1 { "session" } else { "sessions" };
+    format!("fzf not found on PATH; needed to pick among {n} {noun} ({cause})")
+}
+
 /// Locate fzf on PATH and run the picker over every hit in `results`. Missing fzf is a loud error;
 /// it is looked up only here, so the one-hit path never needs it.
 pub(crate) fn pick(results: &SearchResults, header: &str) -> Result<PickOutcome> {
     let n = results.results.len();
-    let fzf = which::which("fzf").map_err(|e| {
-        let noun = if n == 1 { "session" } else { "sessions" };
-        eyre::eyre!("fzf not found on PATH; needed to pick among {n} {noun} ({e})")
-    })?;
+    let fzf = which::which("fzf").map_err(|e| eyre::eyre!("{}", fzf_missing_message(n, &e)))?;
     let items: Vec<PickItem> = results
         .results
         .iter()

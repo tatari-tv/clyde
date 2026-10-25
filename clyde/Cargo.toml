@@ -28,6 +28,7 @@ gethostname = "1.1.0"
 libc = "0.2.186"
 log = { workspace = true }
 mcp-io = { git = "https://github.com/tatari-tv/mcp-io-rs", tag = "v0.3.0", version = "0.3.0" }
+mutants = "0.0.4"
 permit = { path = "../permit" }
 renew = { git = "https://github.com/tatari-tv/renew", tag = "v0.3.3" }
 report = { path = "../report" }

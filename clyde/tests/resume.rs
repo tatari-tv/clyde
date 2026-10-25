@@ -232,3 +232,16 @@ fn ambiguous_id_prefix_goes_to_search_not_id_candidates() {
     assert!(!se.contains("ambiguous"), "must not report id ambiguity: {se:?}");
     assert!(se.contains("→ resuming abcd2222"), "{se:?}");
 }
+
+#[test]
+fn resume_help_lists_claude_and_fzf_under_required_tools() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_clyde"))
+        .args(["session", "resume", "--help"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let help = String::from_utf8_lossy(&out.stdout);
+    let tools = help.split("REQUIRED TOOLS:").nth(1).expect("REQUIRED TOOLS block");
+    assert!(tools.contains("session resume: exec `claude --resume <id>`"), "{help}");
+    assert!(tools.contains("session resume: pick among several matches"), "{help}");
+}

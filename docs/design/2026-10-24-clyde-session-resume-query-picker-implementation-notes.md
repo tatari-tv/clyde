@@ -104,3 +104,20 @@
 
 ### Open questions
 - None.
+
+## PR mutants gate fold-in (PR #124, `mutants / report`)
+
+### Design decisions
+- `clyde/tests/resume.rs:resume_help_lists_claude_and_fzf_under_required_tools` catches deletion of the `["session", "resume"]` help arm in `clyde/src/main.rs:parse_cli`.
+- `clyde/src/resume/pick.rs:fzf_missing_message` extracted from `pick` so the singular/plural branch has a unit test.
+
+### Deviations
+- `#[mutants::skip]` on the `#[cfg(not(unix))]` `launch_resume` in `clyde/src/resume.rs`, via `cargo add mutants` (0.0.4, attribute-only crate). cargo-mutants runs on unix, where that body is compiled out, so its mutant can never be caught. First skip annotation in the tree; `.otto.yml`'s mutants task names an annotated skip as the remedy for an uncatchable survivor.
+
+### Tradeoffs
+- Attribute skip vs a `.cargo/mutants.toml` `exclude_re`: the regex would have to match a line number or also exclude the unix `launch_resume`, which is caught today.
+
+### Open questions
+- None.
+
+Local diff-scoped run (`otto mutants --diff`, PR diff incl. this fix): 59 mutants, 21 caught, 38 unviable, 0 missed.

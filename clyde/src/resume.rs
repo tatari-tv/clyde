@@ -329,6 +329,8 @@ fn launch_resume(dir: &Path, id: &str, extra: &[String]) -> Result<()> {
 
 /// Non-unix: no `exec`. Spawn claude inheriting stdio, wait, and exit with its status code (or a
 /// fixed non-zero when terminated without a code).
+// cargo-mutants runs on unix, where this body is compiled out, so no test can ever catch a mutant.
+#[mutants::skip]
 #[cfg(not(unix))]
 fn launch_resume(dir: &Path, id: &str, extra: &[String]) -> Result<()> {
     // `extra` may carry sensitive passthrough values; log only its length.

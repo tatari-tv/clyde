@@ -415,3 +415,15 @@ fn run_picker_missing_binary_is_an_error() {
     let err = run_picker(Path::new("/nonexistent/fzf"), &items(&recs), "h").unwrap_err();
     assert!(err.to_string().contains("failed to launch fzf"), "{err}");
 }
+
+#[test]
+fn fzf_missing_message_pluralizes_the_candidate_count() {
+    assert_eq!(
+        fzf_missing_message(1, &"not found"),
+        "fzf not found on PATH; needed to pick among 1 session (not found)"
+    );
+    assert_eq!(
+        fzf_missing_message(3, &"not found"),
+        "fzf not found on PATH; needed to pick among 3 sessions (not found)"
+    );
+}
