@@ -98,13 +98,18 @@ pub enum SessionsCommand {
     Ls(LsArgs),
     /// Resume a session in the directory it originally ran in.
     ///
+    /// Takes a session id, a unique id prefix, or search terms. A single hex-and-dash arg that
+    /// resolves to exactly one session resumes it; anything else runs the same search as
+    /// `clyde session search`. One clean hit resumes it; several hits (or a partial any-term
+    /// match) print the list and exit 1.
+    ///
     /// Resolves the session's recorded working directory, changes into it, and replaces the clyde
     /// process with `claude --resume <id>` (fork/exec). On exit you are returned to your original
     /// shell prompt and directory.
     ///
     /// To forward extra flags to `claude`, separate them with a literal `--`:
     ///
-    ///   clyde session resume <id> -- --model opus
+    ///   clyde session resume <query...> -- --model opus
     ///
     /// Omitting the `--` will cause a parse error; clyde does not interpret claude's flags.
     Resume(ResumeArgs),
@@ -197,8 +202,9 @@ pub struct LsArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct ResumeArgs {
-    /// Session id or a unique prefix of it.
-    pub id: String,
+    /// Session id, unique id prefix, or search terms.
+    #[arg(required = true, num_args = 1..)]
+    pub query: Vec<String>,
     /// Skip the lazy reindex before resolving.
     #[arg(long)]
     pub no_reindex: bool,
@@ -206,7 +212,7 @@ pub struct ResumeArgs {
     ///
     /// Requires a literal `--` separator before the flags:
     ///
-    ///   clyde session resume <id> -- --model opus
+    ///   clyde session resume <query...> -- --model opus
     ///
     /// Without `--`, clyde will reject flags it does not recognize. This is intentional:
     /// it prevents claude flags from being silently misinterpreted by clyde's own parser.

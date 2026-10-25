@@ -934,7 +934,7 @@ pub(crate) fn lazy_reindex(db: &Db, skip: bool) {
 /// Resolved Decisions). TTY output stays the existing per-hit listing, plus a one-line notice when
 /// the results are an AND->OR fallback and another when the hit list was truncated to fit the
 /// response size cap.
-fn print_hits(results: &SearchResults) {
+pub(crate) fn print_hits(results: &SearchResults) {
     if !std::io::stdout().is_terminal() {
         print_json(results);
         return;
@@ -987,7 +987,7 @@ fn print_records(records: &[SessionRecord]) {
 /// Single-line, width-capped title for terminal output. A title that fell back to a
 /// (multi-line, possibly huge) first prompt is collapsed to one line and truncated; the JSON
 /// surface keeps the full value.
-fn display_title(rec: &SessionRecord) -> String {
+pub(crate) fn display_title(rec: &SessionRecord) -> String {
     truncate_title(rec.title.as_deref().unwrap_or("(untitled)"))
 }
 
@@ -1017,13 +1017,6 @@ fn truncate_title(raw: &str) -> String {
 /// `msgs_width` right-justifies the message count so the title column lines up across rows.
 fn print_record_line(rec: &SessionRecord, msgs_width: usize) {
     let title = display_title(rec);
-    let repo = rec.cwd.as_deref().and_then(|c| c.rsplit('/').next()).unwrap_or("-");
-    // A detached HEAD (or a cwd outside any repo) is recorded as the literal "HEAD" by Claude
-    // Code; that's not a meaningful branch name, so render it as an empty branch (`repo:`).
-    let branch = match rec.git_branch.as_deref() {
-        None | Some("HEAD") => "",
-        Some(b) => b,
-    };
     let date = rec.modified.format("%Y-%m-%d");
     let tags = if rec.tags.is_empty() {
         String::new()
@@ -1031,9 +1024,7 @@ fn print_record_line(rec: &SessionRecord, msgs_width: usize) {
         format!(" [{}]", rec.tags.join(" "))
     };
     let archived = if rec.archived { " (archived)".red().to_string() } else { String::new() };
-    // Drop the `:` separator when there's no branch (non-repo cwd or detached HEAD) so the
-    // location reads as a plain `repo` instead of a dangling `repo:`.
-    let location = if branch.is_empty() { repo.to_string() } else { format!("{repo}:{branch}") };
+    let location = record_location(rec);
     println!(
         "{}  {}{}{}",
         rec.session_id.yellow(),
@@ -1048,6 +1039,21 @@ fn print_record_line(rec: &SessionRecord, msgs_width: usize) {
         title.as_str().bold(),
         width = msgs_width,
     );
+}
+
+/// `repo:branch` for one record: the cwd basename (`-` when unrecorded) and the git branch. Shared by
+/// the search listing and the resume announce line so the two render a session identically.
+pub(crate) fn record_location(rec: &SessionRecord) -> String {
+    let repo = rec.cwd.as_deref().and_then(|c| c.rsplit('/').next()).unwrap_or("-");
+    // A detached HEAD (or a cwd outside any repo) is recorded as the literal "HEAD" by Claude
+    // Code; that's not a meaningful branch name, so render it as an empty branch.
+    let branch = match rec.git_branch.as_deref() {
+        None | Some("HEAD") => "",
+        Some(b) => b,
+    };
+    // Drop the `:` separator when there's no branch (non-repo cwd or detached HEAD) so the
+    // location reads as a plain `repo` instead of a dangling `repo:`.
+    if branch.is_empty() { repo.to_string() } else { format!("{repo}:{branch}") }
 }
 
 /// Width of the widest message count across `counts`, for right-justified column alignment.

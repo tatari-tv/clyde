@@ -5,10 +5,107 @@ use std::path::{Path, PathBuf};
 use colored::Colorize;
 use eyre::{Context, Result};
 use report::fmt::short_id;
-use sessions::{Db, SessionRecord};
+use sessions::{Db, Fallback, SearchResults, SessionRecord, SortBy};
 
 use crate::cli::ResumeArgs;
-use crate::{lazy_reindex, resolve_one_or_exit};
+use crate::{display_title, lazy_reindex, print_hits, record_location};
+
+/// What a resume query resolved to, before any picking.
+#[derive(Debug)]
+enum Resolution {
+    /// Resume this id directly. `announce` prints the one-hit stderr line.
+    One {
+        id: String,
+        announce: bool,
+    },
+    /// Search candidates for the picker; the full `SearchResults` is kept so no-TTY prints it as-is.
+    Pick {
+        results: SearchResults,
+        header: String,
+    },
+    NoMatch,
+}
+
+/// The single arg when the query is exactly one arg made only of `[0-9a-f-]`. No length gate: the
+/// arg is an id only if [`resolution_from_id`] then finds exactly one session. Rejecting every
+/// other char also keeps `%` and `_` away from `Db::resolve_id`'s unescaped `LIKE`.
+fn looks_like_id(query: &[String]) -> Option<&str> {
+    match query {
+        [arg]
+            if !arg.is_empty()
+                && arg
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c) || c == '-') =>
+        {
+            Some(arg.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// `Some` only when `resolve_id` found exactly one session; 0 or 2+ matches mean the arg is not an
+/// id and the caller falls through to search. Only an arg equal to the full id resumes silently.
+fn resolution_from_id(matches: &[String], arg: &str) -> Option<Resolution> {
+    match matches {
+        [id] => Some(Resolution::One {
+            id: id.clone(),
+            announce: id != arg,
+        }),
+        _ => None,
+    }
+}
+
+/// Map a search response to a [`Resolution`]. Auto-resume only a single AND hit from an untruncated
+/// list: a lone OR-fallback hit matched only some words, and a truncated list may hide others.
+fn resolution_from_search(results: SearchResults, query: &str) -> Resolution {
+    let n = results.results.len();
+    if n == 0 {
+        return Resolution::NoMatch;
+    }
+    if !results.truncated
+        && results.fallback.is_none()
+        && let [hit] = results.results.as_slice()
+    {
+        return Resolution::One {
+            id: hit.record.session_id.clone(),
+            announce: true,
+        };
+    }
+    let header = if results.truncated {
+        format!("showing the first {n} matches (truncated); refine the query")
+    } else if results.fallback == Some(Fallback::Or) {
+        "no session matched all terms; showing any-term matches".to_string()
+    } else {
+        format!("{n} sessions match {query:?}")
+    };
+    Resolution::Pick { results, header }
+}
+
+/// Id path first (one exact `resolve_id` hit), else the same search `session search` runs:
+/// archived excluded, default limit, relevance order.
+fn resolve_query(db: &Db, query: &[String]) -> Result<Resolution> {
+    log::debug!("resolve_query: query={query:?}");
+    if let Some(arg) = looks_like_id(query) {
+        let matches = db.resolve_id(arg)?;
+        if let Some(resolution) = resolution_from_id(&matches, arg) {
+            log::debug!("resolve_query: {arg:?} resolved as an id");
+            return Ok(resolution);
+        }
+        log::debug!(
+            "resolve_query: {arg:?} matched {} ids, not exactly one; searching instead",
+            matches.len()
+        );
+    }
+    let joined = query.join(" ");
+    let results = db.search(&joined, None, false, SortBy::Relevance)?;
+    log::debug!(
+        "resolve_query: search count={} fallback={:?} truncated={}",
+        results.count,
+        results.fallback,
+        results.truncated
+    );
+    Ok(resolution_from_search(results, &joined))
+}
 
 /// What `resume` should do, computed from a resolved [`SessionRecord`] by [`plan_resume`]. Returned
 /// to `main` (which drops the `Db` and then acts on it) so the decision stays a pure, unit-testable
@@ -64,23 +161,54 @@ pub(crate) fn plan_resume(rec: &SessionRecord, extra: Vec<String>) -> ResumeActi
     }
 }
 
-/// Resolve the id (honoring `--no-reindex`), fetch the record, and compute the [`ResumeAction`].
+/// Resolve the query (honoring `--no-reindex`), fetch the record, and compute the [`ResumeAction`].
 /// Does NOT act on the action: `main` drops the `Db` first, then calls [`run_resume_action`].
+/// Zero matches and several candidates print and exit 1 here, as `resolve_one_or_exit` does.
 pub(crate) fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
     // `extra` is arbitrary passthrough forwarded verbatim to claude and may contain sensitive
     // values (tokens, endpoints); log only its length, never the contents.
     log::debug!(
-        "cmd_resume: id={} no_reindex={} extra_count={}",
-        args.id,
+        "cmd_resume: query={:?} no_reindex={} extra_count={}",
+        args.query,
         args.no_reindex,
         args.extra.len()
     );
     lazy_reindex(db, args.no_reindex);
-    let id = resolve_one_or_exit(db, &args.id)?;
+    let (id, announce) = match resolve_query(db, &args.query)? {
+        Resolution::One { id, announce } => (id, announce),
+        Resolution::NoMatch => {
+            eprintln!("{} no session matches {:?}", "✗".red(), args.query.join(" "));
+            std::process::exit(1);
+        }
+        Resolution::Pick { results, header } => {
+            // No picker yet: this is the no-TTY branch, so stdout gets exactly what
+            // `session search` would print and the caller is told to narrow it to an id.
+            log::debug!("cmd_resume: {} candidates, header={header:?}", results.results.len());
+            print_hits(&results);
+            eprintln!("{} {}; pass an id", "✗".red(), candidates_phrase(results.results.len()));
+            std::process::exit(1);
+        }
+    };
     let rec = db
         .get(&id)?
         .ok_or_else(|| eyre::eyre!("session {id} resolved but not found in the catalog"))?;
+    if announce {
+        eprintln!(
+            "→ resuming {}  {}  {}",
+            short_id(&rec.session_id),
+            record_location(&rec),
+            display_title(&rec)
+        );
+    }
     Ok(plan_resume(&rec, args.extra))
+}
+
+fn candidates_phrase(n: usize) -> String {
+    if n == 1 {
+        "1 session matches".to_string()
+    } else {
+        format!("{n} sessions match")
+    }
 }
 
 /// Execute the planned [`ResumeAction`]. `Launch` replaces this process with `claude` (never returns

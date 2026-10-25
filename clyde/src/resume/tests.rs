@@ -190,3 +190,150 @@ fn plan_resume_launch_with_no_extra() {
         }
     );
 }
+
+// ---------------------------------------------------------------------------
+// Query resolution: id detection and the Resolution decision
+// ---------------------------------------------------------------------------
+
+fn words(ws: &[&str]) -> Vec<String> {
+    ws.iter().map(|w| w.to_string()).collect()
+}
+
+fn hit(session_id: &str) -> sessions::SearchHit {
+    let mut record = base_record(PathBuf::from("/nonexistent/transcript"));
+    record.session_id = session_id.to_string();
+    sessions::SearchHit {
+        record,
+        matched: sessions::MatchSource::Body,
+        score: -1.0,
+        snippet: String::new(),
+        terms_matched: None,
+        terms_total: None,
+    }
+}
+
+fn results(ids: &[&str], fallback: Option<Fallback>, truncated: bool) -> SearchResults {
+    SearchResults {
+        count: ids.len(),
+        results: ids.iter().map(|id| hit(id)).collect(),
+        fallback,
+        unenriched: sessions::model::Unenriched::default(),
+        truncated,
+    }
+}
+
+const FULL_ID: &str = "b8024af2-61ac-4746-98c2-6e0f106459e7";
+
+#[test]
+fn looks_like_id_accepts_full_uuid_prefix_and_hex_word() {
+    assert_eq!(looks_like_id(&words(&[FULL_ID])), Some(FULL_ID));
+    assert_eq!(looks_like_id(&words(&["b8024af2"])), Some("b8024af2"));
+    assert_eq!(looks_like_id(&words(&["beef"])), Some("beef"));
+}
+
+#[test]
+fn looks_like_id_rejects_words_urls_multiple_args_and_non_hex() {
+    assert_eq!(looks_like_id(&words(&["marquee"])), None);
+    assert_eq!(
+        looks_like_id(&words(&["https://marquee.internal.tatari.dev/p/~scott-idler/x/"])),
+        None
+    );
+    assert_eq!(looks_like_id(&words(&["b8024af2", "beef"])), None);
+    assert_eq!(looks_like_id(&words(&["fix-auth"])), None);
+    // Uppercase hex is not what the catalog stores, and LIKE wildcards must never reach resolve_id.
+    assert_eq!(looks_like_id(&words(&["B8024AF2"])), None);
+    assert_eq!(looks_like_id(&words(&["b80%"])), None);
+    assert_eq!(looks_like_id(&words(&["b80_"])), None);
+    assert_eq!(looks_like_id(&words(&[""])), None);
+    assert_eq!(looks_like_id(&[]), None);
+}
+
+#[test]
+fn resolution_from_id_exact_full_id_is_silent() {
+    let r = resolution_from_id(&words(&[FULL_ID]), FULL_ID);
+    assert!(
+        matches!(r, Some(Resolution::One { ref id, announce: false }) if id == FULL_ID),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn resolution_from_id_prefix_match_announces() {
+    let r = resolution_from_id(&words(&[FULL_ID]), "b8024af2");
+    assert!(
+        matches!(r, Some(Resolution::One { ref id, announce: true }) if id == FULL_ID),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn resolution_from_id_zero_or_many_matches_fall_through_to_search() {
+    assert!(resolution_from_id(&[], "beef").is_none());
+    let two = words(&[
+        "abcd1111-0000-0000-0000-000000000000",
+        "abcd2222-0000-0000-0000-000000000000",
+    ]);
+    assert!(resolution_from_id(&two, "abcd").is_none());
+}
+
+#[test]
+fn resolution_from_search_zero_hits_is_no_match() {
+    let r = resolution_from_search(results(&[], None, false), "qqxz");
+    assert!(matches!(r, Resolution::NoMatch), "{r:?}");
+}
+
+#[test]
+fn resolution_from_search_single_and_hit_resumes_with_announce() {
+    let r = resolution_from_search(results(&[FULL_ID], None, false), "marquee");
+    assert!(
+        matches!(r, Resolution::One { ref id, announce: true } if id == FULL_ID),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn resolution_from_search_single_or_fallback_hit_goes_to_picker() {
+    let r = resolution_from_search(results(&[FULL_ID], Some(Fallback::Or), false), "marquee qqxz");
+    match r {
+        Resolution::Pick { results, header } => {
+            assert_eq!(results.count, 1);
+            assert_eq!(header, "no session matched all terms; showing any-term matches");
+        }
+        other => panic!("expected Pick, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolution_from_search_single_truncated_hit_goes_to_picker() {
+    let r = resolution_from_search(results(&[FULL_ID], None, true), "review");
+    match r {
+        Resolution::Pick { header, .. } => {
+            assert_eq!(header, "showing the first 1 matches (truncated); refine the query");
+        }
+        other => panic!("expected Pick, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolution_from_search_several_hits_go_to_picker_with_full_results() {
+    let ids = [
+        "e0fd2451-0000-0000-0000-000000000000",
+        "d18ded3d-0000-0000-0000-000000000000",
+        FULL_ID,
+    ];
+    let r = resolution_from_search(results(&ids, None, false), "marquee security audit");
+    match r {
+        Resolution::Pick { results, header } => {
+            assert_eq!(results.count, 3);
+            assert_eq!(results.results.len(), 3);
+            assert_eq!(header, r#"3 sessions match "marquee security audit""#);
+        }
+        other => panic!("expected Pick, got {other:?}"),
+    }
+}
+
+#[test]
+fn candidates_phrase_pluralizes() {
+    assert_eq!(candidates_phrase(1), "1 session matches");
+    assert_eq!(candidates_phrase(3), "3 sessions match");
+}
