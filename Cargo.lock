@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "clyde"
-version = "0.27.2"
+version = "0.27.3"
 dependencies = [
  "chrono",
  "clap",
@@ -255,6 +255,7 @@ dependencies = [
  "libc",
  "log",
  "mcp-io",
+ "mutants",
  "permit",
  "renew",
  "report",
@@ -296,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.27.2"
+version = "0.27.3"
 dependencies = [
  "chrono",
  "claude-pricing",
@@ -346,7 +347,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cost"
-version = "0.27.2"
+version = "0.27.3"
 dependencies = [
  "chrono",
  "clap",
@@ -558,7 +559,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "efficiency"
-version = "0.27.2"
+version = "0.27.3"
 dependencies = [
  "chrono",
  "clap",
@@ -1229,6 +1230,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mutants"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "add0ac067452ff1aca8c5002111bd6b1c895baee6e45fcbc44e0193aea17be56"
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1301,7 +1308,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permit"
-version = "0.27.2"
+version = "0.27.3"
 dependencies = [
  "chrono",
  "clap",
@@ -1601,7 +1608,7 @@ dependencies = [
 
 [[package]]
 name = "report"
-version = "0.27.2"
+version = "0.27.3"
 dependencies = [
  "chrono",
  "clap",
@@ -1911,7 +1918,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.27.2"
+version = "0.27.3"
 dependencies = [
  "chrono",
  "common",
@@ -1928,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "sessions"
-version = "0.27.2"
+version = "0.27.3"
 dependencies = [
  "chrono",
  "common",
@@ -2076,7 +2083,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

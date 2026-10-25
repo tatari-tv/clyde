@@ -28,6 +28,7 @@ gethostname = "1.1.0"
 libc = "0.2.186"
 log = { workspace = true }
 mcp-io = { git = "https://github.com/tatari-tv/mcp-io-rs", tag = "v0.3.0", version = "0.3.0" }
+mutants = "0.0.4"
 permit = { path = "../permit" }
 renew = { git = "https://github.com/tatari-tv/renew", tag = "v0.3.3" }
 report = { path = "../report" }
@@ -36,10 +37,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 session = { path = "../session" }
 sessions = { path = "../sessions" }
+tempfile.workspace = true
 which.workspace = true
 
 [dev-dependencies]
 common = { path = "../common", features = ["testkit"] }
 rusqlite = { workspace = true, features = ["bundled"] }
 serde_yaml.workspace = true
-tempfile = { workspace = true }

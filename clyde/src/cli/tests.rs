@@ -163,7 +163,7 @@ fn resume_parses_bare_id() {
         Command::Sessions {
             command: SessionsCommand::Resume(args),
         } => {
-            assert_eq!(args.id, "3bc0a20d");
+            assert_eq!(args.query, vec!["3bc0a20d".to_string()]);
             assert!(!args.no_reindex);
             assert!(args.extra.is_empty(), "expected empty extra for bare resume");
         }
@@ -179,7 +179,7 @@ fn resume_extra_lands_after_double_dash() {
         Command::Sessions {
             command: SessionsCommand::Resume(args),
         } => {
-            assert_eq!(args.id, "3bc0a20d");
+            assert_eq!(args.query, vec!["3bc0a20d".to_string()]);
             assert_eq!(args.extra, vec!["--model".to_string(), "opus".to_string()]);
         }
         _ => panic!("expected resume"),
@@ -194,12 +194,47 @@ fn resume_no_reindex_flag_parses() {
         Command::Sessions {
             command: SessionsCommand::Resume(args),
         } => {
-            assert_eq!(args.id, "3bc0a20d");
+            assert_eq!(args.query, vec!["3bc0a20d".to_string()]);
             assert!(args.no_reindex);
             assert!(args.extra.is_empty());
         }
         _ => panic!("expected resume"),
     }
+}
+
+#[test]
+fn resume_parses_multi_word_query_with_extra() {
+    // Search terms are positional words; everything after `--` is claude passthrough.
+    let cli = Cli::try_parse_from([
+        "clyde",
+        "session",
+        "resume",
+        "marquee",
+        "security",
+        "--no-reindex",
+        "audit",
+        "--",
+        "--model",
+        "opus",
+    ])
+    .unwrap();
+    match cli.command {
+        Command::Sessions {
+            command: SessionsCommand::Resume(args),
+        } => {
+            assert_eq!(args.query, vec!["marquee", "security", "audit"]);
+            assert!(args.no_reindex);
+            assert_eq!(args.extra, vec!["--model".to_string(), "opus".to_string()]);
+        }
+        _ => panic!("expected resume"),
+    }
+}
+
+#[test]
+fn resume_rejects_missing_query() {
+    // A query is required; passthrough alone is not a query.
+    assert!(Cli::try_parse_from(["clyde", "session", "resume"]).is_err());
+    assert!(Cli::try_parse_from(["clyde", "session", "resume", "--", "--model", "opus"]).is_err());
 }
 
 fn argv(tokens: &[&str]) -> Vec<String> {
