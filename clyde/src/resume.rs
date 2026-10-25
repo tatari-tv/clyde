@@ -190,7 +190,11 @@ pub(crate) fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
             // Gate on stdin only: fzf draws on /dev/tty, so a piped stdout does not matter.
             if !std::io::stdin().is_terminal() {
                 print_hits(&results);
-                eprintln!("{} {}; pass an id", "✗".red(), candidates_phrase(results.results.len()));
+                eprintln!(
+                    "{} {}",
+                    "✗".red(),
+                    no_tty_message(results.results.len(), results.truncated)
+                );
                 std::process::exit(1);
             }
             match pick::pick(&results, &header) {
@@ -217,11 +221,14 @@ pub(crate) fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
     Ok(plan_resume(&rec, args.extra))
 }
 
-fn candidates_phrase(n: usize) -> String {
-    if n == 1 {
-        "1 session matches".to_string()
+// A truncated list dropped trailing hits to fit the response cap, so `n` undercounts the matches.
+fn no_tty_message(n: usize, truncated: bool) -> String {
+    if truncated {
+        format!("more than {n} sessions match (list truncated); refine the query or pass an id")
+    } else if n == 1 {
+        "1 session matches; pass an id".to_string()
     } else {
-        format!("{n} sessions match")
+        format!("{n} sessions match; pass an id")
     }
 }
 

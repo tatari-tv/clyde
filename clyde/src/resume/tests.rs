@@ -343,7 +343,11 @@ fn resolution_from_search_several_hits_go_to_picker_with_full_results() {
 }
 
 #[test]
-fn candidates_phrase_pluralizes() {
-    assert_eq!(candidates_phrase(1), "1 session matches");
-    assert_eq!(candidates_phrase(3), "3 sessions match");
+fn no_tty_message_pluralizes_and_flags_truncation() {
+    assert_eq!(no_tty_message(1, false), "1 session matches; pass an id");
+    assert_eq!(no_tty_message(3, false), "3 sessions match; pass an id");
+    assert_eq!(
+        no_tty_message(22, true),
+        "more than 22 sessions match (list truncated); refine the query or pass an id"
+    );
 }

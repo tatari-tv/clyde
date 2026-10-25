@@ -245,3 +245,17 @@ fn resume_help_lists_claude_and_fzf_under_required_tools() {
     assert!(tools.contains("session resume: exec `claude --resume <id>`"), "{help}");
     assert!(tools.contains("session resume: pick among several matches"), "{help}");
 }
+
+#[test]
+fn resume_help_keeps_the_extra_flags_example_indented() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_clyde"))
+        .args(["session", "resume", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&out.stdout);
+    let about = help.split("Usage:").next().unwrap();
+    assert!(
+        about.contains("\n  clyde session resume <query...> -- --model opus\n"),
+        "{help}"
+    );
+}
