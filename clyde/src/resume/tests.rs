@@ -229,6 +229,8 @@ fn looks_like_id_accepts_full_uuid_prefix_and_hex_word() {
     assert_eq!(looks_like_id(&words(&[FULL_ID])), Some(FULL_ID));
     assert_eq!(looks_like_id(&words(&["b8024af2"])), Some("b8024af2"));
     assert_eq!(looks_like_id(&words(&["beef"])), Some("beef"));
+    // resolve_id's LIKE ignores ASCII case, so uppercase prefixes keep working as they did before.
+    assert_eq!(looks_like_id(&words(&["B8024AF2"])), Some("B8024AF2"));
 }
 
 #[test]
@@ -240,8 +242,7 @@ fn looks_like_id_rejects_words_urls_multiple_args_and_non_hex() {
     );
     assert_eq!(looks_like_id(&words(&["b8024af2", "beef"])), None);
     assert_eq!(looks_like_id(&words(&["fix-auth"])), None);
-    // Uppercase hex is not what the catalog stores, and LIKE wildcards must never reach resolve_id.
-    assert_eq!(looks_like_id(&words(&["B8024AF2"])), None);
+    // LIKE wildcards must never reach resolve_id.
     assert_eq!(looks_like_id(&words(&["b80%"])), None);
     assert_eq!(looks_like_id(&words(&["b80_"])), None);
     assert_eq!(looks_like_id(&words(&[""])), None);
@@ -251,6 +252,15 @@ fn looks_like_id_rejects_words_urls_multiple_args_and_non_hex() {
 #[test]
 fn resolution_from_id_exact_full_id_is_silent() {
     let r = resolution_from_id(&words(&[FULL_ID]), FULL_ID);
+    assert!(
+        matches!(r, Some(Resolution::One { ref id, announce: false }) if id == FULL_ID),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn resolution_from_id_uppercase_full_id_is_silent() {
+    let r = resolution_from_id(&words(&[FULL_ID]), &FULL_ID.to_ascii_uppercase());
     assert!(
         matches!(r, Some(Resolution::One { ref id, announce: false }) if id == FULL_ID),
         "{r:?}"

@@ -100,8 +100,8 @@ pub enum SessionsCommand {
     ///
     /// Takes a session id, a unique id prefix, or search terms. A single hex-and-dash arg that
     /// resolves to exactly one session resumes it; anything else runs the same search as
-    /// `clyde session search`. One clean hit resumes it; several hits (or a partial any-term
-    /// match) print the list and exit 1.
+    /// `clyde session search`. One clean hit resumes it. Several hits, a lone any-term match, or a
+    /// truncated result open an fzf picker; with no TTY on stdin they print the list and exit 1.
     ///
     /// Resolves the session's recorded working directory, changes into it, and replaces the clyde
     /// process with `claude --resume <id>` (fork/exec). On exit you are returned to your original

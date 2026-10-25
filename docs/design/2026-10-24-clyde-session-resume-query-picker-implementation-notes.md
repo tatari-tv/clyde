@@ -89,3 +89,18 @@
 
 ### Open questions
 - None.
+
+## Implementation audit fold-in (review-panel round 1, run xXpoh1pf)
+
+### Design decisions
+- `clyde/src/cli.rs` `Resume` help: several hits, a lone any-term hit, or a truncated result open the fzf picker; the list-and-exit-1 path applies only with no TTY on stdin. The old text described the Phase 2 state.
+- `README.md` "Resuming sessions": a lone any-term or truncated-list hit goes to the picker (so it can need fzf), and the no-TTY path prints what `session search` prints (JSON only when stdout is piped). The Phase 4 note's claim that the README matched shipped behavior was wrong on these two points.
+
+### Deviations
+- Supersedes the Phase 2 entry that `looks_like_id` rejects uppercase hex. It now accepts hex digits of either case (`clyde/src/resume.rs:looks_like_id`), and `resolution_from_id` compares with `eq_ignore_ascii_case`. Reason: `Db::resolve_id`'s `LIKE` ignores ASCII case, so uppercase prefixes worked on v0.27.2, and `session tag`/`export --id`/`enrich` still accept them. Rejecting them was an undisclosed user-visible regression (panel: 19 of 20 sampled uppercase prefixes became "no session matches"). Tests: `looks_like_id` accepts `B8024AF2`; new `resolution_from_id_uppercase_full_id_is_silent`.
+
+### Tradeoffs
+- Accept uppercase vs keep rejecting and document it: accepting restores v0.27.2 behavior and sibling parity in one line.
+
+### Open questions
+- None.

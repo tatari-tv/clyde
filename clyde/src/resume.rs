@@ -33,19 +33,13 @@ enum Resolution {
     NoMatch,
 }
 
-/// The single arg when the query is exactly one arg made only of `[0-9a-f-]`. No length gate: the
+/// The single arg when the query is exactly one arg made only of hex digits (either case) and `-`.
+/// `resolve_id`'s `LIKE` ignores ASCII case, so `B8024AF2` matches as it did before. No length gate: the
 /// arg is an id only if [`resolution_from_id`] then finds exactly one session. Rejecting every
 /// other char also keeps `%` and `_` away from `Db::resolve_id`'s unescaped `LIKE`.
 fn looks_like_id(query: &[String]) -> Option<&str> {
     match query {
-        [arg]
-            if !arg.is_empty()
-                && arg
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c) || c == '-') =>
-        {
-            Some(arg.as_str())
-        }
+        [arg] if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_hexdigit() || c == '-') => Some(arg.as_str()),
         _ => None,
     }
 }
@@ -56,7 +50,7 @@ fn resolution_from_id(matches: &[String], arg: &str) -> Option<Resolution> {
     match matches {
         [id] => Some(Resolution::One {
             id: id.clone(),
-            announce: id != arg,
+            announce: !id.eq_ignore_ascii_case(arg),
         }),
         _ => None,
     }

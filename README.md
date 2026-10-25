@@ -307,16 +307,19 @@ A single argument that is a full id or a unique id prefix resolves directly. `cl
 prefix) is treated as search terms and runs the same search as `clyde session search`:
 
 - No match: `✗ no session matches "<query>"`, exit 1.
-- One match: prints `→ resuming <short-id>  <repo:branch>  <title>` to stderr and resumes it.
+- One match: prints `→ resuming <short-id>  <repo:branch>  <title>` to stderr and resumes it. A
+  lone match that only hit some of the words (any-term fallback), or one from a truncated result
+  set, goes to the picker instead, never straight to claude.
 - Several matches: an `fzf` picker opens, one row per session, with the summary (or first prompt)
   and the matching snippet in a preview pane. The header names the match count, notes an any-term
   fallback when no session matched every term, and flags a truncated result set. Enter resumes the
   chosen row (no announce line, you just picked it). Esc or Ctrl-C prints `✗ cancelled` and exits 130.
-- Several matches with no TTY on stdin: prints the same `SearchResults` JSON as `clyde session
-  search`, then `✗ N sessions match; pass an id` and exits 1. Nothing is launched.
+- Picker cases with no TTY on stdin: prints the matches exactly as `clyde session search` would
+  (the `SearchResults` JSON when stdout is piped, the listing when it is a terminal), then
+  `✗ N sessions match; pass an id` and exits 1. Nothing is launched.
 
 The picker needs `fzf` on PATH. If it is missing, resume fails loudly (`✗ fzf not found on PATH`)
-and exits 1; the one-match and id paths never need it. clyde clears `FZF_DEFAULT_OPTS` and
+and exits 1; a clean one-match result and the id path never need it. clyde clears `FZF_DEFAULT_OPTS` and
 `FZF_DEFAULT_OPTS_FILE` for the child, so a personal fzf config cannot auto-select a row.
 
 ## Reaped transcripts, staging, and what `archived` means
