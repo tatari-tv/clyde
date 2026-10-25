@@ -316,7 +316,8 @@ prefix) is treated as search terms and runs the same search as `clyde session se
   chosen row (no announce line, you just picked it). Esc or Ctrl-C prints `✗ cancelled` and exits 130.
 - Picker cases with no TTY on stdin: prints the matches exactly as `clyde session search` would
   (the `SearchResults` JSON when stdout is piped, the listing when it is a terminal), then
-  `✗ N sessions match; pass an id` and exits 1. Nothing is launched.
+  `✗ N sessions match; pass an id` (or `✗ more than N sessions match (list truncated); refine the
+  query or pass an id` when the list was truncated) and exits 1. Nothing is launched.
 
 The picker needs `fzf` on PATH. If it is missing, resume fails loudly (`✗ fzf not found on PATH`)
 and exits 1; a clean one-match result and the id path never need it. clyde clears `FZF_DEFAULT_OPTS` and

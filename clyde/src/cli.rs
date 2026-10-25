@@ -112,6 +112,7 @@ pub enum SessionsCommand {
     ///   clyde session resume <query...> -- --model opus
     ///
     /// Omitting the `--` will cause a parse error; clyde does not interpret claude's flags.
+    #[command(verbatim_doc_comment)]
     Resume(ResumeArgs),
     /// Set tags on a session (replaces existing).
     Tag(TagArgs),
@@ -216,7 +217,7 @@ pub struct ResumeArgs {
     ///
     /// Without `--`, clyde will reject flags it does not recognize. This is intentional:
     /// it prevents claude flags from being silently misinterpreted by clyde's own parser.
-    #[arg(last = true)]
+    #[arg(last = true, verbatim_doc_comment)]
     pub extra: Vec<String>,
 }
 
