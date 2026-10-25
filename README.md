@@ -38,7 +38,7 @@ clyde doctor                                                             # healt
 
 Subcommands that shell out to external binaries (not linked libraries) advertise them, with live
 install status, in a `REQUIRED TOOLS` block at the end of their `--help`: `clyde report` (persona,
-pandoc, marquee, git, jq), `clyde session resume` (claude), `clyde permit apply` (rkvr), and
+pandoc, marquee, git, jq), `clyde session resume` (claude, fzf), `clyde permit apply` (rkvr), and
 `clyde bootstrap` (systemctl). The probes run only when that specific `--help` is requested, never
 on a normal invocation. Rendering lives in `common::tools`.
 
@@ -295,12 +295,29 @@ When `claude` exits you are returned to your original shell prompt and directory
 ```bash
 clyde session resume 3bc0a20d                  # resume in original directory, default model
 clyde session resume 3bc0a20d -- --model opus  # forward --model opus to claude
+clyde session resume <query...>                # search terms instead of an id
+clyde session resume marquee publish -- --model opus
 ```
 
 The `--` before any claude flags is required: `clyde session resume <id> --model opus` (no `--`)
 will produce a parse error. This is intentional - clyde does not parse claude's flags.
 
-The session id may be a unique prefix. `clyde session ls` or `clyde session search` show ids.
+A single argument that is a full id or a unique id prefix resolves directly. `clyde session ls` or
+`clyde session search` show ids. Anything else (several words, a word that is not hex, an ambiguous
+prefix) is treated as search terms and runs the same search as `clyde session search`:
+
+- No match: `✗ no session matches "<query>"`, exit 1.
+- One match: prints `→ resuming <short-id>  <repo:branch>  <title>` to stderr and resumes it.
+- Several matches: an `fzf` picker opens, one row per session, with the summary (or first prompt)
+  and the matching snippet in a preview pane. The header names the match count, notes an any-term
+  fallback when no session matched every term, and flags a truncated result set. Enter resumes the
+  chosen row (no announce line, you just picked it). Esc or Ctrl-C prints `✗ cancelled` and exits 130.
+- Several matches with no TTY on stdin: prints the same `SearchResults` JSON as `clyde session
+  search`, then `✗ N sessions match; pass an id` and exits 1. Nothing is launched.
+
+The picker needs `fzf` on PATH. If it is missing, resume fails loudly (`✗ fzf not found on PATH`)
+and exits 1; the one-match and id paths never need it. clyde clears `FZF_DEFAULT_OPTS` and
+`FZF_DEFAULT_OPTS_FILE` for the child, so a personal fzf config cannot auto-select a row.
 
 ## Reaped transcripts, staging, and what `archived` means
 

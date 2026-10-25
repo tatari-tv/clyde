@@ -58,6 +58,13 @@ launches a fresh interactive Claude Code session and hands you the prompt.
   explicit request to reopen. To forward flags to `claude`, separate with `--`:
   `clyde session resume <id> -- --model opus`.
 
+`resume` also takes search terms (`clyde session resume <query...>`): a single
+unique id or id prefix resolves directly, anything else runs a search. One hit
+resumes it, several open an fzf picker, and several with no TTY print the hits
+and exit 1. **An agent never calls `resume` with free text**: with no TTY,
+several hits exit 1, and one hit execs an interactive `claude` that takes over
+the terminal. Find the id with `search` or `sessions_search`, then act on it.
+
 These are two different jobs. Never route a "read this session" request through
 `resume`.
 
