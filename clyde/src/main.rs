@@ -97,10 +97,16 @@ fn parse_cli(log_path: &Path) -> Result<Cli> {
             }),
             ["session", "resume"] => command.mut_subcommand("session", |s| {
                 s.mut_subcommand("resume", |r| {
-                    r.after_help(common::required_tools_help(&[common::Tool {
-                        name: "claude",
-                        purpose: "session resume: exec `claude --resume <id>`",
-                    }]))
+                    r.after_help(common::required_tools_help(&[
+                        common::Tool {
+                            name: "claude",
+                            purpose: "session resume: exec `claude --resume <id>`",
+                        },
+                        common::Tool {
+                            name: "fzf",
+                            purpose: "session resume: pick among several matches",
+                        },
+                    ]))
                 })
             }),
             ["bootstrap"] => command.mut_subcommand("bootstrap", |b| {

@@ -1,5 +1,8 @@
 //! `clyde sessions resume`: plan the resume from a catalog record, then exec `claude --resume`.
 
+mod pick;
+
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use colored::Colorize;
@@ -9,6 +12,10 @@ use sessions::{Db, Fallback, SearchResults, SessionRecord, SortBy};
 
 use crate::cli::ResumeArgs;
 use crate::{display_title, lazy_reindex, print_hits, record_location};
+use pick::PickOutcome;
+
+/// Exit status for a cancelled picker, matching fzf's own Esc / Ctrl-C code.
+const EXIT_CANCELLED: i32 = 130;
 
 /// What a resume query resolved to, before any picking.
 #[derive(Debug)]
@@ -126,6 +133,9 @@ pub(crate) enum ResumeAction {
     StagedOnly { staged: PathBuf },
     /// Neither the live transcript nor a staged copy exists: fully TTL-reaped.
     Reaped,
+    /// The user dismissed the picker (Esc / Ctrl-C). Not an `Err`: `main` maps every `Err` to exit
+    /// 1, and a cancel exits 130.
+    Cancelled,
 }
 
 /// Pure decision: maps a resolved record to what `resume` should do. Unit-tested directly (Phase 3).
@@ -163,7 +173,8 @@ pub(crate) fn plan_resume(rec: &SessionRecord, extra: Vec<String>) -> ResumeActi
 
 /// Resolve the query (honoring `--no-reindex`), fetch the record, and compute the [`ResumeAction`].
 /// Does NOT act on the action: `main` drops the `Db` first, then calls [`run_resume_action`].
-/// Zero matches and several candidates print and exit 1 here, as `resolve_one_or_exit` does.
+/// Zero matches, several candidates without a TTY, and a picker failure print and exit 1 here;
+/// several candidates on a TTY go through the fzf picker.
 pub(crate) fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
     // `extra` is arbitrary passthrough forwarded verbatim to claude and may contain sensitive
     // values (tokens, endpoints); log only its length, never the contents.
@@ -181,12 +192,21 @@ pub(crate) fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
             std::process::exit(1);
         }
         Resolution::Pick { results, header } => {
-            // No picker yet: this is the no-TTY branch, so stdout gets exactly what
-            // `session search` would print and the caller is told to narrow it to an id.
             log::debug!("cmd_resume: {} candidates, header={header:?}", results.results.len());
-            print_hits(&results);
-            eprintln!("{} {}; pass an id", "✗".red(), candidates_phrase(results.results.len()));
-            std::process::exit(1);
+            // Gate on stdin only: fzf draws on /dev/tty, so a piped stdout does not matter.
+            if !std::io::stdin().is_terminal() {
+                print_hits(&results);
+                eprintln!("{} {}; pass an id", "✗".red(), candidates_phrase(results.results.len()));
+                std::process::exit(1);
+            }
+            match pick::pick(&results, &header) {
+                Ok(PickOutcome::Picked(id)) => (id, false),
+                Ok(PickOutcome::Cancelled) => return Ok(ResumeAction::Cancelled),
+                Err(e) => {
+                    eprintln!("{} {e:#}", "✗".red());
+                    std::process::exit(1);
+                }
+            }
         }
     };
     let rec = db
@@ -256,6 +276,10 @@ pub(crate) fn run_resume_action(action: ResumeAction) -> Result<()> {
                 "✗".red(),
             );
             std::process::exit(1);
+        }
+        ResumeAction::Cancelled => {
+            eprintln!("{} cancelled", "✗".red());
+            std::process::exit(EXIT_CANCELLED);
         }
     }
 }
