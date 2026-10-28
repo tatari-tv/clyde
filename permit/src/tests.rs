@@ -1,4 +1,5 @@
-//! Crate-root tests for the hook panic-containment boundary (`run` / `contain_log_panics`).
+//! Crate-root tests for the hook panic-containment boundary (`run` / `contain_log_panics`) and
+//! the `permit apply` REQUIRED TOOLS block.
 //!
 //! Two layers of coverage:
 //! - Direct unit tests on [`contain_log_panics`] with an injected byte buffer, so the exact `{}`
@@ -136,4 +137,11 @@ fn log_file_path_resolves_under_unified_clyde_logs_dir() {
         None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
     }
     drop(guard);
+}
+
+#[test]
+fn apply_tools_help_lists_rkvr_under_required_tools() {
+    let help = apply_tools_help();
+    assert!(help.starts_with("REQUIRED TOOLS:"), "block header missing: {help}");
+    assert!(help.contains("rkvr"), "rkvr row missing: {help}");
 }
