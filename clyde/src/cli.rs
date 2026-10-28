@@ -102,6 +102,7 @@ pub enum SessionsCommand {
     /// resolves to exactly one session resumes it; anything else runs the same search as
     /// `clyde session search`. One clean hit resumes it. Several hits, a lone any-term match, or a
     /// truncated result open an fzf picker; with no TTY on stdin they print the list and exit 1.
+    /// With no query, the picker lists the most recent sessions, newest first.
     ///
     /// Resolves the session's recorded working directory, changes into it, and replaces the clyde
     /// process with `claude --resume <id>` (fork/exec). On exit you are returned to your original
@@ -203,8 +204,8 @@ pub struct LsArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct ResumeArgs {
-    /// Session id, unique id prefix, or search terms.
-    #[arg(required = true, num_args = 1..)]
+    /// Session id, unique id prefix, or search terms. Omit to pick among the most recent sessions.
+    #[arg(num_args = 0..)]
     pub query: Vec<String>,
     /// Skip the lazy reindex before resolving.
     #[arg(long)]

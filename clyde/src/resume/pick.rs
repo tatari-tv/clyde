@@ -223,11 +223,8 @@ fn fzf_missing_message(n: usize, cause: &dyn std::fmt::Display) -> String {
     format!("fzf not found on PATH; needed to pick among {n} {noun} ({cause})")
 }
 
-/// Locate fzf on PATH and run the picker over every hit in `results`. Missing fzf is a loud error;
-/// it is looked up only here, so the one-hit path never needs it.
+/// Run the picker over every hit in `results`.
 pub(crate) fn pick(results: &SearchResults, header: &str) -> Result<PickOutcome> {
-    let n = results.results.len();
-    let fzf = which::which("fzf").map_err(|e| eyre::eyre!("{}", fzf_missing_message(n, &e)))?;
     let items: Vec<PickItem> = results
         .results
         .iter()
@@ -236,7 +233,20 @@ pub(crate) fn pick(results: &SearchResults, header: &str) -> Result<PickOutcome>
             snippet: &hit.snippet,
         })
         .collect();
-    run_picker(&fzf, &items, header)
+    pick_items(&items, header)
+}
+
+/// Run the picker over plain catalog records, in the order given; no snippet in the preview.
+pub(crate) fn pick_records(records: &[SessionRecord], header: &str) -> Result<PickOutcome> {
+    let items: Vec<PickItem> = records.iter().map(|record| PickItem { record, snippet: "" }).collect();
+    pick_items(&items, header)
+}
+
+/// Locate fzf on PATH and run the picker. Missing fzf is a loud error; it is looked up only here,
+/// so the one-hit path never needs it.
+fn pick_items(items: &[PickItem], header: &str) -> Result<PickOutcome> {
+    let fzf = which::which("fzf").map_err(|e| eyre::eyre!("{}", fzf_missing_message(items.len(), &e)))?;
+    run_picker(&fzf, items, header)
 }
 
 #[cfg(test)]

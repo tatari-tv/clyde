@@ -2,7 +2,8 @@
 //! clyde data/config/cache locations, what each integration currently points at, and the permit
 //! events-DB presence + row count. Exits NON-ZERO while any integration still resolves to an old
 //! binary name (`klod`/`ccu`/`claude-permit`) or any tool's state still lives only at a legacy
-//! path -- so a missed `bootstrap` step fails loud.
+//! path -- so a missed `bootstrap` step fails loud. Also lists every external binary a subcommand
+//! shells out to, with install status; a missing tool is informational and never fails the exit.
 
 use std::path::{Path, PathBuf};
 
@@ -38,7 +39,19 @@ pub fn run(db_path: &Path) -> Result<i32> {
         Ok(None) => println!("\n  {} no catalog at {}", "attribution:".bold(), db_path.display()),
         Err(e) => println!("\n  {} could not read the catalog: {e}", "attribution:".red()),
     }
+    println!("\n{}", common::required_tools_help(&required_tools()));
     Ok(if report.healthy() { 0 } else { 1 })
+}
+
+/// Every subcommand's external binaries, in the order `clyde --help` lists the subcommands.
+fn required_tools() -> Vec<common::Tool> {
+    [
+        crate::resume::TOOLS,
+        report::TOOLS,
+        permit::APPLY_TOOLS,
+        crate::bootstrap::TOOLS,
+    ]
+    .concat()
 }
 
 /// The `reposlugs-ptns:` line for the paths block: the configured patterns, normalized (lowercased,

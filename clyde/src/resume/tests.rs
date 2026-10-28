@@ -351,3 +351,15 @@ fn no_tty_message_pluralizes_and_flags_truncation() {
         "more than 22 sessions match (list truncated); refine the query or pass an id"
     );
 }
+
+#[test]
+fn no_tty_recent_message_pluralizes_and_points_at_both_inputs() {
+    assert_eq!(
+        no_tty_recent_message(1),
+        "listed the 1 most recent session; pass an id or search terms"
+    );
+    assert_eq!(
+        no_tty_recent_message(50),
+        "listed the 50 most recent sessions; pass an id or search terms"
+    );
+}

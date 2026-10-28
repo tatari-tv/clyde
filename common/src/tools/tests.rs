@@ -14,6 +14,14 @@ fn extract_version_handles_dash_separated_jq_format() {
 }
 
 #[test]
+fn extract_version_takes_a_parenthesized_version_whole() {
+    assert_eq!(
+        extract_version("systemd 259 (259.9-0ubuntu0.1)\n+PAM +AUDIT"),
+        "259.9-0ubuntu0.1"
+    );
+}
+
+#[test]
 fn extract_version_strips_leading_v() {
     assert_eq!(extract_version("mytool v2.3.4"), "2.3.4");
 }

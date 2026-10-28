@@ -27,6 +27,12 @@ const EVENTS_BUSY_TIMEOUT_MS: i64 = 5_000;
 /// `common::llm::cli::CLAUDE_BINARY` and `clyde::resolve_claude`.
 const CLAUDE_BINARY: &str = "claude";
 
+/// External binaries `bootstrap` runs.
+pub(crate) const TOOLS: &[common::Tool] = &[common::Tool {
+    name: "systemctl",
+    purpose: "bootstrap: repoint the enrich systemd user timer",
+}];
+
 /// The environment variable [`resolve_claude_path_env`] reads and composes.
 const PATH_ENV: &str = "PATH";
 

@@ -38,7 +38,7 @@ pub use cli::ReportArgs;
 // column. Leaving an alias to a resolver `report` must never call again would be an invitation to
 // reintroduce exactly the collect-time decay this phase removed.
 pub use config::{Config, ResolvedCommand};
-pub use tools::tool_validation_help;
+pub use tools::{TOOLS, tool_validation_help};
 
 /// ONE process-wide lock for every test that reads or mutates the process environment.
 ///

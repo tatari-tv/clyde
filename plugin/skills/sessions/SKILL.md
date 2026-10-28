@@ -61,7 +61,8 @@ launches a fresh interactive Claude Code session and hands you the prompt.
 `resume` also takes search terms (`clyde session resume <query...>`): a single
 unique id or id prefix resolves directly, anything else runs a search. One hit
 resumes it, several open an fzf picker, and several with no TTY print the hits
-and exit 1. **An agent never calls `resume` with free text**: with no TTY,
+and exit 1. With no query it opens the picker over the most recent sessions.
+**An agent never calls `resume` with free text or no query**: with no TTY,
 several hits exit 1, and one hit execs an interactive `claude` that takes over
 the terminal. Find the id with `search` or `sessions_search`, then act on it.
 

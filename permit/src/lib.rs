@@ -18,14 +18,16 @@ use log::info;
 
 pub use cli::{Command, PermitArgs};
 
-/// The "REQUIRED TOOLS" block for `clyde permit apply`: `apply` shells out to `rkvr` to back up
-/// `settings.json`/`settings.local.json` before rewriting them. Advertised in that subcommand's
-/// `--help`.
+/// `clyde permit apply` shells out to `rkvr` to back up `settings.json`/`settings.local.json`
+/// before rewriting them.
+pub const APPLY_TOOLS: &[common::Tool] = &[common::Tool {
+    name: "rkvr",
+    purpose: "permit apply: back up settings.json before rewriting it",
+}];
+
+/// The "REQUIRED TOOLS" block for `clyde permit apply`, advertised in that subcommand's `--help`.
 pub fn apply_tools_help() -> String {
-    common::required_tools_help(&[common::Tool {
-        name: "rkvr",
-        purpose: "permit apply: back up settings.json before rewriting it",
-    }])
+    common::required_tools_help(APPLY_TOOLS)
 }
 
 use crate::config::Config;
