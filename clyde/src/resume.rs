@@ -8,14 +8,29 @@ use std::path::{Path, PathBuf};
 use colored::Colorize;
 use eyre::{Context, Result};
 use report::fmt::short_id;
-use sessions::{Db, Fallback, SearchResults, SessionRecord, SortBy};
+use sessions::{Db, Fallback, Filters, SearchResults, SessionRecord, SortBy};
 
 use crate::cli::ResumeArgs;
-use crate::{display_title, lazy_reindex, print_hits, record_location};
+use crate::{display_title, lazy_reindex, print_hits, print_records, record_location};
 use pick::PickOutcome;
 
 /// Exit status for a cancelled picker, matching fzf's own Esc / Ctrl-C code.
 const EXIT_CANCELLED: i32 = 130;
+
+/// External binaries `session resume` runs.
+pub(crate) const TOOLS: &[common::Tool] = &[
+    common::Tool {
+        name: "claude",
+        purpose: "session resume: exec `claude --resume <id>`",
+    },
+    common::Tool {
+        name: "fzf",
+        purpose: "session resume: pick among several matches, or recent sessions with no query",
+    },
+];
+
+/// How many sessions the no-query picker lists, most recent first. Matches `session search`'s default.
+const RECENT_LIMIT: usize = 50;
 
 /// What a resume query resolved to, before any picking.
 #[derive(Debug)]
@@ -29,6 +44,10 @@ enum Resolution {
     Pick {
         results: SearchResults,
         header: String,
+    },
+    /// No query: the most recent unarchived sessions, newest first, always for the picker.
+    Recent {
+        records: Vec<SessionRecord>,
     },
     NoMatch,
 }
@@ -82,10 +101,18 @@ fn resolution_from_search(results: SearchResults, query: &str) -> Resolution {
     Resolution::Pick { results, header }
 }
 
-/// Id path first (one exact `resolve_id` hit), else the same search `session search` runs:
-/// archived excluded, default limit, relevance order.
+/// No query lists the most recent sessions. Otherwise the id path first (one exact `resolve_id`
+/// hit), else the same search `session search` runs: archived excluded, default limit, relevance order.
 fn resolve_query(db: &Db, query: &[String]) -> Result<Resolution> {
     log::debug!("resolve_query: query={query:?}");
+    if query.is_empty() {
+        let records = db.list(&Filters {
+            limit: Some(RECENT_LIMIT),
+            ..Filters::default()
+        })?;
+        log::debug!("resolve_query: no query, {} recent sessions", records.len());
+        return Ok(Resolution::Recent { records });
+    }
     if let Some(arg) = looks_like_id(query) {
         let matches = db.resolve_id(arg)?;
         if let Some(resolution) = resolution_from_id(&matches, arg) {
@@ -168,7 +195,7 @@ pub(crate) fn plan_resume(rec: &SessionRecord, extra: Vec<String>) -> ResumeActi
 /// Resolve the query (honoring `--no-reindex`), fetch the record, and compute the [`ResumeAction`].
 /// Does NOT act on the action: `main` drops the `Db` first, then calls [`run_resume_action`].
 /// Zero matches, several candidates without a TTY, and a picker failure print and exit 1 here;
-/// several candidates on a TTY go through the fzf picker.
+/// several candidates on a TTY, or no query at all, go through the fzf picker.
 pub(crate) fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
     // `extra` is arbitrary passthrough forwarded verbatim to claude and may contain sensitive
     // values (tokens, endpoints); log only its length, never the contents.
@@ -197,13 +224,26 @@ pub(crate) fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
                 );
                 std::process::exit(1);
             }
-            match pick::pick(&results, &header) {
-                Ok(PickOutcome::Picked(id)) => (id, false),
-                Ok(PickOutcome::Cancelled) => return Ok(ResumeAction::Cancelled),
-                Err(e) => {
-                    eprintln!("{} {e:#}", "✗".red());
-                    std::process::exit(1);
-                }
+            match picked(pick::pick(&results, &header)) {
+                Some(id) => (id, false),
+                None => return Ok(ResumeAction::Cancelled),
+            }
+        }
+        Resolution::Recent { records } => {
+            log::debug!("cmd_resume: no query, {} recent candidates", records.len());
+            if records.is_empty() {
+                eprintln!("{} no sessions in the catalog", "✗".red());
+                std::process::exit(1);
+            }
+            if !std::io::stdin().is_terminal() {
+                print_records(&records);
+                eprintln!("{} {}", "✗".red(), no_tty_recent_message(records.len()));
+                std::process::exit(1);
+            }
+            let header = format!("{} most recent sessions", records.len());
+            match picked(pick::pick_records(&records, &header)) {
+                Some(id) => (id, false),
+                None => return Ok(ResumeAction::Cancelled),
             }
         }
     };
@@ -219,6 +259,23 @@ pub(crate) fn cmd_resume(db: &Db, args: ResumeArgs) -> Result<ResumeAction> {
         );
     }
     Ok(plan_resume(&rec, args.extra))
+}
+
+/// The chosen id, or `None` on cancel. A picker failure prints and exits 1.
+fn picked(outcome: Result<PickOutcome>) -> Option<String> {
+    match outcome {
+        Ok(PickOutcome::Picked(id)) => Some(id),
+        Ok(PickOutcome::Cancelled) => None,
+        Err(e) => {
+            eprintln!("{} {e:#}", "✗".red());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn no_tty_recent_message(n: usize) -> String {
+    let noun = if n == 1 { "session" } else { "sessions" };
+    format!("listed the {n} most recent {noun}; pass an id or search terms")
 }
 
 // A truncated list dropped trailing hits to fit the response cap, so `n` undercounts the matches.

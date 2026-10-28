@@ -4,7 +4,8 @@
 //! --projects-dir` (as `tests/search.rs` does). Seeded cwds are real tempdirs and the transcripts
 //! exist, so `plan_resume` reaches `Launch`; a stub `claude` first on `PATH` prints its cwd and
 //! args, so the exec is observable on stdout. `Command::output` gives the child a null stdin, which
-//! is the no-TTY case.
+//! is the no-TTY case. The TTY case runs clyde under util-linux `script` with a stub `fzf` that
+//! picks the first row.
 
 use std::fs;
 use std::io::Write;
@@ -22,6 +23,7 @@ const STUB_MARKER: &str = "STUB-CLAUDE";
 
 struct Fixture {
     tmp: TempDir,
+    projects: PathBuf,
     db_path: PathBuf,
     alpha_cwd: PathBuf,
     bravo_cwd: PathBuf,
@@ -56,6 +58,8 @@ fn session_lines(cwd: &Path, prompt: &str, title: &str) -> Vec<String> {
 ///
 /// - alpha: `kubernetes`, `facade` (an id-shaped word no id starts with), `migrate`
 /// - bravo: `terraform`, `abcd` (the shared id prefix as a body word), `migrate`
+///
+/// bravo's transcript mtime is newer, so it is the most recent session.
 fn fixture() -> Fixture {
     let tmp = TempDir::new().expect("tempdir");
     let projects = tmp.path().join("projects");
@@ -84,14 +88,17 @@ fn fixture() -> Fixture {
         ),
     );
 
-    let reindex = std::process::Command::new(env!("CARGO_BIN_EXE_clyde"))
-        .arg("--db")
-        .arg(&db_path)
-        .args(["session", "reindex", "--projects-dir"])
-        .arg(&projects)
-        .output()
-        .expect("clyde session reindex should run");
-    assert!(reindex.status.success(), "reindex failed: {:?}", reindex);
+    let day = std::time::Duration::from_secs(86_400);
+    let older = std::time::SystemTime::now() - 2 * day;
+    for (sid, dir, mtime) in [(SID_ALPHA, "-tmp-alpha", older), (SID_BRAVO, "-tmp-bravo", older + day)] {
+        fs::File::options()
+            .write(true)
+            .open(projects.join(dir).join(format!("{sid}.jsonl")))
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+    reindex(&db_path, &projects);
 
     let stub_dir = tmp.path().join("bin");
     fs::create_dir_all(&stub_dir).unwrap();
@@ -105,6 +112,7 @@ fn fixture() -> Fixture {
 
     Fixture {
         tmp,
+        projects,
         db_path,
         alpha_cwd,
         bravo_cwd,
@@ -112,19 +120,67 @@ fn fixture() -> Fixture {
     }
 }
 
+fn reindex(db_path: &Path, projects: &Path) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_clyde"))
+        .arg("--db")
+        .arg(db_path)
+        .args(["session", "reindex", "--projects-dir"])
+        .arg(projects)
+        .output()
+        .expect("clyde session reindex should run");
+    assert!(out.status.success(), "reindex failed: {out:?}");
+}
+
 impl Fixture {
-    /// Run `clyde --db <db> session resume <query...> --no-reindex` with the stub first on `PATH`.
-    fn resume(&self, query: &[&str]) -> Output {
+    /// Delete a seeded transcript and reindex, so the catalog marks that session archived.
+    fn archive(&self, sid: &str) {
+        let dir = if sid == SID_ALPHA { "-tmp-alpha" } else { "-tmp-bravo" };
+        fs::remove_file(self.projects.join(dir).join(format!("{sid}.jsonl"))).unwrap();
+        reindex(&self.db_path, &self.projects);
+    }
+
+    fn path_env(&self) -> std::ffi::OsString {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut dirs = vec![self.stub_dir.clone()];
         dirs.extend(std::env::split_paths(&path));
+        std::env::join_paths(dirs).unwrap()
+    }
+
+    /// Run `clyde session resume --no-reindex` with no query on a pseudo-terminal (util-linux
+    /// `script`), with a stub `fzf` that touches a marker file and picks the first row. Returns the
+    /// combined terminal output and whether fzf ran.
+    fn resume_on_tty(&self) -> (Output, bool) {
+        let marker = self.tmp.path().join("fzf-ran");
+        let fzf = self.stub_dir.join("fzf");
+        fs::write(&fzf, format!("#!/bin/sh\ntouch '{}'\nhead -n 1\n", marker.display())).unwrap();
+        fs::set_permissions(&fzf, fs::Permissions::from_mode(0o755)).unwrap();
+        let cmd = format!(
+            "'{}' --db '{}' session resume --no-reindex",
+            env!("CARGO_BIN_EXE_clyde"),
+            self.db_path.display()
+        );
+        // `script` runs `cmd` through `$SHELL`. A login zsh's startup files can put the user's own
+        // `claude` ahead of the stub on PATH, so pin a plain sh and a HOME with no startup files.
+        let out = std::process::Command::new("script")
+            .args(["-qec", &cmd, "/dev/null"])
+            .env("SHELL", "/bin/sh")
+            .env("HOME", self.tmp.path())
+            .env("PATH", self.path_env())
+            .current_dir(self.tmp.path())
+            .output()
+            .expect("util-linux script should run");
+        (out, marker.exists())
+    }
+
+    /// Run `clyde --db <db> session resume <query...> --no-reindex` with the stub first on `PATH`.
+    fn resume(&self, query: &[&str]) -> Output {
         std::process::Command::new(env!("CARGO_BIN_EXE_clyde"))
             .arg("--db")
             .arg(&self.db_path)
             .args(["session", "resume"])
             .args(query)
             .arg("--no-reindex")
-            .env("PATH", std::env::join_paths(dirs).unwrap())
+            .env("PATH", self.path_env())
             .current_dir(self.tmp.path())
             .output()
             .expect("clyde session resume should run")
@@ -200,6 +256,70 @@ fn zero_hits_report_no_match_and_exit_1() {
         stderr(&out).contains(r#"no session matches "qqxzqqxznomatch""#),
         "{out:?}"
     );
+}
+
+#[test]
+fn no_query_without_tty_lists_recent_sessions_and_exits_1() {
+    let fx = fixture();
+    let out = fx.resume(&[]);
+    assert_not_launched(&out);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out))
+        .unwrap_or_else(|e| panic!("stdout is not a SessionRecord JSON array: {e}: {out:?}"));
+    let ids: Vec<&str> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["session-id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [SID_BRAVO, SID_ALPHA], "newest first: {v}");
+    assert!(
+        stderr(&out).contains("listed the 2 most recent sessions; pass an id or search terms"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn no_query_leaves_out_archived_sessions() {
+    let fx = fixture();
+    fx.archive(SID_BRAVO);
+    let out = fx.resume(&[]);
+    assert_not_launched(&out);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let ids: Vec<&str> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["session-id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [SID_ALPHA], "{v}");
+    assert!(stderr(&out).contains("listed the 1 most recent session;"), "{out:?}");
+}
+
+#[test]
+fn no_query_with_every_session_archived_reports_an_empty_catalog() {
+    let fx = fixture();
+    fx.archive(SID_ALPHA);
+    fx.archive(SID_BRAVO);
+    let out = fx.resume(&[]);
+    assert_not_launched(&out);
+    assert!(stderr(&out).contains("no sessions in the catalog"), "{out:?}");
+}
+
+#[test]
+fn no_query_on_a_tty_opens_the_picker_newest_first() {
+    let fx = fixture();
+    let (out, fzf_ran) = fx.resume_on_tty();
+    assert!(fzf_ran, "the picker must open: {out:?}");
+    assert_launched(&out, &fx.bravo_cwd, SID_BRAVO);
+}
+
+#[test]
+fn no_query_on_a_tty_opens_the_picker_even_for_one_session() {
+    let fx = fixture();
+    fx.archive(SID_BRAVO);
+    let (out, fzf_ran) = fx.resume_on_tty();
+    assert!(fzf_ran, "one session must still go through the picker: {out:?}");
+    assert_launched(&out, &fx.alpha_cwd, SID_ALPHA);
 }
 
 #[test]

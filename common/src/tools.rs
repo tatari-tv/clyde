@@ -17,6 +17,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// One external binary a subcommand depends on: the executable `name` and a short `purpose`
 /// describing what the subcommand uses it for.
+#[derive(Clone, Copy)]
 pub struct Tool {
     pub name: &'static str,
     pub purpose: &'static str,
@@ -116,6 +117,9 @@ fn extract_version(output: &str) -> String {
         return String::new();
     };
     for word in line.split_whitespace() {
+        // systemctl prints `systemd 259 (259.9-0ubuntu0.1)`: untrimmed, the dash split below
+        // would return `0ubuntu0.1)`.
+        let word = word.trim_matches(|c| matches!(c, '(' | ')' | '[' | ']' | ','));
         if let Some(v) = looks_like_version(word.trim_start_matches('v')) {
             return v.to_string();
         }

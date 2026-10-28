@@ -82,7 +82,10 @@ fn main() -> ExitCode {
 /// clap's own message -- that is unchanged. The `Err` this returns is the narrower
 /// `from_arg_matches` case.
 fn parse_cli(log_path: &Path) -> Result<Cli> {
-    let after_help = format!("Logs are written to: {}", log_path.display());
+    let after_help = format!(
+        "Logs are written to: {}\nRun `clyde doctor` to check required tools.",
+        log_path.display()
+    );
     let mut command = Cli::command().after_help(after_help);
     // Subcommands that shell out to external binaries advertise them in a REQUIRED TOOLS block at
     // the end of their `--help`. Building a block spawns a `--version` probe per tool, so attach
@@ -96,24 +99,10 @@ fn parse_cli(log_path: &Path) -> Result<Cli> {
                 p.mut_subcommand("apply", |a| a.after_help(permit::apply_tools_help()))
             }),
             ["session", "resume"] => command.mut_subcommand("session", |s| {
-                s.mut_subcommand("resume", |r| {
-                    r.after_help(common::required_tools_help(&[
-                        common::Tool {
-                            name: "claude",
-                            purpose: "session resume: exec `claude --resume <id>`",
-                        },
-                        common::Tool {
-                            name: "fzf",
-                            purpose: "session resume: pick among several matches",
-                        },
-                    ]))
-                })
+                s.mut_subcommand("resume", |r| r.after_help(common::required_tools_help(resume::TOOLS)))
             }),
             ["bootstrap"] => command.mut_subcommand("bootstrap", |b| {
-                b.after_help(common::required_tools_help(&[common::Tool {
-                    name: "systemctl",
-                    purpose: "bootstrap: repoint the enrich systemd user timer",
-                }]))
+                b.after_help(common::required_tools_help(bootstrap::TOOLS))
             }),
             _ => command,
         };
@@ -975,7 +964,7 @@ pub(crate) fn print_hits(results: &SearchResults) {
     }
 }
 
-fn print_records(records: &[SessionRecord]) {
+pub(crate) fn print_records(records: &[SessionRecord]) {
     if !std::io::stdout().is_terminal() {
         print_json(records);
         return;

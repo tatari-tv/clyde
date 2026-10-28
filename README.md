@@ -39,8 +39,10 @@ clyde doctor                                                             # healt
 Subcommands that shell out to external binaries (not linked libraries) advertise them, with live
 install status, in a `REQUIRED TOOLS` block at the end of their `--help`: `clyde report` (persona,
 pandoc, marquee, git, jq), `clyde session resume` (claude, fzf), `clyde permit apply` (rkvr), and
-`clyde bootstrap` (systemctl). The probes run only when that specific `--help` is requested, never
-on a normal invocation. Rendering lives in `common::tools`.
+`clyde bootstrap` (systemctl). The probes run only when that specific `--help` is requested or
+`clyde doctor` runs, never on any other invocation. `clyde doctor` lists all of them in one REQUIRED TOOLS block, and the root
+`clyde --help` points there. A missing tool never fails `doctor`'s exit. Rendering lives in
+`common::tools`.
 
 ## Report formats
 
@@ -296,6 +298,7 @@ When `claude` exits you are returned to your original shell prompt and directory
 clyde session resume 3bc0a20d                  # resume in original directory, default model
 clyde session resume 3bc0a20d -- --model opus  # forward --model opus to claude
 clyde session resume <query...>                # search terms instead of an id
+clyde session resume                           # pick among the most recent sessions
 clyde session resume marquee publish -- --model opus
 ```
 
@@ -318,6 +321,12 @@ prefix) is treated as search terms and runs the same search as `clyde session se
   (the `SearchResults` JSON when stdout is piped, the listing when it is a terminal), then
   `✗ N sessions match; pass an id` (or `✗ more than N sessions match (list truncated); refine the
   query or pass an id` when the list was truncated) and exits 1. Nothing is launched.
+
+With no query, `clyde session resume` opens the same picker over the 50 most recent unarchived
+sessions, newest first. It always opens the picker, even for one session; an empty catalog prints
+`✗ no sessions in the catalog` and exits 1. With no TTY on stdin it prints the list as
+`clyde session ls` would, then `✗ listed the N most recent sessions; pass an id or search terms`,
+and exits 1.
 
 The picker needs `fzf` on PATH. If it is missing, resume fails loudly (`✗ fzf not found on PATH`)
 and exits 1; a clean one-match result and the id path never need it. clyde clears `FZF_DEFAULT_OPTS` and

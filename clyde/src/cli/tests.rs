@@ -231,10 +231,25 @@ fn resume_parses_multi_word_query_with_extra() {
 }
 
 #[test]
-fn resume_rejects_missing_query() {
-    // A query is required; passthrough alone is not a query.
-    assert!(Cli::try_parse_from(["clyde", "session", "resume"]).is_err());
-    assert!(Cli::try_parse_from(["clyde", "session", "resume", "--", "--model", "opus"]).is_err());
+fn resume_accepts_no_query_with_and_without_passthrough() {
+    // No query opens the recent-sessions picker; passthrough alone is still not a query.
+    for (argv, extra) in [
+        (vec!["clyde", "session", "resume"], vec![]),
+        (
+            vec!["clyde", "session", "resume", "--", "--model", "opus"],
+            vec!["--model".to_string(), "opus".to_string()],
+        ),
+    ] {
+        match Cli::try_parse_from(&argv).unwrap().command {
+            Command::Sessions {
+                command: SessionsCommand::Resume(args),
+            } => {
+                assert!(args.query.is_empty(), "{argv:?}");
+                assert_eq!(args.extra, extra, "{argv:?}");
+            }
+            _ => panic!("expected resume"),
+        }
+    }
 }
 
 fn argv(tokens: &[&str]) -> Vec<String> {
