@@ -3,6 +3,7 @@ name = "sessions"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 description = "clyde navigational layer: index, FTS5, search/ls/open over Claude sessions"
 
 [lints]
