@@ -31,7 +31,7 @@ impl From<SortOrder> for sessions::SortBy {
 #[command(
     name = "clyde",
     about = "Catalog, search, and resume Claude Code sessions",
-    version = env!("GIT_DESCRIBE"),
+    version = concat!("v", env!("CARGO_PKG_VERSION")),
     arg_required_else_help = true,
 )]
 pub struct Cli {

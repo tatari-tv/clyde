@@ -3,7 +3,6 @@ name = "cost"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-build = "build.rs"
 description = "Fast CLI tool for tracking Claude Code session costs from JSONL logs"
 
 [lib]
