@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 description = "Catalog, search, and resume Claude Code sessions"
-build = "build.rs"
 repository = "https://github.com/tatari-tv/clyde"
 
 [[bin]]

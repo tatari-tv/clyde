@@ -24,6 +24,6 @@ permissions:
 
 jobs:
   release:
-    uses: tatari-tv/github-actions-public/.github/workflows/rust-cli-release.yml@v2.0.0
+    uses: tatari-tv/github-actions-public/.github/workflows/rust-cli-release.yml@v2.4.0
     with:
       rust-version: "1.99.1"

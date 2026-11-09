@@ -3,7 +3,6 @@ name = "report"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-build = "build.rs"
 description = "Read the session catalog and emit a per-host JSON usage report"
 
 [lib]

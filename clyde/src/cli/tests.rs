@@ -300,3 +300,10 @@ fn help_target_is_none_for_non_help_and_keeps_terms_in_the_path() {
         path(&["session", "search", "report"])
     );
 }
+
+#[test]
+fn version_is_v_plus_the_cargo_toml_version() {
+    use clap::CommandFactory;
+    let version = Cli::command().get_version().unwrap().to_string();
+    assert_eq!(version, format!("v{}", env!("CARGO_PKG_VERSION")));
+}

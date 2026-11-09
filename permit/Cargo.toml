@@ -3,7 +3,6 @@ name = "permit"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-build = "build.rs"
 description = "Manage Claude Code permission hygiene - log, audit, suggest, report"
 
 [lib]
