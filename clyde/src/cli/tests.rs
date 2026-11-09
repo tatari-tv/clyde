@@ -302,8 +302,12 @@ fn help_target_is_none_for_non_help_and_keeps_terms_in_the_path() {
 }
 
 #[test]
-fn version_is_v_plus_the_cargo_toml_version() {
+fn version_is_v_plus_the_build_version() {
     use clap::CommandFactory;
     let version = Cli::command().get_version().unwrap().to_string();
-    assert_eq!(version, format!("v{}", env!("CARGO_PKG_VERSION")));
+    assert_eq!(version, env!("BUILD_VERSION"));
+    assert!(
+        version.starts_with('v'),
+        "BUILD_VERSION carries the v prefix: {version}"
+    );
 }
