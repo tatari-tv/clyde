@@ -43,3 +43,6 @@ which.workspace = true
 common = { path = "../common", features = ["testkit"] }
 rusqlite = { workspace = true, features = ["bundled"] }
 serde_yaml.workspace = true
+
+[build-dependencies]
+build-version = { git = "https://github.com/tatari-tv/build-version-rs", tag = "v0.1.0", version = "0.1.0" }
